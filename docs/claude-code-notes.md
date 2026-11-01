@@ -47,16 +47,17 @@
 
 共用 stdin 欄位：`session_id`、`prompt_id`、`transcript_path`、`cwd`、`scratchpad_dir`、`permission_mode`、`effort`、`hook_event_name`。子代理內觸發時多 `agent_id`、`agent_type`。**Notification 的文件範例沒有 `permission_mode`**，不可假設每個事件都有。Manual 模式傳 `"default"`。
 
-| 事件                | 專屬欄位                                                                          | 本專案用途                                                                                                                 |
-| ------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `SessionStart`      | `source`（startup/resume/clear/compact/fork）、`model`、`context_tokens`          | 更新 `claudeSessionId`（`/clear` 會換 id）、context 用量                                                                   |
-| `UserPromptSubmit`  | `prompt`                                                                          | → `running`                                                                                                                |
-| `PreToolUse`        | `tool_name`、`tool_input`、`tool_use_id`                                          | → `running`；危險指令比對                                                                                                  |
-| `PermissionRequest` | `tool_name`、`tool_input`、`permission_suggestions`（沒有 `tool_use_id`）         | 網頁核准                                                                                                                   |
-| `Notification`      | `message`、`title`、`notification_type`                                           | `permission_prompt` → `waiting_permission`；`idle_prompt` → `waiting_input`                                                |
-| `Stop`              | `last_assistant_message`、`stop_hook_active`、`background_tasks`、`session_crons` | → `waiting_input`，或 plan 模式 → `plan_review`；交接摘要來源（文件明說不要讀 transcript，它在 Stop 當下不保證有最後一則） |
-| `StopFailure`       | `error`、`error_details`、`last_assistant_message`                                | `error=rate_limit` → `rate_limited`，其他 → `error`                                                                        |
-| `SessionEnd`        | `reason`                                                                          | 記錄                                                                                                                       |
+| 事件                                | 專屬欄位                                                                          | 本專案用途                                                                                                                 |
+| ----------------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `SessionStart`                      | `source`（startup/resume/clear/compact/fork）、`model`、`context_tokens`          | 更新 `claudeSessionId`（`/clear` 會換 id）、context 用量                                                                   |
+| `UserPromptSubmit`                  | `prompt`                                                                          | → `running`                                                                                                                |
+| `PreToolUse`                        | `tool_name`、`tool_input`、`tool_use_id`                                          | → `running`；危險指令比對                                                                                                  |
+| `PermissionRequest`                 | `tool_name`、`tool_input`、`permission_suggestions`（沒有 `tool_use_id`）         | 網頁核准                                                                                                                   |
+| `PostToolUse`、`PostToolUseFailure` | `tool_name`、`tool_input`、`tool_use_id`                                          | → `running`（核准後離開 `waiting_permission`）。`PostToolUseFailure` 的專屬欄位未逐字查證                                  |
+| `Notification`                      | `message`、`title`、`notification_type`                                           | `permission_prompt` → `waiting_permission`；`idle_prompt` → `waiting_input`                                                |
+| `Stop`                              | `last_assistant_message`、`stop_hook_active`、`background_tasks`、`session_crons` | → `waiting_input`，或 plan 模式 → `plan_review`；交接摘要來源（文件明說不要讀 transcript，它在 Stop 當下不保證有最後一則） |
+| `StopFailure`                       | `error`、`error_details`、`last_assistant_message`                                | `error=rate_limit` → `rate_limited`，其他 → `error`                                                                        |
+| `SessionEnd`                        | `reason`                                                                          | 記錄                                                                                                                       |
 
 `Stop` 不會在使用者中斷時觸發；API 錯誤走 `StopFailure`。`StopFailure`、`SessionEnd`、`Notification` 都無法影響流程，輸出被忽略。
 
