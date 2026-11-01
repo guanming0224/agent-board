@@ -32,11 +32,31 @@ describe('approval decision', () => {
     );
   });
 
+  it('keeps an answer distinct from a denial, and requires text', () => {
+    expect(ApprovalDecision.safeParse({ behavior: 'answer', text: '' }).success).toBe(false);
+    expect(ApprovalDecision.parse({ behavior: 'answer', text: 'English' }).behavior).toBe('answer');
+  });
+
   it('defaults remember to false', () => {
     expect(ApprovalDecision.parse({ behavior: 'allow' })).toEqual({
       behavior: 'allow',
       remember: false,
     });
+  });
+});
+
+describe('rest bodies', () => {
+  it('parses archived=false as false', () => {
+    expect(routes.sessionsList.query.parse({ archived: 'false' }).archived).toBe(false);
+  });
+
+  it('requires the current password to change the password', () => {
+    expect(routes.usersUpdate.body.safeParse({ password: 'new-password' }).success).toBe(false);
+    expect(
+      routes.usersUpdate.body.safeParse({ password: 'new-password', currentPassword: 'old' })
+        .success,
+    ).toBe(true);
+    expect(routes.usersUpdate.body.safeParse({ locale: 'en' }).success).toBe(true);
   });
 });
 
