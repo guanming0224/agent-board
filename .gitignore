@@ -1,0 +1,22 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.DS_Store
+
+# 執行期資料與機密：一律不進版控
+data/
+*.db
+*.db-*
+*.sqlite*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+vapid*.json
+
+# 每台機器自己的部署設定（launchd plist、serve 對應、實際網址）
+deploy/local/

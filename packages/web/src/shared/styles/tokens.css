@@ -1,0 +1,115 @@
+/* 「塔台 × 放手線」設計 token。規格見 docs/design/STYLE.md；元件裡不寫死色碼。 */
+:root {
+  color-scheme: dark;
+  --bg: #0a0c10;
+  --surface: #14181f;
+  --surface-2: #1b212b;
+  --raise: #232b36;
+  --fg: #ffffff;
+  --fg-muted: #e9eef5;
+  --muted: #cbd3dc;
+  --faint: #8b949e;
+  --border: #282f3a;
+  --border-2: #333c49;
+
+  /* 藍色是語意色，所以選中與主按鈕用白色 */
+  --accent: #ffffff;
+  --on-accent: #0a0c10;
+  --accent-bg: rgba(255, 255, 255, 0.1);
+  --ring: rgba(255, 255, 255, 0.6);
+
+  /* 規則一：顏色只回答「球在誰手上」 */
+  --you: #f2b33d;
+  --fault: #f0665f;
+  --agent: #4aa3ff;
+  --quota: #e58be0;
+  --idle: #c9d1d9;
+
+  /* 只在 diff 區塊使用，一定配 + − */
+  --diff-add: #46c26a;
+  --diff-del: #f0665f;
+
+  --term-bg: #0a0c10;
+  --canvas-dot: #1b212b;
+  --hatch: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.09) 0 4px, transparent 4px 8px);
+
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'PingFang TC', 'Noto Sans TC', 'Helvetica Neue', Arial,
+    sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 var(--font-sans);
+}
+
+button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+
+button:hover:not(:disabled) {
+  background: var(--raise);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--fg-muted);
+}
+
+button.danger {
+  background: color-mix(in srgb, var(--fault) 12%, transparent);
+  border-color: var(--fault);
+  color: var(--fg);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.001ms !important;
+  }
+}

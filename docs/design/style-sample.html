@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>塔台 × 放手線</title>
+<link rel="icon" href="data:,">
+<style>
+/* 規格：Claude控制中心_設計邏輯風格.md。全部資料都是範例。單一檔、零外部套件。 */
+:root { color-scheme:dark;
+  --bg:#0a0c10; --surface:#14181f; --surface-2:#1b212b; --raise:#232b36;
+  --fg:#ffffff; --fg-muted:#e9eef5; --muted:#cbd3dc; --faint:#8b949e;
+  --border:#282f3a; --border-2:#333c49;
+  --accent:#ffffff; --on-accent:#0a0c10; --accent-bg:rgba(255,255,255,.1); --ring:rgba(255,255,255,.6);
+  --you:#f2b33d; --fault:#f0665f; --agent:#4aa3ff; --quota:#e58be0; --idle:#c9d1d9;
+  --diff-add:#46c26a; --diff-del:#f0665f; --term-bg:#0a0c10; --canvas-dot:#1b212b;
+  --hatch:repeating-linear-gradient(135deg,rgba(255,255,255,.09) 0 4px,transparent 4px 8px);
+  --team-a:#3cc4b0;
+  --font-sans:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Helvetica Neue",Arial,sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+*{box-sizing:border-box} html{min-width:320px}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--font-sans);overflow-x:hidden}
+button{min-height:36px;padding:0 14px;border:1px solid var(--border-2);border-radius:8px;background:var(--surface-2);color:var(--fg);font:inherit;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s}
+button:hover:not(:disabled){background:var(--raise)}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+button.primary:hover:not(:disabled){background:var(--fg-muted)}
+button.danger{background:color-mix(in srgb,var(--fault) 12%,transparent);border-color:var(--fault)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.num{font-variant-numeric:tabular-nums}
+
+.top{position:sticky;top:0;z-index:20;background:rgba(10,12,16,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
+.bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px 0}
+.bar>*{flex-shrink:0}
+.brand{font-size:18px;font-weight:700;letter-spacing:-.01em}
+.waiting{display:inline-flex;align-items:baseline;gap:6px;color:var(--you)}
+.waiting span{font-size:13px;font-weight:600}
+.waiting b{font-size:26px;font-weight:650;letter-spacing:-.01em;line-height:1.1}
+kbd{font:11px var(--font-mono);border:1px solid color-mix(in srgb,var(--on-accent) 35%,transparent);border-radius:4px;padding:0 4px;margin-left:6px}
+.spacer{flex:1 1 auto}
+.meta{color:var(--muted);font-size:12.5px;display:inline-flex;gap:12px;flex-wrap:wrap}
+.tabs{display:flex;gap:2px;padding:4px 16px 0;overflow-x:auto}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;color:var(--muted);min-height:38px}
+.tabs button:hover{background:none;color:var(--fg)}
+.tabs button[aria-selected=true]{color:var(--fg);border-bottom-color:var(--accent)}
+[hidden]{display:none!important}
+
+/* 畫布 */
+.board{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:760px}
+.side{border-right:1px solid var(--border);padding:16px;background:var(--surface);min-width:0}
+.side h3{font-size:12px;color:var(--muted);font-weight:600;margin:0 0 8px}
+.side section+section{margin-top:22px}
+.rig{padding:10px 0;border-top:1px solid var(--border)}
+.rig:first-of-type{border-top:0;padding-top:0}
+.rig .name{display:flex;align-items:center;gap:6px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--fg);flex-shrink:0}
+.rig.off .dot{background:var(--faint)} .rig.off .name{color:var(--muted)}
+.bars{display:grid;grid-template-columns:34px 1fr;gap:4px 8px;align-items:center;margin-top:6px;font-size:11px;color:var(--muted)}
+.m{height:6px;border-radius:999px;background:color-mix(in srgb,var(--agent) 18%,transparent);overflow:hidden}
+.m i{display:block;height:100%;border-radius:999px;background:var(--agent)}
+.m.w{background:color-mix(in srgb,var(--you) 18%,transparent)} .m.w i{background:var(--you)}
+.m.q{background:color-mix(in srgb,var(--quota) 18%,transparent)} .m.q i{background:var(--quota)}
+.legend{list-style:none;margin:0;padding:0;font-size:12.5px;color:var(--fg-muted)}
+.legend li{display:flex;gap:8px;padding:2px 0}
+.legend b{width:16px;text-align:center;font-weight:400}
+.hint{font-size:12.5px;color:var(--muted);margin:6px 0 0}
+
+.canvas{position:relative;min-width:0;overflow:auto;background-color:var(--bg);background-image:radial-gradient(var(--canvas-dot) 1.2px,transparent 1.2px);background-size:22px 22px}
+.world{position:relative;width:1170px;height:760px}
+.team{position:absolute;left:24px;top:34px;width:774px;height:312px;border:1px solid var(--team-a);border-radius:12px;background:color-mix(in srgb,var(--team-a) 8%,transparent)}
+.team>span{position:absolute;top:-11px;left:12px;padding:0 8px;font-size:12px;font-weight:600;border-radius:999px;background:var(--bg);border:1px solid var(--team-a);color:var(--fg-muted)}
+.edge{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.edge path{fill:none;stroke:var(--muted);stroke-width:1.5;stroke-dasharray:6 4}
+.edge text{fill:var(--muted);font-size:11px}
+.strip{position:absolute;width:320px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 12px 12px 16px;overflow:hidden;min-width:0}
+.strip::before{content:"";position:absolute;left:0;top:0;bottom:0;border-left:3px dashed var(--muted)}
+.strip.h-plan::before{border-left:3px dotted var(--muted)}
+.strip.h-edits::before{border-left:3px solid var(--muted)}
+.strip.h-auto::before{border-left:5px solid var(--muted)}
+.strip.h-bypass::before{border-left:5px solid var(--fault)}
+.strip.you{border:2px solid var(--you)}
+.strip.gone{opacity:.45;background-image:var(--hatch)}
+.head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.lamp{display:inline-flex;gap:5px;align-items:baseline;font-size:12px;font-weight:600;white-space:nowrap}
+.lamp i{font-style:normal;font-size:14px;line-height:1}
+.l-you{color:var(--you)} .l-fault{color:var(--fault)} .l-agent{color:var(--agent)} .l-quota{color:var(--quota)} .l-idle{color:var(--idle)}
+.title{font-weight:650;font-size:15px}
+.age{margin-left:auto;font-size:12px;color:var(--muted);white-space:nowrap}
+.sign{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.callsign{font:12px var(--font-mono);color:var(--muted);overflow-wrap:anywhere}
+.chip{display:inline-flex;font-size:11.5px;font-weight:600;padding:1px 7px;border-radius:999px;border:1px solid var(--border-2);color:var(--muted);white-space:nowrap}
+.chip.bypass{border-color:var(--fault);color:var(--fg);background:color-mix(in srgb,var(--fault) 14%,transparent)}
+.cost{border-color:var(--quota);color:var(--quota)}
+.tail{margin:8px 0 0;padding:6px 8px;background:var(--surface-2);border-radius:8px;font:12px/1.45 var(--font-mono);color:var(--fg-muted);white-space:pre-wrap;overflow-wrap:anywhere;min-height:76px}
+.ctx{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;margin-top:8px;font-size:11px;color:var(--muted)}
+.acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.acts button{min-height:30px;font-size:13px;padding:0 10px}
+input.cmd,textarea{width:100%;margin-top:8px;min-height:32px;padding:4px 10px;border:1px solid var(--border-2);border-radius:8px;background:var(--surface-2);color:var(--fg);font:13px var(--font-sans)}
+input.cmd::placeholder,textarea::placeholder{color:var(--muted)}
+
+/* 審核與收件匣 */
+.page{max-width:1320px;margin:0 auto;padding:18px 16px 56px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:16px}
+.card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 16px 16px 20px;min-width:0;overflow:hidden}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;border-left:3px dashed var(--muted)}
+.card.h-bypass::before{border-left:5px solid var(--fault)}
+.alert{display:flex;gap:10px;padding:10px 14px;border-radius:10px;border:1px solid color-mix(in srgb,var(--fault) 55%,transparent);background:color-mix(in srgb,var(--fault) 10%,transparent);font-size:13.5px;margin-bottom:10px}
+h2{margin:0;font-size:16px;font-weight:650}
+.tool{font-weight:600;margin:10px 0 6px}
+.diff{margin:0;background:var(--term-bg);border:1px solid var(--border);border-radius:8px;padding:8px 0;font:12.5px/1.6 var(--font-mono);overflow-x:auto}
+.diff div{padding:0 10px;white-space:pre}
+.diff .a{color:var(--diff-add);background:color-mix(in srgb,var(--diff-add) 10%,transparent)}
+.diff .d{color:var(--diff-del);background:color-mix(in srgb,var(--diff-del) 10%,transparent)}
+.card .acts{margin-top:12px}
+.card .acts button{min-height:36px;font-size:14px;padding:0 14px}
+.msg{font-size:13px;color:var(--muted);align-self:center}
+.sub{color:var(--muted);font-size:13px}
+.phone{max-width:390px;margin:0 auto;display:grid;gap:12px}
+.inbox-item{position:relative;background:var(--surface);border:2px solid var(--you);border-radius:12px;padding:14px 14px 14px 18px;overflow:hidden}
+.inbox-item::before{content:"";position:absolute;left:0;top:0;bottom:0;border-left:3px dashed var(--muted)}
+.inbox-item .big{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.inbox-item .big button{min-height:56px;font-size:16px}
+.inbox-item .big .wide{grid-column:1/-1}
+.back{font-size:12.5px;color:var(--muted);margin:10px 0 0}
+
+@media (max-width:860px){
+  .board{grid-template-columns:minmax(0,1fr)}
+  .side{border-right:0;border-bottom:1px solid var(--border)}
+  .canvas{height:560px}
+}
+@media (max-width:520px){ .meta{display:none} .brand{font-size:16px} }
+@media (prefers-reduced-motion:reduce){ *{transition-duration:.001ms!important} }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <span class="brand">Agent Board</span>
+    <span class="waiting" aria-label="有 3 個 session 在等你"><span>等你</span><b class="num">3</b></span>
+    <button class="primary" id="next">下一個等我的<kbd>N</kbd></button>
+    <span class="spacer"></span>
+    <span class="meta"><span>2 台上線・1 台失聯</span><span>額度 62%</span></span>
+    <button>新增 session</button>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="主要分頁">
+    <button role="tab" aria-selected="true" data-tab="canvas">畫布</button>
+    <button role="tab" aria-selected="false" data-tab="review">審核中心</button>
+    <button role="tab" aria-selected="false" data-tab="inbox">手機收件匣</button>
+  </nav>
+</header>
+
+<div id="canvas" class="board">
+  <aside class="side">
+    <section>
+      <h3>機器</h3>
+      <div class="rig"><div class="name"><span class="dot"></span>mac-studio</div>
+        <div class="bars"><span>CPU</span><div class="m"><i style="width:34%"></i></div><span>RAM</span><div class="m w"><i style="width:71%"></i></div></div></div>
+      <div class="rig"><div class="name"><span class="dot"></span>gpu-box</div>
+        <div class="bars"><span>CPU</span><div class="m"><i style="width:12%"></i></div><span>RAM</span><div class="m"><i style="width:28%"></i></div><span>GPU</span><div class="m w"><i style="width:64%"></i></div></div></div>
+      <div class="rig off"><div class="name"><span class="dot"></span>⊘ laptop</div><p class="hint">失聯・最後讀到 14:02</p></div>
+    </section>
+    <section><h3>額度</h3><div class="m q"><i style="width:62%"></i></div><p class="hint">本週已用 62%</p></section>
+    <section>
+      <h3>狀態圖例</h3>
+      <ul class="legend">
+        <li class="l-you"><b>◆</b>等你允許</li><li class="l-you"><b>◇</b>等你回覆</li><li class="l-you"><b>▣</b>等你審計畫</li>
+        <li class="l-fault"><b>✕</b>錯誤</li><li class="l-fault"><b>⚠</b>卡住</li>
+        <li class="l-agent"><b>●</b>工作中</li><li class="l-agent"><b>◌</b>啟動中</li><li class="l-agent"><b>⋯</b>排隊中</li>
+        <li class="l-quota"><b>⧖</b>額度用完</li><li class="l-idle"><b>✓</b>完成</li><li class="l-idle"><b>⊘</b>失聯</li>
+      </ul>
+      <h3 style="margin-top:12px">放手線</h3>
+      <p class="hint">點線 只讀或只跑事先允許的<br>虛線 每步問你<br>實線 自己改檔<br>粗線 全部自己來<br>紅粗線 略過權限</p>
+    </section>
+  </aside>
+
+  <main class="canvas" tabindex="0" aria-label="畫布（範例）">
+    <div class="world">
+      <div class="team"><span>團隊・登入重構</span></div>
+      <svg class="edge" aria-hidden="true">
+        <defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 8 4 0 8" style="stroke-dasharray:none"/></marker></defs>
+        <path d="M362 190 L462 190" marker-end="url(#arr)"/><text x="412" y="180" text-anchor="middle">完成時交接</text>
+      </svg>
+
+      <article class="strip you" style="left:40px;top:56px">
+        <div class="head"><span class="lamp l-you"><i>◆</i>等你允許</span><span class="title">修登入</span><span class="age num">等了 12 分</span></div>
+        <div class="sign"><span class="callsign">mac-studio / api @ ab/fix-auth</span><span class="chip">default</span></div>
+        <pre class="tail">Bash  npm test -- auth
+Do you want to proceed?
+❯ 1. Yes
+  2. No</pre>
+        <div class="ctx"><span>context</span><div class="m"><i style="width:38%"></i></div><span class="num">38%</span></div>
+        <div class="acts"><button class="primary">檢視並決定</button></div>
+        <input class="cmd" placeholder="送指令給這個 session" aria-label="送指令給修登入">
+      </article>
+
+      <article class="strip h-edits" style="left:464px;top:56px">
+        <div class="head"><span class="lamp l-agent"><i>●</i>工作中</span><span class="title">寫測試</span><span class="age num">3 秒前有輸出</span></div>
+        <div class="sign"><span class="callsign">mac-studio / api @ ab/auth-tests</span><span class="chip">acceptEdits</span></div>
+        <pre class="tail">Edit  tests/auth.test.ts
+  + 42 lines
+Running vitest…
+  ✓ 18 passed</pre>
+        <div class="ctx"><span>context</span><div class="m"><i style="width:21%"></i></div><span class="num">21%</span></div>
+        <input class="cmd" placeholder="送指令給這個 session" aria-label="送指令給寫測試">
+      </article>
+
+      <article class="strip you h-plan" style="left:828px;top:56px">
+        <div class="head"><span class="lamp l-you"><i>▣</i>等你審計畫</span><span class="title">資料遷移</span><span class="age num">等了 4 分</span></div>
+        <div class="sign"><span class="callsign">gpu-box / etl @ main</span><span class="chip">plan</span></div>
+        <pre class="tail">Plan: 3 steps
+1. Add column
+2. Backfill in batches
+3. Drop old column</pre>
+        <div class="ctx"><span>context</span><div class="m"><i style="width:12%"></i></div><span class="num">12%</span></div>
+        <div class="acts"><button class="primary">審核計畫</button></div>
+      </article>
+
+      <article class="strip h-bypass" style="left:40px;top:376px">
+        <div class="head"><span class="lamp l-fault"><i>⚠</i>卡住</span><span class="title">訓練模型</span><span class="age num">14 分鐘沒輸出</span></div>
+        <div class="sign"><span class="callsign">gpu-box / ml @ ab/train-v2</span><span class="chip bypass">略過權限</span></div>
+        <pre class="tail">epoch 12/40
+loss 0.4182
+loading checkpoint…
+</pre>
+        <div class="ctx"><span>context</span><div class="m w"><i style="width:66%"></i></div><span class="num">66%</span></div>
+        <div class="acts"><button>開啟終端機</button><button>Esc 中斷</button></div>
+      </article>
+
+      <article class="strip" style="left:464px;top:376px">
+        <div class="head"><span class="lamp l-quota"><i>⧖</i>額度用完</span><span class="title">整理文件</span><span class="age num">重置前</span></div>
+        <div class="sign"><span class="callsign">mac-studio / docs @ main</span><span class="chip">default</span></div>
+        <pre class="tail">API Error: Rate limit reached
+
+
+
+</pre>
+        <div class="ctx"><span>context</span><div class="m"><i style="width:9%"></i></div><span class="num">9%</span></div>
+      </article>
+
+      <article class="strip gone" style="left:828px;top:376px">
+        <div class="head"><span class="lamp l-idle"><i>⊘</i>失聯</span><span class="title">前端調整</span><span class="age num">最後讀到 14:02</span></div>
+        <div class="sign"><span class="callsign">laptop / web @ ab/nav</span><span class="chip">default</span></div>
+        <pre class="tail">Edit  src/nav.tsx
+  + 8 lines
+Running build…
+</pre>
+      </article>
+    </div>
+  </main>
+</div>
+
+<div id="review" class="page" hidden>
+  <div class="grid2">
+    <section class="card">
+      <h2>修登入 要改一個檔</h2>
+      <div class="sign"><span class="callsign">mac-studio / api @ ab/fix-auth</span><span class="chip">default</span></div>
+      <div class="tool">Edit <span class="callsign">src/auth/session.ts</span></div>
+      <div class="diff" role="img" aria-label="程式碼差異：刪除一行、新增兩行"><div>  const cookie = req.cookies.sid;</div><div class="d">− if (!cookie) return null;</div><div class="a">+ if (!cookie) throw new AuthError();</div><div class="a">+ verifyOrigin(req);</div></div>
+      <div class="acts"><button class="primary">允許一次</button><button>允許並記住</button><button>拒絕</button></div>
+      <input class="cmd" placeholder="拒絕原因（必填）" aria-label="拒絕原因">
+    </section>
+    <section class="card h-bypass">
+      <div class="alert"><span>⛔</span><div>命中危險指令清單 <span class="callsign">git push --force</span>。這個 session 略過權限，只有這裡能攔下它。</div></div>
+      <h2>訓練模型 要執行指令</h2>
+      <div class="sign"><span class="callsign">gpu-box / ml @ ab/train-v2</span><span class="chip bypass">略過權限</span></div>
+      <div class="tool">Bash</div>
+      <div class="diff"><div>git push --force origin ab/train-v2</div></div>
+      <div class="acts"><button class="danger" id="danger">允許一次</button><button>拒絕</button><span class="msg" id="msg" role="status"></span></div>
+    </section>
+  </div>
+</div>
+
+<div id="inbox" class="page" hidden>
+  <div class="phone">
+    <article class="inbox-item">
+      <div class="head"><span class="lamp l-you"><i>◆</i>等你允許</span><span class="title">修登入</span><span class="age num">等了 12 分</span></div>
+      <div class="sign"><span class="callsign">mac-studio / api @ ab/fix-auth</span><span class="chip">default</span></div>
+      <div class="tool">Bash <span class="callsign">npm test -- auth</span></div>
+      <div class="big"><button class="primary">允許一次</button><button>拒絕</button></div>
+    </article>
+    <article class="inbox-item">
+      <div class="head"><span class="lamp l-you"><i>◇</i>等你回覆</span><span class="title">寫文件</span><span class="age num">等了 2 分</span></div>
+      <div class="sign"><span class="callsign">mac-studio / docs @ main</span><span class="chip">default</span></div>
+      <p class="tool" style="font-weight:400">要用繁中還是英文寫 README？</p>
+      <div class="big"><button class="wide">回覆</button></div>
+    </article>
+    <article class="inbox-item" style="border-color:var(--you)">
+      <div class="head"><span class="lamp l-you"><i>▣</i>等你審計畫</span><span class="title">資料遷移</span><span class="age num">等了 4 分</span></div>
+      <div class="sign"><span class="callsign">gpu-box / etl @ main</span><span class="chip">plan</span></div>
+      <p class="back">計畫比較長，回電腦處理比較清楚。</p>
+    </article>
+  </div>
+</div>
+
+<script>
+const tabs = document.querySelectorAll('[role=tab]');
+tabs.forEach(t => t.addEventListener('click', () => {
+  tabs.forEach(o => { o.setAttribute('aria-selected', o === t); document.getElementById(o.dataset.tab).hidden = o !== t; });
+}));
+// 危險操作按兩次
+const danger = document.getElementById('danger'), msg = document.getElementById('msg');
+let armed = 0;
+danger.addEventListener('click', () => {
+  if (Date.now() - armed > 4000) { armed = Date.now(); danger.textContent = '再按一次確認'; msg.textContent = '4 秒內再按一次才會執行'; return; }
+  armed = 0; danger.textContent = '允許一次'; msg.textContent = '（範例）已送出';
+});
+document.getElementById('next').addEventListener('click', () => { tabs[1].click(); });
+</script>
+</body>
+</html>

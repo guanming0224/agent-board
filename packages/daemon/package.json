@@ -1,0 +1,28 @@
+{
+  "name": "@agent-board/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "agent-board-daemon": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@agent-board/protocol": "workspace:*",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
+    "node-pty": "^1.1.0",
+    "systeminformation": "^5.33.19",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

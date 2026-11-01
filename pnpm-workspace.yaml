@@ -1,0 +1,9 @@
+packages:
+  - packages/*
+
+# 只允許這些套件跑安裝腳本（原生模組與 esbuild 需要）
+allowBuilds:
+  argon2: true
+  better-sqlite3: true
+  esbuild: true
+  node-pty: true
