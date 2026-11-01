@@ -1,0 +1,6 @@
+#!/bin/bash
+# commit 完成後在背景推送 main。實際做事的是同目錄的 autopush.sh（受版控，改它就好，不用重裝）。
+# 安裝：bash deploy/git-hooks/install.sh
+script="$(git rev-parse --show-toplevel)/deploy/git-hooks/autopush.sh"
+[ -x "$script" ] && exec "$script"
+exit 0
