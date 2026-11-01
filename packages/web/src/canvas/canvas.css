@@ -1,0 +1,329 @@
+/* 畫布與航班條（STYLE.md §5）。 */
+.canvas {
+  /* 團隊框色是使用者選的色盤（STYLE.md §4），不是狀態色；之後應搬進 tokens.css。 */
+  --team-teal: #3cc4b0;
+  --z: 1;
+  position: absolute;
+  inset: 0;
+}
+.canvas .react-flow {
+  --xy-background-color: var(--bg);
+  --xy-node-boxshadow-selected: none;
+  background: var(--bg);
+}
+.canvas .react-flow__attribution {
+  background: transparent;
+}
+.canvas .react-flow__attribution a {
+  color: var(--faint);
+}
+/* 預設節點外觀全部不要，外框由 .frame 自己畫 */
+.canvas .react-flow__node {
+  border: 0;
+  background: transparent;
+}
+.canvas .react-flow__node:focus-visible {
+  outline: calc(2px / var(--z)) solid var(--ring);
+  outline-offset: calc(2px / var(--z));
+}
+
+.frame {
+  position: relative;
+  border-radius: 25px;
+}
+.frame.spot {
+  outline: calc(2px / var(--z)) solid var(--accent);
+  outline-offset: calc(4px / var(--z));
+}
+
+/* 摘要條：邏輯寬 320，整張等比放大填滿外框 */
+.strip {
+  transform-origin: 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 12px 12px 12px 16px;
+  overflow: hidden;
+  cursor: grab;
+}
+.strip .sign,
+.strip .head {
+  margin: 0;
+}
+.strip .sign {
+  margin-top: -4px;
+}
+.strip.you,
+.termcard.you,
+.queue-item.you {
+  border: 2px solid var(--you);
+}
+.gone {
+  opacity: 0.45;
+  background-image: var(--hatch);
+}
+.tail {
+  flex: 1 1 76px;
+  min-height: 0;
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border-radius: var(--radius-control);
+  font: 12px/1.45 var(--font-mono);
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.gone .tail {
+  background: transparent;
+}
+.acts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.acts button {
+  min-height: 30px;
+  font-size: 13px;
+  padding: 0 10px;
+}
+.cmd-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  cursor: auto;
+}
+input.cmd {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: 13px var(--font-sans);
+}
+input.cmd::placeholder {
+  color: var(--muted);
+}
+input.cmd:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.cmd-row .msg {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.danger-tag {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fault);
+}
+
+/* 真終端機：同一個外框，狀態與按鈕都在 xterm 之外 */
+.termcard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  padding: 10px 10px 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  cursor: grab;
+}
+.termcard > header {
+  flex-shrink: 0;
+}
+.term-acts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.term-acts:not(:empty) {
+  margin-top: 6px;
+}
+.term-acts > button {
+  min-height: 30px;
+  font-size: 13px;
+  padding: 0 10px;
+}
+.term-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--term-bg);
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: auto;
+}
+.term-slot > * {
+  width: 100%;
+  height: 100%;
+}
+
+/* 團隊框：維持螢幕上的 1px 框與 12px 標籤 */
+/* 畫在卡片底下，8% 的底色才不會染到卡片 */
+.canvas .react-flow__viewport-portal {
+  position: relative;
+  z-index: -1;
+}
+.team {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  transform-origin: 0 0;
+  border: calc(1px / var(--z)) solid var(--team);
+  border-radius: calc(12px / var(--z));
+  background: color-mix(in srgb, var(--team) 8%, transparent);
+}
+.team > span {
+  position: absolute;
+  top: 0;
+  left: calc(12px / var(--z));
+  transform: translateY(-50%) scale(calc(1 / var(--z)));
+  transform-origin: 0 50%;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--team);
+  color: var(--fg-muted);
+}
+
+/* 交接線 */
+.canvas .react-flow__edge-path.edge-handoff,
+.canvas .edge-handoff {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+.canvas .edge-handoff.selected {
+  stroke: var(--fg);
+}
+.edge-label {
+  position: absolute;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.canvas .react-flow__connection-path {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+
+/* 拖線把手：在外框邊上、標題的高度，永遠不會蓋到 xterm */
+.canvas .react-flow__handle.ab-handle {
+  z-index: 2;
+  top: 28px;
+  width: calc(10px / var(--z));
+  height: calc(10px / var(--z));
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-2);
+  border: calc(1px / var(--z)) solid var(--muted);
+}
+.canvas .react-flow__handle.ab-handle:hover,
+.canvas .react-flow__handle.ab-handle.connectingto {
+  background: var(--fg);
+}
+
+/* 右下縮放與小地圖 */
+.canvas .minimap {
+  margin: 0 16px 60px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+.canvas .zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 16px 16px 0;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.canvas .zoom span {
+  min-width: 40px;
+  text-align: center;
+}
+.canvas .zoom button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+.canvas .save-error {
+  max-width: min(480px, calc(100% - 32px));
+}
+
+/* 待處理清單 */
+.queue-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+.queue {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.queue-item {
+  display: grid;
+  gap: 6px;
+  padding: 14px 14px 14px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+.queue-item:hover {
+  background: var(--surface-2);
+}
+.queue-item .sign {
+  margin-top: 0;
+}
+.tool {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .canvas .minimap {
+    display: none;
+  }
+  .canvas .react-flow__attribution {
+    display: none;
+  }
+  .canvas .zoom {
+    margin: 0 8px 8px 0;
+  }
+}
