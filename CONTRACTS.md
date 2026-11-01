@@ -88,6 +88,10 @@ agent-board-hook <EventName>   stdin：Claude Code 的 JSON
 - 未命中 → `output: null`。
 - 命中但連不到 daemon：hook 無法判斷是否命中，對 Bash 回 `permissionDecision: "ask"`；其他工具 exit 0。超時也回 `deny`，**危險指令失敗要往安全的方向**。
 
+超時與斷線的規則：PreToolUse + Bash **超時回 `deny`**；**連不上、中途斷線或回答壞掉回 `ask`**。其他 blocking 事件一律安靜結束，交回原生流程。
+
+**必須確保 hook 找得到**：`agent-board-hook` 不在 PTY 的 PATH 上時會 exit 127，Claude Code 視為非阻擋錯誤照常執行工具，危險指令檢查就被靜默跳過。daemon 開 session 前要確認 hook 可執行，找不到就不開並回 `session.createFailed`。
+
 ### 4.4 網頁核准
 
 ```
@@ -101,23 +105,26 @@ PermissionRequest hook → daemon（建 Approval，卡住）→ hub → 瀏覽�
 
 ## 5. 狀態機（DISPATCH §4）
 
-| 事件                                                         | 新狀態                        |
-| ------------------------------------------------------------ | ----------------------------- |
-| PTY 開啟                                                     | `starting`                    |
-| `UserPromptSubmit`、`PreToolUse`                             | `running`                     |
-| `Notification` + `permission_prompt`，或 `PermissionRequest` | `waiting_permission`          |
-| `Notification` + `idle_prompt`                               | `waiting_input`               |
-| `Stop` 且 `permission_mode == 'plan'`                        | `plan_review`                 |
-| `Stop` 其他                                                  | `waiting_input`               |
-| `StopFailure` + `rate_limit`，或輸出比對到用量上限           | `rate_limited`                |
-| `StopFailure` 其他                                           | `error`                       |
-| PTY exit ≠ 0                                                 | `error`                       |
-| `running` 且超過 `stuckMinutes` 沒輸出                       | `stuck`；有新輸出回 `running` |
-| 使用者標記（hub）                                            | `done`                        |
-| 機器斷線（hub）                                              | `offline`                     |
-| 超過併發上限（hub）                                          | `queued`                      |
+| 事件                                                                            | 新狀態                        |
+| ------------------------------------------------------------------------------- | ----------------------------- |
+| PTY 開啟                                                                        | `starting`                    |
+| `SessionStart`（`source` 為 startup 或 resume）且目前是 `starting`              | `waiting_input`               |
+| `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`           | `running`                     |
+| `Notification` + `permission_prompt`，或 `PermissionRequest`                    | `waiting_permission`          |
+| `Notification` + `idle_prompt`（不覆蓋 `plan_review`、`rate_limited`、`error`） | `waiting_input`               |
+| `Stop` 且 `permission_mode == 'plan'`                                           | `plan_review`                 |
+| `Stop` 其他                                                                     | `waiting_input`               |
+| `StopFailure` + `rate_limit`，或輸出比對到用量上限                              | `rate_limited`                |
+| `StopFailure` 其他                                                              | `error`                       |
+| PTY exit ≠ 0                                                                    | `error`                       |
+| `running` 且超過 `stuckMinutes` 沒輸出                                          | `stuck`；有新輸出回 `running` |
+| 使用者標記（hub）                                                               | `done`                        |
+| 機器斷線（hub）                                                                 | `offline`                     |
+| 超過併發上限（hub）                                                             | `queued`                      |
 
 判斷不出來就維持或回到 `running`，**不要誤報**。其他 `notification_type` 只記錄不改狀態。每次變化寫 `session.event`（type `status`，payload 含 from、to、原因）並更新 `session.runtime`。
+
+`PostToolUse`、`PostToolUseFailure` 的細則：工具結束不代表下一步開始，所以它們**只**讓 `stuck`、`starting`（僅主線）、`waiting_permission` 回 `running`，不動 `waiting_input`、`plan_review`、`rate_limited`、`error`。`waiting_permission` 要等同一 agent、同工具、同輸入的待決請求都結算才離開。子代理（payload 有 `agent_id`）的 PreToolUse 只讓 `stuck` 回 `running` 或結算自己的請求；主線 PreToolUse 一律回 `running`。
 
 ### 5.1 daemon 內部介面
 
