@@ -1,0 +1,355 @@
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { loadConfig, normalizeHubUrl } from './config';
+import { listDirectory } from './fsList';
+import { parseNvidiaSmi, ResourceMonitor } from './resources';
+import { buildClaudeArgs } from './session';
+import { SessionStore, type PersistedSession } from './store';
+import { makeTempDir, waitUntil } from './test-support/harness';
+import { summarizeUsage } from './usage';
+import { createWorktree, currentBranch, makeSlug, removeWorktree } from './worktree';
+import type { DaemonToHub } from '@agent-board/protocol';
+
+const temps: string[] = [];
+function temp(): string {
+  const dir = makeTempDir();
+  temps.push(dir);
+  return dir;
+}
+afterEach(() => {
+  for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('config', () => {
+  it('轉換 hub 網址，缺路徑補 /ws/daemon', () => {
+    expect(normalizeHubUrl('http://host:8787')).toBe('ws://host:8787/ws/daemon');
+    expect(normalizeHubUrl('https://host.ts.net/')).toBe('wss://host.ts.net/ws/daemon');
+    expect(normalizeHubUrl('ws://h:1/ws/daemon')).toBe('ws://h:1/ws/daemon');
+    expect(() => normalizeHubUrl('ftp://h')).toThrow('協定');
+  });
+
+  it('必要變數缺少就報錯；可覆寫項目生效', () => {
+    expect(() => loadConfig({})).toThrow('AGENT_BOARD_HUB_URL');
+    expect(() => loadConfig({ AGENT_BOARD_HUB_URL: 'http://h' })).toThrow(
+      'AGENT_BOARD_MACHINE_TOKEN',
+    );
+    const config = loadConfig({
+      AGENT_BOARD_HUB_URL: 'http://h',
+      AGENT_BOARD_MACHINE_TOKEN: 't',
+      AGENT_BOARD_DATA_DIR: '/d',
+      AGENT_BOARD_CLAUDE_BIN: '/bin/c',
+      CLAUDE_CONFIG_DIR: '/c',
+    });
+    expect(config).toMatchObject({ dataDir: '/d', claudeBin: '/bin/c', claudeConfigDir: '/c' });
+  });
+});
+
+describe('buildClaudeArgs', () => {
+  it('default 不帶 --permission-mode；--resume 優先', () => {
+    expect(
+      buildClaudeArgs({ newSessionId: 'u', permissionMode: 'default', model: null, name: 'n' }),
+    ).toEqual(['--session-id', 'u', '--name', 'n']);
+    expect(
+      buildClaudeArgs({
+        newSessionId: 'u',
+        resumeId: 'r',
+        permissionMode: 'plan',
+        model: 'opus',
+        name: 'n',
+      }),
+    ).toEqual(['--resume', 'r', '--permission-mode', 'plan', '--model', 'opus', '--name', 'n']);
+  });
+});
+
+describe('SessionStore', () => {
+  const entry = (sessionId: string): PersistedSession => ({
+    sessionId,
+    spec: {
+      name: 'n',
+      projectId: null,
+      cwd: '/w',
+      useWorktree: false,
+      permissionMode: 'default',
+      model: null,
+      accountProfile: null,
+      resumeClaudeSessionId: null,
+      firstPrompt: null,
+    },
+    claudeSessionId: 'c',
+    cwd: '/w',
+    branch: null,
+    worktreePath: null,
+    pendingFirstPrompt: null,
+    createdAt: new Date().toISOString(),
+  });
+
+  it('寫入後重新載入內容相同；不留暫存檔', () => {
+    const dir = temp();
+    const store = new SessionStore(dir);
+    store.upsert(entry('a'));
+    store.upsert(entry('b'));
+    store.patch('a', { claudeSessionId: 'new' });
+    store.remove('b');
+    store.setHubSettings(['x'], 3);
+    const reloaded = new SessionStore(dir);
+    expect(reloaded.sessions.map((s) => [s.sessionId, s.claudeSessionId])).toEqual([['a', 'new']]);
+    expect(reloaded.dangerRules).toEqual(['x']);
+    expect(reloaded.stuckMinutes).toBe(3);
+    expect(readdirSync(dir)).toEqual(['sessions.json']);
+  });
+
+  it('寫不進去時只記錄，不丟例外（正在跑的 session 不受影響）', () => {
+    const dir = temp();
+    const store = new SessionStore(dir);
+    rmSync(dir, { recursive: true });
+    expect(() => store.upsert(entry('a'))).not.toThrow();
+    expect(store.sessions.map((s) => s.sessionId)).toEqual(['a']);
+  });
+
+  it('壞檔不 crash，移到旁邊保留', () => {
+    const dir = temp();
+    writeFileSync(join(dir, 'sessions.json'), '{ broken');
+    expect(new SessionStore(dir).sessions).toEqual([]);
+    const aside = readdirSync(dir).find((name) => name.includes('corrupt'));
+    expect(aside).toBeDefined();
+    expect(readFileSync(join(dir, aside as string), 'utf8')).toBe('{ broken');
+  });
+});
+
+describe('worktree', () => {
+  function makeRepo(): string {
+    const repo = join(temp(), '我的 repo');
+    mkdirSync(join(repo, 'sub'), { recursive: true });
+    writeFileSync(join(repo, 'sub', 'file.txt'), 'x');
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+        stdio: 'ignore',
+      });
+    git('init', '-b', 'main');
+    git('add', '.');
+    git('commit', '-m', 'init');
+    return repo;
+  }
+
+  it('slug 處理中文、符號、過長名稱與路徑穿越', () => {
+    expect(makeSlug('修 Bug #12!', 'abcd1234-ef')).toBe('修-bug-12-abcd1234');
+    expect(makeSlug('../../etc', 'id')).toBe('etc-id');
+    expect(makeSlug('!!!', 'id')).toBe('session-id');
+    expect(makeSlug('a'.repeat(100), 'id').length).toBeLessThanOrEqual(43);
+  });
+
+  it('依合約建立 <repo>/../.agent-board-wt/<slug> 與 ab/<slug>，子資料夾位置對應', async () => {
+    const repo = makeRepo();
+    const info = await createWorktree(join(repo, 'sub'), 'feat', 'sess1');
+    expect(info.worktreePath).toBe(join(repo, '..', '.agent-board-wt', 'feat-sess1'));
+    expect(info.branch).toBe('ab/feat-sess1');
+    expect(info.cwd).toBe(join(info.worktreePath, 'sub'));
+    expect(readFileSync(join(info.cwd, 'file.txt'), 'utf8')).toBe('x');
+    expect(await currentBranch(info.cwd)).toBe('ab/feat-sess1');
+
+    await removeWorktree(info);
+    expect(existsSync(info.worktreePath)).toBe(false);
+    expect(await currentBranch(repo)).toBe('main');
+  });
+
+  it('removeWorktree 不動有變更的 worktree', async () => {
+    const repo = makeRepo();
+    const info = await createWorktree(repo, 'keep', 'sess2');
+    writeFileSync(join(info.cwd, 'new.txt'), 'data');
+    await expect(removeWorktree(info)).rejects.toThrow();
+    expect(readFileSync(join(info.cwd, 'new.txt'), 'utf8')).toBe('data');
+  });
+
+  it('不是 git repo 時報錯；currentBranch 回 null', async () => {
+    const dir = temp();
+    await expect(createWorktree(dir, 'x', 'y')).rejects.toThrow();
+    expect(await currentBranch(dir)).toBeNull();
+  });
+});
+
+describe('fs.list', () => {
+  it('列出資料夾、標 isGitRepo，資料夾排前面，符號連結跟隨', async () => {
+    const dir = temp();
+    mkdirSync(join(dir, 'plain'));
+    mkdirSync(join(dir, 'repo', '.git'), { recursive: true });
+    writeFileSync(join(dir, 'a-file.txt'), '');
+    symlinkSync(join(dir, 'repo'), join(dir, 'link'));
+    symlinkSync(join(dir, 'missing'), join(dir, 'broken'));
+    const result = await listDirectory('r1', dir);
+    expect(result).toMatchObject({
+      type: 'fs.listResult',
+      requestId: 'r1',
+      path: dir,
+      error: null,
+    });
+    expect(result.entries).toEqual([
+      { name: 'link', isDir: true, isGitRepo: true },
+      { name: 'plain', isDir: true, isGitRepo: false },
+      { name: 'repo', isDir: true, isGitRepo: true },
+      { name: 'a-file.txt', isDir: false, isGitRepo: false },
+      { name: 'broken', isDir: false, isGitRepo: false },
+    ]);
+  });
+
+  it('不存在的路徑回 error，不丟例外', async () => {
+    const result = await listDirectory('r2', join(temp(), 'nope'));
+    expect(result.entries).toEqual([]);
+    expect(result.error).toContain('ENOENT');
+  });
+});
+
+describe('usage', () => {
+  const from = new Date('2026-10-01T00:00:00Z');
+  const to = new Date('2026-11-01T00:00:00Z');
+  const line = (fields: Record<string, unknown>) => JSON.stringify(fields);
+
+  it('彙總 usage、同一則回應不重複算、區間外不算、爛資料略過', async () => {
+    const config = temp();
+    const project = join(config, 'projects', 'p', 'nested');
+    mkdirSync(project, { recursive: true });
+    const inRange = '2026-10-15T00:00:00Z';
+    const usage = {
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_input_tokens: 100,
+      cache_creation_input_tokens: 20,
+    };
+    writeFileSync(
+      join(project, 'a.jsonl'),
+      [
+        line({ timestamp: inRange, requestId: 'r1', message: { id: 'm1', usage } }),
+        // 串流的同一則回應，輸出變多：取最大，不相加。
+        line({
+          timestamp: inRange,
+          requestId: 'r1',
+          message: { id: 'm1', usage: { ...usage, output_tokens: 50 } },
+        }),
+        line({ timestamp: inRange, requestId: 'r2', message: { id: 'm2', usage } }),
+        line({ timestamp: '2020-01-01T00:00:00Z', message: { id: 'old', usage } }),
+        line({ timestamp: inRange, usage: { input_tokens: 1, output_tokens: 'x' } }),
+        '{"usage": broken json',
+        'plain garbage',
+        line({ usage: null }),
+        line({ type: 'user', message: { content: 'hello' } }),
+        line({
+          timestamp: inRange,
+          message: { id: 'm3', usage: { input_tokens: -5, output_tokens: 1.5 } },
+        }),
+      ].join('\n'),
+    );
+    writeFileSync(join(project, 'ignored.txt'), line({ usage }));
+    const summary = await summarizeUsage([config, join(config, 'missing')], from, to);
+    expect(summary).toEqual({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      inputTokens: 21,
+      outputTokens: 56,
+      cacheReadTokens: 200,
+      cacheCreationTokens: 40,
+    });
+  });
+
+  it('比區間舊的檔案不讀；同一個資料夾列兩次不重複算', async () => {
+    const config = temp();
+    const project = join(config, 'projects', 'p');
+    mkdirSync(project, { recursive: true });
+    const usage = { input_tokens: 1 };
+    const stale = join(project, 'stale.jsonl');
+    writeFileSync(stale, line({ usage }));
+    utimesSync(stale, new Date('2020-01-01'), new Date('2020-01-01'));
+    writeFileSync(join(project, 'fresh.jsonl'), line({ usage }));
+    const summary = await summarizeUsage([config, config], from, new Date());
+    expect(summary.inputTokens).toBe(1);
+  });
+
+  it('設定資料夾不存在時回全 0', async () => {
+    const summary = await summarizeUsage([join(temp(), 'none')], from, to);
+    expect(summary.inputTokens + summary.outputTokens).toBe(0);
+  });
+});
+
+describe('resources', () => {
+  it('解析 nvidia-smi 輸出，壞資料回 null', () => {
+    expect(parseNvidiaSmi('NVIDIA RTX 4090, 37, 1024, 24564\n')).toEqual({
+      name: 'NVIDIA RTX 4090',
+      utilizationPercent: 37,
+      memoryUsedBytes: 1024 * 1024 * 1024,
+      memoryTotalBytes: 24564 * 1024 * 1024,
+    });
+    expect(parseNvidiaSmi('')).toBeNull();
+    expect(parseNvidiaSmi('name, [N/A], 1, 2')).toBeNull();
+  });
+
+  it('只在 watching 時回報，GPU 與 CPU 週期分開；關掉就停', async () => {
+    const sent: DaemonToHub[] = [];
+    let cpuCalls = 0;
+    let gpuCalls = 0;
+    const monitor = new ResourceMonitor({
+      send: (message) => sent.push(message),
+      sampleCpuMem: async () => {
+        cpuCalls += 1;
+        return { cpuPercent: 12, memoryUsedBytes: 1, memoryTotalBytes: 2 };
+      },
+      sampleGpu: async () => {
+        gpuCalls += 1;
+        return {
+          name: 'G',
+          utilizationPercent: 1,
+          memoryUsedBytes: 1,
+          memoryTotalBytes: 2,
+        };
+      },
+      cpuIntervalMs: 10,
+      gpuIntervalMs: 40,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(sent).toEqual([]);
+
+    monitor.setWatching(true);
+    monitor.setWatching(true); // 重複打開不會多開計時器
+    await waitUntil(() => sent.length >= 8, '多筆樣本');
+    const cpuBefore = cpuCalls;
+    monitor.setWatching(false);
+    expect(gpuCalls).toBeLessThan(cpuBefore);
+    expect(sent[0]).toMatchObject({
+      type: 'resources',
+      sample: { cpuPercent: 12, gpu: { name: 'G' } },
+    });
+
+    const count = sent.length;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(sent.length).toBe(count);
+  });
+
+  it('取樣失敗不會 crash，下一輪繼續', async () => {
+    const sent: DaemonToHub[] = [];
+    let calls = 0;
+    const monitor = new ResourceMonitor({
+      send: (message) => sent.push(message),
+      sampleCpuMem: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('boom');
+        return { cpuPercent: 1, memoryUsedBytes: 1, memoryTotalBytes: 1 };
+      },
+      sampleGpu: async () => {
+        throw new Error('no gpu');
+      },
+      cpuIntervalMs: 10,
+    });
+    monitor.setWatching(true);
+    await waitUntil(() => sent.length > 0, '第二輪成功');
+    monitor.stop();
+    expect(sent[0]).toMatchObject({ sample: { gpu: null } });
+  });
+});
