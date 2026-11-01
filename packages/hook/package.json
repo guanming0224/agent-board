@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "bin": {
-    "agent-board-hook": "./src/index.ts"
+    "agent-board-hook": "./src/cli.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
