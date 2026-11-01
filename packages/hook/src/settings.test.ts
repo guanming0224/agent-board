@@ -86,6 +86,7 @@ describe('installHooks', () => {
       hooks: {
         Stop: [userStop],
         PostToolUse: [{ hooks: [{ type: 'command', command: 'lint.sh' }] }],
+        SubagentStop: [{ hooks: [{ type: 'command', command: 'sub.sh' }] }],
       },
     };
     await seed(JSON.stringify(original));
@@ -95,7 +96,8 @@ describe('installHooks', () => {
     expect(settings.permissions).toEqual(original.permissions);
     expect(settings.model).toBe('opus');
     expect(settings.env).toEqual(original.env);
-    expect(settings.hooks.PostToolUse).toEqual(original.hooks.PostToolUse);
+    expect(settings.hooks.SubagentStop).toEqual(original.hooks.SubagentStop);
+    expect(commands(settings, 'PostToolUse')).toEqual(['lint.sh', 'agent-board-hook PostToolUse']);
     expect(settings.hooks.Stop?.[0]).toEqual(userStop);
     expect(commands(settings, 'Stop')).toEqual(['my-own-stop.sh', 'agent-board-hook Stop']);
   });
@@ -118,6 +120,33 @@ describe('installHooks', () => {
     expect(await readFile(path, 'utf8')).toBe(first);
     expect((await stat(path)).ino).toBe(firstStat.ino);
     expect(commands(await read(), 'Stop')).toEqual(['agent-board-hook Stop']);
+  });
+
+  it.each(['PostToolUse', 'PostToolUseFailure'])('%s 有安裝，重複安裝不會多一筆', async (event) => {
+    await installHooks(cwd);
+    await installHooks(cwd);
+    expect((await read()).hooks[event]).toEqual([
+      {
+        hooks: [
+          { type: 'command', command: `agent-board-hook ${event}`, timeout: HOOK_TIMEOUT_SECONDS },
+        ],
+      },
+    ]);
+  });
+
+  it('舊版設定（沒有新事件）升級時補上新事件，原有的不重複', async () => {
+    await installHooks(cwd);
+    const settings = await read();
+    delete settings.hooks.PostToolUse;
+    delete settings.hooks.PostToolUseFailure;
+    await writeFile(path, JSON.stringify(settings));
+    await installHooks(cwd);
+    const upgraded = await read();
+    expect(commands(upgraded, 'PostToolUse')).toEqual(['agent-board-hook PostToolUse']);
+    expect(commands(upgraded, 'PostToolUseFailure')).toEqual([
+      'agent-board-hook PostToolUseFailure',
+    ]);
+    expect(commands(upgraded, 'Stop')).toEqual(['agent-board-hook Stop']);
   });
 
   it('自己的 hook 和別的 hook 放在同一群組也認得出來，timeout 舊了會更新', async () => {

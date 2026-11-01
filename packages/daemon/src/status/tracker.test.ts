@@ -77,6 +77,13 @@ describe('createStatusTracker', () => {
         payload('PermissionRequest', { tool_name: 'Bash', permission_suggestions: [] }),
         'waiting_permission',
       ],
+      ['PostToolUse', 'PostToolUse', payload('PostToolUse', toolCall), 'running'],
+      [
+        'PostToolUseFailure',
+        'PostToolUseFailure',
+        payload('PostToolUseFailure', toolCall),
+        'running',
+      ],
       [
         'Notification permission_prompt',
         'Notification',
@@ -182,9 +189,9 @@ describe('createStatusTracker', () => {
       expect(tracker.status).toBe('running');
     });
 
-    it.each(['SessionStart', 'SessionEnd'] as const)('%s 維持原狀', (event) => {
+    it('SessionEnd 維持原狀', () => {
       toRunning();
-      tracker.onHook(event, payload(event, { source: 'clear', reason: 'other' }));
+      tracker.onHook('SessionEnd', payload('SessionEnd', { reason: 'other' }));
       expect(tracker.status).toBe('running');
       expect(changes).toHaveLength(1);
     });
@@ -193,6 +200,262 @@ describe('createStatusTracker', () => {
       toRunning();
       tracker.onHook('SomethingNew' as HookEventName, payload('Stop'));
       expect(tracker.status).toBe('running');
+    });
+  });
+
+  describe('SessionStart', () => {
+    it.each(['startup', 'resume'])('starting 時 source=%s 變 waiting_input', (source) => {
+      tracker.onHook('SessionStart', payload('SessionStart', { source }));
+      expect(tracker.status).toBe('waiting_input');
+      expect(last()).toMatchObject({
+        from: 'starting',
+        to: 'waiting_input',
+        reason: `hook:SessionStart:${source}`,
+      });
+    });
+
+    it.each(['clear', 'compact', 'fork', 'future_source'])(
+      'starting 時 source=%s 維持 starting',
+      (source) => {
+        tracker.onHook('SessionStart', payload('SessionStart', { source }));
+        expect(tracker.status).toBe('starting');
+        expect(changes).toEqual([]);
+      },
+    );
+
+    it('沒有 source 維持 starting', () => {
+      tracker.onHook('SessionStart', payload('SessionStart'));
+      expect(tracker.status).toBe('starting');
+    });
+
+    it.each(['startup', 'resume', 'clear', 'compact', 'fork'])(
+      '工作中 source=%s 不改狀態',
+      (source) => {
+        toRunning();
+        tracker.onHook('SessionStart', payload('SessionStart', { source }));
+        expect(tracker.status).toBe('running');
+        expect(changes).toHaveLength(1);
+      },
+    );
+
+    it.each(['clear', 'compact', 'fork'])('waiting_input 時 source=%s 不改狀態', (source) => {
+      tracker.onHook('SessionStart', payload('SessionStart', { source: 'startup' }));
+      tracker.onHook('SessionStart', payload('SessionStart', { source }));
+      expect(tracker.status).toBe('waiting_input');
+      expect(changes).toHaveLength(1);
+    });
+  });
+
+  describe('工具事件與等人決定的狀態', () => {
+    const sub = { agent_id: 'agent-1', agent_type: 'Explore' };
+    const lsCall = { tool_name: 'Bash', tool_input: { command: 'ls' } };
+    const rmCall = { tool_name: 'Bash', tool_input: { command: 'rm x' } };
+    const readCall = { tool_name: 'Read', tool_input: { file_path: '/tmp/x' } };
+    const postEvents = ['PostToolUse', 'PostToolUseFailure'] as const;
+
+    function waitForPermission(extra: Record<string, unknown> = lsCall): void {
+      toRunning();
+      tracker.onHook('PermissionRequest', payload('PermissionRequest', extra));
+      expect(tracker.status).toBe('waiting_permission');
+    }
+
+    describe.each(postEvents)('%s', (event) => {
+      it('核准的工具結束：waiting_permission 回 running，並重新計 stuck', () => {
+        waitForPermission();
+        tracker.onHook(event, payload(event, lsCall));
+        expect(tracker.status).toBe('running');
+        expect(last()).toMatchObject({ from: 'waiting_permission', reason: `hook:${event}` });
+        vi.advanceTimersByTime(STUCK_MINUTES * MINUTE);
+        expect(tracker.status).toBe('stuck');
+      });
+
+      it('只有 Notification、沒有工具資訊時，主線工具結束也能離開', () => {
+        toRunning();
+        tracker.onHook('Notification', notification('permission_prompt'));
+        tracker.onHook(event, payload(event, lsCall));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('payload 沒有工具欄位時不當成不符', () => {
+        waitForPermission();
+        tracker.onHook(event, payload(event));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('主線並行的另一個工具結束：維持 waiting_permission', () => {
+        waitForPermission(rmCall);
+        tracker.onHook(event, payload(event, readCall));
+        expect(tracker.status).toBe('waiting_permission');
+        tracker.onHook(event, payload(event, lsCall));
+        expect(tracker.status).toBe('waiting_permission');
+        tracker.onHook(event, payload(event, rmCall));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('輸入相同但工具不同：維持 waiting_permission', () => {
+        const input = { file_path: '/tmp/x' };
+        waitForPermission({ tool_name: 'Write', tool_input: input });
+        tracker.onHook(event, payload(event, { tool_name: 'Read', tool_input: input }));
+        expect(tracker.status).toBe('waiting_permission');
+      });
+
+      it('後到的 Notification 不會洗掉請求的工具資訊', () => {
+        waitForPermission(rmCall);
+        tracker.onHook('Notification', notification('permission_prompt'));
+        tracker.onHook(event, payload(event, readCall));
+        expect(tracker.status).toBe('waiting_permission');
+      });
+
+      it('子代理的工具結束：主線的權限請求維持 waiting_permission', () => {
+        waitForPermission();
+        tracker.onHook(event, payload(event, { ...lsCall, ...sub }));
+        expect(tracker.status).toBe('waiting_permission');
+      });
+
+      it('子代理自己的請求被核准後，它的工具結束就離開', () => {
+        waitForPermission({ ...lsCall, ...sub });
+        tracker.onHook(event, payload(event, lsCall));
+        expect(tracker.status).toBe('waiting_permission');
+        tracker.onHook(event, payload(event, { ...lsCall, agent_id: 'agent-2' }));
+        expect(tracker.status).toBe('waiting_permission');
+        tracker.onHook(event, payload(event, { ...lsCall, ...sub }));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('兩個請求都結束才離開', () => {
+        waitForPermission({ ...lsCall, ...sub });
+        tracker.onHook(
+          'PermissionRequest',
+          payload('PermissionRequest', { ...readCall, agent_id: 'agent-2' }),
+        );
+        tracker.onHook(event, payload(event, { ...lsCall, ...sub }));
+        expect(tracker.status).toBe('waiting_permission');
+        tracker.onHook(event, payload(event, { ...readCall, agent_id: 'agent-2' }));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('Notification 與 PermissionRequest 不論先後都算同一個請求', () => {
+        toRunning();
+        tracker.onHook('Notification', notification('permission_prompt'));
+        tracker.onHook('PermissionRequest', payload('PermissionRequest', lsCall));
+        tracker.onHook('Notification', notification('permission_prompt'));
+        tracker.onHook(event, payload(event, lsCall));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('上一輪留下的請求不影響下一輪', () => {
+        waitForPermission(rmCall);
+        tracker.onHook('Stop', payload('Stop')); // 使用者拒絕，工具沒跑。
+        waitForPermission(lsCall);
+        tracker.onHook(event, payload(event, lsCall));
+        expect(tracker.status).toBe('running');
+      });
+
+      it.each([
+        ['plan_review', () => tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' }))],
+        ['waiting_input', () => tracker.onHook('Stop', payload('Stop'))],
+        [
+          'rate_limited',
+          () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'rate_limit' })),
+        ],
+        ['error', () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'x' }))],
+      ] as const)('%s：主線或子代理的工具結束都維持原狀', (status, enter) => {
+        toRunning();
+        enter();
+        tracker.onHook(event, payload(event, lsCall));
+        expect(tracker.status).toBe(status);
+        tracker.onHook(event, payload(event, { ...lsCall, ...sub }));
+        expect(tracker.status).toBe(status);
+      });
+
+      it('stuck：工具結束代表還活著，回 running', () => {
+        toRunning();
+        vi.advanceTimersByTime(STUCK_MINUTES * MINUTE);
+        tracker.onHook(event, payload(event, { ...lsCall, ...sub }));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('running：工具結束算有動靜，重新計 stuck', () => {
+        toRunning();
+        vi.advanceTimersByTime(STUCK_MINUTES * MINUTE - 1);
+        tracker.onHook(event, payload(event, lsCall));
+        vi.advanceTimersByTime(1);
+        expect(tracker.status).toBe('running');
+      });
+
+      it('starting：子代理不改狀態', () => {
+        tracker.onHook(event, payload(event, { ...lsCall, ...sub }));
+        expect(tracker.status).toBe('starting');
+      });
+    });
+
+    describe('子代理的 PreToolUse', () => {
+      it.each([
+        ['plan_review', () => tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' }))],
+        ['waiting_input', () => tracker.onHook('Stop', payload('Stop'))],
+        [
+          'rate_limited',
+          () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'rate_limit' })),
+        ],
+        ['error', () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'x' }))],
+      ] as const)('%s 維持原狀', (status, enter) => {
+        toRunning();
+        enter();
+        tracker.onHook('PreToolUse', payload('PreToolUse', { ...toolCall, ...sub }));
+        expect(tracker.status).toBe(status);
+      });
+
+      it('主線的權限請求還在等：維持 waiting_permission', () => {
+        waitForPermission();
+        tracker.onHook('PreToolUse', payload('PreToolUse', { ...toolCall, ...sub }));
+        expect(tracker.status).toBe('waiting_permission');
+      });
+
+      it('自己的請求有結果（被拒後做下一步）：離開 waiting_permission', () => {
+        waitForPermission({ ...lsCall, ...sub });
+        tracker.onHook('PreToolUse', payload('PreToolUse', { ...readCall, ...sub }));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('stuck 回 running', () => {
+        toRunning();
+        vi.advanceTimersByTime(STUCK_MINUTES * MINUTE);
+        tracker.onHook('PreToolUse', payload('PreToolUse', { ...toolCall, ...sub }));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('子代理的 PermissionRequest 仍然算等人決定', () => {
+        toRunning();
+        tracker.onHook('Stop', payload('Stop'));
+        tracker.onHook('PermissionRequest', payload('PermissionRequest', { ...lsCall, ...sub }));
+        expect(tracker.status).toBe('waiting_permission');
+      });
+    });
+
+    describe('主線的 PreToolUse', () => {
+      it.each([
+        ['plan_review', () => tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' }))],
+        ['waiting_input', () => tracker.onHook('Stop', payload('Stop'))],
+        [
+          'rate_limited',
+          () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'rate_limit' })),
+        ],
+        ['error', () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'x' }))],
+      ] as const)('%s 回 running', (_status, enter) => {
+        toRunning();
+        enter();
+        tracker.onHook('PreToolUse', payload('PreToolUse', toolCall));
+        expect(tracker.status).toBe('running');
+      });
+
+      it('waiting_permission 回 running，也清掉子代理留下的請求', () => {
+        waitForPermission({ ...lsCall, ...sub });
+        tracker.onHook('PreToolUse', payload('PreToolUse', toolCall));
+        expect(tracker.status).toBe('running');
+        tracker.onHook('PermissionRequest', payload('PermissionRequest', lsCall));
+        tracker.onHook('PostToolUse', payload('PostToolUse', lsCall));
+        expect(tracker.status).toBe('running');
+      });
     });
   });
 
@@ -235,7 +498,7 @@ describe('createStatusTracker', () => {
   });
 
   describe('claudeSessionId', () => {
-    it('從 hook 更新，/clear 換 id 時跟著換，且不發狀態事件', () => {
+    it('從 hook 更新，/clear 換 id 時跟著換，且 /clear 不改狀態', () => {
       tracker.onHook('SessionStart', payload('SessionStart', { source: 'startup' }));
       expect(tracker.claudeSessionId).toBe('claude-1');
       tracker.onHook(
@@ -243,7 +506,8 @@ describe('createStatusTracker', () => {
         payload('SessionStart', { source: 'clear', session_id: 'claude-2' }),
       );
       expect(tracker.claudeSessionId).toBe('claude-2');
-      expect(changes).toEqual([]);
+      // 只有 startup 那次改了狀態，/clear 沒有。
+      expect(changes.map((change) => change.reason)).toEqual(['hook:SessionStart:startup']);
     });
 
     it('任何事件的 session_id 都算', () => {
@@ -492,6 +756,26 @@ describe('createStatusTracker', () => {
       expect(tracker.status).toBe('waiting_input');
       tracker.onOutput(' is a phrase we should handle\n');
       expect(tracker.status).toBe('waiting_input');
+    });
+
+    it('SessionStart 之後、開始工作之前的重繪不算（--resume）', () => {
+      tracker.onHook('SessionStart', payload('SessionStart', { source: 'resume' }));
+      tracker.onOutput(`${LIMIT_LINE}\n`);
+      expect(tracker.status).toBe('waiting_input');
+      tracker.onOutput('Usage limit reached\n');
+      expect(tracker.status).toBe('waiting_input');
+      toRunning();
+      tracker.onHook('Stop', payload('Stop'));
+      tracker.onOutput(`${LIMIT_LINE}\n`);
+      expect(tracker.status).toBe('waiting_input');
+    });
+
+    it('開始工作後的新限流訊息照常偵測', () => {
+      tracker.onHook('SessionStart', payload('SessionStart', { source: 'resume' }));
+      tracker.onOutput(`${LIMIT_LINE}\n`);
+      toRunning();
+      tracker.onOutput("You've hit your weekly limit · resets Monday\n");
+      expect(tracker.status).toBe('rate_limited');
     });
 
     it('--resume 重繪舊對話時（starting）不算，之後再次重繪也不算', () => {

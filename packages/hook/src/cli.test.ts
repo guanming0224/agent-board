@@ -315,6 +315,8 @@ describe('agent-board-hook CLI', () => {
   describe('連不上 socket', () => {
     it.each([
       ['Stop', stopInput],
+      ['PostToolUse', { ...bashInput, hook_event_name: 'PostToolUse', tool_response: {} }],
+      ['PostToolUseFailure', { ...bashInput, hook_event_name: 'PostToolUseFailure', error: 'x' }],
       ['Notification', { ...base, hook_event_name: 'Notification', notification_type: 'x' }],
       ['SessionStart', { ...base, hook_event_name: 'SessionStart', source: 'startup' }],
       ['SessionEnd', { ...base, hook_event_name: 'SessionEnd', reason: 'other' }],
@@ -322,7 +324,7 @@ describe('agent-board-hook CLI', () => {
       ['StopFailure', { ...base, hook_event_name: 'StopFailure', error: 'rate_limit' }],
       ['PermissionRequest', permissionInput],
       ['PreToolUse', readInput],
-    ])('%s（非 Bash）exit 0 不輸出', async (event, input) => {
+    ])('%s（非 PreToolUse + Bash）exit 0 不輸出', async (event, input) => {
       expectSilentExit(
         await runCli({
           args: [event],
@@ -371,6 +373,8 @@ describe('agent-board-hook CLI', () => {
   describe('非 blocking 事件', () => {
     it.each([
       ['Stop', stopInput],
+      ['PostToolUse', { ...bashInput, hook_event_name: 'PostToolUse', tool_response: {} }],
+      ['PostToolUseFailure', { ...bashInput, hook_event_name: 'PostToolUseFailure', error: 'x' }],
       ['StopFailure', { ...base, hook_event_name: 'StopFailure', error: 'rate_limit' }],
       [
         'Notification',

@@ -9,6 +9,8 @@ export const HOOK_EVENTS: readonly string[] = [
   'UserPromptSubmit',
   'PreToolUse',
   'PermissionRequest',
+  'PostToolUse',
+  'PostToolUseFailure',
   'Notification',
   'Stop',
   'StopFailure',
