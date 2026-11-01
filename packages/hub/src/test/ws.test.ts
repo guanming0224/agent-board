@@ -889,6 +889,166 @@ describe('reconciliation', () => {
   });
 });
 
+describe('daemon reconnect behaviours', () => {
+  const subscribeAndSnapshot = async (client: Peer, daemon: Peer, sessionId: string) => {
+    client.send({ type: 'terminal.subscribe', sessionId });
+    await daemon.next('terminal.subscribe');
+    daemon.send({ type: 'terminal.snapshot', sessionId, seq: 1, cols: 80, rows: 24, data: 'old' });
+    await client.next('terminal.snapshot');
+  };
+
+  it('after hello re-subscribes only sessions still viewed, and skips resources.watch with no watcher', async () => {
+    hub = await startHub();
+    const { cookie, daemon, token, machineId, session: viewed } = await startedSession();
+    const left = await newSession(cookie, machineId);
+    const client = await hub.client(cookie);
+    await subscribeAndSnapshot(client, daemon, viewed.id);
+    await subscribeAndSnapshot(client, daemon, left.id);
+    client.send({ type: 'terminal.unsubscribe', sessionId: left.id });
+    client.send({ type: 'resources.watch', watching: true });
+    await daemon.next('resources.watch');
+    client.send({ type: 'resources.watch', watching: false });
+    await daemon.next('resources.watch');
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getMachine(machineId)?.online === false, 'offline');
+
+    const back = await hub.daemon(token);
+    // hello 之前不重送：daemon 還沒準備好。
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(back.of('terminal.subscribe')).toHaveLength(0);
+    back.send(hello({ sessions: [runtime(viewed.id), runtime(left.id)] }));
+    await back.next('hub.welcome');
+    expect((await back.next('terminal.subscribe')).sessionId).toBe(viewed.id);
+    client.send({ type: 'ping', at: new Date().toISOString() });
+    await client.next('pong');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(back.of('terminal.subscribe')).toHaveLength(0);
+    expect(back.of('resources.watch')).toHaveLength(0);
+  });
+
+  it('hello: unlisted sessions end, but done and archived keep their status and do not notify', async () => {
+    hub = await startHub();
+    const { cookie, daemon, token, machineId, session: alive } = await startedSession();
+    const lost = await newSession(cookie, machineId);
+    const done = await newSession(cookie, machineId);
+    const archived = await newSession(cookie, machineId);
+    for (const s of [lost, done, archived]) {
+      daemon.send({ type: 'session.runtime', session: runtime(s.id) });
+      await until(() => hub.running.store.getSession(s.id)?.status === 'running', 'running');
+    }
+    await hub.api('PATCH', `/api/sessions/${done.id}`, { cookie, body: { markDone: true } });
+    await hub.api('PATCH', `/api/sessions/${archived.id}`, { cookie, body: { archived: true } });
+    await hub.api('POST', '/api/push/subscriptions', {
+      cookie,
+      body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
+    });
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getSession(alive.id)?.status === 'offline', 'offline');
+    const statusBefore = hub.running.store.getSession(archived.id)?.status;
+
+    const back = await hub.daemon(token);
+    back.send(hello({ sessions: [runtime(alive.id, { status: 'running' })] }));
+    await back.next('hub.welcome');
+    const get = (id: string) => hub.running.store.getSession(id)!;
+
+    expect(get(alive.id)).toMatchObject({ status: 'running', endedAt: null });
+    expect(get(lost.id).status).toBe('error');
+    expect(get(lost.id).endedAt).not.toBeNull();
+    expect(get(done.id).status).toBe('done');
+    expect(get(archived.id).status).toBe(statusBefore);
+    expect(get(archived.id).archived).toBe(true);
+    // 兩者都要放出併發名額，所以記下結束時間。
+    expect(get(done.id).endedAt).not.toBeNull();
+    expect(get(archived.id).endedAt).not.toBeNull();
+    await hub.running.hub.pushesSettled();
+    const pushed = hub.push.sent.map(
+      (p) => (JSON.parse(p.payload) as { sessionId: string }).sessionId,
+    );
+    expect(pushed).toEqual([lost.id]);
+  });
+
+  it('pendingApprovals replaces the cache: new clients and open clients both see it', async () => {
+    hub = await startHub();
+    const { cookie, daemon, token, session } = await startedSession();
+    const client = await hub.client(cookie);
+    const gone = approval(session.id);
+    daemon.send({ type: 'approval.requested', approval: gone });
+    await client.next('approval.requested');
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getSession(session.id)?.status === 'offline', 'offline');
+
+    const back = await hub.daemon(token);
+    back.send(hello({ sessions: [runtime(session.id)], pendingApprovals: [] }));
+    await back.next('hub.welcome');
+    expect(await client.next('approval.resolved')).toMatchObject({
+      approvalId: gone.id,
+      sessionId: session.id,
+    });
+    const late = await hub.client(cookie);
+    late.send({
+      type: 'approval.decide',
+      approvalId: gone.id,
+      sessionId: session.id,
+      decision: { behavior: 'allow', remember: false },
+    });
+    expect((await late.next('error')).code).toBe('approval_not_found');
+    expect(back.of('approval.decide')).toHaveLength(0);
+    const fresh = await connect(`ws://127.0.0.1:${hub.port}/ws/client`, {
+      cookie,
+      origin: hub.origin,
+    });
+    expect((await fresh.next('board.state')).approvals).toEqual([]);
+    fresh.close();
+  });
+
+  it('a 17 MiB snapshot passes through without dropping the daemon connection', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    const client = await hub.client(cookie);
+    client.send({ type: 'terminal.subscribe', sessionId: session.id });
+    await daemon.next('terminal.subscribe');
+    const data = 'x'.repeat(17 * 1024 * 1024);
+    daemon.send({
+      type: 'terminal.snapshot',
+      sessionId: session.id,
+      seq: 1,
+      cols: 80,
+      rows: 24,
+      data,
+    });
+    const snapshot = await client.next('terminal.snapshot');
+    expect((snapshot.data as string).length).toBe(data.length);
+    expect(daemon.closeCode).toBeNull();
+    daemon.send({ type: 'terminal.output', sessionId: session.id, seq: 2, data: 'still alive' });
+    expect((await client.next('terminal.output')).data).toBe('still alive');
+  });
+
+  it('the next runtime after markDone updates fields but leaves done and its timestamp alone', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    await until(() => hub.running.store.getSession(session.id)?.status === 'running', 'running');
+    const marked = await hub.api('PATCH', `/api/sessions/${session.id}`, {
+      cookie,
+      body: { markDone: true },
+    });
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(session.id, {
+        status: 'waiting_input',
+        statusDetail: 'from daemon',
+        statusSince: '2000-01-01T00:00:00.000Z',
+        contextTokens: 123,
+      }),
+    });
+    await until(() => hub.running.store.getSession(session.id)?.contextTokens === 123, 'applied');
+    expect(hub.running.store.getSession(session.id)).toMatchObject({
+      status: 'done',
+      statusDetail: null,
+      statusSince: marked.body.statusSince,
+    });
+  });
+});
+
 describe('session lifecycle', () => {
   const setLimit = (cookie: string, max: number | null) =>
     hub.api('PATCH', '/api/settings', {

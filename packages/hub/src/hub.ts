@@ -329,7 +329,8 @@ export class Hub {
       }
       this.store.setPendingSpec(session.id, null);
       this.store.setPreOfflineStatus(session.id, null);
-      if (session.status === 'done') {
+      // 使用者已經處理過的（done、archived）不改狀態也不推播，只記下結束時間，併發名額才會放出來。
+      if (session.status === 'done' || session.archived) {
         this.updateFields(session, { endedAt: this.nowIso() });
       } else {
         this.setStatus(session, 'error', SESSION_DETAIL_LOST, 'daemon_reconcile', {
