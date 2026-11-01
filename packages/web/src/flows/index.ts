@@ -1,6 +1,14 @@
-// Agent F 取代這些占位元件。
-export const NewSessionPage = () => null;
-export const ReviewPage = () => null;
-export const InboxPage = () => null;
-export const SettingsPage = () => null;
-export const OnboardingPage = () => null;
+import './flows.css';
+import { registerMessages } from '../shared/i18n';
+import { restoreLocale } from './locale';
+import { en, zhTW } from './messages';
+
+registerMessages('zh-TW', zhTW);
+registerMessages('en', en);
+restoreLocale();
+
+export { InboxPage } from './InboxPage';
+export { NewSessionPage } from './NewSessionPage';
+export { OnboardingPage } from './OnboardingPage';
+export { ReviewPage } from './ReviewPage';
+export { SettingsPage } from './SettingsPage';

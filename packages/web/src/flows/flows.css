@@ -1,0 +1,905 @@
+/* 流程畫面。規格見 docs/design/STYLE.md；全部限定在 .flows 底下，不影響畫布與終端機。 */
+.flows {
+  min-width: 0;
+}
+
+.flows .stale-line {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 8px 16px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-2);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.flows .page {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 18px 16px 56px;
+}
+
+.flows .page.narrow {
+  max-width: 560px;
+}
+
+.flows .page.is-stale {
+  opacity: 0.55;
+}
+
+.flows .page-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 16px;
+}
+
+.flows .waiting-slot {
+  margin-left: auto;
+}
+
+.flows h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.flows h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.flows h3 {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.flows a {
+  color: var(--fg);
+  text-underline-offset: 2px;
+}
+
+.flows a.button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.flows a.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+/* 主角計數 */
+.flows .waiting {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--you);
+}
+
+.flows .waiting span {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.flows .waiting b {
+  font-size: 26px;
+  font-weight: 650;
+  line-height: 1.1;
+}
+
+.flows .waiting.none {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 共用的小元件 */
+.flows .sign {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.flows .head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin-top: 6px;
+}
+
+.flows .callsign {
+  font: 12px var(--font-mono);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.flows .chip {
+  display: inline-flex;
+  padding: 1px 7px;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.flows .chip.bypass {
+  border-color: var(--fault);
+  background: color-mix(in srgb, var(--fault) 14%, transparent);
+  color: var(--fg);
+}
+
+.flows .chip.unsaved {
+  border-color: var(--you);
+  color: var(--you);
+}
+
+.flows .lamp {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.flows .lamp i {
+  font-size: 14px;
+  font-style: normal;
+  line-height: 1;
+}
+
+.flows .l-you {
+  color: var(--you);
+}
+
+.flows .l-fault {
+  color: var(--fault);
+}
+
+.flows .l-agent {
+  color: var(--agent);
+}
+
+.flows .l-quota {
+  color: var(--quota);
+}
+
+.flows .l-idle {
+  color: var(--idle);
+}
+
+.flows .title {
+  font-size: 15px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.flows .age {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.flows .sub {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.flows .hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.flows .hint.you {
+  color: var(--you);
+}
+
+.flows .tool {
+  margin: 10px 0 6px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.flows .body-text {
+  margin: 10px 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.flows .blocked {
+  margin: 10px 0 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.flows .msg {
+  align-self: center;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.flows .msg:empty {
+  display: none;
+}
+
+.flows .msg.err {
+  color: var(--fault);
+}
+
+.flows .acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.flows .acts.inline {
+  display: inline-flex;
+  margin-top: 8px;
+}
+
+.flows .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg);
+  flex-shrink: 0;
+}
+
+.flows .alert {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--fault) 55%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fault) 10%, transparent);
+  font-size: 13.5px;
+}
+
+.flows .alert-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.flows .alert-body button {
+  margin-top: 8px;
+}
+
+.flows .state {
+  padding: 32px 16px;
+  border: 1px dashed var(--border-2);
+  border-radius: var(--radius-card);
+  color: var(--muted);
+  text-align: center;
+}
+
+.flows .state strong {
+  display: block;
+  color: var(--fg);
+  font-size: 15px;
+}
+
+.flows .state-next {
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+/* 卡片與放手線（STYLE.md 規則二） */
+.flows .card,
+.flows .inbox-item {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.flows .card {
+  padding: 16px 16px 16px 20px;
+  border: 1px solid var(--border);
+}
+
+.flows .inbox-item {
+  padding: 14px 14px 14px 18px;
+  border: 2px solid var(--you);
+}
+
+.flows .inbox-item.is-fault {
+  border-color: var(--fault);
+}
+
+.flows .card::before,
+.flows .inbox-item::before,
+.flows .mode-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-left: 3px dashed var(--muted);
+}
+
+.flows .hands-dotted::before {
+  border-left: 3px dotted var(--muted);
+}
+
+.flows .hands-dashed::before {
+  border-left: 3px dashed var(--muted);
+}
+
+.flows .hands-solid::before {
+  border-left: 3px solid var(--muted);
+}
+
+.flows .hands-heavy::before {
+  border-left: 5px solid var(--muted);
+}
+
+.flows .hands-bypass::before {
+  border-left: 5px solid var(--fault);
+}
+
+.flows .gone {
+  opacity: 0.45;
+  background-image: var(--hatch);
+}
+
+.flows .grid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.flows .review .acts button {
+  white-space: normal;
+}
+
+/* diff 是整個介面唯一能出現綠色的地方，一定配 + − */
+.flows .diff {
+  max-height: 420px;
+  overflow: auto;
+  padding: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--term-bg);
+  font: 12.5px/1.6 var(--font-mono);
+}
+
+.flows .diff-lines {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.flows .diff-lines > div {
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.flows .diff .sign {
+  display: inline-block;
+  width: 1.5ch;
+  user-select: none;
+}
+
+.flows .diff .a {
+  background: color-mix(in srgb, var(--diff-add) 10%, transparent);
+  color: var(--diff-add);
+}
+
+.flows .diff .d {
+  background: color-mix(in srgb, var(--diff-del) 10%, transparent);
+  color: var(--diff-del);
+}
+
+/* 指令全文一律換行顯示，不截斷也不撐版面 */
+.flows .command {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--term-bg);
+  color: var(--fg-muted);
+  font: 12.5px/1.6 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.flows .command.plan {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.flows .armed {
+  margin-top: 8px;
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.flows .armed .command {
+  border-color: var(--fault);
+}
+
+/* 收件匣 */
+.flows .phone {
+  display: grid;
+  gap: 12px;
+}
+
+.flows .big {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.flows .big button {
+  min-height: 56px;
+  padding: 6px 10px;
+  font-size: 16px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.flows .big .wide {
+  grid-column: 1 / -1;
+}
+
+.flows .back {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.flows .inbox-item .msg {
+  display: block;
+  margin-top: 8px;
+}
+
+.flows .inbox-item .msg:empty {
+  display: none;
+}
+
+/* 表單 */
+.flows .form-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.flows .form-card.dirty {
+  border-color: var(--you);
+}
+
+.flows .field {
+  min-width: 0;
+  margin: 14px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.flows .field:first-child {
+  margin-top: 0;
+}
+
+.flows label,
+.flows legend,
+.flows .label {
+  display: block;
+  padding: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.flows .field > label,
+.flows .field > legend,
+.flows .field > .label {
+  margin-bottom: 4px;
+}
+
+.flows input:not([type='radio'], [type='checkbox']),
+.flows select,
+.flows textarea {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: 14px/1.4 var(--font-sans);
+}
+
+.flows textarea {
+  resize: vertical;
+}
+
+.flows .field-input {
+  margin-top: 8px;
+}
+
+.flows input.mono,
+.flows textarea.mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.flows input.short {
+  max-width: 120px;
+}
+
+.flows input::placeholder,
+.flows textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.flows [aria-invalid='true'] {
+  border-color: var(--fault);
+}
+
+.flows input[type='radio'],
+.flows input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+
+.flows .field-error {
+  margin: 4px 0 0;
+  color: var(--fault);
+  font-size: 12.5px;
+}
+
+.flows .input-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.flows .input-row > input,
+.flows .input-row > label {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.flows .check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  font-weight: 500;
+}
+
+.flows .segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.flows .segmented label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.flows .segmented label.on {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--fg);
+}
+
+.flows .segmented input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.flows .segmented label:has(input:focus-visible) {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* 新增 session */
+.flows .new-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 420px);
+  gap: 16px;
+  align-items: start;
+}
+
+.flows .preview {
+  position: sticky;
+  top: 12px;
+}
+
+.flows .preview-bypass {
+  border: 2px solid var(--fault);
+}
+
+.flows .preview .sign {
+  margin-bottom: 10px;
+}
+
+.flows .modes {
+  padding: 0;
+}
+
+.flows .modes-bypass {
+  padding: 10px;
+  border: 2px solid var(--fault);
+  border-radius: var(--radius-control);
+}
+
+.flows .mode-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px 7px 14px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.flows .mode-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.flows .warn-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--quota);
+  font-size: 13px;
+}
+
+.flows .warn-list li + li {
+  margin-top: 6px;
+}
+
+.flows .template-save {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.flows .template-save .msg {
+  display: block;
+  margin-top: 6px;
+}
+
+.flows .browser {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+
+.flows .browser-list {
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.flows .browser-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.flows .browser-list button {
+  min-height: 32px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+}
+
+/* 設定 */
+.flows .settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.flows .settings-col {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.flows .section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.flows .rows {
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.flows .rig-row {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.flows .rows .rig-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.flows .rig-row .acts {
+  margin-top: 8px;
+}
+
+.flows .rig-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  overflow-wrap: anywhere;
+}
+
+.flows .rig-row.off .rig-name strong {
+  color: var(--muted);
+}
+
+.flows .pairing {
+  margin-top: 8px;
+}
+
+.flows .add-user {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.flows .rule-list {
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flows .rule-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.flows .rule-list code {
+  min-width: 0;
+  font: 12.5px var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.flows .rule-list button {
+  flex-shrink: 0;
+  min-height: 30px;
+  font-size: 13px;
+}
+
+/* 聚焦時別被底部黏住的儲存列蓋住 */
+.flows .settings-col input,
+.flows .settings-col textarea {
+  scroll-margin-bottom: 120px;
+}
+
+.flows .save-bar {
+  position: sticky;
+  bottom: 8px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+}
+
+.flows .save-bar .acts {
+  margin-top: 0;
+}
+
+.flows .save-bar.on {
+  border-color: var(--you);
+}
+
+.flows .save-bar.on .save-count {
+  color: var(--you);
+  font-weight: 600;
+}
+
+/* 首次引導 */
+.flows .stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0 0 16px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  list-style: none;
+}
+
+.flows .stepper li.on {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.flows .connected {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+@media (max-width: 960px) {
+  .flows .new-grid,
+  .flows .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .flows .preview {
+    position: relative;
+    top: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  /* iOS 在字級小於 16px 的輸入框聚焦時會放大整頁 */
+  .flows input:not([type='radio'], [type='checkbox']),
+  .flows select,
+  .flows textarea {
+    font-size: 16px;
+  }
+}
