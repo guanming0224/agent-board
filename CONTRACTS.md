@@ -124,7 +124,7 @@ PermissionRequest hook → daemon（建 Approval，卡住）→ hub → 瀏覽�
 
 判斷不出來就維持或回到 `running`，**不要誤報**。其他 `notification_type` 只記錄不改狀態。每次變化寫 `session.event`（type `status`，payload 含 from、to、原因）並更新 `session.runtime`。
 
-核准後工具開始跑到結束可能很久，所以 `PostToolUse`、`PostToolUseFailure` 也回到 `running`，否則長工具會一直顯示「等你允許」。
+`PostToolUse`、`PostToolUseFailure` 的細則：工具結束不代表下一步開始，所以它們**只**讓 `stuck`、`starting`（僅主線）、`waiting_permission` 回 `running`，不動 `waiting_input`、`plan_review`、`rate_limited`、`error`。`waiting_permission` 要等同一 agent、同工具、同輸入的待決請求都結算才離開。子代理（payload 有 `agent_id`）的 PreToolUse 只讓 `stuck` 回 `running` 或結算自己的請求；主線 PreToolUse 一律回 `running`。
 
 ### 5.1 daemon 內部介面
 
