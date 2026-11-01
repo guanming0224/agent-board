@@ -84,7 +84,14 @@ export const routes = {
     method: 'PATCH',
     path: '/api/users/:id',
     auth: 'user',
-    body: z.object({ locale: Locale.optional(), password: Password.optional() }),
+    body: z
+      .object({
+        locale: Locale.optional(),
+        password: Password.optional(),
+        /** 改密碼時必填，避免 cookie 被偷就能改掉密碼。 */
+        currentPassword: z.string().min(1).optional(),
+      })
+      .refine((b) => !b.password || b.currentPassword, { path: ['currentPassword'] }),
     response: User,
   }),
   usersDelete: route({ method: 'DELETE', path: '/api/users/:id', auth: 'owner', response: Ok }),
@@ -148,7 +155,7 @@ export const routes = {
     method: 'GET',
     path: '/api/sessions',
     auth: 'user',
-    query: z.object({ archived: z.coerce.boolean().optional() }),
+    query: z.object({ archived: z.stringbool().optional() }),
     response: z.array(Session),
   }),
   sessionsCreate: route({
