@@ -172,6 +172,7 @@ export const HubToClient = z.discriminatedUnion('type', [
   z.object({ type: z.literal('session.removed'), sessionId: Id }),
   z.object({ type: z.literal('session.event'), event: SessionEvent }),
   z.object({ type: z.literal('machine.updated'), machine: Machine }),
+  z.object({ type: z.literal('machine.removed'), machineId: Id }),
   z.object({ type: z.literal('approval.requested'), approval: Approval }),
   z.object({
     type: z.literal('approval.resolved'),

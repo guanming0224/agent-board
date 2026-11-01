@@ -221,6 +221,8 @@ export type Approval = z.infer<typeof Approval>;
 export const ApprovalDecision = z.discriminatedUnion('behavior', [
   z.object({ behavior: z.literal('allow'), remember: z.boolean().default(false) }),
   z.object({ behavior: z.literal('deny'), reason: z.string().trim().min(1) }),
+  /** 回答提問（kind: question）。和 deny 分開，audit 才不會把回答記成拒絕。 */
+  z.object({ behavior: z.literal('answer'), text: z.string().trim().min(1) }),
 ]);
 export type ApprovalDecision = z.infer<typeof ApprovalDecision>;
 
