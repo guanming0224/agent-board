@@ -28,6 +28,12 @@ Phase 1 各 agent 只看這份就能開工。型別的唯一來源是 `packages/
 4. 限流偵測以 `StopFailure` hook 為主，輸出比對為輔。
 5. approval 不開資料表：hook 卡在 daemon 上等，重啟後 hook 也不在了，存 DB 沒有意義。決定結果寫 `audit_log`、`session_events`。
 
+### 權限與提問
+
+- 任何登入使用者都能操作 session 與一般核准；**`kind: 'danger'` 的 approval 只有 `owner` 能決定**，hub 必須擋，前端要停用並說明。
+- `behavior: 'answer'` 用來回答提問。Claude Code 如何接收答案尚未驗證，daemon 暫時轉成 deny + message（內容寫明這是使用者的回答）；audit 與事件仍記為 answer。實作集中在 `approvals.ts`，Phase 2 再換。
+- 配對指令固定為 `agent-board-daemon pair --hub '<origin>' --code <code>`。
+
 ## 3. Session 生命週期
 
 ```
@@ -117,6 +123,7 @@ PermissionRequest hook → daemon（建 Approval，卡住）→ hub → 瀏覽�
 | `StopFailure` + `rate_limit`，或輸出比對到用量上限                              | `rate_limited`                |
 | `StopFailure` 其他                                                              | `error`                       |
 | PTY exit ≠ 0                                                                    | `error`                       |
+| PTY exit 0（使用者自己離開）                                                    | `done`，並設 `endedAt`        |
 | `running` 且超過 `stuckMinutes` 沒輸出                                          | `stuck`；有新輸出回 `running` |
 | 使用者標記（hub）                                                               | `done`                        |
 | 機器斷線（hub）                                                                 | `offline`                     |
@@ -124,7 +131,7 @@ PermissionRequest hook → daemon（建 Approval，卡住）→ hub → 瀏覽�
 
 判斷不出來就維持或回到 `running`，**不要誤報**。其他 `notification_type` 只記錄不改狀態。每次變化寫 `session.event`（type `status`，payload 含 from、to、原因）並更新 `session.runtime`。
 
-核准後工具開始跑到結束可能很久，所以 `PostToolUse`、`PostToolUseFailure` 也回到 `running`，否則長工具會一直顯示「等你允許」。
+`PostToolUse`、`PostToolUseFailure` 的細則：工具結束不代表下一步開始，所以它們**只**讓 `stuck`、`starting`（僅主線）、`waiting_permission` 回 `running`，不動 `waiting_input`、`plan_review`、`rate_limited`、`error`。`waiting_permission` 要等同一 agent、同工具、同輸入的待決請求都結算才離開。子代理（payload 有 `agent_id`）的 PreToolUse 只讓 `stuck` 回 `running` 或結算自己的請求；主線 PreToolUse 一律回 `running`。
 
 ### 5.1 daemon 內部介面
 
@@ -144,6 +151,9 @@ PermissionRequest hook → daemon（建 Approval，卡住）→ hub → 瀏覽�
 4. 慢的 client：hub 緩衝超過 1 MiB 就丟掉該 client 的輸出並送新快照，不拖累其他人。
 5. 全部 client 退訂後 hub 向 daemon 退訂；daemon 的 headless 仍持續更新。
 6. resize 以最後一個送的為準。
+
+7. hub 不存內容，所以後來的訂閱者與慢 client 要快照時，hub 會**再送一次** `terminal.subscribe`。daemon 收到重複訂閱要冪等，每次都回新快照。退訂仍只在最後一個 client 離開時才送。
+8. 不合法的 daemon 訊息：hub 記 log 並丟棄，不斷線，也不回 error（`HubToDaemon` 沒有這個型別，daemon 是已驗證的對象）。
 
 ### 6.2 資源
 
