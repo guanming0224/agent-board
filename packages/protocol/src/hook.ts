@@ -18,6 +18,8 @@ export const HookEventName = z.enum([
   'UserPromptSubmit',
   'PreToolUse',
   'PermissionRequest',
+  'PostToolUse',
+  'PostToolUseFailure',
   'Notification',
   'Stop',
   'StopFailure',
