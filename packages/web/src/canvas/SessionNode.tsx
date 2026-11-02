@@ -1,0 +1,262 @@
+import { useRef, useState, type RefObject } from 'react';
+import {
+  Handle,
+  Position,
+  useReactFlow,
+  useStore,
+  useStoreApi,
+  type Node,
+  type NodeProps,
+} from '@xyflow/react';
+import type { Session } from '@agent-board/protocol';
+import { useT } from '../shared/i18n';
+import { STATUS_VISUAL } from '../shared/status';
+import { useBoard } from '../shared/store';
+import { TerminalView } from '../terminal';
+import {
+  Age,
+  Callsign,
+  ContextUsage,
+  dangerApproval,
+  handsClass,
+  Lamp,
+  ModeChip,
+  useViewsUi,
+} from '../views';
+import { CommandInput } from './CommandInput';
+import { fitCardZoom, STRIP_W } from './layout';
+import { motion } from './motion';
+
+export const TERMINAL_ZOOM = 0.9;
+/** 低於這個倍率，展開的 xterm 字太小看不清。 */
+const READABLE_ZOOM = 0.7;
+
+export type SessionNodeType = Node<{ sessionId: string }, 'session'>;
+
+/** 這些狀態沒有在跑的 PTY 可以收指令。 */
+const NO_INPUT: readonly Session['status'][] = ['offline', 'done', 'queued'];
+
+function Actions({
+  session,
+  isTerminal,
+  onOpenTerminal,
+  inputRef,
+}: {
+  session: Session;
+  isTerminal: boolean;
+  onOpenTerminal: () => void;
+  inputRef: RefObject<HTMLInputElement | null>;
+}) {
+  const t = useT();
+  const backend = useBoard((s) => s.backend);
+  const connected = useBoard((s) => s.connected);
+  const danger = useBoard((s) => dangerApproval(s.approvals, session.id));
+  const [msg, setMsg] = useState('');
+  const openReview = () => (location.hash = `#/review/${session.id}`);
+
+  let body = null;
+  if (danger || session.status === 'waiting_permission') {
+    body = (
+      <button className={danger ? 'danger' : 'primary'} onClick={openReview}>
+        {t('canvas.act.decide')}
+      </button>
+    );
+  } else if (session.status === 'plan_review') {
+    body = (
+      <button className="primary" onClick={openReview}>
+        {t('canvas.act.plan')}
+      </button>
+    );
+  } else if (session.status === 'waiting_input') {
+    body = (
+      <button className="primary" onClick={() => inputRef.current?.focus()}>
+        {t('canvas.act.reply')}
+      </button>
+    );
+  } else if (session.status === 'error' || session.status === 'stuck') {
+    body = (
+      <>
+        {!isTerminal && <button onClick={onOpenTerminal}>{t('canvas.act.terminal')}</button>}
+        <button
+          disabled={!connected}
+          onClick={() => {
+            backend.terminal.send({
+              type: 'terminal.signal',
+              sessionId: session.id,
+              signal: 'escape',
+            });
+            setMsg(t('canvas.act.escSent'));
+          }}
+        >
+          {t('canvas.act.esc')}
+        </button>
+      </>
+    );
+  }
+  if (!body) return null;
+  return (
+    <div className="acts nodrag">
+      {body}
+      {msg && (
+        <span className="msg" role="status">
+          {msg}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function CardHead({ session }: { session: Session }) {
+  const t = useT();
+  const danger = useBoard((s) => dangerApproval(s.approvals, session.id));
+  return (
+    <>
+      {danger && <div className="danger-tag">{t('canvas.danger')}</div>}
+      <div className="head">
+        <Lamp status={session.status} />
+        <span className="title">{session.name}</span>
+        <Age session={session} />
+      </div>
+      <div className="sign">
+        <Callsign session={session} />
+        <ModeChip mode={session.permissionMode} />
+      </div>
+    </>
+  );
+}
+
+const cardClass = (base: string, session: Session) =>
+  [
+    base,
+    'hands-host',
+    handsClass(session.permissionMode),
+    STATUS_VISUAL[session.status].holder === 'you' ? 'you' : '',
+    session.status === 'offline' ? 'gone' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+export function SessionNode({
+  data,
+  width,
+  height,
+  positionAbsoluteX: x,
+  positionAbsoluteY: y,
+}: NodeProps<SessionNodeType>) {
+  const t = useT();
+  const { sessions, backend } = useBoard();
+  const session = sessions.find((s) => s.id === data.sessionId);
+  const w = width ?? 0;
+  const h = height ?? 0;
+
+  const zoomedIn = useStore((s) => s.transform[2] >= TERMINAL_ZOOM);
+  const onScreen = useStore((s) => {
+    const [tx, ty, zoom] = s.transform;
+    const left = x * zoom + tx;
+    const top = y * zoom + ty;
+    return left < s.width && left + w * zoom > 0 && top < s.height && top + h * zoom > 0;
+  });
+  const expanded = useViewsUi((s) => s.expandedIds.includes(data.sessionId));
+  const toggleExpanded = useViewsUi((s) => s.toggleExpanded);
+  const focused = useViewsUi((s) => s.focusId === data.sessionId);
+  const flow = useReactFlow();
+  const store = useStoreApi();
+  const inputRef = useRef<HTMLInputElement>(null);
+  // 還沒進過畫面的卡不開 xterm，一次放大不會同時建幾十個終端機。
+  const everOnScreen = useRef(false);
+  if (onScreen) everOnScreen.current = true;
+
+  if (!session) return null;
+
+  // 失聯的機器沒有串流可接，維持凍結的最後畫面（規則四）。
+  const isTerminal = session.status !== 'offline' && (zoomedIn || expanded);
+  const scale = w / STRIP_W;
+  // 外框留在原地，只移動鏡頭；停在 xterm 門檻以下，其他卡維持摘要條。
+  const openTerminal = () => {
+    toggleExpanded(session.id);
+    if (flow.getZoom() >= READABLE_ZOOM) return;
+    const { width, height } = store.getState();
+    const zoom = Math.min(TERMINAL_ZOOM - 0.05, fitCardZoom({ x, y, w, h }, width, height));
+    void flow.setCenter(x + w / 2, y + h / 2, { zoom, duration: motion() });
+  };
+  const canType = !NO_INPUT.includes(session.status);
+  const fromControl = (target: EventTarget) =>
+    target instanceof Element && target.closest('button, input, a') !== null;
+
+  return (
+    <div
+      className={`frame${focused ? ' spot' : ''}`}
+      style={{ width: w, height: h }}
+      data-testid={`card-${session.id}`}
+      data-mode={isTerminal ? 'terminal' : 'summary'}
+    >
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="ab-handle"
+        aria-label={t('canvas.handoff.target')}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="ab-handle"
+        title={t('canvas.handoff.drag')}
+        aria-label={t('canvas.handoff.drag')}
+      />
+      {isTerminal ? (
+        <article className={cardClass('termcard', session)}>
+          <header
+            onDoubleClick={(e) => {
+              if (expanded && !fromControl(e.target)) toggleExpanded(session.id);
+            }}
+          >
+            <CardHead session={session} />
+            <div className="term-acts">
+              <Actions session={session} isTerminal onOpenTerminal={() => {}} inputRef={inputRef} />
+              {expanded && !zoomedIn && (
+                <button className="nodrag" onClick={() => toggleExpanded(session.id)}>
+                  {t('canvas.act.summary')}
+                </button>
+              )}
+            </div>
+          </header>
+          {/* xterm 外框之內不疊任何東西（規則三之一）。 */}
+          <div
+            className="term-slot nodrag nowheel nopan"
+            data-testid="terminal-slot"
+            data-visible={onScreen}
+          >
+            {everOnScreen.current && (
+              <TerminalView
+                sessionId={session.id}
+                stream={backend.terminal}
+                visible={onScreen}
+                autoFocus={expanded}
+              />
+            )}
+          </div>
+          {canType && <CommandInput session={session} inputRef={inputRef} />}
+        </article>
+      ) : (
+        <article
+          className={cardClass('strip', session)}
+          style={{ width: STRIP_W, height: h / scale, transform: `scale(${scale})` }}
+          onDoubleClick={(e) => {
+            if (session.status !== 'offline' && !fromControl(e.target)) openTerminal();
+          }}
+        >
+          <CardHead session={session} />
+          <pre className="tail">{session.lastLines.join('\n')}</pre>
+          {session.status !== 'offline' && <ContextUsage tokens={session.contextTokens} />}
+          <Actions
+            session={session}
+            isTerminal={false}
+            onOpenTerminal={openTerminal}
+            inputRef={inputRef}
+          />
+          {canType && <CommandInput session={session} inputRef={inputRef} />}
+        </article>
+      )}
+    </div>
+  );
+}
