@@ -11,6 +11,12 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
  * idle_prompt 只代表「閒置中」。這些狀態已經說明了為什麼閒置，被蓋成 waiting_input 反而是誤報：
  * 限流會看不到、計畫審核會變成一般等待。
  */
+/**
+ * 新資料夾的信任對話框。回答前 hook 不會跑，只能從輸出判斷；不偵測的話會一直顯示「啟動中」，
+ * 使用者不知道它在等人。字串取自 claude 2.1.316，換版比對不到就退回 starting，不會誤報。
+ */
+const TRUST_PROMPT = /Yes, I trust this folder/;
+
 const KEEP_ON_IDLE_PROMPT: readonly SessionStatus[] = ['plan_review', 'rate_limited', 'error'];
 
 /** 等人決定的權限請求。Notification 不帶工具資訊，所以 toolName、toolInput 可能是 null。 */
@@ -215,6 +221,9 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
 
   function detectUsageLimit(data: string): void {
     for (const line of splitLines(data)) {
+      if (status === 'starting' && TRUST_PROMPT.test(line)) {
+        transition('waiting_input', 'output:trust-prompt', 'trust');
+      }
       if (!matchesUsageLimit(line, 'idle')) continue;
       const key = line.trim();
       if (seenLimitLines.has(key)) continue;
@@ -228,8 +237,12 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
 
   function onOutput(data: string): void {
     if (closed || data.length === 0) return;
-    lastActivityAt = now().getTime();
     detectUsageLimit(data);
+  }
+
+  function onProgress(): void {
+    if (closed) return;
+    lastActivityAt = now().getTime();
     if (status === 'stuck') transition('running', 'output:resumed', null);
   }
 
@@ -261,6 +274,7 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     },
     onHook,
     onOutput,
+    onProgress,
     onExit,
     setStuckMinutes,
     dispose,

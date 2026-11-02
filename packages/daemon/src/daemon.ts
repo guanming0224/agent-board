@@ -41,7 +41,23 @@ const USAGE_WINDOW_MS = 30 * 24 * 60 * 60_000;
 const MAX_ENDED_SESSIONS = 20;
 const MAX_EVENT_TEXT = 8_000;
 /** 不能讓 claude 及其子程序讀到的環境變數。 */
-const SECRET_ENV = ['AGENT_BOARD_MACHINE_TOKEN'];
+const SECRET_ENV = [
+  'AGENT_BOARD_MACHINE_TOKEN',
+  // daemon 若是從某個 Claude Code session 裡啟動，會繼承這些標記：claude 會把自己當成子 session，
+  // 不存對話紀錄（--resume 與用量統計都會失效），MESSAGING_TOKEN 還是憑證。
+  // 只列 session 標記，CLAUDE_CODE_USE_BEDROCK 之類是使用者的設定，要保留。
+  'AI_AGENT',
+  'CLAUDECODE',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CLAUDE_CODE_SESSION_ATTENDED',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_SPAWN_BACKEND',
+  'CLAUDE_PID',
+];
 
 export interface DaemonDeps {
   config: DaemonConfig;
@@ -162,6 +178,15 @@ export class Daemon {
         this.sessions
           .get(sessionId)
           ?.onHook('PermissionRequest', { ...payload, hook_event_name: 'PermissionRequest' }),
+      onDecided: (approval) => {
+        const session = this.sessions.get(approval.sessionId);
+        session?.onHook('PreToolUse', {
+          session_id: session.runtime().claudeSessionId ?? '',
+          hook_event_name: 'PreToolUse',
+          tool_name: approval.toolName,
+          tool_input: approval.toolInput,
+        });
+      },
       waitMs: deps.approvalWaitMs,
     });
     this.resources = new ResourceMonitor({
@@ -539,6 +564,7 @@ export class Daemon {
     } else if (event !== 'PreToolUse') {
       return null;
     }
+    this.approvals.settleAnsweredInTerminal(event, sessionId, payload);
     // 不認得的 session 也照樣比對危險指令，往安全的方向。
     return this.approvals.handleHook(event, sessionId, payload, signal);
   }

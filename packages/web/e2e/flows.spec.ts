@@ -863,7 +863,7 @@ test.describe('新增 session', () => {
     await page.getByLabel('名稱').fill('Fix login');
     await page.getByLabel('工作目錄').fill('/work/web');
     await expect(preview(page)).toHaveText(
-      "cd /work/web\nclaude --session-id <uuid> --name 'Fix login'",
+      "cd /work/web\nclaude --session-id <uuid> --permission-mode manual --name 'Fix login'",
     );
     await page.getByLabel('模型').fill('opus');
     await page.getByLabel('帳號').fill('/home/me/.claude-b');
@@ -1060,7 +1060,7 @@ test.describe('新增 session', () => {
     await page.getByLabel('名稱').fill('a>b');
     await page.getByLabel('工作目錄').fill('/work/my repo');
     await expect(preview(page)).toHaveText(
-      "cd '/work/my repo'\nclaude --session-id <uuid> --name 'a>b'",
+      "cd '/work/my repo'\nclaude --session-id <uuid> --permission-mode manual --name 'a>b'",
     );
   });
 

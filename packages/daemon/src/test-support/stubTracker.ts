@@ -31,6 +31,8 @@ export class StubTracker implements StatusTracker {
     if (event === 'Stop') this.change('waiting_input', 'hook:Stop');
   }
 
+  onProgress(): void {}
+
   onOutput(data: string): void {
     this.outputs.push(data);
   }

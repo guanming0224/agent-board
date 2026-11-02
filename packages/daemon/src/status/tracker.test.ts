@@ -59,6 +59,27 @@ describe('createStatusTracker', () => {
     return changes.at(-1);
   }
 
+  describe('信任對話框', () => {
+    const dialog = '\x1b[2m  Yes, I trust this folder\x1b[0m\r\n';
+
+    it('啟動中看到對話框就是在等人，不會一直顯示啟動中', () => {
+      tracker.onOutput(dialog);
+      expect(tracker.status).toBe('waiting_input');
+      expect(last()).toMatchObject({ reason: 'output:trust-prompt', detail: 'trust' });
+    });
+
+    it('已經在工作時，輸出提到同一句話不算（agent 可能正在讀這段文字）', () => {
+      toRunning();
+      tracker.onOutput(dialog);
+      expect(tracker.status).toBe('running');
+    });
+
+    it('一般啟動輸出不改狀態', () => {
+      tracker.onOutput('Claude Code v2\r\n');
+      expect(tracker.status).toBe('starting');
+    });
+  });
+
   describe('初始狀態', () => {
     it('PTY 開啟是 starting，不發事件', () => {
       expect(tracker.status).toBe('starting');
@@ -523,6 +544,15 @@ describe('createStatusTracker', () => {
   });
 
   describe('stuck', () => {
+    it('只有輸出、畫面沒進展，還是會變 stuck（TUI 的計時器每秒重畫）', () => {
+      toRunning();
+      for (let i = 0; i < STUCK_MINUTES * 60; i += 1) {
+        vi.advanceTimersByTime(1000);
+        tracker.onOutput(`\x1b[2K✶ Osmosing… (${i}s · ↓ ${i * 3} tokens)`);
+      }
+      expect(tracker.status).toBe('stuck');
+    });
+
     it('running 超過 stuckMinutes 沒輸出變 stuck', () => {
       toRunning();
       vi.advanceTimersByTime(STUCK_MINUTES * MINUTE - 1);
@@ -535,7 +565,7 @@ describe('createStatusTracker', () => {
     it('有輸出就重新計時', () => {
       toRunning();
       vi.advanceTimersByTime(STUCK_MINUTES * MINUTE - 1);
-      tracker.onOutput('still working');
+      tracker.onProgress();
       vi.advanceTimersByTime(STUCK_MINUTES * MINUTE - 1);
       expect(tracker.status).toBe('running');
       vi.advanceTimersByTime(1);
@@ -553,7 +583,7 @@ describe('createStatusTracker', () => {
     it('stuck 後有新輸出回 running，且會再次計時', () => {
       toRunning();
       vi.advanceTimersByTime(STUCK_MINUTES * MINUTE);
-      tracker.onOutput('back');
+      tracker.onProgress();
       expect(tracker.status).toBe('running');
       expect(last()).toMatchObject({ from: 'stuck', to: 'running', reason: 'output:resumed' });
       vi.advanceTimersByTime(STUCK_MINUTES * MINUTE);
@@ -585,7 +615,7 @@ describe('createStatusTracker', () => {
 
     it('離開 running 再回來，從回來的時間開始算', () => {
       toRunning();
-      tracker.onOutput('x');
+      tracker.onProgress();
       tracker.onHook('Stop', payload('Stop'));
       vi.advanceTimersByTime(STUCK_MINUTES * MINUTE * 2);
       toRunning();

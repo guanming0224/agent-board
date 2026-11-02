@@ -46,7 +46,7 @@ Phase 1 各 agent 只看這份就能開工。型別的唯一來源是 `packages/
 
 ### 3.1 daemon 開 PTY
 
-指令：`claude [--session-id <uuid>|--resume <id>] [--permission-mode <mode>] [--model <m>] [--name <n>]`，`default` 模式不帶旗標。
+指令：`claude [--session-id <uuid>|--resume <id>] [--permission-mode <mode>] [--model <m>] [--name <n>]`，**權限模式一定要明確帶**，`default` 傳 `manual`：不帶的話 claude 會用使用者設定裡的預設模式（可能是 auto），畫面的放手線就會說謊。
 env 加入 `AGENT_BOARD_SESSION_ID`、`AGENT_BOARD_SOCKET`，有 `accountProfile` 時加 `CLAUDE_CONFIG_DIR`，`TERM=xterm-256color`。
 
 worktree：`git worktree add <repo>/../.agent-board-wt/<slug> -b ab/<slug>`。

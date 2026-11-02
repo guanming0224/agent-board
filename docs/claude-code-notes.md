@@ -5,14 +5,14 @@
 
 ## CLI 旗標
 
-| 旗標                        | 用途        | 備註                                                                                                                                                                                                                      |
-| --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--permission-mode <mode>`  | 權限模式    | 文件：`default`、`acceptEdits`、`plan`、`auto`、`dontAsk`、`bypassPermissions`；`manual` 是 `default` 的別名（v2.1.200+）。`--help` 列的是 `manual` 而不是 `default`，所以傳 `manual` 較保險，或 `default` 時乾脆不帶旗標 |
-| `--model <model>`           | 模型        | 別名或完整名稱                                                                                                                                                                                                            |
-| `--session-id <uuid>`       | 指定對話 ID | 必須是合法 UUID。daemon 用它預先決定 `claudeSessionId`，不用等 hook 回報                                                                                                                                                  |
-| `-r, --resume [id\|name]`   | 接續對話    | daemon 重啟與「接續舊對話」用                                                                                                                                                                                             |
-| `-n, --name <name>`         | 顯示名稱    | 顯示在 prompt、`/resume`、終端機標題                                                                                                                                                                                      |
-| `--settings <file-or-json>` | 額外設定    | 本專案依 DISPATCH §5.1 改寫 `settings.local.json`，不用這個                                                                                                                                                               |
+| 旗標                        | 用途        | 備註                                                                                                                                                                                                                                                                                  |
+| --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--permission-mode <mode>`  | 權限模式    | 文件：`default`、`acceptEdits`、`plan`、`auto`、`dontAsk`、`bypassPermissions`；`manual` 是 `default` 的別名（v2.1.200+）。`--help` 列的是 `manual` 而不是 `default`，所以一律傳 `manual`。**不可以不帶旗標**：實測（2.1.316）不帶時 claude 用使用者設定的預設模式，這台機器會進 auto |
+| `--model <model>`           | 模型        | 別名或完整名稱                                                                                                                                                                                                                                                                        |
+| `--session-id <uuid>`       | 指定對話 ID | 必須是合法 UUID。daemon 用它預先決定 `claudeSessionId`，不用等 hook 回報                                                                                                                                                                                                              |
+| `-r, --resume [id\|name]`   | 接續對話    | daemon 重啟與「接續舊對話」用                                                                                                                                                                                                                                                         |
+| `-n, --name <name>`         | 顯示名稱    | 顯示在 prompt、`/resume`、終端機標題                                                                                                                                                                                                                                                  |
+| `--settings <file-or-json>` | 額外設定    | 本專案依 DISPATCH §5.1 改寫 `settings.local.json`，不用這個                                                                                                                                                                                                                           |
 
 環境變數 `CLAUDE_CONFIG_DIR`（預設 `~/.claude`）：設定、對話紀錄、外掛都在此路徑下，官方說明可用來並存多帳號。**只能從環境變數或使用者設定指定**，專案與 local 設定檔裡的會被忽略，所以 daemon 要在開 PTY 時放進 env。憑證儲存位置見官方 authentication 文件（未驗證 macOS Keychain 下是否真能分帳號）。
 
@@ -96,11 +96,23 @@
 2. **危險指令不能靠 `ask`**：`dontAsk` 下 `ask` 會被直接拒絕，`bypassPermissions` 下未查證。所以 `PreToolUse` 命中時由 hook 自己卡住等網頁決定，再回 `allow`／`deny`，不受權限模式影響。
 3. **rm/rmdir 關鍵路徑**：即使 PreToolUse 回 `allow` 也無法批准，這是 Claude Code 自己的保護，介面要能顯示被拒結果。
 
+## 實測結果（2.1.316，真 claude，haiku）
+
+- **`PermissionRequest` hook 卡住時，原生對話框同時顯示。** 從網頁決定後對話框自動消失，畫面寫 `Allowed by PermissionRequest hook`。網頁核准與「畫面和 CLI 一致」可以並存，不需要送按鍵。
+- **直接在終端機回答時，Claude Code 不會結束卡住的 hook**，工具照跑。要從之後的 `PostToolUse`、`Stop` 推得已回答，否則網頁卡片會一直留著（`ApprovalManager.settleAnsweredInTerminal`）。
+- **`PostToolUse` 要等工具跑完**，所以網頁決定當下就要離開 `waiting_permission`，否則長指令全程顯示「等你允許」。
+- **不帶 `--permission-mode` 時用使用者設定的預設模式**（這台是 auto）。一律明確帶，`default` 傳 `manual`。
+- **信任對話框**：新資料夾第一次開時出現，預設選項是 `No, exit`；回答前 hook 不會跑。從輸出偵測 `Yes, I trust this folder` 轉 `waiting_input`，字串可能隨版本變。
+- **長指令期間每秒重畫**（計時器、spinner、提示輪換、工具行前的 `⏺` 每 0.6 秒閃爍），所以不能用「有沒有輸出」判斷卡住，要比對排除動畫後的畫面（`screenFingerprint`）。
+- **從 Claude Code 裡啟動 daemon 時會繼承 session 標記**（`CLAUDE_CODE_CHILD_SESSION` 等，含憑證 `CLAUDE_CODE_MESSAGING_TOKEN`）：子 session 不存對話紀錄。daemon 開 PTY 前要濾掉。
+- 閒置時畫面也可能出現新對話框（例如 `Teach auto mode about your environment?`），狀態仍是 `waiting_input`。
+- `SessionStart` 在 `startup` 時沒有 `context_tokens`，所以 context 用量一開始是 null。
+- 這台機器上 `.claude/settings.local.json` 沒有顯示在 `git status`（原因未查，可能是全域 gitignore）。
+
 ## 未驗證（Phase 2 要測）
 
 - [ ] `PermissionRequest` hook 卡住等待時，終端機的原生權限對話框會不會顯示、使用者直接在終端機回答時 hook 會怎樣。**這決定「網頁核准」和「畫面與 CLI 一致」能否並存**；若衝突，退路是只用 `Notification` 偵測，核准時對 PTY 送按鍵。
 - [ ] plan 模式交出計畫時，是走 `Stop` 還是 `PermissionRequest`（`tool_name` 是否為 `ExitPlanMode`）。
 - [ ] `bypassPermissions` 下 PreToolUse 回 `deny` 是否生效。
-- [ ] 新 worktree 的信任對話框會擋住 hook 多久（`settings.local.json` 的 hook 在信任前不會跑）。
 - [ ] `CLAUDE_CONFIG_DIR` 在 macOS 是否真能隔離帳號。
 - [ ] 對話紀錄 JSONL 內的 usage 欄位（用量統計要讀）。

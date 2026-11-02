@@ -22,7 +22,10 @@ export interface StatusTracker {
   /** claude 回報的 id；`/clear` 之類的動作會讓它改變。 */
   readonly claudeSessionId: string | null;
   onHook(event: HookEventName, payload: HookPayload): void;
+  /** 原始輸出，用來偵測限流。TUI 的計時器每秒重畫，所以有輸出不代表有進展。 */
   onOutput(data: string): void;
+  /** 畫面內容真的變了（排除計時器與動畫），stuck 的計時以此為準。 */
+  onProgress(): void;
   onExit(exitCode: number): void;
   setStuckMinutes(minutes: number): void;
   dispose(): void;

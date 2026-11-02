@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig, normalizeHubUrl } from './config';
 import { listDirectory } from './fsList';
 import { parseNvidiaSmi, ResourceMonitor } from './resources';
-import { buildClaudeArgs } from './session';
+import { buildClaudeArgs, screenFingerprint, withoutPromptBox } from './session';
 import { SessionStore, type PersistedSession } from './store';
 import { makeTempDir, waitUntil } from './test-support/harness';
 import { summarizeUsage } from './usage';
@@ -69,11 +69,66 @@ describe('config', () => {
   });
 });
 
+describe('withoutPromptBox', () => {
+  const box = ['────────────── real ─', '❯ git status', '──────', '  ⏵⏵ manual mode on'];
+
+  it('切掉 claude 的輸入框與狀態列，留下對話', () => {
+    expect(withoutPromptBox(['⏺ done', '', '✻ Brewed for 5s', '', ...box])).toEqual([
+      '⏺ done',
+      '',
+      '✻ Brewed for 5s',
+    ]);
+  });
+
+  it('權限對話框的 ❯ 上面不是橫線，選項要留著', () => {
+    const dialog = ['Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel'];
+    expect(withoutPromptBox(dialog)).toEqual(dialog);
+  });
+
+  it('一般程式輸出原樣回傳', () => {
+    expect(withoutPromptBox(['a', 'b'])).toEqual(['a', 'b']);
+  });
+});
+
+describe('screenFingerprint', () => {
+  const screen = (seconds: string, spinner: string, tip: string) => [
+    '⏺ Bash(python3 -c "sleep")',
+    `  ⎿  $ python3 -c "sleep" (${seconds})`,
+    `${spinner} (${seconds} · ↓ 98 tokens)`,
+    `  ⎿  Tip: ${tip}`,
+  ];
+
+  it('計時、spinner 文字、提示變了都不算進展（取自實測 2.1.316 的畫面）', () => {
+    expect(screenFingerprint(screen('59s', '✳ Contemplating…', 'a'))).toBe(
+      screenFingerprint(screen('1m 18s', '✽ Osmosing…', 'b')),
+    );
+  });
+
+  it('提示輪換、長提示折行都不算進展', () => {
+    const wrapped = [
+      ...screen('5s', '✳ Thinking…', 'Control this session from the Claude'),
+      '     app on your phone',
+    ];
+    expect(screenFingerprint(wrapped)).toBe(screenFingerprint(screen('6s', '✳ Thinking…', 'x')));
+  });
+
+  it('執行中工具行前的 ⏺ 閃爍、時間跨過一分鐘，都不算進展（實測 2.1.316）', () => {
+    expect(screenFingerprint(['⏺ Sleeping 85 seconds via python · 59s'])).toBe(
+      screenFingerprint(['  Sleeping 85 seconds via python · 1m 0s']),
+    );
+  });
+
+  it('多了真的內容就算進展', () => {
+    const before = screen('5s', '✳ Thinking…', 'a');
+    expect(screenFingerprint(['⏺ done', ...before])).not.toBe(screenFingerprint(before));
+  });
+});
+
 describe('buildClaudeArgs', () => {
-  it('default 不帶 --permission-mode；--resume 優先', () => {
+  it('default 也明確帶 manual，否則 claude 會用使用者設定的預設模式；--resume 優先', () => {
     expect(
       buildClaudeArgs({ newSessionId: 'u', permissionMode: 'default', model: null, name: 'n' }),
-    ).toEqual(['--session-id', 'u', '--name', 'n']);
+    ).toEqual(['--session-id', 'u', '--permission-mode', 'manual', '--name', 'n']);
     expect(
       buildClaudeArgs({
         newSessionId: 'u',

@@ -12,7 +12,9 @@ export function commandPreview(spec: Omit<SessionSpec, 'projectId' | 'firstPromp
       ? `--resume ${shellQuote(spec.resumeClaudeSessionId)}`
       : '--session-id <uuid>',
   );
-  if (spec.permissionMode !== 'default') claude.push(`--permission-mode ${spec.permissionMode}`);
+  claude.push(
+    `--permission-mode ${spec.permissionMode === 'default' ? 'manual' : spec.permissionMode}`,
+  );
   if (spec.model) claude.push(`--model ${shellQuote(spec.model)}`);
   if (spec.name) claude.push(`--name ${shellQuote(spec.name)}`);
 

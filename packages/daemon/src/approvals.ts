@@ -93,6 +93,8 @@ export interface ApprovalManagerOptions {
   dangerRules: () => readonly string[];
   /** 危險指令開始等人決定。合約的狀態表只有 PreToolUse→running，畫面要靠這個顯示在等人。 */
   onDangerPending?: (sessionId: string, payload: HookPayload) => void;
+  /** 網頁決定了。工具可能跑很久，不能等到 PostToolUse 才離開「等你允許」。 */
+  onDecided?: (approval: Approval) => void;
   now?: () => Date;
   waitMs?: number;
 }
@@ -124,7 +126,36 @@ export class ApprovalManager {
     const pending = this.pendingById.get(approvalId);
     if (!pending || pending.approval.sessionId !== sessionId) return false;
     this.finish(pending, pending.render(decision), 'web');
+    this.options.onDecided?.(pending.approval);
     return true;
+  }
+
+  /**
+   * 使用者直接在終端機回答時，Claude Code 不會結束卡住的 hook（實測 2.1.316），
+   * 只能從之後的事件推得。工具跑完比對同工具同輸入；輪次結束或下一句話代表前面的請求都結束了。
+   */
+  settleAnsweredInTerminal(event: HookEventName, sessionId: string, payload: HookPayload): void {
+    const toolDone = event === 'PostToolUse' || event === 'PostToolUseFailure';
+    const turnMoved =
+      event === 'Stop' ||
+      event === 'StopFailure' ||
+      event === 'UserPromptSubmit' ||
+      event === 'SessionEnd';
+    if (!toolDone && !turnMoved) return;
+    const input = JSON.stringify(payload.tool_input);
+    for (const pending of [...this.pendingById.values()]) {
+      const { approval } = pending;
+      // danger 是 PreToolUse 自己卡住，工具根本還沒開始，終端機也回答不了。
+      if (approval.sessionId !== sessionId || approval.kind === 'danger') continue;
+      if (
+        toolDone &&
+        (approval.toolName !== payload.tool_name ||
+          (payload.tool_input !== undefined && JSON.stringify(approval.toolInput) !== input))
+      ) {
+        continue;
+      }
+      this.finish(pending, pending.giveUp('已在終端機處理'), 'terminal');
+    }
   }
 
   /** session 結束時，還在等的 approval 都沒有意義了。 */

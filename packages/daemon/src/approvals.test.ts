@@ -152,6 +152,71 @@ describe('PermissionRequest', () => {
   });
 });
 
+describe('使用者改在終端機回答', () => {
+  const input = { command: 'touch a' };
+  const request = payload({ tool_name: 'Bash', tool_input: input });
+  const resolved = (sent: DaemonToHub[]) =>
+    sent.flatMap((m) => (m.type === 'approval.resolved' ? [m.by] : []));
+
+  it('同工具同輸入的 PostToolUse：收掉 approval，hook 不輸出', async () => {
+    const { manager, signal, sent } = setup();
+    const result = manager.handleHook('PermissionRequest', 's1', request, signal);
+    manager.settleAnsweredInTerminal('PostToolUse', 's1', request);
+    expect(await result).toBeNull();
+    expect(manager.pending()).toEqual([]);
+    expect(resolved(sent)).toEqual(['terminal']);
+  });
+
+  it('別的工具結束、別的 session 的事件，都不算', () => {
+    const { manager, signal } = setup();
+    void manager.handleHook('PermissionRequest', 's1', request, signal);
+    manager.settleAnsweredInTerminal(
+      'PostToolUse',
+      's1',
+      payload({ tool_name: 'Bash', tool_input: { command: 'other' } }),
+    );
+    manager.settleAnsweredInTerminal('PostToolUse', 's2', request);
+    manager.settleAnsweredInTerminal('Stop', 's2', payload({}));
+    expect(manager.pending()).toHaveLength(1);
+    manager.dispose();
+  });
+
+  it('在終端機拒絕不會有 PostToolUse，輪次結束時收掉', async () => {
+    const { manager, signal, sent } = setup();
+    const result = manager.handleHook('PermissionRequest', 's1', request, signal);
+    manager.settleAnsweredInTerminal('Stop', 's1', payload({}));
+    expect(await result).toBeNull();
+    expect(resolved(sent)).toEqual(['terminal']);
+  });
+
+  it('危險指令不受影響：工具還沒開始，只能由網頁決定', () => {
+    const { manager, signal } = setup();
+    void manager.handleHook(
+      'PreToolUse',
+      's1',
+      payload({ tool_name: 'Bash', tool_input: { command: 'git push --force' } }),
+      signal,
+    );
+    manager.settleAnsweredInTerminal('Stop', 's1', payload({}));
+    expect(manager.pending()).toHaveLength(1);
+    manager.dispose();
+  });
+
+  it('網頁決定時通知 daemon，讓長指令不會一直顯示等你允許', () => {
+    const decided: string[] = [];
+    const manager = new ApprovalManager({
+      send: () => {},
+      dangerRules: () => [],
+      onDecided: (approval) => decided.push(approval.sessionId),
+    });
+    let id = '';
+    void manager.handleHook('PermissionRequest', 's1', request, new AbortController().signal);
+    id = manager.pending()[0]!.id;
+    manager.decide(id, 's1', { behavior: 'allow', remember: false });
+    expect(decided).toEqual(['s1']);
+  });
+});
+
 describe('PreToolUse 危險指令', () => {
   const danger = payload({ tool_name: 'Bash', tool_input: { command: 'git  push  --force' } });
 

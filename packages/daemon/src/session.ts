@@ -51,7 +51,12 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
   if (input.resumeId) args.push('--resume', input.resumeId);
   else if (input.newSessionId) args.push('--session-id', input.newSessionId);
   // default 不帶旗標：--help 列的是 manual，default 只有文件有寫（見筆記）。
-  if (input.permissionMode !== 'default') args.push('--permission-mode', input.permissionMode);
+  // 一定要明確帶：不帶的話 claude 會用使用者設定裡的預設模式（可能是 auto），
+  // 畫面的放手線顯示「每步問你」，實際卻全部自己來。`default` 在 CLI 上叫 manual。
+  args.push(
+    '--permission-mode',
+    input.permissionMode === 'default' ? 'manual' : input.permissionMode,
+  );
   if (input.model) args.push('--model', input.model);
   args.push('--name', input.name);
   return args;
@@ -59,14 +64,57 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
 
 /** 畫面上最後幾行非空白的純文字。從 xterm 緩衝區讀，TUI 重繪時才不會拿到一堆殘段。 */
 export function readLastLines(term: TerminalType, count = LAST_LINES): string[] {
+  return withoutPromptBox(readScreen(term)).filter(Boolean).slice(-count);
+}
+
+function readScreen(term: TerminalType): string[] {
   const buffer = term.buffer.active;
-  const lines: string[] = [];
   const stop = Math.max(0, buffer.length - LAST_LINES_SCAN);
-  for (let y = buffer.length - 1; y >= stop && lines.length < count; y -= 1) {
-    const text = buffer.getLine(y)?.translateToString(true).trimEnd();
-    if (text) lines.unshift(text);
+  const screen: string[] = [];
+  for (let y = stop; y < buffer.length; y += 1) {
+    screen.push(buffer.getLine(y)?.translateToString(true).trimEnd() ?? '');
   }
-  return lines;
+  return screen;
+}
+
+/**
+ * 畫面的指紋：拿掉會自己一直變的東西（計時、spinner、提示），剩下的變了才算有進展。
+ * 實測 claude 2.1.316：長指令期間每秒重畫，15 秒有 15 次輸出，所以不能用「有沒有輸出」判斷卡住。
+ */
+export function screenFingerprint(lines: readonly string[]): string {
+  const content = withoutPromptBox(lines);
+  // spinner 那行以下都是動畫區：提示會輪換，長提示還會折行，所以整塊切掉，不逐行過濾。
+  const spinner = content.findLastIndex((line) => /^\s*\S?\s*\p{L}+…/u.test(line));
+  return (
+    (spinner === -1 ? content : content.slice(0, spinner))
+      // 執行中工具行前的 ⏺ 每 0.6 秒閃一次；時間會從 59s 變成 1m 0s，所以連單位一起拿掉。
+      .map((line) =>
+        line
+          .replace(/^\s*[⏺●]?\s*/u, '')
+          .replace(/\b\d+(?:\.\d+)?[hms]\b/g, '')
+          .replace(/\d+/g, '')
+          .replace(/\s+/g, ''),
+      )
+      .filter(Boolean)
+      .join('\n')
+  );
+}
+
+const RULE_LINE = /^[\s─╌━-]+(?:\S+[\s─╌━-]+)?$/;
+
+/**
+ * 摘要卡要看對話，不是輸入框和狀態列。claude 的輸入框是一條橫線下面一行 `❯`；
+ * 權限對話框的 `❯ 1. Yes` 上面不是橫線，所以不會被切掉。認不出來就原樣回傳。
+ */
+export function withoutPromptBox(lines: readonly string[]): string[] {
+  for (let y = lines.length - 1; y > 0; y -= 1) {
+    if (!/^\s*❯(\s|$)/.test(lines[y]!)) continue;
+    if (!RULE_LINE.test(lines[y - 1]!)) continue;
+    const above = lines.slice(0, y - 1);
+    while (above.length > 0 && !above.at(-1)) above.pop();
+    return above;
+  }
+  return [...lines];
 }
 
 export interface ManagedSessionOptions {
@@ -121,6 +169,7 @@ export class ManagedSession {
   private statusDetail: string | null = null;
   private statusSince: string;
   private lastLines: string[] = [];
+  private fingerprint = '';
   private lastOutputAt: string | null = null;
   private contextTokens: number | null = null;
   private endedAt: string | null = null;
@@ -426,6 +475,14 @@ export class ManagedSession {
     this.options.onRuntime(this.runtime());
   }
 
+  private noteProgress(): void {
+    if (this.termDisposed) return;
+    const fingerprint = screenFingerprint(readScreen(this.term));
+    if (fingerprint === this.fingerprint) return;
+    this.fingerprint = fingerprint;
+    this.guardTracker(() => this.tracker.onProgress());
+  }
+
   private refreshLastLines(): void {
     if (!this.termDisposed) this.lastLines = readLastLines(this.term);
   }
@@ -436,6 +493,7 @@ export class ManagedSession {
       this.runtimeTimer = null;
       if (!this.alive || this.detached) return;
       this.refreshLastLines();
+      this.noteProgress();
       this.options.onRuntime(this.runtime());
     }, this.options.runtimeThrottleMs ?? RUNTIME_THROTTLE_MS);
     this.runtimeTimer.unref();

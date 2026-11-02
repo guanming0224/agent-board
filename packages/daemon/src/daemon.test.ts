@@ -85,8 +85,9 @@ describe('session 建立', () => {
     expect(run?.cwd).toBe(h.workDir);
     expect(run?.argv.slice(0, 1)).toEqual(['--session-id']);
     expect(run?.argv[1]).toMatch(/^[0-9a-f-]{36}$/);
-    expect(run?.argv.slice(2)).toEqual(['--name', 'test session']);
-    expect(run?.argv).not.toContain('--permission-mode');
+    expect(run?.argv.slice(2)).toEqual(['--permission-mode', 'manual', '--name', 'test session']);
+    expect(run?.argv).toContain('--permission-mode');
+    expect(run?.argv[run.argv.indexOf('--permission-mode') + 1]).toBe('manual');
     expect(run?.env).toMatchObject({
       AGENT_BOARD_SESSION_ID: 's1',
       AGENT_BOARD_MACHINE_TOKEN: null,
@@ -104,6 +105,19 @@ describe('session 建立', () => {
       endedAt: null,
     });
     expect(h.installHookCalls).toEqual([h.workDir]);
+  });
+
+  it('從 Claude Code 裡啟動 daemon 時，不把 session 標記與憑證傳給 claude，使用者的設定照傳', async () => {
+    h.extraEnv.CLAUDE_CODE_CHILD_SESSION = '1';
+    h.extraEnv.CLAUDE_CODE_MESSAGING_TOKEN = 'secret-token';
+    h.extraEnv.CLAUDE_CODE_USE_BEDROCK = '1';
+    await h.restartDaemon();
+    await h.createAndSubscribe('s9');
+    expect(h.runs().at(-1)?.env).toMatchObject({
+      CLAUDE_CODE_CHILD_SESSION: null,
+      CLAUDE_CODE_MESSAGING_TOKEN: null,
+      CLAUDE_CODE_USE_BEDROCK: '1',
+    });
   });
 
   it('permissionMode、model、name、accountProfile、resumeClaudeSessionId 都會傳進去', async () => {
