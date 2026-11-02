@@ -63,6 +63,14 @@ process.stdin.on('data', (chunk) => {
     if (line === 'crash') process.exit(3);
     hook('UserPromptSubmit', { prompt: line });
     if (line === 'ask-permission') tool('Bash', { command: 'npm test' });
+    // 模擬收到交接後動手改檔：防迴圈測試需要目標在沒有人輸入的情況下再觸發規則。
+    if (line.startsWith('[Handoff]')) {
+      hook('PostToolUse', {
+        tool_name: 'Write',
+        tool_input: { file_path: '/tmp/ab-team/after-handoff.ts' },
+        tool_use_id: randomUUID(),
+      });
+    }
     // 只送 PostToolUse：團隊測試要的是 file.changed，不走權限流程。
     if (line.startsWith('edit-file ')) {
       hook('PostToolUse', {

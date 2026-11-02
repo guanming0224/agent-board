@@ -28,6 +28,7 @@ registerMessages('zh-TW', {
   'canvas.handoff.on_file': '改到檔案時交接',
   'canvas.handoff.on_fail': '失敗時交接',
   'canvas.handoff.off': '・未開啟',
+  'canvas.handoff.panelHint': '「完成」是在團隊頁按標記完成，或 session 正常結束。',
   'canvas.handoff.turnOn': '開啟自動交接',
   'canvas.handoff.turnOff': '關閉自動交接',
   'canvas.handoff.noTeam': '交接規則屬於團隊：先在「團隊」把其中一張卡加入團隊，再拖線。',
@@ -70,6 +71,7 @@ registerMessages('en', {
   'canvas.handoff.on_file': 'Hand off on file change',
   'canvas.handoff.on_fail': 'Hand off on failure',
   'canvas.handoff.off': ' · off',
+  'canvas.handoff.panelHint': '"Done" means Mark done on the Teams page, or a normal exit.',
   'canvas.handoff.turnOn': 'Turn on auto handoff',
   'canvas.handoff.turnOff': 'Turn off auto handoff',
   'canvas.handoff.noTeam':

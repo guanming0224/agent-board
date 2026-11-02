@@ -11,6 +11,11 @@ import { refreshTeams, useTeams } from './store';
 const ACTIVITY_POLL_MS = 10_000;
 const ACTIVITY_SHOWN = 8;
 const ACTIVITY_TYPES = new Set(['handoff.fired', 'handoff.blocked']);
+const TRIGGER_NOTE: Record<HandoffRule['trigger'], string> = {
+  on_done: 'team.rules.doneLimit',
+  on_file: 'team.rules.fileLimit',
+  on_fail: 'team.rules.failLimit',
+};
 
 function RuleRow({ rule, members }: { rule: HandoffRule; members: Session[] }) {
   const t = useT();
@@ -86,7 +91,7 @@ function RuleRow({ rule, members }: { rule: HandoffRule; members: Session[] }) {
           {t('team.rules.delete')}
         </button>
       </div>
-      {rule.trigger === 'on_file' && <p className="sub">{t('team.rules.fileLimit')}</p>}
+      <p className="sub rule-limit">{t(TRIGGER_NOTE[rule.trigger])}</p>
       <ActionMessage message={message} />
     </li>
   );
@@ -150,7 +155,7 @@ function NewRule({ team, members }: { team: Team; members: Session[] }) {
         {t('team.rules.add')}
       </button>
       <ActionMessage message={message} />
-      {trigger === 'on_file' && <p className="sub rule-limit">{t('team.rules.fileLimit')}</p>}
+      <p className="sub rule-limit">{t(TRIGGER_NOTE[trigger])}</p>
     </div>
   );
 }

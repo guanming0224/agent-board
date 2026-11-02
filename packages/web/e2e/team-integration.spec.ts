@@ -282,7 +282,7 @@ test('請隊長拆解：提示真的送進隊長，回覆解析後放入待分�
   await expect(card).toHaveAttribute('data-column', 'doing');
 });
 
-test('拖線之外也能建立規則：關著不交接，開啟後目標收到一行，只有摘要、檔案、分支', async ({
+test('完成時交接：關著不交接；回合結束不觸發；標記完成才送，只有摘要、檔案、分支', async ({
   page,
 }) => {
   await page.goto(`/#/team/${teamId}`);
@@ -294,24 +294,34 @@ test('拖線之外也能建立規則：關著不交接，開啟後目標收到�
     'aria-pressed',
     'false',
   );
-
-  await typeInto(page, lead.id, 'rule is off');
-  await screenOf(page, lead.id).toContain('GOT rule is off');
-  await page.waitForTimeout(500);
-  expect(await readScreen(page, worker.id)).not.toContain('[Handoff]');
-
   await rule.getByRole('button', { name: /自動交接/ }).click();
   await expect(rule.getByRole('button', { name: /自動交接/ })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
-  await expectStatus(page.request, lead.id, 'waiting_input');
-  await typeInto(page, lead.id, 'finish login fix');
 
-  await screenOf(page, worker.id).toContain('GOT [Handoff] Summary: done: finish login fix');
+  // 真 daemon 從 PostToolUse 送 file.changed；Stop 只是回合結束，不交接。
+  await expectStatus(page.request, lead.id, 'waiting_input');
+  await typeInto(page, lead.id, 'edit-file /tmp/ab-team/login.ts');
+  await screenOf(page, lead.id).toContain('GOT edit-file /tmp/ab-team/login.ts');
+  await expectStatus(page.request, lead.id, 'waiting_input');
+  await page.waitForTimeout(500);
+  expect(await readScreen(page, worker.id)).not.toContain('[Handoff]');
+  expect(await auditOf(page, 'handoff.fired')).toHaveLength(0);
+
+  // 重新載入規則還在
+  await page.reload();
+  const member = page.getByTestId(`member-${lead.id}`);
+  await expect(member.locator('.chip.cost')).toHaveText('◈ 耗額度');
+  await member.getByRole('button', { name: '標記完成' }).click();
+
+  await screenOf(page, worker.id).toContain(
+    'GOT [Handoff] Summary: done: edit-file /tmp/ab-team/login.ts',
+  );
   const screen = (await readScreen(page, worker.id)).replace(/\s+/g, ' ');
-  expect(screen).toContain('(shell changes not tracked): none detected');
+  expect(screen).toContain('Detected file edits: /tmp/ab-team/login.ts');
   expect(screen).toContain(`Branch: ${lead.branch}`);
+  await expect(member.locator('.lamp')).toContainText('完成');
 
   const fired = await auditOf(page, 'handoff.fired');
   expect(fired).toHaveLength(1);
@@ -324,47 +334,40 @@ test('拖線之外也能建立規則：關著不交接，開啟後目標收到�
   expect(typed.some((a) => a.sessionId === worker.id && a.detail.startsWith('[Handoff]'))).toBe(
     true,
   );
-
-  // 真 daemon 從 PostToolUse 送 file.changed，下一次交接列出路徑
-  await expectStatus(page.request, worker.id, 'waiting_input');
-  await typeInto(page, lead.id, 'edit-file /tmp/ab-team/login.ts');
-  await screenOf(page, worker.id).toContain('(shell changes not tracked): /tmp/ab-team/login.ts');
-
-  // 重新載入規則還在
-  await page.reload();
-  await expect(
-    page
-      .locator('.rule', { hasText: 'lead-session → worker-session' })
-      .getByRole('button', { name: /自動交接/ }),
-  ).toHaveAttribute('aria-pressed', 'true');
+  expect((await auditOf(page, 'handoff_rule.update')).length).toBeGreaterThanOrEqual(1);
 });
 
 test('A → B → A：回頭的那條被擋下，畫面看得到', async ({ page }) => {
   await page.goto(`/#/team/${teamId}`);
-  await page.getByLabel('從', { exact: true }).selectOption({ label: 'worker-session' });
-  await page.getByLabel('交給', { exact: true }).selectOption({ label: 'lead-session' });
-  await page.getByRole('button', { name: '新增規則' }).click();
-  const back = page.locator('.rule', { hasText: 'worker-session → lead-session' });
-  await back.getByRole('button', { name: /自動交接/ }).click();
-  await expect(back.getByRole('button', { name: /自動交接/ })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
+  const addFileRule = async (from: string, to: string) => {
+    await page.getByLabel('從', { exact: true }).selectOption({ label: from });
+    await page.getByLabel('交給', { exact: true }).selectOption({ label: to });
+    await page.locator('.new-rule').getByLabel('觸發條件').selectOption('on_file');
+    await page.getByRole('button', { name: '新增規則' }).click();
+    const rule = page.locator('.rule', { hasText: `${from} → ${to}` });
+    await rule.getByRole('button', { name: /自動交接/ }).click();
+    await expect(rule.getByRole('button', { name: /自動交接/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  };
+  await addFileRule('worker-session', 'plain-session');
+  await addFileRule('plain-session', 'worker-session');
   await expectStatus(page.request, worker.id, 'waiting_input');
-  await expectStatus(page.request, lead.id, 'waiting_input');
+  await expectStatus(page.request, plain.id, 'waiting_input');
 
-  await typeInto(page, lead.id, 'second round');
-  await screenOf(page, worker.id).toContain('done: second round');
+  await typeInto(page, worker.id, 'edit-file /tmp/ab-team/round.ts');
+  // 假 claude 收到交接後會改檔，所以 plain 的回合結束會想交接回 worker。
+  await screenOf(page, plain.id).toContain('GOT [Handoff] Summary: done: edit-file');
   await expect
     .poll(async () => (await auditOf(page, 'handoff.blocked')).length, { timeout: 20_000 })
     .toBe(1);
   const blocked = await auditOf(page, 'handoff.blocked');
   expect(JSON.parse(blocked[0]!.detail)).toMatchObject({
     reason: 'loop',
-    fromSessionId: worker.id,
-    toSessionId: lead.id,
+    fromSessionId: plain.id,
+    toSessionId: worker.id,
   });
-  expect(await readScreen(page, lead.id)).not.toContain('[Handoff]');
 
   await page.reload();
   await expect(page.getByTestId('handoff-activity')).toContainText('會形成迴圈');
@@ -381,7 +384,7 @@ test('全隊停止：規則先關，session 真的結束，不會因結束再觸
   await page.getByRole('button', { name: /再按一次，停止/ }).click();
   await expect(page.getByTestId('team-controls-msg')).toContainText('已要求停止');
   await expect
-    .poll(async () => (await getSession(page.request, lead.id)).endedAt, { timeout: 20_000 })
+    .poll(async () => (await getSession(page.request, worker.id)).endedAt, { timeout: 20_000 })
     .not.toBeNull();
   const firedBefore = (await auditOf(page, 'handoff.fired')).length;
   await page.waitForTimeout(500);

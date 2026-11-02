@@ -29,6 +29,8 @@ registerMessages('zh-TW', {
   'team.members.empty': '還沒有成員。從下面選一個 session 加入。',
   'team.members.roleOf': '{name} 的角色',
   'team.members.remove': '移出團隊',
+  'team.members.markDone': '標記完成',
+  'team.members.markDoneHint': '會觸發完成時交接。',
   'team.members.pick': '選 session',
   'team.members.role': '角色',
   'team.members.add': '加入團隊',
@@ -92,7 +94,11 @@ registerMessages('zh-TW', {
     '隊長的回覆是 JSON，但沒有任何任務標題：「{preview}」。格式應該是 [{"title":"…"}]。',
   'team.rules.title': '自動交接規則',
   'team.rules.hint':
-    '觸發時只把一句摘要、偵測到的檔案改動和分支名稱送給下一位，不貼完整對話。透過 Bash 改的檔案偵測不到，所以清單不一定完整，空的也不代表沒改。對方收到就會開始工作，所以開啟後會花對方的額度。「完成」指來源 session 每個回合結束。',
+    '觸發時只把一句摘要、偵測到的檔案改動和分支名稱送給下一位，不貼完整對話。透過 Bash 改的檔案偵測不到，所以清單不一定完整，空的也不代表沒改。對方收到就會開始工作，所以開啟後會花對方的額度。',
+  'team.rules.doneLimit':
+    '在你按來源 session 的「標記完成」，或它正常結束（exit 0）時觸發。回合結束不會觸發。按「停止」也不會。',
+  'team.rules.failLimit':
+    '在來源 session 變成「錯誤」時觸發。額度用完、卡住、結果不明的斷線都不算。',
   'team.rules.fileLimit':
     '只偵測 Write、Edit、MultiEdit、NotebookEdit 改的檔案；透過 Bash 改的（sed、mv、產生器）不會觸發。',
   'team.rules.empty': '還沒有規則。可以在這裡新增，或在畫布上從卡片拖線。',
@@ -145,6 +151,8 @@ registerMessages('en', {
   'team.members.empty': 'No members yet. Pick a session below to add it.',
   'team.members.roleOf': 'Role of {name}',
   'team.members.remove': 'Remove from team',
+  'team.members.markDone': 'Mark done',
+  'team.members.markDoneHint': 'This fires on-done handoffs.',
   'team.members.pick': 'Pick a session',
   'team.members.role': 'Role',
   'team.members.add': 'Add to team',
@@ -211,7 +219,11 @@ registerMessages('en', {
     'The lead\'s reply is JSON but has no task titles: "{preview}". The format should be [{"title":"…"}].',
   'team.rules.title': 'Automatic handoff rules',
   'team.rules.hint':
-    'When triggered, only a one-sentence summary, detected file edits and the branch name go to the next session, never the full conversation. Files changed through Bash are not detected, so the list may be incomplete, and an empty list does not mean nothing changed. It starts working on receipt, so turning a rule on uses its quota. "On done" means every turn the source session finishes.',
+    'When triggered, only a one-sentence summary, detected file edits and the branch name go to the next session, never the full conversation. Files changed through Bash are not detected, so the list may be incomplete, and an empty list does not mean nothing changed. It starts working on receipt, so turning a rule on uses its quota.',
+  'team.rules.doneLimit':
+    'Fires when you press Mark done on the source session, or when it exits normally (exit 0). The end of a turn does not fire it, and neither does Stop.',
+  'team.rules.failLimit':
+    'Fires when the source session goes to Error. Rate limits, stuck sessions and disconnects with an unknown outcome do not count.',
   'team.rules.fileLimit':
     'Only files edited with Write, Edit, MultiEdit or NotebookEdit are detected. Changes made through Bash (sed, mv, generators) do not trigger this rule.',
   'team.rules.empty': 'No rules yet. Add one here or drag a line between cards on the canvas.',

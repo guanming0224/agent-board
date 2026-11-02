@@ -839,6 +839,8 @@ export class Hub {
     if (Object.keys(defined).length > 0) session = this.updateFields(session, defined);
     if (markDone && session.status !== 'done') {
       this.audit(user.id, id, 'session.mark_done', '');
+      // 使用者親自判定完成，接下來的交接不算上一條鏈的延續。
+      this.handoff.onUserInput(id);
       this.store.setPendingSpec(id, null);
       session = this.setStatus(
         session,

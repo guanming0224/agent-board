@@ -5,7 +5,14 @@ import type { Session, Task, Team, TeamMember } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { Callsign, errorText, handsClass, Lamp, ModeChip } from '../views';
-import { ActionMessage, ColorPicker, TwoClickButton, useAction, useDraft } from './common';
+import {
+  ActionMessage,
+  ColorPicker,
+  CostChip,
+  TwoClickButton,
+  useAction,
+  useDraft,
+} from './common';
 import { HandoffPanel } from './HandoffPanel';
 import { refreshTeams, teamColorVar, useTeams } from './store';
 import { TaskBoard } from './TaskBoard';
@@ -117,6 +124,14 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
       await refreshTeams(backend);
     });
 
+  const markDone = (id: string) =>
+    run(async () => {
+      await backend.updateSession(id, { markDone: true });
+    });
+
+  const firesHandoff = (id: string) =>
+    rules.some((r) => r.enabled && r.trigger === 'on_done' && r.fromSessionId === id);
+
   /** 離開團隊的成員，和他有關的交接規則也不該留著。 */
   const remove = (id: string) =>
     run(async () => {
@@ -161,6 +176,15 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
                     </option>
                   ))}
                 </select>
+                {isLive(s) && (
+                  <button onClick={() => void markDone(s.id)}>{t('team.members.markDone')}</button>
+                )}
+                {isLive(s) && firesHandoff(s.id) && (
+                  <>
+                    <CostChip />
+                    <span className="sub">{t('team.members.markDoneHint')}</span>
+                  </>
+                )}
                 <button onClick={() => void remove(s.id)}>{t('team.members.remove')}</button>
               </div>
             </li>

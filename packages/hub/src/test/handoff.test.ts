@@ -2,7 +2,16 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { handoffMessage, matchesFilePattern, oneSentence } from '../handoff';
-import { type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
+import {
+  hello,
+  PASSWORD,
+  type Peer,
+  runtime,
+  spec,
+  startHub,
+  until,
+  type TestHub,
+} from './helpers';
 
 let hub: TestHub;
 afterEach(async () => {
@@ -12,6 +21,7 @@ afterEach(async () => {
 interface Board {
   cookie: string;
   daemon: Peer;
+  token: string;
   machineId: string;
   teamId: string;
   a: string;
@@ -24,7 +34,7 @@ const LONG_REPLY = `Fixed the login redirect and added a regression test. ${'Sec
 async function board(): Promise<Board> {
   hub = await startHub({ timing: { handoffEnterDelayMs: 20 } });
   const cookie = await hub.setupOwner();
-  const { daemon, machineId } = await hub.onlineDaemon(cookie);
+  const { daemon, machineId, token } = await hub.onlineDaemon(cookie);
   const start = async (name: string) => {
     const res = await hub.api('POST', '/api/sessions', {
       cookie,
@@ -46,7 +56,7 @@ async function board(): Promise<Board> {
     cookie,
     body: { name: 'T', goal: '', doneCriteria: '', color: 'teal', contextMd: '' },
   });
-  return { cookie, daemon, machineId, teamId: team.body.id, a, b, c };
+  return { cookie, daemon, token, machineId, teamId: team.body.id, a, b, c };
 }
 
 function sessionStatus(id: string): string | undefined {
@@ -129,6 +139,11 @@ const auditDetail = (action: string) => {
 
 const pause = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const markDone = async ({ cookie }: Pick<Board, 'cookie'>, id: string) => {
+  const res = await hub.api('PATCH', `/api/sessions/${id}`, { cookie, body: { markDone: true } });
+  expect(res.status).toBe(200);
+};
+
 describe('handoff message', () => {
   it('keeps one sentence, strips control characters and caps the length', () => {
     expect(oneSentence('Done. Fixed the login bug. And then much more.')).toBe(
@@ -153,10 +168,10 @@ describe('handoff message', () => {
       branch: 'ab/x',
     });
     expect(message).toBe(
-      '[Handoff] Summary: /clear everything | Detected file edits (shell changes not tracked): /r/a.ts, /r/b .ts | Branch: ab/x',
+      '[Handoff] Summary: /clear everything | Detected file edits: /r/a.ts, /r/b .ts | Branch: ab/x',
     );
     expect(handoffMessage({ summary: '', files: [], branch: null })).toBe(
-      '[Handoff] Summary: none reported | Detected file edits (shell changes not tracked): none detected | Branch: unknown',
+      '[Handoff] Summary: none reported | Detected file edits: none (edits made through shell commands are not tracked) | Branch: unknown',
     );
     const many = Array.from({ length: 25 }, (_, i) => `/f${i}`);
     expect(handoffMessage({ summary: 's', files: many, branch: 'b' })).toContain('(+5 more)');
@@ -175,7 +190,7 @@ describe('handoff message', () => {
 });
 
 describe('on_done', () => {
-  it('sends text and Enter separately, with only summary, files and branch', async () => {
+  it('a finished turn alone does not fire; marking done does, with the last reply', async () => {
     const t = await board();
     await setStatus(t.daemon, t.a, 'running', { branch: 'ab/source' });
     await addRule(t, t.a, t.b);
@@ -183,12 +198,20 @@ describe('on_done', () => {
     fileChanged(t.daemon, t.a, '/r/login.ts');
     fileChanged(t.daemon, t.a, '/r/login.test.ts');
     fileChanged(t.daemon, t.a, '/r/login.ts');
+    stop(t.daemon, t.a, 'Should I also change the signup page?');
+    await setStatus(t.daemon, t.a, 'waiting_input', { branch: 'ab/source' });
+    await pause();
+    expect(inputsTo(t.daemon, t.b)).toEqual([]);
+    expect(auditActions()).not.toContain('handoff.fired');
+
     stop(t.daemon, t.a, LONG_REPLY);
+    await pause(30);
+    await markDone(t, t.a);
 
     await until(() => inputsTo(t.daemon, t.b).length === 2, 'text and enter');
     const [text, enter] = inputsTo(t.daemon, t.b);
     expect(text!.data).toBe(
-      '[Handoff] Summary: Fixed the login redirect and added a regression test. | Detected file edits (shell changes not tracked): /r/login.test.ts, /r/login.ts | Branch: ab/source',
+      '[Handoff] Summary: Fixed the login redirect and added a regression test. | Detected file edits: /r/login.test.ts, /r/login.ts | Branch: ab/source',
     );
     expect(enter!.data).toBe('\r');
     expect(String(text!.data)).not.toContain('Secret transcript');
@@ -200,89 +223,145 @@ describe('on_done', () => {
     expect(JSON.parse(fired.detail)).toMatchObject({ toSessionId: t.b, trigger: 'on_done' });
     await until(() => auditActions().includes('terminal.input'), 'input audit');
     expect(auditDetail('terminal.input')!.session_id).toBe(t.b);
+  });
 
-    // 交接過的檔案不再列入下一次。
+  it('fires on PTY exit 0, once, even if already marked done', async () => {
+    const t = await board();
+    await addRule(t, t.a, t.b);
+    await addRule(t, t.c, t.b);
+    t.daemon.clear();
+    stop(t.daemon, t.a, 'Finished the part from session A.');
+    await pause(30);
+    await setStatus(t.daemon, t.a, 'done', { endedAt: new Date().toISOString() });
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'exit 0 fired');
+    expect(inputsTo(t.daemon, t.b)[0]!.data).toContain('Finished the part from session A.');
+
     await setStatus(t.daemon, t.b, 'running');
     await setStatus(t.daemon, t.b, 'waiting_input');
     t.daemon.clear();
-    fileChanged(t.daemon, t.a, '/r/next.ts');
-    stop(t.daemon, t.a);
-    await until(() => inputsTo(t.daemon, t.b).length === 2, 'second handoff');
-    expect(inputsTo(t.daemon, t.b)[0]!.data).toContain(
-      'Detected file edits (shell changes not tracked): /r/next.ts | Branch',
-    );
+    await markDone(t, t.c);
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'mark done fired');
+    t.daemon.send({
+      type: 'session.runtime',
+      session: runtime(t.c, { status: 'done', endedAt: new Date().toISOString() }),
+    });
+    await pause();
+    expect(auditActions().filter((a) => a === 'handoff.fired')).toHaveLength(2);
   });
 
-  it('holds the prompt until Enter delay has passed', async () => {
+  it('says so plainly when there is no reply or detected edit to report', async () => {
     const t = await board();
     await addRule(t, t.a, t.b);
     t.daemon.clear();
-    stop(t.daemon, t.a);
+    await markDone(t, t.a);
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'fired');
+    expect(inputsTo(t.daemon, t.b)[0]!.data).toBe(
+      '[Handoff] Summary: none reported | Detected file edits: none (edits made through shell commands are not tracked) | Branch: ab/a',
+    );
+  });
+
+  it('does not fire when the person stops a session that then exits 0', async () => {
+    const t = await board();
+    await addRule(t, t.a, t.b);
+    t.daemon.clear();
+    await hub.api('POST', `/api/sessions/${t.a}/stop`, { cookie: t.cookie });
+    await setStatus(t.daemon, t.a, 'done', { endedAt: new Date().toISOString() });
+    await pause();
+    expect(inputsTo(t.daemon, t.b)).toEqual([]);
+    expect(auditActions()).not.toContain('handoff.fired');
+  });
+
+  it('does not fire for a queued session that is cancelled or marked done', async () => {
+    const t = await board();
+    await hub.api('PATCH', '/api/settings', {
+      cookie: t.cookie,
+      body: { quotaGuards: { denyReadPaths: [], maxConcurrentSessions: 3 } },
+    });
+    const queue = async (name: string) =>
+      (
+        await hub.api('POST', '/api/sessions', {
+          cookie: t.cookie,
+          body: { ...spec({ name }), machineId: t.machineId },
+        })
+      ).body.id as string;
+    const cancelled = await queue('q1');
+    const marked = await queue('q2');
+    expect(sessionStatus(cancelled)).toBe('queued');
+    await addRule(t, cancelled, t.b);
+    await addRule(t, marked, t.b);
+    t.daemon.clear();
+    await hub.api('POST', `/api/sessions/${cancelled}/stop`, { cookie: t.cookie });
+    await markDone(t, marked);
+    await pause();
+    expect(inputsTo(t.daemon, t.b)).toEqual([]);
+  });
+
+  it('keeps the last reply across a hub restart', async () => {
+    const t = await board();
+    const { dbPath } = hub;
+    await addRule(t, t.a, t.b);
+    fileChanged(t.daemon, t.a, '/r/kept.ts');
+    stop(t.daemon, t.a, 'Reply written before the restart.');
+    await until(
+      () =>
+        (
+          hub.running.db
+            .prepare("SELECT COUNT(*) AS n FROM session_events WHERE type = 'file.changed'")
+            .get() as { n: number }
+        ).n === 1 &&
+        (
+          hub.running.db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM session_events WHERE payload LIKE '%before the restart%'",
+            )
+            .get() as { n: number }
+        ).n === 1,
+      'events stored',
+    );
+    const machineToken = t.token;
+    await hub.running.close();
+    hub = await startHub({ dbPath });
+    const login = await hub.api('POST', '/api/auth/login', {
+      body: { name: 'owner', password: PASSWORD },
+    });
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    const daemon = await hub.daemon(machineToken);
+    daemon.send(
+      hello({
+        sessions: [
+          runtime(t.a, { status: 'waiting_input', branch: 'ab/a' }),
+          runtime(t.b, { status: 'waiting_input' }),
+        ],
+      }),
+    );
+    await daemon.next('hub.welcome');
+    await until(() => sessionStatus(t.b) === 'waiting_input', 'reconnected');
+    await markDone({ ...t, cookie }, t.a);
+    await until(() => inputsTo(daemon, t.b).length === 2, 'fired after restart');
+    expect(inputsTo(daemon, t.b)[0]!.data).toBe(
+      '[Handoff] Summary: Reply written before the restart. | Detected file edits: /r/kept.ts | Branch: ab/a',
+    );
+  });
+
+  it('holds Enter until the delay has passed', async () => {
+    const t = await board();
+    await addRule(t, t.a, t.b);
+    t.daemon.clear();
+    await markDone(t, t.a);
     await until(() => inputsTo(t.daemon, t.b).length === 1, 'text');
     const textAt = Date.now();
     await until(() => inputsTo(t.daemon, t.b).length === 2, 'enter');
     expect(Date.now() - textAt).toBeGreaterThanOrEqual(10);
   });
 
-  it('ignores disabled rules, plan mode and replayed events', async () => {
+  it('ignores disabled rules', async () => {
     const t = await board();
     await addRule(t, t.a, t.b, 'on_done', { enabled: false });
     t.daemon.clear();
-    stop(t.daemon, t.a);
+    await markDone(t, t.a);
     await pause();
     expect(inputsTo(t.daemon, t.b)).toEqual([]);
     expect(auditActions()).not.toContain('handoff.fired');
-
-    // plan 模式
-    const res = await hub.api('POST', '/api/sessions', {
-      cookie: t.cookie,
-      body: { ...spec({ name: 'p', permissionMode: 'plan' }), machineId: t.machineId },
-    });
-    const create = await t.daemon.next('session.create');
-    t.daemon.send({
-      type: 'session.created',
-      requestId: create.requestId,
-      session: runtime(res.body.id, { status: 'waiting_input' }),
-    });
-    await addRule(t, res.body.id, t.c);
-    stop(t.daemon, res.body.id);
-    await pause();
-    expect(inputsTo(t.daemon, t.c)).toEqual([]);
-
-    // daemon 重送同一筆事件（斷線補送）不能觸發兩次
-    await addRule(t, t.a, t.c);
-    const event = {
-      id: randomUUID(),
-      sessionId: t.a,
-      type: 'hook',
-      payload: { event: 'Stop', last_assistant_message: 'replayed once only here.' },
-      at: new Date().toISOString(),
-    };
-    t.daemon.send({ type: 'session.event', event });
-    t.daemon.send({ type: 'session.event', event });
-    await until(() => inputsTo(t.daemon, t.c).length === 2, 'one handoff');
-    await pause();
-    expect(inputsTo(t.daemon, t.c)).toHaveLength(2);
-  });
-
-  it('waits for the target to be idle; never types into a permission prompt', async () => {
-    const t = await board();
-    await setStatus(t.daemon, t.b, 'waiting_permission');
-    await addRule(t, t.a, t.b);
-    t.daemon.clear();
-    stop(t.daemon, t.a, 'First version of the summary is here.');
-    await pause();
-    expect(inputsTo(t.daemon, t.b)).toEqual([]);
-    // 同一條規則再觸發：只留最新的。
-    stop(t.daemon, t.a, 'Second version of the summary is here.');
-    await pause();
-    expect(inputsTo(t.daemon, t.b)).toEqual([]);
-
-    await setStatus(t.daemon, t.b, 'waiting_input');
-    await until(() => inputsTo(t.daemon, t.b).length === 2, 'delivered after idle');
-    expect(inputsTo(t.daemon, t.b)[0]!.data).toContain('Second version');
-    await pause();
-    expect(inputsTo(t.daemon, t.b)).toHaveLength(2);
   });
 
   it('does not press Enter if the target stopped waiting in between', async () => {
@@ -311,7 +390,7 @@ describe('on_done', () => {
     });
     await addRule({ cookie, teamId: team.body.id } as Board, a, b);
     daemon.clear();
-    stop(daemon, a);
+    await markDone({ cookie } as Board, a);
     await until(() => inputsTo(daemon, b).length === 1, 'text');
     await setStatus(daemon, b, 'waiting_permission');
     await until(() => auditActions().includes('handoff.enter_aborted'), 'aborted');
@@ -335,24 +414,10 @@ describe('on_done', () => {
     await addRule(t, t.a, res.body.id);
     second.daemon.close();
     await until(() => sessionStatus(res.body.id) === 'offline', 'offline');
-    stop(t.daemon, t.a);
+    await markDone(t, t.a);
     await pause();
     const again = await hub.daemon(second.token);
-    again.send({
-      type: 'daemon.hello',
-      name: 'far',
-      os: 'linux',
-      version: '0',
-      capabilities: {
-        hasGpu: false,
-        gpuName: null,
-        cpuCores: 1,
-        memoryBytes: 1,
-        claudeVersion: null,
-      },
-      sessions: [runtime(res.body.id, { status: 'waiting_input' })],
-      pendingApprovals: [],
-    });
+    again.send(hello({ sessions: [runtime(res.body.id, { status: 'waiting_input' })] }));
     await until(() => inputsTo(again, res.body.id).length === 2, 'delivered after reconnect');
     expect(inputsTo(again, res.body.id)[0]!.data).toContain('[Handoff]');
   });
@@ -362,7 +427,7 @@ describe('on_done', () => {
     await setStatus(t.daemon, t.b, 'done', { endedAt: new Date().toISOString() });
     await addRule(t, t.a, t.b);
     t.daemon.clear();
-    stop(t.daemon, t.a);
+    await markDone(t, t.a);
     await until(() => auditActions().includes('handoff.blocked'), 'blocked');
     expect(JSON.parse(auditDetail('handoff.blocked')!.detail).reason).toBe('target_ended');
     expect(inputsTo(t.daemon, t.b)).toEqual([]);
@@ -373,7 +438,7 @@ describe('on_done', () => {
     await setStatus(t.daemon, t.b, 'running');
     const ruleId = await addRule(t, t.a, t.b);
     t.daemon.clear();
-    stop(t.daemon, t.a);
+    await markDone(t, t.a);
     await until(() => auditActions().includes('handoff.fired'), 'fired');
     await hub.api('PATCH', `/api/handoff-rules/${ruleId}`, {
       cookie: t.cookie,
@@ -385,20 +450,53 @@ describe('on_done', () => {
   });
 });
 
+describe('rule audit', () => {
+  it('records who created, switched and deleted a rule', async () => {
+    const t = await board();
+    const id = await addRule(t, t.a, t.b, 'on_done', { enabled: false });
+    await hub.api('PATCH', `/api/handoff-rules/${id}`, {
+      cookie: t.cookie,
+      body: { enabled: true },
+    });
+    await hub.api('DELETE', `/api/handoff-rules/${id}`, { cookie: t.cookie });
+    const created = auditDetail('handoff_rule.create')!;
+    const updated = auditDetail('handoff_rule.update')!;
+    const deleted = auditDetail('handoff_rule.delete')!;
+    expect(created.user_id).not.toBeNull();
+    expect(updated.user_id).toBe(created.user_id);
+    expect(deleted.user_id).toBe(created.user_id);
+    expect(created.session_id).toBe(t.a);
+    expect(JSON.parse(created.detail)).toMatchObject({ id, enabled: false });
+    expect(JSON.parse(updated.detail)).toMatchObject({ id, enabled: true });
+    expect(JSON.parse(deleted.detail)).toMatchObject({ id });
+    expect((await hub.api('DELETE', `/api/handoff-rules/${id}`, { cookie: t.cookie })).status).toBe(
+      404,
+    );
+  });
+});
+
 describe('loop protection', () => {
+  const FILE_RULE = { filePattern: '*.ts' };
+
+  /** 一個改了檔案的回合：on_file 在這時候判斷。 */
+  const editTurn = (daemon: Peer, id: string, text = 'Finished this turn of the work.') => {
+    fileChanged(daemon, id, '/r/turn.ts');
+    stop(daemon, id, text);
+  };
+
   /** 模擬目標收到後做完一個回合。 */
   const finishTurn = async (t: Board, id: string, text: string) => {
     await setStatus(t.daemon, id, 'running');
     await setStatus(t.daemon, id, 'waiting_input');
-    stop(t.daemon, id, text);
+    editTurn(t.daemon, id, text);
   };
 
   it('blocks A -> B -> A and says so in audit and events', async () => {
     const t = await board();
-    await addRule(t, t.a, t.b);
-    await addRule(t, t.b, t.a);
+    await addRule(t, t.a, t.b, 'on_file', FILE_RULE);
+    await addRule(t, t.b, t.a, 'on_file', FILE_RULE);
     t.daemon.clear();
-    stop(t.daemon, t.a, 'Source A finished its part.');
+    editTurn(t.daemon, t.a, 'Source A finished its part.');
     await until(() => inputsTo(t.daemon, t.b).length === 2, 'A to B');
 
     await finishTurn(t, t.b, 'Target B finished its part.');
@@ -417,11 +515,11 @@ describe('loop protection', () => {
 
   it('blocks longer cycles and allows chains without a repeat', async () => {
     const t = await board();
-    await addRule(t, t.a, t.b);
-    await addRule(t, t.b, t.c);
-    await addRule(t, t.c, t.a);
+    await addRule(t, t.a, t.b, 'on_file', FILE_RULE);
+    await addRule(t, t.b, t.c, 'on_file', FILE_RULE);
+    await addRule(t, t.c, t.a, 'on_file', FILE_RULE);
     t.daemon.clear();
-    stop(t.daemon, t.a, 'Source A finished its part.');
+    editTurn(t.daemon, t.a, 'Source A finished its part.');
     await until(() => inputsTo(t.daemon, t.b).length === 2, 'A to B');
     await finishTurn(t, t.b, 'Target B finished its part.');
     await until(() => inputsTo(t.daemon, t.c).length === 2, 'B to C');
@@ -432,11 +530,11 @@ describe('loop protection', () => {
 
   it('a person typing in the target starts a new chain', async () => {
     const t = await board();
-    await addRule(t, t.a, t.b);
-    await addRule(t, t.b, t.a);
+    await addRule(t, t.a, t.b, 'on_file', FILE_RULE);
+    await addRule(t, t.b, t.a, 'on_file', FILE_RULE);
     const client = await hub.client(t.cookie);
     t.daemon.clear();
-    stop(t.daemon, t.a, 'Source A finished its part.');
+    editTurn(t.daemon, t.a, 'Source A finished its part.');
     await until(() => inputsTo(t.daemon, t.b).length === 2, 'A to B');
 
     client.send({ type: 'terminal.input', sessionId: t.b, data: 'please go on\r' });
@@ -446,11 +544,23 @@ describe('loop protection', () => {
     expect(auditActions()).not.toContain('handoff.blocked');
   });
 
+  it('a person marking the target done starts a new chain', async () => {
+    const t = await board();
+    await addRule(t, t.a, t.b, 'on_file', FILE_RULE);
+    await addRule(t, t.b, t.a, 'on_done');
+    t.daemon.clear();
+    editTurn(t.daemon, t.a, 'Source A finished its part.');
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'A to B');
+    await markDone(t, t.b);
+    await until(() => inputsTo(t.daemon, t.a).length === 2, 'B to A after mark done');
+    expect(auditActions()).not.toContain('handoff.blocked');
+  });
+
   it('rate limits a single rule as a second line of defence', async () => {
     const t = await board();
-    await addRule(t, t.a, t.b);
+    await addRule(t, t.a, t.b, 'on_file', FILE_RULE);
     t.daemon.clear();
-    for (let i = 0; i < 12; i += 1) stop(t.daemon, t.a, `Turn number ${i} finished here.`);
+    for (let i = 0; i < 12; i += 1) editTurn(t.daemon, t.a, `Turn number ${i} finished here.`);
     await until(() => auditActions().includes('handoff.blocked'), 'rate limited');
     expect(JSON.parse(auditDetail('handoff.blocked')!.detail).reason).toBe('rate_limit');
     expect(auditActions().filter((a) => a === 'handoff.fired')).toHaveLength(10);
@@ -458,6 +568,60 @@ describe('loop protection', () => {
 });
 
 describe('on_file', () => {
+  it('fires at most once per detected edit, does not repeat listed files, ignores replays', async () => {
+    const t = await board();
+    await addRule(t, t.a, t.b, 'on_file');
+    t.daemon.clear();
+    stop(t.daemon, t.a, 'A turn that edited nothing at all.');
+    await pause();
+    expect(inputsTo(t.daemon, t.b)).toEqual([]);
+
+    fileChanged(t.daemon, t.a, '/r/first.ts');
+    const event = {
+      id: randomUUID(),
+      sessionId: t.a,
+      type: 'hook',
+      payload: { event: 'Stop', last_assistant_message: 'Replayed turn sent twice here.' },
+      at: new Date().toISOString(),
+    };
+    // daemon 重送同一筆事件（斷線補送）不能觸發兩次
+    t.daemon.send({ type: 'session.event', event });
+    t.daemon.send({ type: 'session.event', event });
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'first handoff');
+    await pause();
+    expect(inputsTo(t.daemon, t.b)).toHaveLength(2);
+
+    await setStatus(t.daemon, t.b, 'running');
+    await setStatus(t.daemon, t.b, 'waiting_input');
+    t.daemon.clear();
+    fileChanged(t.daemon, t.a, '/r/next.ts');
+    stop(t.daemon, t.a);
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'second handoff');
+    expect(inputsTo(t.daemon, t.b)[0]!.data).toContain('Detected file edits: /r/next.ts | Branch');
+  });
+
+  it('waits for the target to be idle; never types into a permission prompt', async () => {
+    const t = await board();
+    await setStatus(t.daemon, t.b, 'waiting_permission');
+    await addRule(t, t.a, t.b, 'on_file');
+    t.daemon.clear();
+    fileChanged(t.daemon, t.a, '/r/one.ts');
+    stop(t.daemon, t.a, 'First version of the summary is here.');
+    await pause();
+    expect(inputsTo(t.daemon, t.b)).toEqual([]);
+    // 同一條規則再觸發：只留最新的。
+    fileChanged(t.daemon, t.a, '/r/two.ts');
+    stop(t.daemon, t.a, 'Second version of the summary is here.');
+    await pause();
+    expect(inputsTo(t.daemon, t.b)).toEqual([]);
+
+    await setStatus(t.daemon, t.b, 'waiting_input');
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'delivered after idle');
+    expect(inputsTo(t.daemon, t.b)[0]!.data).toContain('Second version');
+    await pause();
+    expect(inputsTo(t.daemon, t.b)).toHaveLength(2);
+  });
+
   it('fires at the end of the turn only when a changed file matches', async () => {
     const t = await board();
     await addRule(t, t.a, t.b, 'on_file', { filePattern: '*.sql' });

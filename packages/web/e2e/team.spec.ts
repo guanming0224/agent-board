@@ -432,6 +432,31 @@ test('全隊暫停送 Esc 給工作中的、關規則；全隊停止要按兩次
   await expect(page.getByTestId('member-s-auth').locator('.lamp')).toContainText('完成');
 });
 
+test('標記完成：按鈕在成員列，有完成時交接規則才標耗額度，規則畫面說明觸發條件', async ({
+  page,
+}) => {
+  await openWorkbench(page);
+  const source = page.getByTestId('member-s-auth');
+  const other = page.getByTestId('member-s-tests');
+  await expect(source.locator('.chip.cost')).toHaveText('◈ 耗額度');
+  await expect(source).toContainText('會觸發完成時交接');
+  await expect(other.locator('.chip.cost')).toHaveCount(0);
+
+  const rule = page.getByTestId('rule-rule-1');
+  await expect(rule).toContainText('在你按來源 session 的「標記完成」');
+  await expect(rule).toContainText('回合結束不會觸發');
+  await rule.getByLabel('觸發條件').selectOption('on_fail');
+  await expect(rule).toContainText('變成「錯誤」時觸發');
+  await expect(source.locator('.chip.cost')).toHaveCount(0);
+  await rule.getByLabel('觸發條件').selectOption('on_done');
+  await expect(source.locator('.chip.cost')).toHaveText('◈ 耗額度');
+
+  await source.getByRole('button', { name: '標記完成' }).click();
+  await expect(source.locator('.lamp')).toContainText('完成');
+  await expect(source.getByRole('button', { name: '標記完成' })).toHaveCount(0);
+  await expect(source.locator('.chip.cost')).toHaveCount(0);
+});
+
 test('全隊停止第一次按完離開就解除，不會誤觸', async ({ page }) => {
   await openWorkbench(page);
   await page.getByRole('button', { name: '全隊停止' }).click();
@@ -525,6 +550,7 @@ test.describe('畫布接真資料', () => {
     await page.locator('.react-flow__edge[data-id="s-tests->s-etl"]').click({ force: true });
     const panel = page.getByTestId('handoff-panel');
     await expect(panel.locator('.chip.cost')).toHaveText('◈ 耗額度');
+    await expect(panel).toContainText('標記完成');
     await panel.getByRole('button', { name: '開啟自動交接' }).click();
     await expect(panel.getByRole('button', { name: '關閉自動交接' })).toBeVisible();
     await shot(page, 'canvas-handoff-panel');

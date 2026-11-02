@@ -352,6 +352,7 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
               {selectedHandoff.enabled ? t('canvas.handoff.turnOff') : t('canvas.handoff.turnOn')}
             </button>
             <CostChip />
+            <span className="sub">{t('canvas.handoff.panelHint')}</span>
           </Panel>
         )}
         {(handoffError ?? teamLoadError) && (

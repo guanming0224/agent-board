@@ -41,11 +41,14 @@ export function handoffMessage(input: {
 }): string {
   const listed = input.files.slice(0, MAX_LISTED_FILES).map(cleanLine);
   const more = input.files.length - listed.length;
-  const files = listed.length === 0 ? 'none detected' : listed.join(', ');
+  // 只看得到 Write、Edit、MultiEdit、NotebookEdit：空清單不能讀起來像沒改動。
+  const files =
+    listed.length === 0
+      ? 'none (edits made through shell commands are not tracked)'
+      : listed.join(', ');
   return [
     `[Handoff] Summary: ${input.summary || 'none reported'}`,
-    // 只看得到 Write、Edit、MultiEdit、NotebookEdit：不能讓對方以為清單就是全部，空的也不代表沒改。
-    `Detected file edits (shell changes not tracked): ${files}${more > 0 ? ` (+${more} more)` : ''}`,
+    `Detected file edits: ${files}${more > 0 ? ` (+${more} more)` : ''}`,
     `Branch: ${input.branch ? cleanLine(input.branch) : 'unknown'}`,
   ].join(' | ');
 }
@@ -95,17 +98,17 @@ export class HandoffEngine {
 
   constructor(private readonly deps: HandoffDeps) {}
 
-  /** on_done、on_file 都在回合結束時判斷：改到一半的檔案不該觸發，摘要也要等這時才有。 */
+  /** on_file 在回合結束時判斷：改到一半的檔案不該觸發，摘要也要等這時才有。 */
   onEvent(event: SessionEvent): void {
     if (event.type !== 'hook' || event.payload.event !== 'Stop') return;
     const source = this.deps.store.getSession(event.sessionId);
-    // plan 模式下的 Stop 可能只是提問或計畫被拒（docs/claude-code-notes.md），不算完成。
-    if (!source || source.permissionMode === 'plan') return;
-    this.fire(source, (rule, files) => {
-      if (rule.trigger === 'on_done') return true;
-      if (rule.trigger !== 'on_file') return false;
-      return files.some((file) => matchesFilePattern(rule.action.filePattern, file));
-    });
+    if (!source) return;
+    this.fire(
+      source,
+      (rule, files) =>
+        rule.trigger === 'on_file' &&
+        files.some((file) => matchesFilePattern(rule.action.filePattern, file)),
+    );
   }
 
   /** 由 hub 在 session 每次變動時呼叫；`entered` 表示這是要通知使用者的新狀態。 */
@@ -117,9 +120,13 @@ export class HandoffEngine {
     }
     const stoppedByUser = this.stopped.has(next.id);
     if (next.endedAt !== null) this.stopped.delete(next.id);
-    // 開不起來的 session 沒有成果可交接；使用者自己按停止也不是失敗。
-    if (!entered || next.status !== 'error' || prev.status === 'starting' || stoppedByUser) return;
-    this.fire(next, (rule) => rule.trigger === 'on_fail', next.statusDetail);
+    // 沒開起來的 session 沒有成果可交接；使用者自己按停止既不是完成也不是失敗。
+    if (!entered || stoppedByUser || prev.status === 'starting' || prev.status === 'queued') return;
+    // Stop 只代表回合結束（問一句問題也算），不能當完成：完成是使用者標記或 PTY exit 0。
+    if (next.status === 'done') this.fire(next, (rule) => rule.trigger === 'on_done');
+    if (next.status === 'error') {
+      this.fire(next, (rule) => rule.trigger === 'on_fail', next.statusDetail);
+    }
   }
 
   /** 使用者親自下指令，接下來的工作就不是上一條交接鏈的延續。 */
