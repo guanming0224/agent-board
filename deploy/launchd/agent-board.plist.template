@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 由 scripts/installer.mjs 產生。launchd 不給使用者的 PATH，node、claude、git 都靠這裡的環境變數。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{LABEL}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{NODE}}</string>
+    <string>{{ENTRY}}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+{{ENV}}
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>{{WORKDIR}}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>{{LOG}}</string>
+  <key>StandardErrorPath</key>
+  <string>{{LOG}}</string>
+</dict>
+</plist>
