@@ -147,7 +147,7 @@ PermissionRequest hook → daemon（建 Approval，卡住）→ hub → 瀏覽�
 
 1. client 送 `terminal.subscribe`。hub 第一個訂閱者才往 daemon 訂閱。
 2. daemon 回 `terminal.snapshot`（`seq` 為快照涵蓋到的序號），之後持續 `terminal.output`（`seq` 遞增）。
-3. client 寫入 snapshot，丟棄 `seq` ≤ 快照的 output。**發現跳號就重新 subscribe**。
+3. client 寫入 snapshot，丟棄 `seq` ≤ 快照的 output。**發現跳號就重新 subscribe**。收到新快照時要以它的 `seq` 重設序號，**包括比目前小的情況**：session resume 會開新 PTY，seq 從頭開始，hub 會替還在看的 client 重送訂閱。
 4. 慢的 client：hub 緩衝超過 1 MiB 就丟掉該 client 的輸出並送新快照，不拖累其他人。
 5. 全部 client 退訂後 hub 向 daemon 退訂；daemon 的 headless 仍持續更新。
 6. resize 以最後一個送的為準。
