@@ -241,6 +241,8 @@ export class Hub {
         if (this.ownsSession(conn, msg.session.id)) {
           this.store.setPendingSpec(msg.session.id, null);
           this.applyRuntime(msg.session);
+          // 新 PTY 的 seq 重新開始，daemon 也還沒有這個 PTY 的訂閱，畫面開著的人要重新要快照。
+          this.relay.resubscribe([msg.session.id]);
         }
         return;
       }
@@ -249,9 +251,14 @@ export class Hub {
         if (pending) this.failStart(pending.sessionId, msg.error);
         return;
       }
-      case 'session.runtime':
-        if (this.ownsSession(conn, msg.session.id)) this.applyRuntime(msg.session);
+      case 'session.runtime': {
+        if (!this.ownsSession(conn, msg.session.id)) return;
+        const wasEnded = this.store.getSession(msg.session.id)?.endedAt !== null;
+        this.applyRuntime(msg.session);
+        // 已結束的 session 又活過來（daemon 修好環境後重啟）：同樣是新的 PTY。
+        if (wasEnded && msg.session.endedAt === null) this.relay.resubscribe([msg.session.id]);
         return;
+      }
       case 'session.event':
         if (this.ownsSession(conn, msg.event.sessionId) && this.store.insertEvent(msg.event)) {
           this.broadcast({ type: 'session.event', event: msg.event });

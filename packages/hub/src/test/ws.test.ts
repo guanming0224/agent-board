@@ -731,6 +731,165 @@ describe('terminal relay', () => {
   });
 });
 
+describe('terminal stream across a new PTY', () => {
+  const watching = async () => {
+    const started = await startedSession();
+    const { cookie, daemon, session } = started;
+    const client = await hub.client(cookie);
+    client.send({ type: 'terminal.subscribe', sessionId: session.id });
+    await daemon.next('terminal.subscribe');
+    daemon.send({
+      type: 'terminal.snapshot',
+      sessionId: session.id,
+      seq: 50,
+      cols: 80,
+      rows: 24,
+      data: 'old',
+    });
+    await client.next('terminal.snapshot');
+    return { ...started, client };
+  };
+  const end = async (daemon: Peer, id: string) => {
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(id, { status: 'error', endedAt: new Date().toISOString() }),
+    });
+    await until(() => hub.running.store.getSession(id)?.endedAt !== null, 'ended');
+  };
+
+  it('re-subscribes after a resume, and viewers follow the new snapshot with seq restarting at 1', async () => {
+    hub = await startHub();
+    const { cookie, daemon, client, session } = await watching();
+    await end(daemon, session.id);
+    await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie });
+    const create = await daemon.next('session.create');
+    expect(daemon.of('terminal.subscribe')).toHaveLength(0);
+
+    daemon.send({
+      type: 'session.created',
+      requestId: create.requestId,
+      session: runtime(session.id),
+    });
+    await daemon.next('terminal.subscribe');
+    // 新快照之前的輸出對畫面沒有意義。
+    daemon.send({
+      type: 'terminal.output',
+      sessionId: session.id,
+      seq: 1,
+      data: 'before snapshot',
+    });
+    daemon.send({
+      type: 'terminal.snapshot',
+      sessionId: session.id,
+      seq: 1,
+      cols: 80,
+      rows: 24,
+      data: 'new',
+    });
+    daemon.send({ type: 'terminal.output', sessionId: session.id, seq: 2, data: 'after' });
+    expect(await client.next('terminal.snapshot')).toMatchObject({ seq: 1, data: 'new' });
+    expect(await client.next('terminal.output')).toMatchObject({ seq: 2, data: 'after' });
+    expect(client.of('terminal.output')).toHaveLength(0);
+  });
+
+  it('nobody watching: a resume sends no subscribe', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    await end(daemon, session.id);
+    await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie });
+    const create = await daemon.next('session.create');
+    daemon.send({
+      type: 'session.created',
+      requestId: create.requestId,
+      session: runtime(session.id),
+    });
+    await until(() => hub.running.store.getSession(session.id)?.status === 'running', 'running');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(daemon.of('terminal.subscribe')).toHaveLength(0);
+  });
+
+  it('a viewer who subscribed while the session was starting gets the stream once it is created', async () => {
+    hub = await startHub();
+    const cookie = await hub.setupOwner();
+    const { daemon, machineId } = await hub.onlineDaemon(cookie);
+    const session = await newSession(cookie, machineId);
+    const create = await daemon.next('session.create');
+    const client = await hub.client(cookie);
+    client.send({ type: 'terminal.subscribe', sessionId: session.id });
+    await daemon.next('terminal.subscribe');
+    daemon.send({
+      type: 'session.created',
+      requestId: create.requestId,
+      session: runtime(session.id),
+    });
+    await daemon.next('terminal.subscribe');
+    daemon.send({
+      type: 'terminal.snapshot',
+      sessionId: session.id,
+      seq: 0,
+      cols: 80,
+      rows: 24,
+      data: 'hi',
+    });
+    expect((await client.next('terminal.snapshot')).data).toBe('hi');
+  });
+
+  it('re-subscribes when an ended session comes back through session.runtime', async () => {
+    hub = await startHub();
+    const { daemon, client, session } = await watching();
+    await end(daemon, session.id);
+    daemon.send({ type: 'session.runtime', session: runtime(session.id, { status: 'running' }) });
+    await daemon.next('terminal.subscribe');
+    daemon.send({
+      type: 'terminal.snapshot',
+      sessionId: session.id,
+      seq: 1,
+      cols: 80,
+      rows: 24,
+      data: 'back',
+    });
+    expect((await client.next('terminal.snapshot')).data).toBe('back');
+
+    // 一般的 runtime 更新不會多要快照。
+    daemon.send({ type: 'session.runtime', session: runtime(session.id, { contextTokens: 7 }) });
+    await until(() => hub.running.store.getSession(session.id)?.contextTokens === 7, 'applied');
+    expect(daemon.of('terminal.subscribe')).toHaveLength(0);
+  });
+
+  it('two snapshots in a row: each viewer gets one and continues without a gap', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    const a = await hub.client(cookie);
+    const b = await hub.client(cookie);
+    a.send({ type: 'terminal.subscribe', sessionId: session.id });
+    b.send({ type: 'terminal.subscribe', sessionId: session.id });
+    await daemon.next('terminal.subscribe');
+    await daemon.next('terminal.subscribe');
+    daemon.send({
+      type: 'terminal.snapshot',
+      sessionId: session.id,
+      seq: 4,
+      cols: 80,
+      rows: 24,
+      data: 'N',
+    });
+    daemon.send({
+      type: 'terminal.snapshot',
+      sessionId: session.id,
+      seq: 5,
+      cols: 80,
+      rows: 24,
+      data: 'N+1',
+    });
+    daemon.send({ type: 'terminal.output', sessionId: session.id, seq: 5, data: 'five' });
+    for (const client of [a, b]) {
+      expect((await client.next('terminal.snapshot')).seq).toBe(4);
+      expect((await client.next('terminal.output')).seq).toBe(5);
+      expect(client.of('terminal.snapshot')).toHaveLength(0);
+    }
+  });
+});
+
 describe('reconciliation', () => {
   it('daemon disconnect marks machine and sessions offline and tells clients; hello restores real state', async () => {
     hub = await startHub();
