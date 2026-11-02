@@ -69,7 +69,7 @@ worktree：`git worktree add <repo>/../.agent-board-wt/<slug> -b ab/<slug>`。
 開 session 時合併寫入 `<cwd>/.claude/settings.local.json`：
 
 - 事件見 `HookEventName`，command 為 `agent-board-hook <Event>`，`timeout` 為 `HOOK_TIMEOUT_SECONDS`。
-- **不得覆蓋使用者原有設定**；重複安裝要冪等；JSON 壞掉就不動它，回報 `session.event` 警告。
+- **不得覆蓋使用者原有設定**；重複安裝要冪等；JSON 壞掉就不動它，**回 `session.createFailed`，不開 PTY**，訊息寫明哪個檔案壞了、怎麼修。hook 沒裝上時危險指令檢查不會執行，所以各種權限模式都一樣。
 
 ### 4.2 agent-board-hook CLI
 
