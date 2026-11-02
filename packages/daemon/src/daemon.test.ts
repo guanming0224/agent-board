@@ -563,6 +563,45 @@ describe('結束', () => {
     await h.hub.waitFor('session.event', (m) => m.event.type === 'exit');
   });
 
+  it('補送的 error：statusDetail 寫真實 exit code、帶 endedAt（重啟後也一樣）', async () => {
+    await h.createAndSubscribe('s1');
+    h.hub.autoWelcome = false;
+    h.hub.dropConnection();
+    await waitUntil(() => !h.daemons[0]?.['hub'].connected, '斷線');
+    h.daemons[0]?.['sessions'].get('s1')?.write('exit 7\r');
+    await waitUntil(() => h.trackers.created[0]?.disposed, 'PTY 結束');
+    // stub 的 detail 是 null，這裡驗的是 daemon 自己補上的原因。
+    const [saved] = persistedEnded();
+    expect(saved?.status).toBe('error');
+    expect(saved?.statusDetail).toContain('7');
+    expect(saved?.endedAt).not.toBeNull();
+
+    await h.restartDaemon();
+    h.hub.autoWelcome = true;
+    h.hub.dropConnection();
+    const { session } = await h.hub.waitFor(
+      'session.runtime',
+      (m) => m.session.id === 's1' && m.session.endedAt !== null,
+      { includePast: false, timeoutMs: 15_000 },
+    );
+    expect(session.status).toBe('error');
+    expect(session.statusDetail).toContain('7');
+    expect(session.statusDetail).not.toContain('不明');
+    expect(session.endedAt).not.toBeNull();
+  });
+
+  it('被訊號殺掉：statusDetail 寫得出原因；exit 0 的 done 不硬塞原因', async () => {
+    await h.createAndSubscribe('killed');
+    await h.createAndSubscribe('clean');
+    const pid = h.daemons[0]?.['sessions'].get('killed')?.['pty'].pid as number;
+    process.kill(pid, 'SIGKILL');
+    input('clean', 'exit 0');
+    await waitUntil(() => lastRuntime('killed')?.status === 'error', 'killed→error');
+    expect(lastRuntime('killed')?.statusDetail).toContain('137');
+    await waitUntil(() => lastRuntime('clean')?.status === 'done', 'clean→done');
+    expect(lastRuntime('clean')?.statusDetail).toBeNull();
+  });
+
   it('斷線中結束、daemon 又重啟：紀錄不會丟，不會被接回，welcome 後補送一次', async () => {
     await h.createAndSubscribe('s1');
     h.hub.autoWelcome = false;
@@ -1184,6 +1223,18 @@ describe('與 hub 的語意（Agent C）', () => {
     expect(snap.data).toContain('dropped');
     input('s1', 'still-live');
     await h.waitForOutput('s1', 'INPUT:still-live');
+  });
+
+  it('PTY 還沒開就收到 subscribe：不出事；session.created 後重送就有快照', async () => {
+    h.hub.send({ type: 'session.create', requestId: 'early', sessionId: 'early', spec: h.spec() });
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 'early' });
+    h.hub.send({ type: 'terminal.resize', sessionId: 'early', cols: 80, rows: 24 });
+    await h.hub.waitFor('session.created', (m) => m.requestId === 'early');
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 'early' });
+    const snap = await h.hub.waitFor('terminal.snapshot', (m) => m.sessionId === 'early');
+    expect(snap.seq).toBeGreaterThanOrEqual(0);
+    input('early', 'ok');
+    await h.waitForOutput('early', 'INPUT:ok');
   });
 
   it('hub.welcome 重送時覆蓋 dangerRules；用量不重掃', async () => {

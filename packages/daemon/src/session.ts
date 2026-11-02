@@ -124,6 +124,7 @@ export class ManagedSession {
   private lastOutputAt: string | null = null;
   private contextTokens: number | null = null;
   private endedAt: string | null = null;
+  private exitCode: number | null = null;
   private claudeSessionId: string;
   private pendingFirstPrompt: string | null;
 
@@ -186,7 +187,10 @@ export class ManagedSession {
       branch: this.options.branch,
       worktreePath: this.options.worktreePath,
       status: this.status,
-      statusDetail: this.statusDetail,
+      // hub 靠這個判斷是第一次得知結果；tracker 沒給原因時，已結束的 error 也要寫得出來。
+      statusDetail:
+        this.statusDetail ??
+        (this.status === 'error' && this.exitCode !== null ? `exit code ${this.exitCode}` : null),
       claudeSessionId: this.claudeSessionId,
       lastLines: this.lastLines,
       lastOutputAt: this.lastOutputAt,
@@ -361,6 +365,7 @@ export class ManagedSession {
     this.endedAt = this.now().toISOString();
     // 使用者要求停止不算錯誤；被其他訊號殺掉才算。
     const code = this.stopRequested ? 0 : exitCode !== 0 ? exitCode : signal ? 128 + signal : 0;
+    this.exitCode = code;
     this.guardTracker(() => this.tracker.onExit(code));
     // 本機清單要立刻更新：若 daemon 下一刻就關閉，已結束的 session 不可被接回。
     this.options.onExit(code);
