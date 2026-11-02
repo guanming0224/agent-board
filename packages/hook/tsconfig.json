@@ -1,4 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // src/cli.ts 由 node 直接執行（原生 type stripping），相對 import 必須帶 .ts、語法只能用可抹除的。
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
+  },
   "include": ["src"]
 }
