@@ -29,6 +29,8 @@ export interface BoardBackend {
   /** 回傳值用來取消監聽；監聽時立刻收到一次目前狀態。 */
   watchBoard(listener: BoardListener): () => void;
   watchResources(listener: (sample: ResourceSample) => void): () => void;
+  /** 和 hub 的連線狀態；假後端沒有這個概念。 */
+  watchConnection?(listener: (connected: boolean) => void): () => void;
 
   needsSetup(): Promise<boolean>;
   currentUser(): Promise<User | null>;

@@ -13,5 +13,6 @@ export default defineConfig({
     cwd: '..',
     url: `http://127.0.0.1:${PORT}`,
     reuseExistingServer: false,
+    env: { VITE_AGENT_BOARD_DEMO: '1' },
   },
 });

@@ -190,6 +190,9 @@ importers:
 
   packages/daemon:
     dependencies:
+      '@agent-board/hook':
+        specifier: workspace:*
+        version: link:../hook
       '@agent-board/protocol':
         specifier: workspace:*
         version: link:../protocol

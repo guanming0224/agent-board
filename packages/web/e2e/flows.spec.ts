@@ -552,7 +552,8 @@ test.describe('審核中心', () => {
   test('審核中心沒有自己的「等你 N」', async ({ page }) => {
     await open(page, 'review');
     await expect(page.getByTestId('review-a-1')).toBeVisible();
-    await expect(page.locator('.waiting')).toHaveCount(0);
+    // App 頁首那一份不算，要驗的是審核中心頁面自己沒有。
+    await expect(page.locator('.flows .waiting')).toHaveCount(0);
   });
 
   test('看不出 session、機器失聯、hub 斷線：不能允許', async ({ page }) => {
@@ -1045,7 +1046,13 @@ test.describe('新增 session', () => {
     await page.evaluate(() => scrollTo(0, 0));
     expect(await top('aside.preview')).toBe(await top('form.form-card'));
     await page.evaluate(() => scrollTo(0, 300));
-    expect(await top('aside.preview')).toBe(12);
+    // 要停在 App 頁首下方，頁首本身不可以被捲走。
+    const header = await page
+      .locator('header')
+      .first()
+      .evaluate((el) => el.getBoundingClientRect());
+    expect(header.top).toBe(0);
+    await expect.poll(() => top('aside.preview')).toBeCloseTo(header.height + 12, 0);
   });
 
   test('使用者輸入照 shell 規則引號，不會看起來像重導向', async ({ page }) => {

@@ -203,7 +203,7 @@ describe('獨立程序', () => {
     await waitUntil(() => h.hellos().length > helloCount, '第二個程序連上', 20_000);
     expect(h.hellos().at(-1)?.sessions[0]).toMatchObject({
       id: 's1',
-      status: 'running', // index.ts 目前接的是占位狀態機；真實狀態機會是 starting
+      status: 'starting', // 接回後先標 starting，等 hook 回報才變（CONTRACTS §3.2）
       claudeSessionId: claudeId,
     });
     await waitUntil(() => h.runs().length === 2, '用 --resume 重開');

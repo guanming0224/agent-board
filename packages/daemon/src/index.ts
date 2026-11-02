@@ -1,35 +1,30 @@
 // agent-board-daemon 入口。見 CONTRACTS.md。
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { installHooks } from '@agent-board/hook';
 import { loadConfig, resolveDataDir } from './config';
 import { Daemon } from './daemon';
 import { errorMessage, log } from './log';
 import { pairMachine, parsePairArgs } from './pair';
 import { probeCapabilities } from './resources';
-import type { CreateStatusTracker } from './status/types';
+import { createStatusTracker } from './status';
 
 export { Daemon, type DaemonDeps } from './daemon';
 export { loadConfig, type DaemonConfig } from './config';
 
-// Phase 2 接線：換成 Agent B 的狀態機（src/status/）。
-const placeholderStatusTracker: CreateStatusTracker = () => ({
-  status: 'running',
-  claudeSessionId: null,
-  onHook: () => {},
-  onOutput: () => {},
-  onExit: () => {},
-  setStuckMinutes: () => {},
-  dispose: () => {},
-});
-
-// Phase 2 接線：換成 Agent B 的 installHooks（packages/hook）。
-const placeholderInstallHooks = async (_cwd: string): Promise<void> => {};
+/** 沒有指定 hook 路徑時，用這個套件自己依賴的那一支，使用者不必另外裝到 PATH。 */
+function useBundledHook(): void {
+  if (process.env.AGENT_BOARD_HOOK_BIN) return;
+  const bundled = fileURLToPath(new URL('../node_modules/.bin/agent-board-hook', import.meta.url));
+  if (existsSync(bundled)) process.env.AGENT_BOARD_HOOK_BIN = bundled;
+}
 
 async function pair(argv: string[]): Promise<void> {
   const { hub, code } = parsePairArgs(argv);
   const { machineId, path } = await pairMachine({
     hub,
     code,
+    name: process.env.AGENT_BOARD_MACHINE_NAME || undefined,
     dataDir: resolveDataDir(process.env),
     capabilities: await probeCapabilities(
       process.env.AGENT_BOARD_CLAUDE_BIN || 'claude',
@@ -49,13 +44,14 @@ async function main(): Promise<void> {
       `不認得的指令「${command}」。可用：agent-board-daemon、agent-board-daemon pair`,
     );
   }
+  useBundledHook();
   const config = loadConfig();
   // 讀完就清掉，git hook、nvidia-smi 等所有子程序才不會繼承到 token。
   delete process.env.AGENT_BOARD_MACHINE_TOKEN;
   const daemon = new Daemon({
     config,
-    createStatusTracker: placeholderStatusTracker,
-    installHooks: placeholderInstallHooks,
+    createStatusTracker,
+    installHooks,
   });
   let stopping = false;
   const shutdown = (signal: NodeJS.Signals) => {

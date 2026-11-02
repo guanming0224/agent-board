@@ -1059,6 +1059,11 @@ describe('hook 執行檔檢查（CONTRACTS §4.3）', () => {
   });
 
   it('bare 指令名不在 PATH 上也算找不到', async () => {
+    // pnpm test 會把 node_modules/.bin 放進 PATH，而 daemon 依賴 hook 套件，要拿掉才符合前提。
+    h.extraEnv.PATH = (process.env.PATH ?? '')
+      .split(delimiter)
+      .filter((dir) => !dir.includes('node_modules'))
+      .join(delimiter);
     await h.restartDaemon({ config: { ...baseConfig(), hookBin: 'agent-board-hook' } });
     h.hub.send({ type: 'session.create', requestId: 'r1', sessionId: 's1', spec: h.spec() });
     await h.hub.waitFor('session.createFailed', (m) => m.requestId === 'r1');
