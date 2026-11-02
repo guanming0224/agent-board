@@ -9,11 +9,13 @@ import {
   SettingsPage,
 } from './flows';
 import { isDemo, useBoard } from './shared/store';
+import { TeamPage } from './team';
 import { AppHeader, type TabName } from './views';
 
 const ROUTES: Record<string, ComponentType> = {
   canvas: CanvasPage,
   queue: QueuePage,
+  team: TeamPage,
   new: NewSessionPage,
   review: ReviewPage,
   inbox: InboxPage,

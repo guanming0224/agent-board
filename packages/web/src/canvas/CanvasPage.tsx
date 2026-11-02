@@ -22,6 +22,8 @@ import type { Layout, Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { STATUS_VISUAL } from '../shared/status';
 import { useBoard } from '../shared/store';
+import { CostChip } from '../team/common';
+import { refreshTeams, useTeams, useTeamSync } from '../team/store';
 import {
   EmptyState,
   ErrorState,
@@ -43,7 +45,7 @@ import {
 } from './layout';
 import { SessionNode, TERMINAL_ZOOM, type SessionNodeType } from './SessionNode';
 import { TeamFrames } from './TeamFrames';
-import { useTeams } from './teams';
+import { groupHandoffs, teamForHandoff } from './teams';
 import './canvas.css';
 import './messages';
 
@@ -118,7 +120,10 @@ function ZoomVariable({ host }: { host: React.RefObject<HTMLDivElement | null> }
 function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] }) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
-  const { handoffs, addHandoff, removeHandoffs } = useTeams();
+  const rules = useTeams((s) => s.rules);
+  const handoffs = useMemo(() => groupHandoffs(rules), [rules]);
+  const teamLoadError = useTeams((s) => s.detail);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const clearFocus = useViewsUi((s) => s.clearFocus);
   const focusId = useViewsUi((s) => s.focusId);
   const pendingFocus = useViewsUi((s) => s.pendingFocus);
@@ -193,16 +198,34 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
           source: h.source,
           target: h.target,
           selected: selectedEdges.has(h.id),
-          data: { labelKey: `canvas.handoff.${h.trigger}` },
+          data: {
+            labelKeys: h.triggers.map((trigger) => `canvas.handoff.${trigger}`),
+            enabled: h.enabled,
+          },
           markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--muted)' },
         })),
     [handoffs, liveIds, selectedEdges],
   );
 
+  const changeHandoffs = useCallback(
+    (change: () => Promise<unknown>) => {
+      setHandoffError(null);
+      change()
+        .then(() => refreshTeams(backend))
+        .catch((e: unknown) =>
+          setHandoffError(t('canvas.handoff.failed', { detail: errorText(e) })),
+        );
+    },
+    [backend, t],
+  );
+
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
-      const removed = changes.flatMap((c) => (c.type === 'remove' ? [c.id] : []));
-      if (removed.length > 0) removeHandoffs(removed);
+      const removed = new Set(changes.flatMap((c) => (c.type === 'remove' ? [c.id] : [])));
+      const ruleIds = handoffs.filter((h) => removed.has(h.id)).flatMap((h) => h.ruleIds);
+      if (ruleIds.length > 0) {
+        changeHandoffs(() => Promise.all(ruleIds.map((id) => backend.deleteHandoffRule(id))));
+      }
       setSelectedEdges((prev) => {
         const next = new Set(prev);
         for (const c of changes) {
@@ -213,10 +236,42 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
         return next;
       });
     },
-    [removeHandoffs],
+    [backend, changeHandoffs, handoffs],
   );
 
-  const onConnect = useCallback((c: Connection) => addHandoff(c.source, c.target), [addHandoff]);
+  const onConnect = useCallback(
+    ({ source, target }: Connection) => {
+      if (handoffs.some((h) => h.source === source && h.target === target)) return;
+      const { members } = useTeams.getState();
+      const teamId = teamForHandoff(source, target, members);
+      if (!teamId) {
+        setHandoffError(t('canvas.handoff.noTeam'));
+        return;
+      }
+      // 先關著：開啟才會花額度，要使用者自己按（STYLE.md 規則三之二）。
+      changeHandoffs(() =>
+        backend.createHandoffRule(teamId, {
+          fromSessionId: source,
+          trigger: 'on_done',
+          action: { toSessionId: target },
+          enabled: false,
+        }),
+      );
+    },
+    [backend, changeHandoffs, handoffs, t],
+  );
+
+  const selectedHandoff =
+    selectedEdges.size === 1 ? handoffs.find((h) => selectedEdges.has(h.id)) : undefined;
+  const toggleHandoff = (id: string) => {
+    const line = handoffs.find((h) => h.id === id);
+    if (!line) return;
+    changeHandoffs(() =>
+      Promise.all(
+        line.ruleIds.map((ruleId) => backend.updateHandoffRule(ruleId, { enabled: !line.enabled })),
+      ),
+    );
+  };
 
   // 初次顯示與「下一個等我的」都要等節點量好尺寸。有目標就直接去，不先全部顯示再跳一次。
   const fitted = useRef(false);
@@ -288,6 +343,26 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
           position="bottom-right"
         />
         <ZoomPanel />
+        {selectedHandoff && (
+          <Panel position="top-center" className="edge-panel" data-testid="handoff-panel">
+            <button
+              aria-pressed={selectedHandoff.enabled}
+              onClick={() => toggleHandoff(selectedHandoff.id)}
+            >
+              {selectedHandoff.enabled ? t('canvas.handoff.turnOff') : t('canvas.handoff.turnOn')}
+            </button>
+            <CostChip />
+            <span className="sub">{t('canvas.handoff.panelHint')}</span>
+          </Panel>
+        )}
+        {(handoffError ?? teamLoadError) && (
+          <Panel position="top-center" className="save-error">
+            <div className="alert" role="alert">
+              <span aria-hidden="true">✕</span>
+              <div>{handoffError ?? t('canvas.error.teams', { detail: teamLoadError ?? '' })}</div>
+            </div>
+          </Panel>
+        )}
         {saveError && (
           <Panel position="top-center" className="save-error">
             <div className="alert" role="alert">
@@ -329,6 +404,7 @@ export function CanvasPage() {
   const t = useT();
   const board = useBoardLoad();
   const { state: layouts, retry } = useLayouts();
+  useTeamSync();
   const sessions = useBoard().sessions.filter((s) => !s.archived);
 
   let body;

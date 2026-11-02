@@ -19,6 +19,7 @@ import { conflict, HttpError, notFound } from './errors';
 import type { Hub } from './hub';
 import { isAllowedPushEndpoint, isValidClockTime, type VapidKeys } from './push';
 import type { Store } from './store';
+import { worktreeConflicts } from './worktree';
 
 export const AUTH_COOKIE = 'ab_session';
 const LOGIN_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -388,6 +389,22 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
         sessionId: param(ctx, 'sessionId'),
         role: ctx.body.role,
       };
+      if (!store.getSession(member.sessionId)) throw notFound('Session');
+      const others = store.listTeamMembers(member.teamId);
+      // 已經是成員只是改角色：不重新判斷，否則改不了角色也解不開衝突。
+      if (!others.some((m) => m.sessionId === member.sessionId)) {
+        const clashes = worktreeConflicts(
+          store,
+          member.sessionId,
+          others.map((m) => m.sessionId),
+        );
+        if (clashes.length > 0) {
+          throw conflict(
+            'worktree_required',
+            `Same folder as ${clashes.map((s) => s.name).join(', ')}. Each team member needs its own worktree.`,
+          );
+        }
+      }
       store.upsertTeamMember(member);
       return member;
     },
@@ -427,6 +444,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     handoffRulesCreate: (ctx) => {
       const rule = { id: randomUUID(), teamId: requireTeam(param(ctx)).id, ...ctx.body };
       store.upsertRule(rule);
+      hub.audit(ctx.user.id, rule.fromSessionId, 'handoff_rule.create', JSON.stringify(rule));
       return rule;
     },
     handoffRulesUpdate: (ctx) => {
@@ -434,10 +452,14 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       if (!current) throw notFound('Handoff rule');
       const next = merge(current, ctx.body);
       store.upsertRule(next);
+      // 開關會決定要不要花目標的額度，要查得到是誰開的。
+      hub.audit(ctx.user.id, next.fromSessionId, 'handoff_rule.update', JSON.stringify(next));
       return next;
     },
     handoffRulesDelete: (ctx) => {
-      if (!store.deleteRule(param(ctx))) throw notFound('Handoff rule');
+      const current = store.getRule(param(ctx));
+      if (!current || !store.deleteRule(current.id)) throw notFound('Handoff rule');
+      hub.audit(ctx.user.id, current.fromSessionId, 'handoff_rule.delete', JSON.stringify(current));
       return ok;
     },
 

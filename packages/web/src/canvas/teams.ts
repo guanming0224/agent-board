@@ -1,61 +1,66 @@
-// 團隊與交接的後端是 Phase 3。這裡是畫布內的本地狀態：團隊只有示範資料（對應 fakeBackend 的 session id，
-// 正式環境的 id 對不上就什麼都不畫），交接線重新載入後會消失。
-import type { HandoffRule } from '@agent-board/protocol';
-import { create } from 'zustand';
+// 把 hub 的團隊與交接規則換算成畫布上的框和線。資料在 team/store.ts。
+import type { HandoffRule, Team, TeamMember } from '@agent-board/protocol';
 import type { Rect } from './layout';
 
 export interface CanvasTeam {
   id: string;
-  nameKey: string;
-  /** 使用者選的團隊框色（STYLE.md §4），不是狀態色。 */
+  name: string;
   color: string;
   memberIds: string[];
 }
 
+export function canvasTeams(teams: readonly Team[], members: readonly TeamMember[]): CanvasTeam[] {
+  return teams.map((team) => ({
+    id: team.id,
+    name: team.name,
+    color: team.color,
+    memberIds: members.filter((m) => m.teamId === team.id).map((m) => m.sessionId),
+  }));
+}
+
+/** 畫布上一條線：同一對 session 的多條規則（不同觸發條件）畫成一條。 */
 export interface Handoff {
   id: string;
   source: string;
   target: string;
-  trigger: HandoffRule['trigger'];
+  triggers: HandoffRule['trigger'][];
+  ruleIds: string[];
+  enabled: boolean;
 }
-
-const DEMO_TEAMS: CanvasTeam[] = [
-  {
-    id: 'team-demo-auth',
-    nameKey: 'canvas.team.demoAuth',
-    color: 'var(--team-teal)',
-    memberIds: ['s-auth', 's-tests'],
-  },
-];
 
 const handoffId = (source: string, target: string) => `${source}->${target}`;
 
-interface TeamsState {
-  teams: CanvasTeam[];
-  handoffs: Handoff[];
-  addHandoff: (source: string, target: string) => void;
-  removeHandoffs: (ids: readonly string[]) => void;
+export function groupHandoffs(rules: readonly HandoffRule[]): Handoff[] {
+  const grouped = new Map<string, Handoff>();
+  for (const rule of rules) {
+    const source = rule.fromSessionId;
+    const target = rule.action.toSessionId;
+    const id = handoffId(source, target);
+    const line = grouped.get(id) ?? {
+      id,
+      source,
+      target,
+      triggers: [],
+      ruleIds: [],
+      enabled: false,
+    };
+    if (!line.triggers.includes(rule.trigger)) line.triggers.push(rule.trigger);
+    line.ruleIds.push(rule.id);
+    line.enabled ||= rule.enabled;
+    grouped.set(id, line);
+  }
+  return [...grouped.values()];
 }
 
-export const useTeams = create<TeamsState>((set) => ({
-  teams: DEMO_TEAMS,
-  handoffs: [
-    {
-      id: handoffId('s-auth', 's-tests'),
-      source: 's-auth',
-      target: 's-tests',
-      trigger: 'on_done',
-    },
-  ],
-  addHandoff: (source, target) =>
-    set((state) => {
-      const id = handoffId(source, target);
-      if (source === target || state.handoffs.some((h) => h.id === id)) return state;
-      return { handoffs: [...state.handoffs, { id, source, target, trigger: 'on_done' }] };
-    }),
-  removeHandoffs: (ids) =>
-    set((state) => ({ handoffs: state.handoffs.filter((h) => !ids.includes(h.id)) })),
-}));
+/** 從卡片拖線建立規則要歸在哪個團隊：來源的優先，其次目標。 */
+export function teamForHandoff(
+  source: string,
+  target: string,
+  members: readonly TeamMember[],
+): string | null {
+  const teamOf = (id: string) => members.find((m) => m.sessionId === id)?.teamId ?? null;
+  return teamOf(source) ?? teamOf(target);
+}
 
 const TEAM_PADDING = 32;
 

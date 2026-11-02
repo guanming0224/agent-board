@@ -844,6 +844,53 @@ describe('hook 與 approval（走真的 socket）', () => {
     );
   });
 
+  it('改檔工具成功後送 file.changed，payload 只有路徑；Bash 與失敗的工具不送', async () => {
+    const changed = () =>
+      h.hub.received.flatMap((m) =>
+        m.type === 'session.event' && m.event.type === 'file.changed' ? [m.event] : [],
+      );
+    const secret = { content: 'secret file body', old_string: 'secret', new_string: 'secret' };
+    for (const [tool_name, tool_input] of [
+      ['Write', { file_path: '/r/write.ts', ...secret }],
+      ['Edit', { file_path: '/r/edit.ts', ...secret }],
+      ['MultiEdit', { file_path: '/r/multi.ts', edits: [secret] }],
+      ['NotebookEdit', { notebook_path: '/r/book.ipynb', new_source: 'secret' }],
+    ] as const) {
+      const reply = await client.request('s1', 'PostToolUse', { tool_name, tool_input });
+      expect(reply.output).toBeNull();
+    }
+    await waitUntil(() => changed().length === 4, 'file.changed 事件');
+    expect(changed().map((e) => e.payload)).toEqual([
+      { path: '/r/write.ts' },
+      { path: '/r/edit.ts' },
+      { path: '/r/multi.ts' },
+      { path: '/r/book.ipynb' },
+    ]);
+    expect(JSON.stringify(changed())).not.toContain('secret');
+    expect(changed()[0]?.sessionId).toBe('s1');
+
+    await client.request('s1', 'PostToolUse', {
+      tool_name: 'Bash',
+      tool_input: { command: 'sed -i s/a/b/ /r/x.ts', file_path: '/r/x.ts' },
+    });
+    await client.request('s1', 'PostToolUse', { tool_name: 'Write', tool_input: {} });
+    await client.request('s1', 'PostToolUse', {
+      tool_name: 'Read',
+      tool_input: { file_path: '/r/y' },
+    });
+    await client.request('s1', 'PostToolUseFailure', {
+      tool_name: 'Write',
+      tool_input: { file_path: '/r/failed.ts' },
+    });
+    // 同一條連線、依序處理：標記事件到了，前面的都已經處理完。
+    await client.request('s1', 'PostToolUse', {
+      tool_name: 'Edit',
+      tool_input: { file_path: '/r/end.ts' },
+    });
+    await waitUntil(() => changed().length === 5, '結尾事件');
+    expect(changed()[4]?.payload).toEqual({ path: '/r/end.ts' });
+  });
+
   it('SessionStart：更新 contextTokens、claudeSessionId；firstPrompt 只送一次且送完清掉', async () => {
     await h.createAndSubscribe('fp', { firstPrompt: 'do the thing' });
     expect(persisted().sessions.find((s) => s.sessionId === 'fp')?.pendingFirstPrompt).toBe(

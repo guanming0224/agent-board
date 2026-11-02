@@ -63,7 +63,27 @@ process.stdin.on('data', (chunk) => {
     if (line === 'crash') process.exit(3);
     hook('UserPromptSubmit', { prompt: line });
     if (line === 'ask-permission') tool('Bash', { command: 'npm test' });
+    // 模擬收到交接後動手改檔：防迴圈測試需要目標在沒有人輸入的情況下再觸發規則。
+    if (line.startsWith('[Handoff]')) {
+      hook('PostToolUse', {
+        tool_name: 'Write',
+        tool_input: { file_path: '/tmp/ab-team/after-handoff.ts' },
+        tool_use_id: randomUUID(),
+      });
+    }
+    // 只送 PostToolUse：團隊測試要的是 file.changed，不走權限流程。
+    if (line.startsWith('edit-file ')) {
+      hook('PostToolUse', {
+        tool_name: 'Write',
+        tool_input: { file_path: line.slice('edit-file '.length) },
+        tool_use_id: randomUUID(),
+      });
+    }
     if (line === 'danger') tool('Bash', { command: 'git push --force origin main' });
-    hook('Stop', { last_assistant_message: `done: ${line}`, stop_hook_active: false });
+    // 團隊測試：假隊長回一份任務清單。
+    const reply = line.startsWith('Break this team goal')
+      ? 'Plan:\n```json\n[{"title":"Integration task one"},{"title":"Integration task two"}]\n```'
+      : `done: ${line}`;
+    hook('Stop', { last_assistant_message: reply, stop_hook_active: false });
   }
 });

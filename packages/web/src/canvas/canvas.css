@@ -223,6 +223,21 @@ input.cmd:disabled {
   white-space: nowrap;
   pointer-events: none;
 }
+.edge-off {
+  color: var(--faint);
+}
+.edge-panel {
+  display: flex;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: min(560px, calc(100vw - 48px));
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
 .canvas .react-flow__connection-path {
   stroke: var(--muted);
   stroke-width: 1.5;

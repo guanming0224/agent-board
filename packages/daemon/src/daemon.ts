@@ -147,6 +147,23 @@ function summarizeHook(event: HookRequest['event'], payload: HookRequest['payloa
   return summary;
 }
 
+/**
+ * 交接要列「偵測到的檔案改動」。只有這四種工具看得到路徑：透過 Bash 改的檔案（sed、mv、產生器）不會有事件，
+ * 所以清單不代表全部。只回傳路徑，內容不進事件。
+ */
+function editedFilePath(payload: HookRequest['payload']): string | null {
+  const input = payload.tool_input as Record<string, unknown> | undefined;
+  const path =
+    payload.tool_name === 'NotebookEdit'
+      ? input?.notebook_path
+      : payload.tool_name === 'Write' ||
+          payload.tool_name === 'Edit' ||
+          payload.tool_name === 'MultiEdit'
+        ? input?.file_path
+        : undefined;
+  return typeof path === 'string' && path !== '' ? path : null;
+}
+
 export class Daemon {
   private readonly store: SessionStore;
   private readonly hub: HubClient;
@@ -591,6 +608,8 @@ export class Daemon {
       if (event !== 'PostToolUse' && event !== 'PostToolUseFailure') {
         this.emitEvent(sessionId, 'hook', summarizeHook(event, payload));
       }
+      const edited = event === 'PostToolUse' ? editedFilePath(payload) : null;
+      if (edited !== null) this.emitEvent(sessionId, 'file.changed', { path: edited });
     } else if (event !== 'PreToolUse') {
       return null;
     }
