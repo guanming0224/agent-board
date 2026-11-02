@@ -15,32 +15,32 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 
 ## 未登入存取
 
-| 項目                                            | 檢查方式                                                                                                       | 結果 |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---- |
-| `public` 以外的每條 REST 路由未登入回 401       | `H src/test/rest.test.ts -t "rejects every non-public"`                                                       | 通過 |
-| 偽造或已登出的 cookie 回 401                    | `H src/test/rest.test.ts -t "forged or logged-out"`                                                           | 通過 |
+| 項目                                            | 檢查方式                                                                                                     | 結果 |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---- |
+| `public` 以外的每條 REST 路由未登入回 401       | `H src/test/rest.test.ts -t "rejects every non-public"`                                                      | 通過 |
+| 偽造或已登出的 cookie 回 401                    | `H src/test/rest.test.ts -t "forged or logged-out"`                                                          | 通過 |
 | `owner` 路由對 member 回 403（含 audit 與匯出） | `H src/test/rest.test.ts -t "rejects members"`；`H src/test/security.test.ts -t "members cannot read audit"` | 通過 |
 | 未登入的 WebSocket 升級回 401                   | `H src/test/ws.test.ts`；瀏覽器：`E -g "未登入"`                                                             | 通過 |
-| 第一個管理員只能建立一次（含競爭）              | `H src/test/rest.test.ts -t "setup exactly once"`                                                             | 通過 |
-| 登入限速（帳號、IP、同時猜測）                  | `H src/test/rest.test.ts -t "rate limit"`                                                                     | 通過 |
+| 第一個管理員只能建立一次（含競爭）              | `H src/test/rest.test.ts -t "setup exactly once"`                                                            | 通過 |
+| 登入限速（帳號、IP、同時猜測）                  | `H src/test/rest.test.ts -t "rate limit"`                                                                    | 通過 |
 
 ## CSRF 與 WebSocket 跨站
 
-| 項目                                                           | 檢查方式                                                                                                                                                                                       | 結果 |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| cookie `httpOnly`、`SameSite=Strict`；`document.cookie` 讀不到 | `E -g "跨站"`；`H src/test/rest.test.ts -t "httpOnly"`                                                                                                                                       | 通過 |
-| `publicOrigin` 為 https 才 `Secure`，http 不設                 | `H src/test/rest.test.ts -t "httpOnly"`；`H src/test/security.test.ts -t "does not set Secure"`                                                                                              | 通過 |
+| 項目                                                           | 檢查方式                                                                                                                                                                                      | 結果 |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| cookie `httpOnly`、`SameSite=Strict`；`document.cookie` 讀不到 | `E -g "跨站"`；`H src/test/rest.test.ts -t "httpOnly"`                                                                                                                                        | 通過 |
+| `publicOrigin` 為 https 才 `Secure`，http 不設                 | `H src/test/rest.test.ts -t "httpOnly"`；`H src/test/security.test.ts -t "does not set Secure"`                                                                                               | 通過 |
 | 別的來源帶 cookie 的 POST 改不了資料                           | `E -g "跨站"`（真瀏覽器 + 真 hub；不同 port 同 site，SameSite 擋不住，靠 Origin）                                                                                                             | 通過 |
 | 別的來源開不了 `/ws/client`，同源開得了（正面對照）            | `E -g "跨站"`                                                                                                                                                                                 | 通過 |
-| Origin 規則：缺少、`null`、非 http、http/https 不同、Host 偽造 | `H src/test/security.test.ts -t "Origin rules"`；`H src/test/units.test.ts`                                                                                                                  | 通過 |
+| Origin 規則：缺少、`null`、非 http、http/https 不同、Host 偽造 | `H src/test/security.test.ts -t "Origin rules"`；`H src/test/units.test.ts`                                                                                                                   | 通過 |
 | DNS rebinding：惡意網域解析到 127.0.0.1 搶先建立管理員         | `H src/test/security.test.ts -t "Host check"`。**本次發現並修正**：原本 Host 與 Origin 同網域就過，還沒設定的 hub 可被搶註。現在只接受 IP、`localhost`、`publicOrigin` 的主機名稱，其餘回 421 | 通過 |
 
 修正的副作用：沒設 `publicOrigin` 又用自訂網域名稱開 hub 會被擋（回 421 並說明），要先用 IP 或 localhost 進去設定。daemon 的 `/ws/daemon` 靠 Bearer，不受影響；但配對走 HTTP，所以用網域名稱配對一樣要先設 `publicOrigin`。
 
 ## 監聽位址
 
-| 項目                                                                                                           | 檢查方式                                             | 結果 |
-| -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ---- |
+| 項目                                                                                                           | 檢查方式                                            | 結果 |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ---- |
 | `0.0.0.0`、`::` 與各種等價寫法：環境變數、設定 API、資料庫被改，都擋                                           | `H src/test/rest.test.ts -t "listening address"`    | 通過 |
 | **公開 IP 也擋**（DISPATCH §5.2 不提供公開網路模式）。**本次發現並修正**：原本只擋全部介面，`8.8.8.8` 這種會過 | `H src/test/security.test.ts -t "listen address"`   | 通過 |
 | 真的入口 `main.ts`：被拒時非零結束並印原因                                                                     | `H src/test/security.test.ts -t "refuses to start"` | 通過 |
@@ -52,64 +52,64 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 
 | 路徑                                                         | 檢查方式                                                                                                                     | 結果                                                                |
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 資料庫只存雜湊，連 WAL checkpoint 後的檔案都找不到明文       | `H src/test/security.test.ts -t "machine token paths"`                                                                      | 通過                                                                |
+| 資料庫只存雜湊，連 WAL checkpoint 後的檔案都找不到明文       | `H src/test/security.test.ts -t "machine token paths"`                                                                       | 通過                                                                |
 | 機器清單、audit 不含 token                                   | 同上                                                                                                                         | 通過                                                                |
-| hub log 不含 token、cookie、密碼、配對碼（真的跑 `main.ts`） | `H src/test/security.test.ts -t "logs never contain"`                                                                       | 通過                                                                |
-| daemon log 不含 token                                        | `D src/hubClient.test.ts -t "401"`                                                                                          | 通過                                                                |
-| 子程序（claude、git hook、nvidia-smi）環境變數沒有 token     | `D src/daemon.test.ts -t "token 不外洩"`                                                                                    | 通過                                                                |
-| 憑證檔權限 `0600`，舊檔權限太寬會修正                        | `D src/pair.test.ts`                                                                                                        | 通過（只看測試；`credentials.ts` 原始碼這次被權限規則擋下，沒有讀） |
-| hook socket `0600`、資料夾 `0700`                            | `D src/hookServer.test.ts`                                                                                                  | 通過                                                                |
-| 撤銷後舊 token 立刻 401                                      | `H src/test/ws.test.ts -t "machine"`                                                                                        | 通過                                                                |
+| hub log 不含 token、cookie、密碼、配對碼（真的跑 `main.ts`） | `H src/test/security.test.ts -t "logs never contain"`                                                                        | 通過                                                                |
+| daemon log 不含 token                                        | `D src/hubClient.test.ts -t "401"`                                                                                           | 通過                                                                |
+| 子程序（claude、git hook、nvidia-smi）環境變數沒有 token     | `D src/daemon.test.ts -t "token 不外洩"`                                                                                     | 通過                                                                |
+| 憑證檔權限 `0600`，舊檔權限太寬會修正                        | `D src/pair.test.ts`                                                                                                         | 通過（只看測試；`credentials.ts` 原始碼這次被權限規則擋下，沒有讀） |
+| hook socket `0600`、資料夾 `0700`                            | `D src/hookServer.test.ts`                                                                                                   | 通過                                                                |
+| 撤銷後舊 token 立刻 401                                      | `H src/test/ws.test.ts -t "machine"`                                                                                         | 通過                                                                |
 | 同一使用者身分的程序讀憑證檔                                 | **設計上擋不住**：`claude` 與 daemon 同一個 OS 帳號，agent 跑的指令讀得到 `~/.agent-board/` 下的憑證。要隔離得用不同 OS 帳號 | 未通過（接受的風險，列給 Lead）                                     |
 
 ## session cookie
 
 | 項目                                               | 檢查方式                                                                                                                                                    | 結果   |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| 登出後舊 cookie 與既有 WebSocket 失效              | `H src/test/rest.test.ts -t "forged or logged-out"`；`H src/test/ws.test.ts`                                                                              | 通過   |
-| 改密碼後其他裝置登出                               | `H src/test/rest.test.ts -t "logs out other devices"`                                                                                                      | 通過   |
-| 資料庫只存 token 雜湊                              | `H src/test/rest.test.ts -t "never returns or stores"`（密碼）；`auth.ts` 的 `sha256`（token，讀程式確認）                                                 | 通過   |
+| 登出後舊 cookie 與既有 WebSocket 失效              | `H src/test/rest.test.ts -t "forged or logged-out"`；`H src/test/ws.test.ts`                                                                                | 通過   |
+| 改密碼後其他裝置登出                               | `H src/test/rest.test.ts -t "logs out other devices"`                                                                                                       | 通過   |
+| 資料庫只存 token 雜湊                              | `H src/test/rest.test.ts -t "never returns or stores"`（密碼）；`auth.ts` 的 `sha256`（token，讀程式確認）                                                  | 通過   |
 | 經 `tailscale serve` 實際走 https 的 Secure cookie | 要真的代理環境。重現：設 `publicOrigin` 為 `https://<機器>.ts.net`，用瀏覽器登入看 cookie。另外 Safari 用 `http://127.0.0.1` 登入時可能存不了 Secure cookie | 未驗證 |
 
 ## XSS
 
-| 項目                                                                                                     | 檢查方式                                                                                                      | 結果   |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------ |
+| 項目                                                                                                     | 檢查方式                                                                                                     | 結果   |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------ |
 | session 名稱、分支、路徑、lastLines、指令、diff、JSON 參數、工具名稱、提問（畫布、待處理、審核、收件匣） | `E -g "只當文字"`                                                                                            | 通過   |
-| 終端機輸出的 HTML、OSC 標題、`javascript:` OSC 8 連結                                                    | `E -g "終端機輸出"`；`W src/terminal/input.test.ts -t "只允許 http"`                                        | 通過   |
-| 原始碼沒有 `dangerouslySetInnerHTML`、`innerHTML`、`eval`                                                | `grep -rn "dangerouslySetInnerHTML\|innerHTML\|eval(" packages/web/src`                                       | 通過   |
+| 終端機輸出的 HTML、OSC 標題、`javascript:` OSC 8 連結                                                    | `E -g "終端機輸出"`；`W src/terminal/input.test.ts -t "只允許 http"`                                         | 通過   |
+| 原始碼沒有 `dangerouslySetInnerHTML`、`innerHTML`、`eval`                                                | `grep -rn "dangerouslySetInnerHTML\|innerHTML\|eval(" packages/web/src`                                      | 通過   |
 | JSON 任務清單（團隊畫面）                                                                                | Agent G 正在做，這個分支沒有畫面。重現：畫面合併後把 `XSS` 字串放進任務標題，跑 `E -g "只當文字"` 同樣的檢查 | 未驗證 |
 
 ## CSP 與標頭
 
-| 項目                                                                                                          | 檢查方式                                                                                         | 結果                 |
-| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | -------------------- |
-| `default-src 'self'`，沒有 `unsafe-eval`；注入的 inline script 不執行；正常載入無違規                         | `E -g "CSP：頁面"`                                                                              | 通過                 |
+| 項目                                                                                                          | 檢查方式                                                                                       | 結果                 |
+| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------- |
+| `default-src 'self'`，沒有 `unsafe-eval`；注入的 inline script 不執行；正常載入無違規                         | `E -g "CSP：頁面"`                                                                             | 通過                 |
 | WebSocket 與 fetch 只能連自己。**本次發現並修正**：原本 `connect-src ws: wss:` 全開，XSS 能把資料送到任何主機 | `E -g "CSP：不能"`；`H src/test/security.test.ts -t "CSP limits"`                              | 通過                 |
-| `style-src 'unsafe-inline'` 還在                                                                              | xterm 與 React Flow 用 inline style。影響：CSS 注入仍可能，但前面的 XSS 檢查沒有注入點           | 未通過（接受的風險） |
+| `style-src 'unsafe-inline'` 還在                                                                              | xterm 與 React Flow 用 inline style。影響：CSS 注入仍可能，但前面的 XSS 檢查沒有注入點         | 未通過（接受的風險） |
 | `nosniff`、`X-Frame-Options: DENY`、`frame-ancestors 'none'`、`no-referrer`、`object-src 'none'`              | `H src/test/rest.test.ts -t "security headers"`；`H src/test/security.test.ts -t "CSP limits"` | 通過                 |
 
 ## 路徑穿越
 
 | 項目                                                                     | 檢查方式                                                                                                     | 結果             |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ | ---------------- |
-| 靜態檔：`../`、`%2e%2e`、`..%2f`、`..%5c`、雙重寫法、dotfile             | `H src/test/security.test.ts -t "static files"`                                                             | 通過             |
-| `fs.list`：`../` 正規化、回實際路徑；只回名稱與類型；NUL、指向檔案回錯誤 | `D src/misc.test.ts -t "NUL"`                                                                               | 通過             |
+| 靜態檔：`../`、`%2e%2e`、`..%2f`、`..%5c`、雙重寫法、dotfile             | `H src/test/security.test.ts -t "static files"`                                                              | 通過             |
+| `fs.list`：`../` 正規化、回實際路徑；只回名稱與類型；NUL、指向檔案回錯誤 | `D src/misc.test.ts -t "NUL"`                                                                                | 通過             |
 | `fs.list` 能列機器上**任何**資料夾                                       | 這是功能（選工作目錄），任何登入使用者都能用。登入使用者本來就能在終端機下指令，沒有多給權限。沒有路徑白名單 | 通過（設計如此） |
 
 ## 危險指令與 hook 被繞過的路徑
 
 | 路徑                                                                                                                             | 檢查方式                                                                                                                            | 結果                                                |
 | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| 指令變形（見下節判定表）                                                                                                         | `D src/approvals.test.ts -t "matchDangerRule"`                                                                                     | 通過                                                |
+| 指令變形（見下節判定表）                                                                                                         | `D src/approvals.test.ts -t "matchDangerRule"`                                                                                      | 通過                                                |
 | 誤報                                                                                                                             | 同上，判定表的「不攔」欄                                                                                                            | 通過                                                |
-| hook 設定檔 JSON 壞掉：不開 session                                                                                              | `D src/daemon.test.ts -t "hook 設定壞掉"`                                                                                          | 通過                                                |
+| hook 設定檔 JSON 壞掉：不開 session                                                                                              | `D src/daemon.test.ts -t "hook 設定壞掉"`                                                                                           | 通過                                                |
 | hook 連不上 daemon：Bash 回 `ask`                                                                                                | `corepack pnpm --filter @agent-board/hook exec vitest run -t "回 ask"`                                                              | 通過                                                |
 | 等候逾時：Bash 回 `deny`                                                                                                         | `corepack pnpm --filter @agent-board/hook exec vitest run -t "超時"`                                                                | 通過                                                |
 | `dangerRules` 被 owner 清空                                                                                                      | 什麼都不會攔。設定頁有寫明（`flows.security.rulesEmpty`）                                                                           | 通過（設計如此）                                    |
-| 只有 owner 能決定 danger                                                                                                         | `H src/test/ws.test.ts -t "only an owner can decide"`                                                                              | 通過                                                |
-| **腳本檔**（`bash ./cleanup.sh`）、變數組字（`RM=rm; $RM -rf /`、`rm${IFS}-rf`）、編碼（`base64 -d \| sh`）、`rm -r /` 少了 `-f` | hook 看不到執行時才有的內容。測試釘住現況：`D src/approvals.test.ts -t "已知看不到"`                                               | 未通過（比對做不到，靠 Claude Code 本身的權限模式） |
-| **非 Bash 工具**：Write 寫腳本再執行、Edit 改設定、MCP 工具                                                                      | 只比對 `tool_name == 'Bash'`：`D src/approvals.test.ts -t "非 Bash"`                                                               | 未通過（設計範圍外）                                |
+| 只有 owner 能決定 danger                                                                                                         | `H src/test/ws.test.ts -t "only an owner can decide"`                                                                               | 通過                                                |
+| **腳本檔**（`bash ./cleanup.sh`）、變數組字（`RM=rm; $RM -rf /`、`rm${IFS}-rf`）、編碼（`base64 -d \| sh`）、`rm -r /` 少了 `-f` | hook 看不到執行時才有的內容。測試釘住現況：`D src/approvals.test.ts -t "已知看不到"`                                                | 未通過（比對做不到，靠 Claude Code 本身的權限模式） |
+| **非 Bash 工具**：Write 寫腳本再執行、Edit 改設定、MCP 工具                                                                      | 只比對 `tool_name == 'Bash'`：`D src/approvals.test.ts -t "非 Bash"`                                                                | 未通過（設計範圍外）                                |
 | agent 自己改 `.claude/settings.local.json` 拿掉 hook，或設 `disableAllHooks`                                                     | 要真 `claude`。重現：開 session，請它編輯該檔移除 hooks，再下 `git push --force`，看有沒有攔到；也要看 Claude Code 是否即時重讀設定 | 未驗證                                              |
 | 終端機 `!` 模式直接執行 shell（不經工具）                                                                                        | 要真 `claude`。重現：在 session 打 `!git push --force --dry-run`，看 hub 有沒有 `approval.requested`                                | 未驗證                                              |
 | 使用者層設定的其他 hook 搶先回 `allow`                                                                                           | 要真 `claude`。重現：`~/.claude/settings.json` 加一個 PreToolUse hook 回 allow                                                      | 未驗證                                              |
@@ -142,14 +142,14 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 
 ## 遮蔽模式
 
-| 項目                                                                                                            | 檢查方式                                                                    | 結果 |
-| --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | ---- |
-| 常見金鑰形狀、`key=value`、Bearer、網址帳密、私鑰、配對碼；一般文字（git SHA、`max_tokens=`、`tokens: 12`）不動 | `W src/security/mask.test.ts`                                              | 通過 |
+| 項目                                                                                                            | 檢查方式                                                                  | 結果 |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ---- |
+| 常見金鑰形狀、`key=value`、Bearer、網址帳密、私鑰、配對碼；一般文字（git SHA、`max_tokens=`、`tokens: 12`）不動 | `W src/security/mask.test.ts`                                             | 通過 |
 | 寫入 xterm 前過濾；切在任何位置都看不到金鑰本體；被顏色碼切開；折行；寬度不變                                   | `W src/security/mask.test.ts -t "StreamMasker"`；`E -g "遮蔽模式：xterm"` | 通過 |
-| 輸出停在半路不會卡住（40ms 後打碼送出）                                                                         | `W src/security/mask.test.ts -t "TerminalMaskGate"`                        | 通過 |
-| 開啟時已畫上去的內容會換掉（重拿快照）                                                                          | `E -g "已經畫上去"`                                                        | 通過 |
-| 摘要卡、審核卡、兩段確認全文、diff、提問、待處理、收件匣                                                        | `E -g "遮蔽模式：畫面"`                                                    | 通過 |
-| 頁首晶片、重新整理還開著、說明寫明不是安全邊界                                                                  | `E -g "頁首晶片"`                                                          | 通過 |
+| 輸出停在半路不會卡住（40ms 後打碼送出）                                                                         | `W src/security/mask.test.ts -t "TerminalMaskGate"`                       | 通過 |
+| 開啟時已畫上去的內容會換掉（重拿快照）                                                                          | `E -g "已經畫上去"`                                                       | 通過 |
+| 摘要卡、審核卡、兩段確認全文、diff、提問、待處理、收件匣                                                        | `E -g "遮蔽模式：畫面"`                                                   | 通過 |
+| 頁首晶片、重新整理還開著、說明寫明不是安全邊界                                                                  | `E -g "頁首晶片"`                                                         | 通過 |
 
 **限制（介面上也寫了）：遮蔽不是安全邊界。**
 
@@ -172,12 +172,12 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 
 | 項目                                                               | 檢查方式                                                        | 結果                                |
 | ------------------------------------------------------------------ | --------------------------------------------------------------- | ----------------------------------- |
-| 提示偵測（sudo、ssh、passphrase、中文、2FA、彩色、切開、TUI 框線） | `H src/test/security.test.ts -t "detects"`                     | 通過                                |
-| 不誤判一般輸出                                                     | `H src/test/security.test.ts -t "does not flag"`               | 通過                                |
-| 走完整條 WebSocket，資料庫檔案裡找不到明文；下一筆指令照常記       | `H src/test/security.test.ts -t "not recorded in plain text"`  | 通過                                |
-| 沒按 Enter 就離開的 partial 也打碼                                 | `H src/test/security.test.ts -t "partial row"`                 | 通過                                |
-| 輸入照常轉送                                                       | `H src/test/security.test.ts -t "forwarded unchanged"`         | 通過                                |
-| 沒有輸出可看時（client 沒訂閱就送輸入、輸出比 Enter 晚到）仍是明文 | 測試釘住現況：`H src/test/security.test.ts -t "known limit"`   | 未通過（盡力而為，無法從 hub 根治） |
+| 提示偵測（sudo、ssh、passphrase、中文、2FA、彩色、切開、TUI 框線） | `H src/test/security.test.ts -t "detects"`                      | 通過                                |
+| 不誤判一般輸出                                                     | `H src/test/security.test.ts -t "does not flag"`                | 通過                                |
+| 走完整條 WebSocket，資料庫檔案裡找不到明文；下一筆指令照常記       | `H src/test/security.test.ts -t "not recorded in plain text"`   | 通過                                |
+| 沒按 Enter 就離開的 partial 也打碼                                 | `H src/test/security.test.ts -t "partial row"`                  | 通過                                |
+| 輸入照常轉送                                                       | `H src/test/security.test.ts -t "forwarded unchanged"`          | 通過                                |
+| 沒有輸出可看時（client 沒訂閱就送輸入、輸出比 Enter 晚到）仍是明文 | 測試釘住現況：`H src/test/security.test.ts -t "known limit"`    | 未通過（盡力而為，無法從 hub 根治） |
 | 提示文字不符合樣式（自訂程式的 `Enter secret>`）仍是明文           | 同上性質                                                        | 未通過                              |
 | 舊資料                                                             | 這版之前已寫入的明文不會回頭改，要等保留期限到期或手動清        | 未通過                              |
 | 真 `claude` 內的提示（`!sudo`、Claude Code 自己的輸入框）          | 要真 `claude`。重現：`!sudo -k; sudo ls`，輸入後看 `/api/audit` | 未驗證                              |
@@ -192,13 +192,13 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 
 **為什麼等 10 分鐘：** 換資料庫或還原備份時 token 也會暫時對不上，這時立刻殺掉正在跑的工作代價太高。代價是撤銷後最多多跑 10 分鐘（加上重連間隔）。機器一直連不上 hub 時，session 會繼續跑到它連上為止；這種情況 hub 什麼都做不了。
 
-| 項目                                              | 檢查方式                                               | 結果   |
-| ------------------------------------------------- | ------------------------------------------------------ | ------ |
+| 項目                                              | 檢查方式                                              | 結果   |
+| ------------------------------------------------- | ----------------------------------------------------- | ------ |
 | hub 送 `session.stop`；已結束的不送               | `H src/test/security.test.ts -t "removing a machine"` | 通過   |
 | daemon 持續被拒：停 session、結果落地、重啟不接回 | `D src/daemon.test.ts -t "持續被拒"`                  | 通過   |
 | 寬限期內恢復不受影響；502 不算                    | `D src/daemon.test.ts -t "機器被移除"`                | 通過   |
-| 真 hub + 真 daemon 整條                           | 兩端各自測過，沒有串起來跑過                           | 未驗證 |
-| 設定頁文字說明會一起停                            | `flows.machine.removeHint`                             | 通過   |
+| 真 hub + 真 daemon 整條                           | 兩端各自測過，沒有串起來跑過                          | 未驗證 |
+| 設定頁文字說明會一起停                            | `flows.machine.removeHint`                            | 通過   |
 
 ## 資料保留
 
@@ -209,14 +209,14 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 
 啟動時跑一次，之後每小時一次。audit 寫到資料庫旁的 `audit-archive/`（資料夾 `0700`、檔案 `0600`），暫存檔寫完才改名。每輪最多 5 萬筆。清除本身記一筆 `audit.retention`。
 
-| 項目                             | 檢查方式                                                          | 結果                                  |
-| -------------------------------- | ----------------------------------------------------------------- | ------------------------------------- |
+| 項目                             | 檢查方式                                                         | 結果                                  |
+| -------------------------------- | ---------------------------------------------------------------- | ------------------------------------- |
 | 先匯出再刪；權限正確             | `H src/test/security.test.ts -t "exported to an owner-only CSV"` | 通過                                  |
 | 匯出失敗就不刪                   | `H src/test/security.test.ts -t "export fails"`                  | 通過                                  |
 | 事件依時間與總量清；0 天不清     | `H src/test/security.test.ts -t "retention"`                     | 通過                                  |
 | 真的啟動流程                     | `H src/test/security.test.ts -t "runs at startup"`               | 通過                                  |
-| 封存檔本身沒有上限，也不會自動刪 | 磁碟會慢慢長，內容含終端機輸入（已打碼金鑰與密碼提示）            | 未通過（給使用者自己處理，列給 Lead） |
-| 設定頁調整天數                   | `Settings` schema 沒有這欄，protocol 不能動，目前只有環境變數     | 未通過（等 Lead）                     |
+| 封存檔本身沒有上限，也不會自動刪 | 磁碟會慢慢長，內容含終端機輸入（已打碼金鑰與密碼提示）           | 未通過（給使用者自己處理，列給 Lead） |
+| 設定頁調整天數                   | `Settings` schema 沒有這欄，protocol 不能動，目前只有環境變數    | 未通過（等 Lead）                     |
 
 ## 依賴審計
 
