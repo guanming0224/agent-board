@@ -68,7 +68,7 @@ describe('access control', () => {
     expect(self.body.locale).toBe('zh-TW');
     const other = await hub.api('PATCH', `/api/users/${b.id}`, {
       cookie: a.cookie,
-      body: { password: 'attacker-chosen' },
+      body: { password: 'attacker-chosen', currentPassword: PASSWORD },
     });
     expect(other.status).toBe(403);
     const stillWorks = await hub.api('POST', '/api/auth/login', {
@@ -189,11 +189,75 @@ describe('login', () => {
     const otherCookie = second.headers.get('set-cookie')!.split(';')[0]!;
     const changed = await hub.api('PATCH', `/api/users/${member.id}`, {
       cookie: member.cookie,
-      body: { password: 'a-brand-new-password' },
+      body: { password: 'a-brand-new-password', currentPassword: PASSWORD },
     });
     expect(changed.status).toBe(200);
     expect((await hub.api('GET', '/api/projects', { cookie: member.cookie })).status).toBe(200);
     expect((await hub.api('GET', '/api/projects', { cookie: otherCookie })).status).toBe(401);
+  });
+
+  describe('changing a password', () => {
+    const newPassword = 'a-brand-new-password';
+    const change = (id: string, cookie: string, body: object) =>
+      hub.api('PATCH', `/api/users/${id}`, { cookie, body });
+    const login = (name: string, password: string) =>
+      hub.api('POST', '/api/auth/login', { body: { name, password } });
+
+    it('requires the current password', async () => {
+      hub = await startHub();
+      const owner = await hub.setupOwner();
+      const member = await hub.createMember(owner);
+      const missing = await change(member.id, member.cookie, { password: newPassword });
+      expect(missing.status).toBe(400);
+      const wrong = await change(member.id, member.cookie, {
+        password: newPassword,
+        currentPassword: 'not-the-password',
+        locale: 'zh-TW',
+      });
+      expect(wrong.status).toBe(403);
+      expect(wrong.body.code).toBe('invalid_current_password');
+      // 舊密碼錯就什麼都不改，同一筆請求帶的語系也一樣。
+      expect((await login('member', newPassword)).status).toBe(401);
+      expect((await login('member', PASSWORD)).body.locale).toBe('en');
+      const audit = hub.running.store.listAudit({ action: 'user.password_change_failed' });
+      expect(audit).toHaveLength(1);
+
+      const ok = await change(member.id, member.cookie, {
+        password: newPassword,
+        currentPassword: PASSWORD,
+      });
+      expect(ok.status).toBe(200);
+      expect((await login('member', PASSWORD)).status).toBe(401);
+      expect((await login('member', newPassword)).status).toBe(200);
+    });
+
+    it('counts wrong current passwords toward a rate limit, without blocking login', async () => {
+      hub = await startHub({ loginLimit: { perAccount: 3, perIp: 100 } });
+      const owner = await hub.setupOwner();
+      const member = await hub.createMember(owner);
+      const attempt = (currentPassword: string) =>
+        change(member.id, member.cookie, { password: newPassword, currentPassword });
+      for (let i = 0; i < 3; i += 1) expect((await attempt('wrong-guess')).status).toBe(403);
+      // 猜中了也要等。
+      const limited = await attempt(PASSWORD);
+      expect(limited.status).toBe(429);
+      expect(limited.body.code).toBe('rate_limited');
+      expect((await login('member', PASSWORD)).status).toBe(200);
+    });
+
+    it('an owner cannot reset the password of someone else, but can still edit their locale', async () => {
+      hub = await startHub();
+      const owner = await hub.setupOwner();
+      const member = await hub.createMember(owner);
+      const reset = await change(member.id, owner, {
+        password: newPassword,
+        currentPassword: PASSWORD,
+      });
+      expect(reset.status).toBe(403);
+      expect((await login('member', PASSWORD)).status).toBe(200);
+      const locale = await change(member.id, owner, { locale: 'zh-TW' });
+      expect(locale.body.locale).toBe('zh-TW');
+    });
   });
 
   it('cannot delete the last owner', async () => {

@@ -193,14 +193,33 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       if (ctx.user.role !== 'owner' && ctx.user.id !== id) {
         throw new HttpError(403, 'forbidden', 'Cannot modify another user');
       }
-      if (!store.getUser(id)) throw notFound('User');
+      const target = store.getUser(id);
+      if (!target) throw notFound('User');
+      if (ctx.body.password) {
+        if (ctx.user.id !== id) {
+          throw new HttpError(403, 'forbidden', 'Cannot change the password of another user');
+        }
+        // 舊密碼的猜測跟登入一樣要限速；key 綁帳號，換 IP 也繞不掉，也不會擋到正常登入。
+        const account = `password-change|${id}`;
+        throwIfLimited([loginAccount, account]);
+        loginAccount.hit(account);
+        const credentials = store.userCredentials(target.name);
+        const valid =
+          credentials !== null &&
+          (await verifyPassword(credentials.passwordHash, ctx.body.currentPassword ?? ''));
+        if (!valid) {
+          hub.audit(ctx.user.id, null, 'user.password_change_failed', id);
+          throw new HttpError(403, 'invalid_current_password', 'Current password is incorrect');
+        }
+        loginAccount.reset(account);
+      }
       const passwordHash = ctx.body.password
         ? await hashPassword(ctx.body.password, passwordParams)
         : undefined;
       store.updateUser(id, { locale: ctx.body.locale, passwordHash });
       if (passwordHash) {
         // 改密碼：其他裝置全部登出，只留下正在操作的這一個。
-        const keep = ctx.user.id === id ? ctx.tokenHash : null;
+        const keep = ctx.tokenHash;
         store.deleteUserAuthSessions(id, keep);
         hub.dropClients((c) => c.userId === id && c.tokenHash !== keep);
         hub.audit(ctx.user.id, null, 'user.password_change', id);
@@ -275,15 +294,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       return hub.latestUsage(id);
     },
 
-    sessionsList: (ctx) => {
-      // z.coerce.boolean() 會把字串 "false" 轉成 true，這裡直接看原始字串。
-      const raw = (ctx.req.query as { archived?: string }).archived;
-      if (raw === undefined) return store.listSessions();
-      if (raw !== 'true' && raw !== 'false') {
-        throw new HttpError(400, 'invalid_request', 'archived must be true or false');
-      }
-      return store.listSessions(raw === 'true');
-    },
+    sessionsList: (ctx) => store.listSessions(ctx.query.archived),
     sessionsCreate: (ctx) => hub.createSession(ctx.body, ctx.user),
     sessionsUpdate: (ctx) => hub.updateSession(param(ctx), ctx.body, ctx.user),
     sessionsStop: (ctx) => hub.stopSession(param(ctx), ctx.user),

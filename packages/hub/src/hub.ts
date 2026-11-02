@@ -98,7 +98,7 @@ const SESSION_DETAIL_LOST = 'session not running after daemon reconnect';
 const SESSION_DETAIL_CREATE_TIMEOUT = 'daemon did not confirm session start in time';
 const SESSION_DETAIL_CANCELLED = 'cancelled while queued';
 
-/** 只有 hub 能設定的狀態（CONTRACTS §5）：daemon 回報這些一律不採用。 */
+/** 由 hub 設定的狀態（CONTRACTS §5）。例外只有一個：PTY exit 0 由 daemon 回報 done + endedAt。 */
 const HUB_ONLY_STATUSES: readonly SessionStatus[] = ['queued', 'done', 'offline'];
 
 const holdsSlot = (s: Session): boolean =>
@@ -593,6 +593,21 @@ export class Hub {
       this.sendClientError(client, 'approval_not_found', 'Approval is no longer pending');
       return;
     }
+    // 危險指令只有 owner 能決定（CONTRACTS §2）。角色每次重查，不信連線建立時的狀態。
+    if (entry.approval.kind === 'danger' && this.store.getUser(client.userId)?.role !== 'owner') {
+      this.audit(
+        client.userId,
+        msg.sessionId,
+        'approval.decide_forbidden',
+        JSON.stringify({
+          approvalId: msg.approvalId,
+          matchedRule: entry.approval.matchedRule,
+          behavior: msg.decision.behavior,
+        }),
+      );
+      this.sendClientError(client, 'forbidden', 'Only an owner can decide dangerous commands');
+      return;
+    }
     const conn = this.daemonFor(entry.machineId);
     if (!conn) {
       this.sendClientError(client, 'machine_offline', 'Machine is offline');
@@ -812,7 +827,9 @@ export class Hub {
     if (!prev || prev.status === 'queued') return;
     const wasOffline = prev.status === 'offline';
     const preOffline = wasOffline ? this.store.preOfflineStatus(runtime.id) : null;
-    const keepStatus = prev.status === 'done' || HUB_ONLY_STATUSES.includes(runtime.status);
+    const exitedCleanly = runtime.status === 'done' && runtime.endedAt !== null;
+    const keepStatus =
+      prev.status === 'done' || (HUB_ONLY_STATUSES.includes(runtime.status) && !exitedCleanly);
     const next: Session = {
       ...prev,
       cwd: runtime.cwd,
@@ -904,15 +921,24 @@ export class Hub {
     }
     this.rejectBrowses(id, new HttpError(502, 'daemon_disconnected', 'Machine removed'));
     this.usage.delete(id);
+    // session 已刪，不能寫 session_events；audit 沒有外鍵，照記。
     for (const [approvalId, entry] of [...this.approvals]) {
-      if (entry.machineId === id) this.approvals.delete(approvalId);
+      if (entry.machineId !== id) continue;
+      const { sessionId } = entry.approval;
+      this.approvals.delete(approvalId);
+      this.audit(
+        null,
+        sessionId,
+        'approval.resolved',
+        JSON.stringify({ approvalId, by: 'timeout', reason: 'machine_removed' }),
+      );
+      this.broadcast({ type: 'approval.resolved', approvalId, sessionId, by: 'timeout' });
     }
     for (const session of sessions) {
       this.relay.dropSession(session.id);
       this.broadcast({ type: 'session.removed', sessionId: session.id });
     }
-    // 協定沒有 machine.removed，用完整的 board.state 讓前端重畫。
-    this.broadcast(this.boardState());
+    this.broadcast({ type: 'machine.removed', machineId: id });
     this.drainQueue();
   }
 

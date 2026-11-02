@@ -343,12 +343,36 @@ describe('pairing', () => {
 
     const removed = await client.next('session.removed');
     expect(removed.sessionId).toBe(session.id);
-    const state = await client.next('board.state');
-    expect(state.machines).toEqual([]);
-    expect(state.sessions).toEqual([]);
+    expect((await client.next('machine.removed')).machineId).toBe(machineId);
+    expect(client.of('board.state')).toHaveLength(0);
+    expect(HubToClient.safeParse({ type: 'machine.removed', machineId }).success).toBe(true);
+    const fresh = await hub.client(cookie);
+    expect(fresh.closeCode).toBeNull();
+    expect((await hub.api('GET', '/api/machines', { cookie })).body).toEqual([]);
+    expect((await hub.api('GET', '/api/sessions', { cookie })).body).toEqual([]);
     // 稽核紀錄不跟著機器消失。
     expect(auditRows().map((r) => r.action)).toContain('machine.delete');
     expect(auditRows().some((r) => r.session_id === session.id)).toBe(true);
+  });
+
+  it('removing a machine resolves its pending approvals for open clients', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession();
+    const client = await hub.client(cookie);
+    const pending = approval(session.id);
+    daemon.send({ type: 'approval.requested', approval: pending });
+    await client.next('approval.requested');
+    await hub.api('DELETE', `/api/machines/${machineId}`, { cookie });
+    expect(await client.next('approval.resolved')).toMatchObject({
+      approvalId: pending.id,
+      by: 'timeout',
+    });
+    const late = await connect(`ws://127.0.0.1:${hub.port}/ws/client`, {
+      cookie,
+      origin: hub.origin,
+    });
+    expect((await late.next('board.state')).approvals).toEqual([]);
+    late.close();
   });
 
   it('a newer connection replaces the old one without marking the machine offline', async () => {
@@ -1049,6 +1073,87 @@ describe('daemon reconnect behaviours', () => {
   });
 });
 
+describe('PTY exit 0', () => {
+  const exited = (id: string) =>
+    runtime(id, { status: 'done', endedAt: new Date().toISOString(), statusDetail: 'exit 0' });
+
+  it('accepts done + endedAt from the daemon, without notifying, and frees the slot', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession();
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { quotaGuards: { denyReadPaths: [], maxConcurrentSessions: 1 } },
+    });
+    await hub.api('POST', '/api/push/subscriptions', {
+      cookie,
+      body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
+    });
+    const queued = await newSession(cookie, machineId);
+    expect(queued.status).toBe('queued');
+    const client = await hub.client(cookie);
+
+    daemon.send({ type: 'session.runtime', session: exited(session.id) });
+    const updated = await client.next(
+      'session.updated',
+      (m) => (m.session as { status: string }).status === 'done',
+    );
+    expect(updated.session).toMatchObject({ id: session.id, statusDetail: 'exit 0' });
+    expect((updated.session as { endedAt: string | null }).endedAt).not.toBeNull();
+    expect((await daemon.next('session.create')).sessionId).toBe(queued.id);
+    await hub.running.hub.pushesSettled();
+    expect(hub.push.sent).toHaveLength(0);
+  });
+
+  it('works while coming back from offline, and the session can be resumed', async () => {
+    hub = await startHub();
+    const { cookie, daemon, token, session } = await startedSession();
+    daemon.send({ type: 'session.runtime', session: runtime(session.id) });
+    await until(() => hub.running.store.getSession(session.id)?.status === 'running', 'running');
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getSession(session.id)?.status === 'offline', 'offline');
+    const back = await hub.daemon(token);
+    back.send(hello({ sessions: [runtime(session.id)] }));
+    await back.next('hub.welcome');
+    back.send({ type: 'session.runtime', session: exited(session.id) });
+    await until(() => hub.running.store.getSession(session.id)?.status === 'done', 'done');
+
+    const resumed = await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie });
+    expect(resumed.body).toMatchObject({ status: 'starting', endedAt: null });
+    await back.next('session.create');
+  });
+
+  it('done without endedAt is still ignored: the daemon cannot fake a user marking', async () => {
+    hub = await startHub();
+    const { daemon, session } = await startedSession();
+    daemon.send({ type: 'session.runtime', session: runtime(session.id, { status: 'running' }) });
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(session.id, { status: 'done', endedAt: null, contextTokens: 5 }),
+    });
+    await until(() => hub.running.store.getSession(session.id)?.contextTokens === 5, 'applied');
+    expect(hub.running.store.getSession(session.id)).toMatchObject({
+      status: 'running',
+      endedAt: null,
+    });
+  });
+
+  it('exit 0 after the user marked done keeps the user marking and records the end', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    const marked = await hub.api('PATCH', `/api/sessions/${session.id}`, {
+      cookie,
+      body: { markDone: true },
+    });
+    daemon.send({ type: 'session.runtime', session: exited(session.id) });
+    await until(() => hub.running.store.getSession(session.id)?.endedAt !== null, 'ended');
+    expect(hub.running.store.getSession(session.id)).toMatchObject({
+      status: 'done',
+      statusDetail: null,
+      statusSince: marked.body.statusSince,
+    });
+  });
+});
+
 describe('session lifecycle', () => {
   const setLimit = (cookie: string, max: number | null) =>
     hub.api('PATCH', '/api/settings', {
@@ -1470,6 +1575,97 @@ describe('approvals', () => {
     await a.next('pong');
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(a.of('approval.resolved')).toHaveLength(0);
+  });
+
+  describe('danger approvals', () => {
+    const decide = (client: Peer, a: { id: string; sessionId: string }, decision: object) =>
+      client.send({
+        type: 'approval.decide',
+        approvalId: a.id,
+        sessionId: a.sessionId,
+        decision,
+      });
+
+    it('only an owner can decide: a member is refused, audited, and the approval stays pending', async () => {
+      hub = await startHub();
+      const { cookie, daemon, session } = await startedSession();
+      const member = await hub.createMember(cookie);
+      const memberClient = await hub.client(member.cookie);
+      const ownerClient = await hub.client(cookie);
+      const pending = approval(session.id, { kind: 'danger', matchedRule: 'rm -rf /' });
+      daemon.send({ type: 'approval.requested', approval: pending });
+      await memberClient.next('approval.requested');
+      await ownerClient.next('approval.requested');
+
+      // 拒絕也算決定，一樣不行。
+      for (const decision of [
+        { behavior: 'allow', remember: false },
+        { behavior: 'deny', reason: 'no' },
+      ]) {
+        decide(memberClient, pending, decision);
+        expect((await memberClient.next('error')).code).toBe('forbidden');
+      }
+      expect(daemon.of('approval.decide')).toHaveLength(0);
+      expect(ownerClient.of('approval.resolved')).toHaveLength(0);
+      const refused = auditRows().filter((r) => r.action === 'approval.decide_forbidden');
+      expect(refused).toHaveLength(2);
+      expect(refused[0]!.user_id).toBe(member.id);
+      expect(JSON.parse(refused[0]!.detail)).toMatchObject({
+        approvalId: pending.id,
+        matchedRule: 'rm -rf /',
+        behavior: 'allow',
+      });
+      expect(auditRows().filter((r) => r.action === 'approval.decide')).toHaveLength(0);
+
+      decide(ownerClient, pending, { behavior: 'allow', remember: false });
+      expect((await daemon.next('approval.decide')).approvalId).toBe(pending.id);
+      expect((await memberClient.next('approval.resolved')).by).toBe('web');
+    });
+
+    it('a member can still decide non-danger approvals', async () => {
+      hub = await startHub();
+      const { cookie, daemon, session } = await startedSession();
+      const member = await hub.createMember(cookie);
+      const client = await hub.client(member.cookie);
+      const pending = approval(session.id, { kind: 'permission' });
+      daemon.send({ type: 'approval.requested', approval: pending });
+      await client.next('approval.requested');
+      decide(client, pending, { behavior: 'allow', remember: false });
+      expect((await daemon.next('approval.decide')).approvalId).toBe(pending.id);
+    });
+  });
+
+  it('records an answer as an answer, not as a denial', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    const client = await hub.client(cookie);
+    const pending = approval(session.id, { kind: 'question', toolName: null, toolInput: null });
+    daemon.send({ type: 'approval.requested', approval: pending });
+    await client.next('approval.requested');
+    const decision = { behavior: 'answer', text: 'Use English' };
+    client.send({
+      type: 'approval.decide',
+      approvalId: pending.id,
+      sessionId: session.id,
+      decision,
+    });
+    expect((await daemon.next('approval.decide')).decision).toEqual(decision);
+
+    const row = auditRows().find((r) => r.action === 'approval.decide')!;
+    expect(JSON.parse(row.detail).decision).toEqual(decision);
+    expect(row.detail).not.toContain('deny');
+    const event = hub.running.store
+      .listEvents(session.id)
+      .find((e) => e.type === 'approval.decided')!;
+    expect(event.payload.decision).toEqual(decision);
+    expect(JSON.stringify(event.payload)).not.toContain('deny');
+    client.send({
+      type: 'approval.decide',
+      approvalId: 'x',
+      sessionId: session.id,
+      decision: { behavior: 'answer', text: '  ' },
+    });
+    expect((await client.next('error')).code).toBe('invalid_message');
   });
 
   it('records a decision made in the terminal', async () => {
