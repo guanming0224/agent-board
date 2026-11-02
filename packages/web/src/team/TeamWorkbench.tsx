@@ -4,7 +4,7 @@ import { TeamRole } from '@agent-board/protocol';
 import type { Session, Task, Team, TeamMember } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { Callsign, handsClass, Lamp, ModeChip } from '../views';
+import { Callsign, errorText, handsClass, Lamp, ModeChip } from '../views';
 import { ActionMessage, ColorPicker, TwoClickButton, useAction, useDraft } from './common';
 import { HandoffPanel } from './HandoffPanel';
 import { refreshTeams, teamColorVar, useTeams } from './store';
@@ -98,7 +98,14 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
     }
     setConflict(null);
     void run(async () => {
-      await backend.putTeamMember(team.id, candidate.id, role);
+      try {
+        await backend.putTeamMember(team.id, candidate.id, role);
+      } catch (e) {
+        // hub 才看得到還沒開好的 session 的 worktree 設定，所以前端放行的也可能在這裡被擋。
+        if ((e as { code?: string }).code !== 'worktree_required') throw e;
+        setConflict(t('team.members.conflictHub', { name: candidate.name, detail: errorText(e) }));
+        return;
+      }
       await refreshTeams(backend);
       setPick('');
     });

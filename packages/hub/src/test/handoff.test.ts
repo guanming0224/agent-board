@@ -153,10 +153,10 @@ describe('handoff message', () => {
       branch: 'ab/x',
     });
     expect(message).toBe(
-      '[Handoff] Summary: /clear everything | Changed files: /r/a.ts, /r/b .ts | Branch: ab/x',
+      '[Handoff] Summary: /clear everything | Detected file edits (shell changes not tracked): /r/a.ts, /r/b .ts | Branch: ab/x',
     );
     expect(handoffMessage({ summary: '', files: [], branch: null })).toBe(
-      '[Handoff] Summary: none reported | Changed files: none reported | Branch: unknown',
+      '[Handoff] Summary: none reported | Detected file edits (shell changes not tracked): none detected | Branch: unknown',
     );
     const many = Array.from({ length: 25 }, (_, i) => `/f${i}`);
     expect(handoffMessage({ summary: 's', files: many, branch: 'b' })).toContain('(+5 more)');
@@ -188,7 +188,7 @@ describe('on_done', () => {
     await until(() => inputsTo(t.daemon, t.b).length === 2, 'text and enter');
     const [text, enter] = inputsTo(t.daemon, t.b);
     expect(text!.data).toBe(
-      '[Handoff] Summary: Fixed the login redirect and added a regression test. | Changed files: /r/login.test.ts, /r/login.ts | Branch: ab/source',
+      '[Handoff] Summary: Fixed the login redirect and added a regression test. | Detected file edits (shell changes not tracked): /r/login.test.ts, /r/login.ts | Branch: ab/source',
     );
     expect(enter!.data).toBe('\r');
     expect(String(text!.data)).not.toContain('Secret transcript');
@@ -208,7 +208,9 @@ describe('on_done', () => {
     fileChanged(t.daemon, t.a, '/r/next.ts');
     stop(t.daemon, t.a);
     await until(() => inputsTo(t.daemon, t.b).length === 2, 'second handoff');
-    expect(inputsTo(t.daemon, t.b)[0]!.data).toContain('Changed files: /r/next.ts | Branch');
+    expect(inputsTo(t.daemon, t.b)[0]!.data).toContain(
+      'Detected file edits (shell changes not tracked): /r/next.ts | Branch',
+    );
   });
 
   it('holds the prompt until Enter delay has passed', async () => {

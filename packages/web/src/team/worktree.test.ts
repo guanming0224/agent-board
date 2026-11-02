@@ -36,6 +36,12 @@ describe('worktreeConflicts', () => {
     expect(worktreeConflicts(c, [c])).toEqual([]);
   });
 
+  it('leaves sessions still starting to the hub, which can see their worktree setting', () => {
+    const c = session('c', {});
+    expect(worktreeConflicts(c, [session('a', { status: 'starting' })])).toEqual([]);
+    expect(worktreeConflicts(session('c', { status: 'queued' }), [session('a', {})])).toEqual([]);
+  });
+
   it('flags two sessions sharing one worktree', () => {
     const c = session('c', { worktreePath: '/wt/x' });
     expect(worktreeConflicts(c, [session('a', { worktreePath: '/wt/x' })])).toHaveLength(1);

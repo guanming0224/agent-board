@@ -138,6 +138,23 @@ test('同一資料夾沒有 worktree 不能加入團隊，要提示怎麼做', a
   await expect(page).toHaveURL(/#\/new/);
 });
 
+test('hub 回 409 worktree_required 時顯示原因和下一步，不當成一般錯誤', async ({ page }) => {
+  await openWorkbench(page);
+  await fake(
+    page,
+    `backend.putTeamMember = async () => {
+       throw Object.assign(new Error('Same folder as Write tests.'), { code: 'worktree_required' });
+     }`,
+  );
+  await page.getByLabel('選 session').selectOption({ label: 'Tidy docs' });
+  await page.getByRole('button', { name: '加入團隊' }).click();
+  const alert = page.getByTestId('worktree-conflict');
+  await expect(alert).toContainText('hub 拒絕加入');
+  await expect(alert).toContainText('Same folder as Write tests.');
+  await expect(alert.getByRole('button', { name: '新增 session' })).toBeVisible();
+  await expect(page.getByTestId('member-s-docs')).toHaveCount(0);
+});
+
 test('任務板：未指派不可推進，指派後走完四欄', async ({ page }) => {
   await openWorkbench(page);
   await page.getByLabel('新任務').fill('補文件');
@@ -328,10 +345,17 @@ test('自動交接規則：開關、觸發條件、耗額度晶片；新規則�
   await expect(toggle).toHaveText('自動交接：關');
 
   await rule.getByLabel('觸發條件').selectOption('on_file');
+  await expect(rule).toContainText('只偵測 Write、Edit、MultiEdit、NotebookEdit');
   const pattern = rule.getByLabel('檔案樣式');
   await pattern.fill('*.sql');
   await pattern.blur();
 
+  await expect(page.locator('section', { hasText: '自動交接規則' }).first()).toContainText(
+    '透過 Bash 改的檔案偵測不到',
+  );
+  await page.locator('.new-rule').getByLabel('觸發條件').selectOption('on_file');
+  await expect(page.locator('.new-rule')).toContainText('透過 Bash 改的');
+  await page.locator('.new-rule').getByLabel('觸發條件').selectOption('on_done');
   await page.getByLabel('從', { exact: true }).selectOption({ label: 'Write tests' });
   await page.getByLabel('交給', { exact: true }).selectOption({ label: 'Write tests' });
   await expect(page.getByRole('button', { name: '新增規則' })).toBeDisabled(); // 不能交接給自己

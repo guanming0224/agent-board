@@ -240,6 +240,9 @@
   border-color: var(--accent);
   color: var(--on-accent);
 }
+.rule-limit {
+  flex-basis: 100%;
+}
 .new-rule {
   padding-top: 10px;
   border-top: 1px solid var(--border);

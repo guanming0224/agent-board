@@ -41,10 +41,11 @@ export function handoffMessage(input: {
 }): string {
   const listed = input.files.slice(0, MAX_LISTED_FILES).map(cleanLine);
   const more = input.files.length - listed.length;
-  const files = listed.length === 0 ? 'none reported' : listed.join(', ');
+  const files = listed.length === 0 ? 'none detected' : listed.join(', ');
   return [
     `[Handoff] Summary: ${input.summary || 'none reported'}`,
-    `Changed files: ${files}${more > 0 ? ` (+${more} more)` : ''}`,
+    // 只看得到 Write、Edit、MultiEdit、NotebookEdit：不能讓對方以為清單就是全部，空的也不代表沒改。
+    `Detected file edits (shell changes not tracked): ${files}${more > 0 ? ` (+${more} more)` : ''}`,
     `Branch: ${input.branch ? cleanLine(input.branch) : 'unknown'}`,
   ].join(' | ');
 }

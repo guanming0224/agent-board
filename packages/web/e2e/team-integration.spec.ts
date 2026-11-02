@@ -227,6 +227,17 @@ test('在工作台建立團隊與成員；同資料夾沒 worktree 的被擋', a
   await expect(page.getByTestId('worktree-conflict')).toContainText('plain-session');
   await expect(page.getByTestId(`member-${second.id}`)).toHaveCount(0);
 
+  // 繞過前端也一樣被 hub 擋下；已是成員改角色不受影響
+  const direct = await page.request.put(`/api/teams/${teamId}/members/${second.id}`, {
+    data: { role: 'worker' },
+  });
+  expect(direct.status()).toBe(409);
+  expect(((await direct.json()) as { code: string }).code).toBe('worktree_required');
+  const roleChange = await page.request.put(`/api/teams/${teamId}/members/${plain.id}`, {
+    data: { role: 'reviewer' },
+  });
+  expect(roleChange.ok()).toBe(true);
+
   // 重新整理後還在（真的存到 hub）
   await page.reload();
   await expect(page.getByTestId(`member-${lead.id}`)).toBeVisible();
@@ -299,7 +310,7 @@ test('拖線之外也能建立規則：關著不交接，開啟後目標收到�
 
   await screenOf(page, worker.id).toContain('GOT [Handoff] Summary: done: finish login fix');
   const screen = (await readScreen(page, worker.id)).replace(/\s+/g, ' ');
-  expect(screen).toContain('Changed files: none reported');
+  expect(screen).toContain('(shell changes not tracked): none detected');
   expect(screen).toContain(`Branch: ${lead.branch}`);
 
   const fired = await auditOf(page, 'handoff.fired');
@@ -313,6 +324,11 @@ test('拖線之外也能建立規則：關著不交接，開啟後目標收到�
   expect(typed.some((a) => a.sessionId === worker.id && a.detail.startsWith('[Handoff]'))).toBe(
     true,
   );
+
+  // 真 daemon 從 PostToolUse 送 file.changed，下一次交接列出路徑
+  await expectStatus(page.request, worker.id, 'waiting_input');
+  await typeInto(page, lead.id, 'edit-file /tmp/ab-team/login.ts');
+  await screenOf(page, worker.id).toContain('(shell changes not tracked): /tmp/ab-team/login.ts');
 
   // 重新載入規則還在
   await page.reload();

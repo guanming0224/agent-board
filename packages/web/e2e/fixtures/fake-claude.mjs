@@ -63,6 +63,14 @@ process.stdin.on('data', (chunk) => {
     if (line === 'crash') process.exit(3);
     hook('UserPromptSubmit', { prompt: line });
     if (line === 'ask-permission') tool('Bash', { command: 'npm test' });
+    // 只送 PostToolUse：團隊測試要的是 file.changed，不走權限流程。
+    if (line.startsWith('edit-file ')) {
+      hook('PostToolUse', {
+        tool_name: 'Write',
+        tool_input: { file_path: line.slice('edit-file '.length) },
+        tool_use_id: randomUUID(),
+      });
+    }
     if (line === 'danger') tool('Bash', { command: 'git push --force origin main' });
     // 團隊測試：假隊長回一份任務清單。
     const reply = line.startsWith('Break this team goal')

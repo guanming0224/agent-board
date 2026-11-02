@@ -34,6 +34,8 @@ registerMessages('zh-TW', {
   'team.members.add': '加入團隊',
   'team.members.conflict':
     '「{name}」和成員 {others} 都在 {dir} 改檔案，會互相蓋掉。同一團隊要各自用 worktree：開一個打開 worktree 的新 session，再把它加入。',
+  'team.members.conflictHub':
+    '「{name}」和成員在同一個資料夾，hub 拒絕加入（{detail}）。開一個打開 worktree 的新 session，再把它加入。',
   'team.members.openNew': '新增 session',
   'team.role.lead': '隊長',
   'team.role.worker': '成員',
@@ -90,7 +92,9 @@ registerMessages('zh-TW', {
     '隊長的回覆是 JSON，但沒有任何任務標題：「{preview}」。格式應該是 [{"title":"…"}]。',
   'team.rules.title': '自動交接規則',
   'team.rules.hint':
-    '觸發時只把一句摘要、改過的檔案路徑和分支名稱送給下一位，不貼完整對話。對方收到就會開始工作，所以開啟後會花對方的額度。「完成」指來源 session 每個回合結束。',
+    '觸發時只把一句摘要、偵測到的檔案改動和分支名稱送給下一位，不貼完整對話。透過 Bash 改的檔案偵測不到，所以清單不一定完整，空的也不代表沒改。對方收到就會開始工作，所以開啟後會花對方的額度。「完成」指來源 session 每個回合結束。',
+  'team.rules.fileLimit':
+    '只偵測 Write、Edit、MultiEdit、NotebookEdit 改的檔案；透過 Bash 改的（sed、mv、產生器）不會觸發。',
   'team.rules.empty': '還沒有規則。可以在這裡新增，或在畫布上從卡片拖線。',
   'team.rules.gone': '（已不存在）',
   'team.rules.trigger': '觸發條件',
@@ -146,6 +150,8 @@ registerMessages('en', {
   'team.members.add': 'Add to team',
   'team.members.conflict':
     '"{name}" and member(s) {others} would both edit files in {dir} and overwrite each other. Each team member needs its own worktree: start a new session with worktree on, then add that one.',
+  'team.members.conflictHub':
+    'The hub refused to add "{name}" because it shares a folder with a member ({detail}). Start a new session with worktree on, then add that one.',
   'team.members.openNew': 'New session',
   'team.role.lead': 'Lead',
   'team.role.worker': 'Worker',
@@ -205,7 +211,9 @@ registerMessages('en', {
     'The lead\'s reply is JSON but has no task titles: "{preview}". The format should be [{"title":"…"}].',
   'team.rules.title': 'Automatic handoff rules',
   'team.rules.hint':
-    'When triggered, only a one-sentence summary, changed file paths and the branch name go to the next session, never the full conversation. It starts working on receipt, so turning a rule on uses its quota. "On done" means every turn the source session finishes.',
+    'When triggered, only a one-sentence summary, detected file edits and the branch name go to the next session, never the full conversation. Files changed through Bash are not detected, so the list may be incomplete, and an empty list does not mean nothing changed. It starts working on receipt, so turning a rule on uses its quota. "On done" means every turn the source session finishes.',
+  'team.rules.fileLimit':
+    'Only files edited with Write, Edit, MultiEdit or NotebookEdit are detected. Changes made through Bash (sed, mv, generators) do not trigger this rule.',
   'team.rules.empty': 'No rules yet. Add one here or drag a line between cards on the canvas.',
   'team.rules.gone': '(no longer exists)',
   'team.rules.trigger': 'Trigger',

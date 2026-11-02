@@ -86,6 +86,7 @@ function RuleRow({ rule, members }: { rule: HandoffRule; members: Session[] }) {
           {t('team.rules.delete')}
         </button>
       </div>
+      {rule.trigger === 'on_file' && <p className="sub">{t('team.rules.fileLimit')}</p>}
       <ActionMessage message={message} />
     </li>
   );
@@ -149,6 +150,7 @@ function NewRule({ team, members }: { team: Team; members: Session[] }) {
         {t('team.rules.add')}
       </button>
       <ActionMessage message={message} />
+      {trigger === 'on_file' && <p className="sub rule-limit">{t('team.rules.fileLimit')}</p>}
     </div>
   );
 }
