@@ -985,10 +985,53 @@ describe('daemon reconnect behaviours', () => {
     expect(get(done.id).endedAt).not.toBeNull();
     expect(get(archived.id).endedAt).not.toBeNull();
     await hub.running.hub.pushesSettled();
-    const pushed = hub.push.sent.map(
-      (p) => (JSON.parse(p.payload) as { sessionId: string }).sessionId,
-    );
-    expect(pushed).toEqual([lost.id]);
+    // 這條路徑全部不推播：結果不明的 error、done、archived 都一樣。
+    expect(hub.push.sent).toEqual([]);
+
+    // done、archived、結果不明的都不佔名額，只剩真的活著的那一個。
+    expect(hub.running.store.countActiveSessions()).toBe(1);
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { quotaGuards: { denyReadPaths: [], maxConcurrentSessions: 2 } },
+    });
+    expect((await newSession(cookie, machineId)).status).toBe('starting');
+    expect((await newSession(cookie, machineId)).status).toBe('queued');
+  });
+
+  it('a session lost during a disconnect is error with an explanation and no push; a real error still pushes', async () => {
+    hub = await startHub();
+    const { cookie, daemon, token, machineId, session: lost } = await startedSession();
+    const real = await newSession(cookie, machineId);
+    daemon.send({ type: 'session.runtime', session: runtime(real.id) });
+    await until(() => hub.running.store.getSession(real.id)?.status === 'running', 'running');
+    await hub.api('POST', '/api/push/subscriptions', {
+      cookie,
+      body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
+    });
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getSession(lost.id)?.status === 'offline', 'offline');
+
+    const back = await hub.daemon(token);
+    back.send(hello({ sessions: [runtime(real.id)] }));
+    await back.next('hub.welcome');
+    const after = hub.running.store.getSession(lost.id)!;
+    expect(after.status).toBe('error');
+    expect(after.statusDetail).toContain('outcome unknown');
+    expect(after.endedAt).not.toBeNull();
+    await hub.running.hub.pushesSettled();
+    expect(hub.push.sent).toEqual([]);
+
+    back.send({
+      type: 'session.runtime',
+      session: runtime(real.id, { status: 'error', statusDetail: 'exit 1' }),
+    });
+    await until(() => hub.running.store.getSession(real.id)?.status === 'error', 'real error');
+    await hub.running.hub.pushesSettled();
+    expect(hub.push.sent).toHaveLength(1);
+    expect(JSON.parse(hub.push.sent[0]!.payload)).toMatchObject({
+      sessionId: real.id,
+      status: 'error',
+    });
   });
 
   it('pendingApprovals replaces the cache: new clients and open clients both see it', async () => {

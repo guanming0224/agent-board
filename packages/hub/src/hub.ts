@@ -94,7 +94,7 @@ interface PendingBrowse {
   reject(error: Error): void;
 }
 
-const SESSION_DETAIL_LOST = 'session not running after daemon reconnect';
+const SESSION_DETAIL_LOST = 'ended while the machine was disconnected; outcome unknown';
 const SESSION_DETAIL_CREATE_TIMEOUT = 'daemon did not confirm session start in time';
 const SESSION_DETAIL_CANCELLED = 'cancelled while queued';
 
@@ -333,9 +333,15 @@ export class Hub {
       if (session.status === 'done' || session.archived) {
         this.updateFields(session, { endedAt: this.nowIso() });
       } else {
-        this.setStatus(session, 'error', SESSION_DETAIL_LOST, 'daemon_reconcile', {
-          endedAt: this.nowIso(),
-        });
+        // 分不出正常結束還是崩潰，推播會變成假警報：標在畫面上讓人自己看。
+        this.setStatus(
+          session,
+          'error',
+          SESSION_DETAIL_LOST,
+          'daemon_reconcile',
+          { endedAt: this.nowIso() },
+          false,
+        );
       }
     }
 
@@ -861,6 +867,7 @@ export class Hub {
     detail: string | null,
     reason: string,
     extra: Partial<Session> = {},
+    notify = true,
   ): Session {
     const next: Session = {
       ...session,
@@ -873,7 +880,7 @@ export class Hub {
     if (status !== session.status) {
       this.addEvent(session.id, 'status', { from: session.status, to: status, reason });
     }
-    this.afterChange(session, next, true);
+    this.afterChange(session, next, notify);
     return next;
   }
 
