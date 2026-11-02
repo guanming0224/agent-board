@@ -269,5 +269,5 @@ export const Settings = z.object({
 export type Settings = z.infer<typeof Settings>;
 
 /** 預設危險指令清單（§7）。比對方式見 CONTRACTS.md §4.3。 */
-export const DEFAULT_DANGER_RULES = ['rm -rf /', 'git push --force', 'git reset --hard'];
+export const DEFAULT_DANGER_RULES = ['rm -rf /', 'rm -r /', 'git push --force', 'git reset --hard'];
 export const DEFAULT_STUCK_MINUTES = 10;

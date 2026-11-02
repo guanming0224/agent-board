@@ -1154,15 +1154,21 @@ test.describe('設定', () => {
   test('危險指令清單：新增、去重、移除、清空警告', async ({ page }) => {
     await open(page, 'settings');
     const rules = page.getByTestId('danger-rules');
-    await expect(rules.locator('li')).toHaveCount(3);
+    await expect(rules.locator('li')).toHaveCount(4);
     const input = page.getByLabel('新增規則，例如 git push --force');
     await input.fill('git   push  --force');
     await page.getByRole('button', { name: '新增規則' }).click();
     await expect(page.locator('#s-security .msg.err')).toHaveText('這條規則已經在清單裡');
     await input.fill('drop database');
     await page.getByRole('button', { name: '新增規則' }).click();
-    await expect(rules.locator('li')).toHaveCount(4);
-    for (const rule of ['rm -rf /', 'git push --force', 'git reset --hard', 'drop database']) {
+    await expect(rules.locator('li')).toHaveCount(5);
+    for (const rule of [
+      'rm -rf /',
+      'rm -r /',
+      'git push --force',
+      'git reset --hard',
+      'drop database',
+    ]) {
       await page.getByRole('button', { name: `移除規則 ${rule}` }).click();
     }
     await expect(page.locator('#s-security')).toContainText('不會攔下任何指令');

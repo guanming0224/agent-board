@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { TaskColumn } from '@agent-board/protocol';
 import type { Session, SessionEvent, Task, Team } from '@agent-board/protocol';
+import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { ActionMessage, CostChip, useAction } from './common';
@@ -129,6 +130,7 @@ function Decompose({
   // 離開頁面就不再輪詢；回覆晚點到，回來按「重新讀取回覆」即可。
   useEffect(() => () => stopWaiting.current?.(), []);
   const { busy, message, run, setMessage } = useAction();
+  const mask = useMaskText();
 
   const blocker = !lead
     ? t('team.decompose.noLead')
@@ -144,7 +146,7 @@ function Decompose({
   const accept = async (reply: string): Promise<string> => {
     const parsed = parseTaskList(reply);
     if (!parsed.ok) {
-      const preview = reply.replace(/\s+/g, ' ').trim().slice(0, REPLY_PREVIEW_CHARS);
+      const preview = mask(reply.replace(/\s+/g, ' ').trim().slice(0, REPLY_PREVIEW_CHARS));
       throw new Error(
         t(`team.decompose.parse.${parsed.reason}`, {
           preview: preview || t('team.decompose.emptyReply'),
