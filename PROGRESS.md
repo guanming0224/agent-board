@@ -70,3 +70,11 @@ Phase 1 平行派工。
 ### 下一步
 
 Phase 4 需要 GM 決定：公開 repo 位置、LICENSE、版本號；實機測試環境。
+
+## 上架到 Mac mini（2026-11-02）
+
+GM 決定先自用，尚未公開發布。步驟、驗證結果與缺口在上層的 `HANDOFF.md`。
+
+- 真 launchd 下的 hub、daemon、`claude`、hook、網頁核准、wss、`Secure` cookie 都通過。
+- 新缺口：沒有改密碼介面；回答信任對話框後 `statusDetail` 留在 `trust`（無可見影響）；登入後語言不套用帳號設定。
+- 未驗證：別台裝置、重開機。
