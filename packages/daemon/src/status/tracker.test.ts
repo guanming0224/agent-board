@@ -856,24 +856,96 @@ describe('createStatusTracker', () => {
       expect(last()).toMatchObject({ from: 'running', to: 'error', detail: 'exit code 137' });
     });
 
-    it('exit 0 維持原狀', () => {
+    it('exit 0 變 done', () => {
       toRunning();
-      tracker.onHook('Stop', payload('Stop'));
       tracker.onExit(0);
-      expect(tracker.status).toBe('waiting_input');
+      expect(tracker.status).toBe('done');
+      expect(last()).toMatchObject({ from: 'running', to: 'done', reason: 'exit:0', detail: null });
     });
 
-    it('結束後停止計時，遲到的事件一律忽略', () => {
-      toRunning();
-      tracker.onExit(1);
-      const count = changes.length;
-      vi.advanceTimersByTime(STUCK_MINUTES * MINUTE * 10);
-      tracker.onHook('Stop', payload('Stop', { session_id: 'late' }));
-      tracker.onOutput(`${LIMIT_LINE}\n`);
-      tracker.onExit(2);
-      expect(tracker.status).toBe('error');
-      expect(tracker.claudeSessionId).toBe('claude-1');
-      expect(changes).toHaveLength(count);
+    describe.each<[SessionStatus, () => void]>([
+      ['starting', () => undefined],
+      ['running', () => toRunning()],
+      [
+        'stuck',
+        () => {
+          toRunning();
+          vi.advanceTimersByTime(STUCK_MINUTES * MINUTE);
+        },
+      ],
+      ['waiting_input', () => tracker.onHook('Stop', payload('Stop'))],
+      [
+        'waiting_permission',
+        () => tracker.onHook('PermissionRequest', payload('PermissionRequest')),
+      ],
+      ['plan_review', () => tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' }))],
+      [
+        'rate_limited',
+        () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'rate_limit' })),
+      ],
+      ['error', () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'x' }))],
+    ])('從 %s 退出', (status, enter) => {
+      beforeEach(() => {
+        enter();
+        expect(tracker.status).toBe(status);
+      });
+
+      it('exit 0 變 done', () => {
+        tracker.onExit(0);
+        expect(tracker.status).toBe('done');
+        expect(last()).toMatchObject({ from: status, to: 'done', reason: 'exit:0' });
+      });
+
+      it('exit ≠ 0 變 error', () => {
+        const before = changes.length;
+        tracker.onExit(1);
+        expect(tracker.status).toBe('error');
+        // 原本就是 error 時不重複發事件。
+        expect(changes).toHaveLength(status === 'error' ? before : before + 1);
+      });
+    });
+
+    describe.each([
+      ['done', 0],
+      ['error', 1],
+    ] as const)('退出成 %s 之後', (expected, exitCode) => {
+      const hookEvents: [HookEventName, HookPayload][] = [
+        ['SessionStart', payload('SessionStart', { source: 'startup', session_id: 'late' })],
+        ['UserPromptSubmit', payload('UserPromptSubmit', { session_id: 'late' })],
+        ['PreToolUse', payload('PreToolUse', { ...toolCall, session_id: 'late' })],
+        ['PermissionRequest', payload('PermissionRequest', { session_id: 'late' })],
+        ['PostToolUse', payload('PostToolUse', { ...toolCall, session_id: 'late' })],
+        ['PostToolUseFailure', payload('PostToolUseFailure', { ...toolCall, session_id: 'late' })],
+        ['Notification', { ...notification('permission_prompt'), session_id: 'late' }],
+        ['Notification', { ...notification('idle_prompt'), session_id: 'late' }],
+        ['Stop', payload('Stop', { session_id: 'late' })],
+        ['StopFailure', payload('StopFailure', { error: 'rate_limit', session_id: 'late' })],
+        ['SessionEnd', payload('SessionEnd', { reason: 'exit', session_id: 'late' })],
+      ];
+
+      it.each(hookEvents)('遲到的 %s 被忽略', (event, hookPayload) => {
+        toRunning();
+        tracker.onExit(exitCode);
+        const count = changes.length;
+        tracker.onHook(event, hookPayload);
+        expect(tracker.status).toBe(expected);
+        expect(tracker.claudeSessionId).toBe('claude-1');
+        expect(changes).toHaveLength(count);
+      });
+
+      it('輸出（含限流訊息）、再次 onExit、計時器都不改狀態', () => {
+        toRunning();
+        tracker.onExit(exitCode);
+        const count = changes.length;
+        tracker.onOutput('ordinary output\n');
+        tracker.onOutput(`${LIMIT_LINE}\n`);
+        tracker.onExit(exitCode === 0 ? 1 : 0);
+        tracker.setStuckMinutes(1);
+        vi.advanceTimersByTime(STUCK_MINUTES * MINUTE * 10);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(tracker.status).toBe(expected);
+        expect(changes).toHaveLength(count);
+      });
     });
   });
 

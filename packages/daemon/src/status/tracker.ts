@@ -237,7 +237,8 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     if (closed) return;
     closed = true;
     clearStuckTimer();
-    if (exitCode !== 0) transition('error', 'exit:nonzero', `exit code ${exitCode}`);
+    if (exitCode === 0) transition('done', 'exit:0', null);
+    else transition('error', 'exit:nonzero', `exit code ${exitCode}`);
   }
 
   function setStuckMinutes(minutes: number): void {
