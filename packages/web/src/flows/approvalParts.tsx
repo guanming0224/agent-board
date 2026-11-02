@@ -1,9 +1,9 @@
 // 審核中心與收件匣共用：把 approval 內容畫出來、送出決定。
 import { useState } from 'react';
-import type { Approval, ApprovalDecision, Machine } from '@agent-board/protocol';
+import type { Approval, ApprovalDecision, Machine, User } from '@agent-board/protocol';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { errorText, Callsign, type Note } from './common';
+import { errorText, Callsign, type Loaded, type Note } from './common';
 import { summarizeTool, type DiffLine, type ToolView } from './toolView';
 
 export function DiffBlock({ lines }: { lines: DiffLine[] }) {
@@ -85,7 +85,12 @@ export const planText = (approval: Approval): string | null => {
 };
 
 /** 這個項目目前能不能從介面決定；不能的話回傳原因。失聯時寫最後讀到的時間（STYLE.md 規則四）。 */
-export function useBlockedReason(hasSession: boolean, machine: Machine | undefined): string | null {
+export function useBlockedReason(
+  hasSession: boolean,
+  machine: Machine | undefined,
+  approval: Approval | null,
+  me: Loaded<User | null>,
+): string | null {
   const t = useT();
   const locale = useLocale((s) => s.locale);
   const { connected } = useBoard();
@@ -99,6 +104,11 @@ export function useBlockedReason(hasSession: boolean, machine: Machine | undefin
         })
       : '—';
     return t('flows.blocked.offline', { machine: machine.name, time });
+  }
+  // 危險指令只有 owner 能決定（CONTRACTS.md）；還不知道身分時也先不給按。
+  if (approval?.kind === 'danger' && me.data?.role !== 'owner') {
+    if (me.data) return t('flows.blocked.ownerOnly');
+    return me.loading ? t('flows.loading') : t('flows.blocked.noUser');
   }
   return null;
 }
@@ -125,11 +135,5 @@ export function useDecide(approval: Approval | null) {
   return { busy, note, setNote, decide };
 }
 
-/**
- * 回答提問。ApprovalDecision 目前沒有「回答」欄位，唯一能把文字交回 agent 的是 deny 的 reason，
- * 所以先集中在這裡；合約加欄位時只改這一處。
- */
-export const answerDecision = (answer: string): ApprovalDecision => ({
-  behavior: 'deny',
-  reason: answer,
-});
+/** 回答提問。和 deny 分開，audit 才不會把回答記成拒絕。 */
+export const answerDecision = (text: string): ApprovalDecision => ({ behavior: 'answer', text });

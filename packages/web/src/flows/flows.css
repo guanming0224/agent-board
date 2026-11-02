@@ -373,6 +373,23 @@
   align-items: start;
 }
 
+.flows .review {
+  scroll-margin-top: calc(var(--app-header-height, 0px) + 12px);
+}
+
+.flows .review:focus {
+  outline: none;
+}
+
+.flows .review.targeted {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.flows .target-missing {
+  margin: 0 0 12px;
+}
+
 .flows .review .acts button {
   white-space: normal;
 }
@@ -640,7 +657,8 @@
 
 .flows .preview {
   position: sticky;
-  top: 12px;
+  /* App 頁首也是 sticky；頁首設定這個變數後預覽才不會滑到它底下 */
+  top: calc(var(--app-header-height, 0px) + 12px);
 }
 
 .flows .preview-bypass {

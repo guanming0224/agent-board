@@ -8,6 +8,7 @@ registerMessages('en', en);
 restoreLocale();
 
 export { InboxPage } from './InboxPage';
+export { LoginPage } from './LoginPage';
 export { NewSessionPage } from './NewSessionPage';
 export { OnboardingPage } from './OnboardingPage';
 export { ReviewPage } from './ReviewPage';

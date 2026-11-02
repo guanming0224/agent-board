@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- e2e 專用：App.tsx 由 Lead 接路由，這裡直接掛 flows 匯出的頁面，資料替身注入後才 mount。 -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>flows harness</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      import { createElement, StrictMode } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import '/src/shared/styles/tokens.css';
+      import { LoginPage } from '/src/flows/index.ts';
+
+      window.__mount = () =>
+        createRoot(document.getElementById('root')).render(
+          createElement(StrictMode, null, createElement(LoginPage)),
+        );
+    </script>
+  </body>
+</html>

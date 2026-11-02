@@ -28,6 +28,7 @@ export const zhTW: Record<string, string> = {
   'flows.review.title': '審核中心',
   'flows.review.emptyNext': '有 session 要你決定時會出現在這裡。想開新的工作：',
   'flows.review.noTool': '工具',
+  'flows.review.targetNone': '這個 session 目前沒有要審核的項目。',
   'flows.review.unknownSession': '找不到對應的 session',
   'flows.review.allowOnce': '允許一次',
   'flows.review.allowRemember': '允許並記住',
@@ -51,6 +52,8 @@ export const zhTW: Record<string, string> = {
   'flows.review.sendFailed': '送不出去：{error}。請求還在，稍後再按一次。',
   'flows.review.useTerminal': '這個請求沒有帶可在網頁決定的內容，請到終端機處理。',
   'flows.blocked.hub': '連不到 hub，恢復後才能決定。',
+  'flows.blocked.ownerOnly': '只有管理員能決定這個。請管理員登入後處理。',
+  'flows.blocked.noUser': '讀不到你的登入身分，所以先不能決定。重新整理或重新登入後再試。',
   'flows.blocked.noSession': '看不出這是哪個 session，不能從這裡允許。請到終端機處理。',
   'flows.blocked.offline': '⊘ 失聯・最後讀到 {time}。連不到 {machine}，恢復後會自動接回。',
   'flows.diff.aria': '程式碼差異：刪除 {del} 行、新增 {add} 行',
@@ -236,6 +239,17 @@ export const zhTW: Record<string, string> = {
   'flows.language.auto': '跟隨瀏覽器',
   'flows.language.hint': '切換立刻生效，只存在這個瀏覽器。',
 
+  'flows.login.title': '登入 Agent Board',
+  'flows.login.name': '帳號',
+  'flows.login.submit': '登入',
+  'flows.login.sending': '登入中…',
+  'flows.login.required': '要填帳號和密碼',
+  'flows.login.invalid': '帳號或密碼不對。確認後再試一次；忘記密碼請聯絡管理員。',
+  'flows.login.limited': '嘗試太多次，暫時不能登入。請稍後再試。',
+  'flows.login.limitedSec': '嘗試太多次，暫時不能登入。請等 {n} 秒後再試。',
+  'flows.login.limitedMin': '嘗試太多次，暫時不能登入。請等 {n} 分鐘後再試。',
+  'flows.login.failed': '連不到 hub：{error}。確認 hub 還在執行後再試一次。',
+
   'flows.onboard.title': '開始使用 Agent Board',
   'flows.onboard.step1': '建立管理員',
   'flows.onboard.step2': '加入第一台機器',
@@ -290,6 +304,7 @@ export const en: Record<string, string> = {
   'flows.review.title': 'Review center',
   'flows.review.emptyNext': 'Sessions that need a decision appear here. To start new work:',
   'flows.review.noTool': 'Tool',
+  'flows.review.targetNone': 'This session has nothing to review right now.',
   'flows.review.unknownSession': 'No matching session found',
   'flows.review.allowOnce': 'Allow once',
   'flows.review.allowRemember': 'Always allow',
@@ -317,6 +332,9 @@ export const en: Record<string, string> = {
   'flows.review.useTerminal':
     'This request has nothing that can be decided on the web. Handle it in the terminal.',
   'flows.blocked.hub': "Can't reach the hub. You can decide once it's back.",
+  'flows.blocked.ownerOnly': 'Only an owner can decide this. Ask an owner to log in and handle it.',
+  'flows.blocked.noUser':
+    "Can't confirm who you're logged in as, so this can't be decided yet. Reload or log in again.",
   'flows.blocked.noSession':
     "Can't tell which session this is, so it can't be allowed here. Handle it in the terminal.",
   'flows.blocked.offline':
@@ -518,6 +536,21 @@ export const en: Record<string, string> = {
 
   'flows.language.auto': 'Follow browser',
   'flows.language.hint': 'Takes effect at once and is stored in this browser only.',
+
+  'flows.login.title': 'Log in to Agent Board',
+  'flows.login.name': 'Username',
+  'flows.login.submit': 'Log in',
+  'flows.login.sending': 'Logging in…',
+  'flows.login.required': 'Enter your username and password',
+  'flows.login.invalid':
+    "The username or password isn't right. Check them and try again. If you forgot your password, contact an owner.",
+  'flows.login.limited': 'Too many attempts, so login is paused. Try again later.',
+  'flows.login.limitedSec':
+    'Too many attempts, so login is paused. Wait {n} seconds and try again.',
+  'flows.login.limitedMin':
+    'Too many attempts, so login is paused. Wait {n} minutes and try again.',
+  'flows.login.failed':
+    "Can't reach the hub: {error}. Check that the hub is running and try again.",
 
   'flows.onboard.title': 'Get started with Agent Board',
   'flows.onboard.step1': 'Create the admin',

@@ -238,6 +238,7 @@ function UsersSection() {
     try {
       await backend.logout();
       setNote({ text: t('flows.user.loggedOut') });
+      location.hash = '#/login';
     } catch (e) {
       setNote({ text: t('flows.user.logoutFailed', { error: errorText(e) }), tone: 'err' });
     }

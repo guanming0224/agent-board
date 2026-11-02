@@ -1,6 +1,6 @@
 // 審核中心：按「允許」之前先確認呼號（STYLE.md 邏輯 2、6）。
-import { useRef, useState } from 'react';
-import type { Approval, Machine, Project, Session } from '@agent-board/protocol';
+import { useEffect, useRef, useState } from 'react';
+import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import {
@@ -22,11 +22,13 @@ import {
   ModeChip,
   Msg,
   Page,
+  useCurrentUser,
   useListSettling,
   useNow,
   useProjects,
   useTwoStep,
   WaitAge,
+  type Loaded,
   type Note,
 } from './common';
 import { summarizeTool } from './toolView';
@@ -36,6 +38,7 @@ interface CardContext {
   machines: Machine[];
   projects: Project[];
   now: number;
+  me: Loaded<User | null>;
   settling: boolean;
 }
 
@@ -71,9 +74,12 @@ function PermissionActions({
   approval,
   disabled,
   decide,
+  canDecide,
 }: {
   approval: Approval;
   disabled: boolean;
+  /** false：這個使用者不能決定，連拒絕原因也不用填。 */
+  canDecide: boolean;
   decide: ReturnType<typeof useDecide>;
 }) {
   const t = useT();
@@ -135,16 +141,18 @@ function PermissionActions({
         </div>
       )}
       {!danger && !canRemember && <p className="hint">{t('flows.review.noSuggestions')}</p>}
-      <RequiredField
-        label={t('flows.review.denyReason')}
-        value={reason}
-        invalid={invalid}
-        inputRef={reasonRef}
-        onChange={(value) => {
-          setReason(value);
-          setInvalid(false);
-        }}
-      />
+      {canDecide && (
+        <RequiredField
+          label={t('flows.review.denyReason')}
+          value={reason}
+          invalid={invalid}
+          inputRef={reasonRef}
+          onChange={(value) => {
+            setReason(value);
+            setInvalid(false);
+          }}
+        />
+      )}
     </>
   );
 }
@@ -311,12 +319,27 @@ function ReplyActions({ session, disabled }: { session: Session; disabled: boole
   );
 }
 
-function ReviewCard({ item, context }: { item: WorkItem; context: CardContext }) {
+function ReviewCard({
+  item,
+  context,
+  targeted,
+}: {
+  item: WorkItem;
+  context: CardContext;
+  targeted: boolean;
+}) {
   const t = useT();
+  const cardRef = useRef<HTMLElement>(null);
+  // 從畫布的「檢視並決定」進來：只在變成目標時捲動與聚焦一次，之後的資料更新不搶焦點。
+  useEffect(() => {
+    if (!targeted) return;
+    cardRef.current?.scrollIntoView({ block: 'center' });
+    cardRef.current?.focus({ preventScroll: true });
+  }, [targeted]);
   const { approval, session } = item;
   const decide = useDecide(approval);
   const machine = context.machines.find((m) => m.id === session?.machineId);
-  const blocked = useBlockedReason(session !== null, machine);
+  const blocked = useBlockedReason(session !== null, machine, approval, context.me);
   const disabled = blocked !== null || decide.busy || context.settling;
   const danger = approval?.kind === 'danger';
   const bypass = session?.permissionMode === 'bypassPermissions';
@@ -324,7 +347,9 @@ function ReviewCard({ item, context }: { item: WorkItem; context: CardContext })
 
   return (
     <section
-      className={`card review ${session ? handsClass(session.permissionMode) : ''}${gone ? ' gone' : ''}`}
+      ref={cardRef}
+      tabIndex={-1}
+      className={`card review ${session ? handsClass(session.permissionMode) : ''}${gone ? ' gone' : ''}${targeted ? ' targeted' : ''}`}
       data-testid={`review-${item.key}`}
     >
       {danger && (
@@ -368,7 +393,12 @@ function ReviewCard({ item, context }: { item: WorkItem; context: CardContext })
       {blocked && <p className="blocked">{blocked}</p>}
 
       {approval && (approval.kind === 'permission' || approval.kind === 'danger') && (
-        <PermissionActions approval={approval} disabled={disabled} decide={decide} />
+        <PermissionActions
+          approval={approval}
+          disabled={disabled}
+          decide={decide}
+          canDecide={!danger || context.me.data?.role === 'owner'}
+        />
       )}
       {approval?.kind === 'plan' && <PlanActions disabled={disabled} decide={decide} />}
       {approval?.kind === 'question' && (
@@ -384,10 +414,33 @@ function ReviewCard({ item, context }: { item: WorkItem; context: CardContext })
   );
 }
 
+/** `#/review/<sessionId>`：畫布卡片的按鈕用它指定要看哪個 session。 */
+function targetFromHash(): string | null {
+  const segment = location.hash.replace(/^#\/?/, '').split('/')[1];
+  if (!segment) return null;
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
+function useTargetSession(): string | null {
+  const [target, setTarget] = useState(targetFromHash);
+  useEffect(() => {
+    const onChange = () => setTarget(targetFromHash());
+    addEventListener('hashchange', onChange);
+    return () => removeEventListener('hashchange', onChange);
+  }, []);
+  return target;
+}
+
 export function ReviewPage() {
   const t = useT();
   const board = useBoard();
   const projects = useProjects();
+  const me = useCurrentUser();
+  const target = useTargetSession();
   const now = useNow();
   // 故障（✕ ⚠）沒有東西可審，留在待處理清單與收件匣。
   const items = workItems(board).filter((item) => !isFault(item));
@@ -396,22 +449,26 @@ export function ReviewPage() {
     machines: board.machines,
     projects: projects.data ?? [],
     now,
+    me,
     settling,
   };
+
+  // 同一個 session 有多張卡時，指向排最前面的那張。
+  const targetKey = items.find(
+    (item) => (item.approval?.sessionId ?? item.session?.id) === target,
+  )?.key;
+  const loaded = !(projects.loading && !projects.data);
 
   return (
     <Page>
       <header className="page-head">
         <h1>{t('flows.review.title')}</h1>
-        <span className="waiting-slot">
-          {items.length > 0 && (
-            <span className="waiting">
-              <span>{t('label.waiting')}</span>
-              <b className="num">{items.length}</b>
-            </span>
-          )}
-        </span>
       </header>
+      {target && loaded && !targetKey && (
+        <p className="blocked target-missing" role="status" data-testid="review-target-missing">
+          {t('flows.review.targetNone')}
+        </p>
+      )}
       {projects.error && (
         <ErrorBox
           what={t('flows.error.projects', { error: projects.error })}
@@ -419,7 +476,7 @@ export function ReviewPage() {
           onRetry={projects.reload}
         />
       )}
-      {projects.loading && !projects.data ? (
+      {!loaded ? (
         <Loading />
       ) : items.length === 0 ? (
         <Empty
@@ -433,7 +490,12 @@ export function ReviewPage() {
       ) : (
         <div className="grid2">
           {items.map((item) => (
-            <ReviewCard key={item.key} item={item} context={context} />
+            <ReviewCard
+              key={item.key}
+              item={item}
+              context={context}
+              targeted={item.key === targetKey}
+            />
           ))}
         </div>
       )}

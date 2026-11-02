@@ -7,6 +7,7 @@ import type {
   Project,
   Session,
   SessionStatus,
+  User,
 } from '@agent-board/protocol';
 import { useLocale, useT } from '../shared/i18n';
 import { HANDS_LINE, STATUS_VISUAL } from '../shared/status';
@@ -114,10 +115,20 @@ export function Msg({ note }: { note: Note | null }) {
 }
 
 /** hub 連不上：整頁淡化＋一行字，內容凍結（呼叫端同時停用操作）。 */
-export function Page({ children, narrow }: { children: ReactNode; narrow?: boolean }) {
+export function Page({
+  children,
+  narrow,
+  ignoreHub,
+}: {
+  children: ReactNode;
+  narrow?: boolean;
+  /** 還沒登入的畫面：WebSocket 本來就連不上，不算資料過期。 */
+  ignoreHub?: boolean;
+}) {
   const t = useT();
   const locale = useLocale((s) => s.locale);
-  const { connected } = useBoard();
+  const board = useBoard();
+  const connected = ignoreHub || board.connected;
   useEffect(() => {
     document.documentElement.lang = locale === 'zh-TW' ? 'zh-Hant' : 'en';
   }, [locale]);
@@ -207,6 +218,12 @@ export function useLoad<V>(load: () => Promise<V>): Loaded<V> {
   }, [load, round]);
   const reload = useCallback(() => setRound((r) => r + 1), []);
   return { ...state, reload };
+}
+
+/** 目前登入的使用者。危險指令只有 owner 能決定，所以讀不到時要當成不能決定。 */
+export function useCurrentUser(): Loaded<User | null> {
+  const { backend } = useBoard();
+  return useLoad(useCallback(() => backend.currentUser(), [backend]));
 }
 
 export function useProjects(): Loaded<Project[]> {

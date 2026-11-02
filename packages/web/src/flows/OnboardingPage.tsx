@@ -3,7 +3,7 @@ import { useCallback, useState } from 'react';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { ErrorBox, errorText, Loading, Msg, Page, useLoad, type Note } from './common';
-import { applyLocaleChoice } from './locale';
+import { LanguagePicker } from './LanguagePicker';
 import { PairingPanel } from './PairingPanel';
 
 const MIN_PASSWORD = 8;
@@ -26,34 +26,10 @@ function Stepper({ step }: { step: number }) {
   );
 }
 
-function LanguagePicker() {
-  const locale = useLocale((s) => s.locale);
-  return (
-    <div className="segmented" role="group" aria-label="Language / 語言">
-      {(
-        [
-          ['zh-TW', '繁體中文'],
-          ['en', 'English'],
-        ] as const
-      ).map(([value, label]) => (
-        <label key={value} className={locale === value ? 'on' : ''}>
-          <input
-            type="radio"
-            name="onboard-locale"
-            checked={locale === value}
-            onChange={() => applyLocaleChoice(value)}
-          />
-          {label}
-        </label>
-      ))}
-    </div>
-  );
-}
-
 function CreateAdmin({ onDone }: { onDone: () => void }) {
   const t = useT();
   const locale = useLocale((s) => s.locale);
-  const { backend, connected } = useBoard();
+  const { backend } = useBoard();
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -122,7 +98,7 @@ function CreateAdmin({ onDone }: { onDone: () => void }) {
         />
       </div>
       <div className="acts">
-        <button type="submit" className="primary" disabled={busy || !connected}>
+        <button type="submit" className="primary" disabled={busy}>
           {t('flows.onboard.createAdmin')}
         </button>
         <Msg note={note} />
@@ -202,7 +178,8 @@ export function OnboardingPage() {
   const current = step ?? (needsSetup.data ? 1 : 2);
 
   return (
-    <Page narrow>
+    // 建立管理員之前還沒登入，WebSocket 本來就連不上。
+    <Page narrow ignoreHub={current === 1}>
       <header className="page-head">
         <h1>{t('flows.onboard.title')}</h1>
         <span className="waiting-slot">

@@ -1,6 +1,6 @@
 // 手機 PWA 收件匣：只列待處理項目，大按鈕；複雜操作回電腦（DISPATCH §5.3-6）。
 import { useRef, useState } from 'react';
-import type { Approval, Machine, Project, Session } from '@agent-board/protocol';
+import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import {
@@ -21,12 +21,14 @@ import {
   ModeChip,
   Msg,
   Page,
+  useCurrentUser,
   useListSettling,
   useNow,
   useProjects,
   useTwoStep,
   WaitAge,
   Waiting,
+  type Loaded,
   type Note,
 } from './common';
 import { summarizeTool } from './toolView';
@@ -36,6 +38,7 @@ interface ItemContext {
   machines: Machine[];
   projects: Project[];
   now: number;
+  me: Loaded<User | null>;
   settling: boolean;
 }
 
@@ -251,7 +254,7 @@ function InboxItem({ item, context }: { item: WorkItem; context: ItemContext }) 
   const t = useT();
   const { approval, session } = item;
   const machine = context.machines.find((m) => m.id === session?.machineId);
-  const blocked = useBlockedReason(session !== null, machine);
+  const blocked = useBlockedReason(session !== null, machine, approval, context.me);
   const disabled = blocked !== null || context.settling;
   const fault = isFault(item);
   const gone = machine !== undefined && !machine.online;
@@ -312,6 +315,7 @@ export function InboxPage() {
   const t = useT();
   const board = useBoard();
   const projects = useProjects();
+  const me = useCurrentUser();
   const now = useNow();
   const items = workItems(board);
   const settling = useListSettling(items.map((item) => item.key).join('|'));
@@ -319,6 +323,7 @@ export function InboxPage() {
     machines: board.machines,
     projects: projects.data ?? [],
     now,
+    me,
     settling,
   };
 

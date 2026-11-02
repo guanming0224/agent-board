@@ -82,7 +82,8 @@ const patchBackend = (name: string, body: string) => `backend.${name} = ${body};
 async function open(page: Page, route: string, seed: Seed = {}) {
   // 只換 hash 不會重新載入，上一次注入的替身會留著；先離開才是乾淨的 store。
   await page.goto('about:blank');
-  await page.goto('/?demo=1#/canvas');
+  // 登入頁的路由由 Lead 接在 App.tsx，這裡用 harness 直接掛 flows 匯出的 LoginPage。
+  await page.goto(route === 'login' ? '/e2e/flows-harness.html?demo=1' : '/?demo=1#/canvas');
   await page.evaluate(async (s) => {
     const path = '/src/shared/store.ts';
     const { useBoard } = await import(/* @vite-ignore */ path);
@@ -121,6 +122,10 @@ async function open(page: Page, route: string, seed: Seed = {}) {
     useBoard.setState(next);
     if (s.patch) new Function('backend', s.patch)(backend);
   }, seed);
+  if (route === 'login') {
+    await page.evaluate(() => (window as unknown as { __mount(): void }).__mount());
+    return;
+  }
   await page.evaluate((r) => {
     location.hash = r;
   }, `#/${route}`);
@@ -463,9 +468,91 @@ test.describe('審核中心', () => {
     expect(recorded[0]).toEqual({
       type: 'decide',
       id: 'q1',
-      decision: { behavior: 'deny', reason: 'en' },
+      decision: { behavior: 'answer', text: 'en' },
     });
     expect(recorded[1]).toEqual({ type: 'prompt', sessionId: 's2', text: '沒有了' });
+  });
+
+  test('危險指令只有 owner 能決定：member 看得到卡片但允許與拒絕都停用', async ({ page }) => {
+    const member = `backend.currentUser = async () => ({ id: 'u2', name: 'pat', role: 'member', locale: 'zh-TW' });`;
+    await open(page, 'review', { ...dangerSeed(), patch: member });
+    const card = page.getByTestId('review-d1');
+    await expect(card.locator('.command')).toHaveText(DANGER_CMD);
+    await expect(card).toContainText('只有管理員能決定這個');
+    await expect(card.getByRole('button', { name: '允許一次' })).toBeDisabled();
+    await expect(card.getByRole('button', { name: '拒絕' })).toBeDisabled();
+    await expect(card.getByLabel('拒絕原因（必填）')).toHaveCount(0);
+    // 一般權限請求 member 照常能決定。
+    const normal = page.getByTestId('review-old');
+    await normal.getByRole('button', { name: '允許一次' }).click();
+    await expect(normal).toHaveCount(0);
+    expect(await calls(page)).toHaveLength(1);
+
+    await open(page, 'review', {
+      ...dangerSeed(),
+      patch: `backend.currentUser = async () => { throw new Error('down'); };`,
+    });
+    const unknown = page.getByTestId('review-d1');
+    await expect(unknown).toContainText('讀不到你的登入身分');
+    await expect(unknown.getByRole('button', { name: '允許一次' })).toBeDisabled();
+
+    await open(page, 'review', {
+      ...dangerSeed(),
+      patch: patchBackend('currentUser', `() => new Promise(() => {})`),
+    });
+    await expect(
+      page.getByTestId('review-d1').getByRole('button', { name: '允許一次' }),
+    ).toBeDisabled();
+  });
+
+  test('#/review/<sessionId>：捲到並聚焦那張卡；資料更新不搶焦點；沒有項目時說明', async ({
+    page,
+  }) => {
+    const many: Seed = {
+      machines: [rigA],
+      sessions: Array.from({ length: 8 }, (_, i) =>
+        session({ id: `s${i}`, name: `S${i}`, machineId: 'm-a' }),
+      ),
+      approvals: Array.from({ length: 8 }, (_, i) =>
+        approval({ id: `a${i}`, sessionId: `s${i}`, createdAt: minutesAgo(20 - i) }),
+      ),
+    };
+    await page.setViewportSize({ width: 800, height: 500 });
+    await open(page, 'review/s7', many);
+    const card = page.getByTestId('review-a7');
+    await expect(card).toBeFocused();
+    await expect(card).toBeInViewport();
+    await expect(card).toHaveClass(/targeted/);
+
+    const other = page.getByTestId('review-a6').getByLabel('拒絕原因（必填）');
+    await other.focus();
+    await setBoard(page, { machines: [{ ...rigA }] });
+    await expect(other).toBeFocused();
+
+    await page.evaluate(() => {
+      location.hash = '#/review/s0';
+    });
+    const first = page.getByTestId('review-a0');
+    await expect(first).toBeFocused();
+    await expect(first).toBeInViewport();
+    await expect(card).not.toHaveClass(/targeted/);
+
+    await page.evaluate(() => {
+      location.hash = '#/review/nope';
+    });
+    await expect(page.getByTestId('review-target-missing')).toHaveText(
+      '這個 session 目前沒有要審核的項目。',
+    );
+    await page.evaluate(() => {
+      location.hash = '#/review';
+    });
+    await expect(page.getByTestId('review-target-missing')).toHaveCount(0);
+  });
+
+  test('審核中心沒有自己的「等你 N」', async ({ page }) => {
+    await open(page, 'review');
+    await expect(page.getByTestId('review-a-1')).toBeVisible();
+    await expect(page.locator('.waiting')).toHaveCount(0);
   });
 
   test('看不出 session、機器失聯、hub 斷線：不能允許', async ({ page }) => {
@@ -668,6 +755,41 @@ test.describe('手機收件匣', () => {
     await expect(item).toHaveCount(0);
     expect(await calls(page)).toEqual([
       { type: 'decide', id: 'a-dng', decision: { behavior: 'allow', remember: false } },
+    ]);
+  });
+
+  test('member 的危險指令按鈕停用並說明', async ({ page }) => {
+    await open(page, 'inbox', {
+      ...inboxSeed(),
+      patch: `backend.currentUser = async () => ({ id: 'u2', name: 'pat', role: 'member', locale: 'zh-TW' });`,
+    });
+    const item = page.getByTestId('inbox-a-dng');
+    await expect(item).toContainText('只有管理員能決定這個');
+    await expect(item.getByRole('button', { name: '允許一次' })).toBeDisabled();
+    await expect(item.getByRole('button', { name: '拒絕' })).toBeDisabled();
+    await expect(
+      page.getByTestId('inbox-a-perm').getByRole('button', { name: '允許一次' }),
+    ).toBeEnabled();
+  });
+
+  test('回答提問送 answer，不是拒絕', async ({ page }) => {
+    await open(page, 'inbox', {
+      machines: [rigA],
+      sessions: [session({ id: 's1', name: 'Docs', machineId: 'm-a', status: 'waiting_input' })],
+      approvals: [
+        approval({
+          id: 'q1',
+          sessionId: 's1',
+          kind: 'question',
+          toolName: 'AskUserQuestion',
+          toolInput: { questions: [{ question: 'Lang?', options: [{ label: 'zh' }] }] },
+        }),
+      ],
+    });
+    await page.getByTestId('inbox-q1').getByRole('button', { name: 'zh', exact: true }).click();
+    await expect(page.getByTestId('inbox-q1')).toHaveCount(0);
+    expect(await calls(page)).toEqual([
+      { type: 'decide', id: 'q1', decision: { behavior: 'answer', text: 'zh' } },
     ]);
   });
 
@@ -915,6 +1037,17 @@ test.describe('新增 session', () => {
     expect(color).toBe('rgb(229, 139, 224)');
   });
 
+  test('預覽靠上對齊表單，捲動時 sticky 跟著', async ({ page }) => {
+    await open(page, 'new', newSeed());
+    await page.getByLabel('名稱').fill('x');
+    const top = (selector: string) =>
+      page.locator(selector).evaluate((el) => el.getBoundingClientRect().top);
+    await page.evaluate(() => scrollTo(0, 0));
+    expect(await top('aside.preview')).toBe(await top('form.form-card'));
+    await page.evaluate(() => scrollTo(0, 300));
+    expect(await top('aside.preview')).toBe(12);
+  });
+
   test('使用者輸入照 shell 規則引號，不會看起來像重導向', async ({ page }) => {
     await open(page, 'new', newSeed());
     await page.getByLabel('名稱').fill('a>b');
@@ -1084,6 +1217,12 @@ test.describe('設定', () => {
     await expect(box.locator('.rows')).not.toContainText('pat');
   });
 
+  test('登出成功導向登入頁', async ({ page }) => {
+    await open(page, 'settings');
+    await page.getByRole('button', { name: '登出' }).click();
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/login');
+  });
+
   test('語言切換即時生效，重新整理還記得，跟隨瀏覽器可復原', async ({ page }) => {
     await open(page, 'settings');
     await expect(page.getByRole('heading', { name: '設定', level: 1 })).toBeVisible();
@@ -1177,6 +1316,18 @@ test.describe('首次引導', () => {
     await expect(page.getByRole('link', { name: '新增 session' })).toHaveAttribute('href', '#/new');
   });
 
+  test('建立管理員前 WebSocket 連不上不算資料過期，仍可建立', async ({ page }) => {
+    await open(page, 'onboarding', { ...blank(), connected: false });
+    await expect(page.locator('.stale-line')).toHaveCount(0);
+    await page.getByLabel('名稱').fill('admin');
+    await page.getByLabel('密碼', { exact: true }).fill('long-enough');
+    await page.getByLabel('再輸入一次密碼').fill('long-enough');
+    await expect(page.getByRole('button', { name: '建立管理員' })).toBeEnabled();
+    await page.getByRole('button', { name: '建立管理員' }).click();
+    await expect(page.locator('.stepper li.on')).toContainText('加入第一台機器');
+    await expect(page.locator('.stale-line')).toBeVisible();
+  });
+
   test('已有管理員時從機器開始；跳過機器會說明下一步', async ({ page }) => {
     await open(page, 'onboarding', { machines: [], sessions: [], approvals: [] });
     await expect(page.locator('.stepper li.on')).toContainText('加入第一台機器');
@@ -1216,6 +1367,124 @@ test.describe('首次引導', () => {
     await page.locator('.segmented label', { hasText: 'English' }).click();
     await expect(page.getByRole('heading', { name: 'Get started with Agent Board' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create admin' })).toBeVisible();
+  });
+});
+
+test.describe('登入', () => {
+  test.use({ locale: 'zh-TW', viewport: { width: 375, height: 700 } });
+
+  const recordLogin = (rejectWith?: string) => `
+    window.__logins = [];
+    backend.login = async (input) => {
+      window.__logins.push(input);
+      ${rejectWith ? `throw ${rejectWith};` : `return { id: 'u', name: input.name, role: 'owner', locale: 'zh-TW' };`}
+    };`;
+  const logins = (page: Page) =>
+    page.evaluate(() => (window as unknown as { __logins: unknown[] }).__logins);
+  const httpError = (status: number, code: string, message: string, extra = '') =>
+    `Object.assign(new Error(${JSON.stringify(message)}), { status: ${status}, code: '${code}' ${extra} })`;
+
+  test('成功：鍵盤 Enter 送出，帳號去空白、密碼原樣，導向畫布', async ({ page }) => {
+    await open(page, 'login', { patch: recordLogin() });
+    await expect(page.getByLabel('帳號')).toBeFocused();
+    await page.getByLabel('帳號').fill(' admin ');
+    await page.getByLabel('密碼').fill(' secret ');
+    await page.getByLabel('密碼').press('Enter');
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/canvas');
+    expect(await logins(page)).toEqual([{ name: 'admin', password: ' secret ' }]);
+  });
+
+  test('沒填不送；帳號不存在與密碼錯誤同一句話，不轉述伺服器文字', async ({ page }) => {
+    await open(page, 'login', {
+      patch: recordLogin(httpError(401, 'invalid_credentials', 'user pat not found')),
+    });
+    await page.getByRole('button', { name: '登入' }).click();
+    await expect(page.locator('.msg.err')).toHaveText('要填帳號和密碼');
+    expect(await logins(page)).toEqual([]);
+
+    await page.getByLabel('帳號').fill('pat');
+    await page.getByLabel('密碼').fill('wrong-password');
+    await page.getByRole('button', { name: '登入' }).click();
+    await expect(page.locator('.msg.err')).toHaveText(
+      '帳號或密碼不對。確認後再試一次；忘記密碼請聯絡管理員。',
+    );
+    await expect(page.locator('.flows')).not.toContainText('not found');
+    await expect(page.getByLabel('帳號')).toHaveValue('pat');
+    await expect(page.getByLabel('密碼')).toHaveValue('');
+    await expect(page.getByLabel('密碼')).toBeFocused();
+    expect(await page.evaluate(() => location.hash)).toBe('');
+  });
+
+  test('限速：說明要等多久，等待期間不能送，時間到恢復', async ({ page }) => {
+    await open(page, 'login', {
+      patch: recordLogin(
+        httpError(429, 'rate_limited', 'Too many attempts', ', retryAfterSeconds: 2'),
+      ),
+    });
+    await page.getByLabel('帳號').fill('pat');
+    await page.getByLabel('密碼').fill('wrong-password');
+    await page.getByLabel('密碼').press('Enter');
+    await expect(page.locator('.msg.err')).toHaveText(
+      '嘗試太多次，暫時不能登入。請等 2 秒後再試。',
+    );
+    const button = page.getByRole('button', { name: '登入' });
+    await expect(button).toBeDisabled();
+    await page.getByLabel('密碼').press('Enter');
+    expect(await logins(page)).toHaveLength(1);
+    await expect(button).toBeEnabled({ timeout: 4000 });
+    await expect(page.locator('.msg.err')).toHaveCount(0);
+
+    await open(page, 'login', {
+      patch: recordLogin(
+        httpError(429, 'rate_limited', 'Too many attempts', ', retryAfterSeconds: 300'),
+      ),
+    });
+    await page.getByLabel('帳號').fill('pat');
+    await page.getByLabel('密碼').fill('wrong-password');
+    await page.getByRole('button', { name: '登入' }).click();
+    await expect(page.locator('.msg.err')).toContainText('請等 5 分鐘後再試');
+
+    await open(page, 'login', { patch: recordLogin(httpError(429, 'rate_limited', 'x')) });
+    await page.getByLabel('帳號').fill('pat');
+    await page.getByLabel('密碼').fill('wrong-password');
+    await page.getByRole('button', { name: '登入' }).click();
+    await expect(page.locator('.msg.err')).toHaveText('嘗試太多次，暫時不能登入。請稍後再試。');
+    await expect(page.getByRole('button', { name: '登入' })).toBeEnabled();
+  });
+
+  test('連不上：寫發生什麼與怎麼辦，輸入都留著', async ({ page }) => {
+    await open(page, 'login', { patch: recordLogin(`new Error('Failed to fetch')`) });
+    await page.getByLabel('帳號').fill('pat');
+    await page.getByLabel('密碼').fill('long-enough');
+    await page.getByRole('button', { name: '登入' }).click();
+    await expect(page.locator('.msg.err')).toHaveText(
+      '連不到 hub：Failed to fetch。確認 hub 還在執行後再試一次。',
+    );
+    await expect(page.getByLabel('密碼')).toHaveValue('long-enough');
+  });
+
+  test('還沒登入時 WebSocket 連不上不算資料過期，仍可登入', async ({ page }) => {
+    await open(page, 'login', { connected: false, patch: recordLogin() });
+    await expect(page.locator('.stale-line')).toHaveCount(0);
+    await expect(page.locator('.page.is-stale')).toHaveCount(0);
+    await page.getByLabel('帳號').fill('a');
+    await page.getByLabel('密碼').fill('b');
+    await page.getByRole('button', { name: '登入' }).click();
+    await expect.poll(() => logins(page)).toHaveLength(1);
+  });
+
+  test('語言切換即時生效，錯誤訊息用新語言', async ({ page }) => {
+    await open(page, 'login', {
+      patch: recordLogin(httpError(401, 'invalid_credentials', 'x')),
+    });
+    await page.locator('.segmented label', { hasText: 'English' }).click();
+    await expect(page.getByRole('heading', { name: 'Log in to Agent Board' })).toBeVisible();
+    await page.getByLabel('Username').fill('pat');
+    await page.getByLabel('Password').fill('wrong-password');
+    await page.getByRole('button', { name: 'Log in' }).click();
+    await expect(page.locator('.msg.err')).toContainText("The username or password isn't right");
+    await page.locator('.segmented label', { hasText: '繁體中文' }).click();
+    await expect(page.getByRole('heading', { name: '登入 Agent Board' })).toBeVisible();
   });
 });
 
@@ -1335,7 +1604,7 @@ test.describe('語系與版面', () => {
           page,
         }, info) => {
           await page.setViewportSize({ width, height: 800 });
-          const routes = ['review', 'inbox', 'new', 'settings', 'onboarding'];
+          const routes = ['review', 'inbox', 'new', 'settings', 'onboarding', 'login'];
           for (const route of routes) {
             await open(page, route, {
               ...rich(),
@@ -1363,6 +1632,7 @@ test.describe('語系與版面', () => {
             const text = (await page.locator('.flows').innerText()) ?? '';
             expect(text).not.toMatch(/flows\.[a-z]/);
             expect(await findGreenOutsideDiff(page)).toEqual([]);
+            await page.evaluate(() => scrollTo(0, 0));
             await page.screenshot({
               path: shot(info, `${route}-${locale}-${width}`),
               fullPage: true,
