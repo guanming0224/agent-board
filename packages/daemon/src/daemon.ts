@@ -12,6 +12,7 @@ import {
   type HookRequest,
   type HubToDaemon,
   type MachineCapabilities,
+  type SessionRuntime,
   type SessionSpec,
 } from '@agent-board/protocol';
 import pkg from '../package.json' with { type: 'json' };
@@ -157,6 +158,10 @@ export class Daemon {
     this.approvals = new ApprovalManager({
       send: (message) => this.send(message),
       dangerRules: () => this.dangerRules,
+      onDangerPending: (sessionId, payload) =>
+        this.sessions
+          .get(sessionId)
+          ?.onHook('PermissionRequest', { ...payload, hook_event_name: 'PermissionRequest' }),
       waitMs: deps.approvalWaitMs,
     });
     this.resources = new ResourceMonitor({
@@ -229,6 +234,7 @@ export class Daemon {
       case 'hub.welcome':
         // 設定變更時 hub 會重送 welcome；用量每條連線只需要補報一次。
         this.applyHubSettings(message.dangerRules, message.stuckMinutes);
+        for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
         if (!this.usageReportedOnConnect) {
           this.usageReportedOnConnect = true;
           void this.reportUsage();
@@ -323,6 +329,7 @@ export class Daemon {
       this.assertCanLaunch();
       assertDirectory(spec.cwd);
       if (spec.useWorktree) worktree = await createWorktree(spec.cwd, spec.name, sessionId);
+      await this.installHooksOrThrow(worktree?.cwd ?? spec.cwd);
       const persisted: PersistedSession = {
         sessionId,
         spec: { ...spec, firstPrompt: null },
@@ -377,12 +384,36 @@ export class Daemon {
     for (const entry of [...this.store.sessions]) {
       try {
         assertDirectory(entry.cwd);
-        await this.launch(entry, { resumeId: entry.claudeSessionId });
       } catch (error) {
         // 接不回來就從清單移除，否則每次重啟都再失敗一次。hub 由 hello 得知它不在了。
         log.error(`無法接回 session ${entry.sessionId}：${errorMessage(error)}`);
         this.store.remove(entry.sessionId);
+        continue;
       }
+      try {
+        await this.installHooksOrThrow(entry.cwd);
+      } catch (error) {
+        // 使用者修好設定檔就能接回，清單留著；沒裝上 hook 不可開 PTY。
+        log.error(`這次不接回 session ${entry.sessionId}：${errorMessage(error)}`);
+        continue;
+      }
+      try {
+        await this.launch(entry, { resumeId: entry.claudeSessionId });
+      } catch (error) {
+        log.error(`無法接回 session ${entry.sessionId}：${errorMessage(error)}`);
+        this.store.remove(entry.sessionId);
+      }
+    }
+  }
+
+  /** hook 沒裝上時危險指令檢查不會執行，各種權限模式都不開 PTY（CONTRACTS §4.1）。 */
+  private async installHooksOrThrow(cwd: string): Promise<void> {
+    try {
+      await this.deps.installHooks(cwd);
+    } catch (error) {
+      throw new Error(
+        `無法安裝 hook 設定（${errorMessage(error)}）。請修好 ${cwd}/.claude/settings.local.json，再重新開啟 session。`,
+      );
     }
   }
 
@@ -391,13 +422,8 @@ export class Daemon {
     how: { resumeId: string } | { newSessionId: string },
   ): Promise<ManagedSession> {
     const { spec, sessionId } = entry;
-    let hookWarning: string | null = null;
-    try {
-      await this.deps.installHooks(entry.cwd);
-    } catch (error) {
-      // 使用者的設定檔可能壞了（不會去動它）：session 照開，但沒有狀態偵測與危險指令攔截。
-      hookWarning = errorMessage(error);
-    }
+    // 接續同一個 session：上一輪還沒送出的結果已不適用，不可蓋掉新的狀態。
+    this.store.removeEnded(sessionId);
     if (spec.accountProfile) this.accountProfiles.add(spec.accountProfile);
 
     const session = new ManagedSession({
@@ -414,13 +440,15 @@ export class Daemon {
       branch: entry.branch,
       worktreePath: entry.worktreePath,
       claudeSessionId: entry.claudeSessionId,
-      // 沒裝到 hook 就不會有 SessionStart，下面的警告會說明 firstPrompt 沒送。
       pendingFirstPrompt: entry.pendingFirstPrompt,
       stuckMinutes: this.stuckMinutes,
       createStatusTracker: this.deps.createStatusTracker,
       runtimeThrottleMs: this.deps.runtimeThrottleMs,
       terminateGraceMs: this.deps.terminateGraceMs,
-      onRuntime: (session) => this.send({ type: 'session.runtime', session }),
+      onRuntime: (session) => {
+        if (session.endedAt !== null) this.recordEnded(session);
+        else this.send({ type: 'session.runtime', session });
+      },
       onStatusChange: (change) =>
         this.emitEvent(sessionId, 'status', {
           from: change.from,
@@ -434,21 +462,29 @@ export class Daemon {
       onExit: (exitCode) => this.handleSessionExit(sessionId, exitCode),
     });
     this.sessions.set(sessionId, session);
-    if (hookWarning !== null) {
-      this.emitEvent(sessionId, 'warning', {
-        code: 'hook_install_failed',
-        message: hookWarning,
-        firstPromptSkipped: entry.pendingFirstPrompt !== null,
-      });
-    }
     return session;
   }
 
   private handleSessionExit(sessionId: string, exitCode: number): void {
     this.approvals.cancelSession(sessionId);
+    // 先記結果再移出接回清單，中間崩潰也不會兩邊都沒有。
+    const session = this.sessions.get(sessionId);
+    if (session) this.recordEnded(session.runtime());
     this.store.remove(sessionId);
     this.emitEvent(sessionId, 'exit', { exitCode });
     this.evictEndedSessions();
+  }
+
+  /** 結果先落地再送；確定寫進 socket 才移除，斷線或 daemon 重啟後都會在 welcome 後補送。 */
+  private recordEnded(runtime: SessionRuntime): void {
+    this.store.setEnded(runtime);
+    this.deliverEnded(runtime);
+  }
+
+  private deliverEnded(runtime: SessionRuntime): void {
+    this.hub.sendConfirmed({ type: 'session.runtime', session: runtime }, (sent) => {
+      if (sent && this.store.isCurrentEnded(runtime)) this.store.removeEnded(runtime.id);
+    });
   }
 
   private evictEndedSessions(): void {

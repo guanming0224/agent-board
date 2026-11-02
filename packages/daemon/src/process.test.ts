@@ -1,9 +1,12 @@
 // 真的把 src/index.ts 當獨立程序跑，測訊號處理與真正的程序重啟（kill -9）。
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { credentialsPath, readCredentials, writeCredentials } from './credentials';
 import { Harness, waitUntil } from './test-support/harness';
 
 const ENTRY = fileURLToPath(new URL('./index.ts', import.meta.url));
@@ -12,6 +15,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 let h: Harness;
 let child: ChildProcess | null = null;
 let stderr = '';
+const closers: (() => Promise<void>)[] = [];
 
 function startProcess(env: Record<string, string> = {}): ChildProcess {
   stderr = '';
@@ -62,7 +66,108 @@ afterEach(async () => {
     await done;
   }
   child = null;
+  for (const close of closers.splice(0)) await close();
   await h.cleanup();
+});
+
+describe('agent-board-daemon pair', () => {
+  const TOKEN = 'paired-long-lived-token';
+
+  /** 假的配對端點，綁 127.0.0.1 隨機 port；WebSocket 仍走 FakeHub。 */
+  async function pairEndpoint(respond: (body: Record<string, unknown>) => [number, unknown]) {
+    const seen: Record<string, unknown>[] = [];
+    const server = createServer((request, response) => {
+      let raw = '';
+      request.on('data', (chunk) => (raw += chunk));
+      request.on('end', () => {
+        const body = JSON.parse(raw) as Record<string, unknown>;
+        seen.push({ url: request.url, method: request.method, ...body });
+        const [status, payload] = respond(body);
+        response.writeHead(status, { 'content-type': 'application/json' });
+        response.end(JSON.stringify(payload));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    closers.push(() => new Promise((resolve) => server.close(() => resolve())));
+    const { port } = server.address() as AddressInfo;
+    return { origin: `http://127.0.0.1:${port}`, seen };
+  }
+
+  function runPair(args: string[]) {
+    const proc = spawn(process.execPath, ['--import', 'tsx', ENTRY, 'pair', ...args], {
+      cwd: REPO_ROOT,
+      env: {
+        PATH: process.env.PATH,
+        HOME: h.root,
+        AGENT_BOARD_DATA_DIR: h.dataDir,
+        AGENT_BOARD_CLAUDE_BIN: h.bin,
+      },
+    });
+    let output = '';
+    proc.stdout.setEncoding('utf8').on('data', (chunk: string) => (output += chunk));
+    proc.stderr.setEncoding('utf8').on('data', (chunk: string) => (output += chunk));
+    return exited(proc).then((code) => ({ code, output }));
+  }
+
+  it('成功：打 pairingExchange，token 存 0600、不印出；之後不用環境變數就能連上', async () => {
+    const hub = await pairEndpoint(() => [200, { machineId: 'machine-9', token: TOKEN }]);
+    const { code, output } = await runPair(['--hub', hub.origin, '--code', 'ONE-TIME']);
+    expect(output).toContain('machine-9');
+    expect(code).toBe(0);
+    expect(output).not.toContain(TOKEN);
+    expect(hub.seen[0]).toMatchObject({
+      url: '/api/machines/pair',
+      method: 'POST',
+      code: 'ONE-TIME',
+      os: process.platform,
+    });
+    expect((hub.seen[0]?.capabilities as { claudeVersion: string }).claudeVersion).toBe('9.9.9');
+
+    const file = credentialsPath(h.dataDir);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readCredentials(h.dataDir)).toEqual({
+      machineId: 'machine-9',
+      token: TOKEN,
+      hubUrl: hub.origin,
+    });
+
+    // 啟動時讀配對檔：hub 位址與 token 都不靠環境變數。WebSocket 端點另開，所以這裡覆寫位址時要帶 token。
+    writeCredentials(h.dataDir, {
+      machineId: 'machine-9',
+      token: TOKEN,
+      hubUrl: `http://127.0.0.1:${h.hub.port}`,
+    });
+    startProcess({ AGENT_BOARD_MACHINE_TOKEN: '', AGENT_BOARD_HUB_URL: '' });
+    await h.hub.waitFor('daemon.hello', () => true, { timeoutMs: 20_000 });
+    expect(h.hub.authHeaders).toEqual([`Bearer ${TOKEN}`]);
+    expect(stderr).not.toContain(TOKEN);
+  });
+
+  it('環境變數優先於配對檔', async () => {
+    writeCredentials(h.dataDir, {
+      machineId: 'machine-9',
+      token: TOKEN,
+      hubUrl: `http://127.0.0.1:${h.hub.port}`,
+    });
+    startProcess({ AGENT_BOARD_MACHINE_TOKEN: 'from-env' });
+    await h.hub.waitFor('daemon.hello', () => true, { timeoutMs: 20_000 });
+    expect(h.hub.authHeaders).toEqual(['Bearer from-env']);
+  });
+
+  it('配對碼錯：exit 1，訊息有 hub 的原因與怎麼辦，不留憑證檔', async () => {
+    const hub = await pairEndpoint(() => [400, { code: 'bad_code', message: '配對碼已過期' }]);
+    const { code, output } = await runPair(['--hub', hub.origin, '--code', 'WRONG']);
+    expect(code).toBe(1);
+    expect(output).toContain('配對碼已過期');
+    expect(output).toContain('產生新的配對碼');
+    expect(existsSync(credentialsPath(h.dataDir))).toBe(false);
+  });
+
+  it('參數缺少：exit 1 並顯示用法', async () => {
+    const { code, output } = await runPair(['--hub', 'http://x']);
+    expect(code).toBe(1);
+    expect(output).toContain("pair --hub '<origin>' --code <code>");
+  });
 });
 
 describe('獨立程序', () => {

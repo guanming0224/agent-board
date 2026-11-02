@@ -37,6 +37,13 @@ const persisted = () =>
     sessions: { sessionId: string; claudeSessionId: string; pendingFirstPrompt: string | null }[];
   };
 
+const persistedEnded = () =>
+  (
+    JSON.parse(readFileSync(join(h.dataDir, 'sessions.json'), 'utf8')) as {
+      endedRuntimes: Runtime[];
+    }
+  ).endedRuntimes;
+
 const lastRuntime = (sessionId: string): Runtime | undefined =>
   h.hub.received
     .filter(
@@ -162,21 +169,43 @@ describe('session 建立', () => {
     expect(h.runs()).toEqual([]);
   });
 
-  it('hook 安裝失敗：session 照開，送 warning 事件，firstPrompt 不亂送', async () => {
+  it('hook 設定壞掉：createFailed、不開 PTY、訊息說明怎麼修；剛建的 worktree 收掉', async () => {
     h.installHooks = async () => {
-      throw new Error('settings.local.json 壞了');
+      throw new Error('settings.local.json 不是合法 JSON');
     };
-    await h.createAndSubscribe('s3', { firstPrompt: 'hello' });
-    const warning = await h.hub.waitFor(
-      'session.event',
-      (m) => m.event.sessionId === 's3' && m.event.type === 'warning',
-    );
-    expect(warning.event.payload).toMatchObject({
-      code: 'hook_install_failed',
-      firstPromptSkipped: true,
+    for (const permissionMode of ['default', 'bypassPermissions', 'dontAsk'] as const) {
+      const requestId = `broken-${permissionMode}`;
+      h.hub.send({
+        type: 'session.create',
+        requestId,
+        sessionId: requestId,
+        spec: h.spec({ permissionMode }),
+      });
+      const failed = await h.hub.waitFor('session.createFailed', (m) => m.requestId === requestId);
+      expect(failed.error).toContain('settings.local.json');
+      expect(failed.error).toContain('請修好');
+    }
+    expect(h.runs()).toEqual([]);
+    expect(h.trackers.created).toEqual([]);
+
+    const repo = join(h.root, 'repo');
+    mkdirSync(repo);
+    writeFileSync(join(repo, 'f.txt'), 'x');
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+        stdio: 'ignore',
+      });
+    git('init', '-b', 'main');
+    git('add', '.');
+    git('commit', '-m', 'init');
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'broken-wt',
+      sessionId: 'broken-wt',
+      spec: h.spec({ cwd: repo, useWorktree: true, name: 'x' }),
     });
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(h.outputText('s3')).not.toContain('INPUT:hello');
+    await h.hub.waitFor('session.createFailed', (m) => m.requestId === 'broken-wt');
+    expect(existsSync(join(h.root, '.agent-board-wt', 'x-brokenwt'))).toBe(false);
   });
 
   it('useWorktree：真的 git repo 建 worktree，claude 開在裡面；非 repo 回 createFailed', async () => {
@@ -477,22 +506,114 @@ describe('結束', () => {
     expect(h.trackers.created.at(-1)?.exitCode).toBe(0);
   });
 
-  it('斷線期間結束的 session：重連後補送最後的 runtime 與事件', async () => {
+  it('順序：先 tracker.onExit 再 dispose；exit 0→done、非 0→error，都有 endedAt', async () => {
+    await h.createAndSubscribe('zero');
+    await h.createAndSubscribe('fail');
+    input('zero', 'exit 0');
+    input('fail', 'exit 4');
+    const [zero, fail] = h.trackers.created;
+    await waitUntil(() => zero?.disposed && fail?.disposed, 'tracker 釋放');
+    // stub 和 B 一樣，dispose 之後的 onExit 會被忽略；順序錯了 exitCode 會是 null。
+    expect(zero?.exitCode).toBe(0);
+    expect(fail?.exitCode).toBe(4);
+    const runtimeOf = (id: string) => lastRuntime(id);
+    await waitUntil(() => runtimeOf('zero')?.status === 'done', 'done');
+    await waitUntil(() => runtimeOf('fail')?.status === 'error', 'error');
+    expect(runtimeOf('zero')?.endedAt).not.toBeNull();
+    expect(runtimeOf('fail')?.endedAt).not.toBeNull();
+  });
+
+  it('連線正常時結束：結果送出後不留在待補送清單', async () => {
     await h.createAndSubscribe('s1');
-    h.hub.autoWelcome = false; // 卡在沒 welcome，確保 exit 發生在「未連上」期間
+    input('s1', 'exit 0');
+    await exitedRuntime('s1');
+    await waitUntil(() => h.trackers.created[0]?.disposed, 'tracker 釋放');
+    await waitUntil(() => persistedEnded().length === 0, '清單清空');
+  });
+
+  it('斷線期間 exit 0：重連後先 hello，welcome 後才補送 done 與 endedAt；送完才移除', async () => {
+    await h.createAndSubscribe('s1');
+    h.hub.autoWelcome = false;
     h.hub.dropConnection();
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    // hub 不在，指令送不進來，直接對 session 寫入讓它結束。
-    h.daemons[0]?.['sessions'].get('s1')?.write('exit 5\r');
-    await waitUntil(() => h.trackers.created[0]?.exitCode === 5, 'PTY 結束');
+    await waitUntil(() => !h.daemons[0]?.['hub'].connected, '斷線');
+    h.daemons[0]?.['sessions'].get('s1')?.write('exit 0\r');
+    await waitUntil(() => h.trackers.created[0]?.disposed, 'PTY 結束');
+    expect(persistedEnded().map((r) => [r.id, r.status])).toEqual([['s1', 'done']]);
+
+    const before = h.hub.received.length;
     await waitUntil(() => h.hellos().length === 2, '重連', 15_000);
-    expect(h.hub.received.some((m) => m.type === 'session.runtime' && m.session.endedAt)).toBe(
-      false,
-    );
+    expect(h.hellos()[1]?.sessions).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // 還沒 welcome：不可送，也不可移除。
+    expect(
+      h.hub.received.slice(before).some((m) => m.type === 'session.runtime' && m.session.endedAt),
+    ).toBe(false);
+    expect(persistedEnded()).toHaveLength(1);
+
     h.hub.send({ type: 'hub.welcome', machineId: 'm', dangerRules: [], stuckMinutes: 5 });
-    const { session } = await exitedRuntime('s1');
-    expect(session.status).toBe('error');
+    const { session } = await h.hub.waitFor(
+      'session.runtime',
+      (m) => m.session.id === 's1' && m.session.endedAt !== null,
+      { includePast: false },
+    );
+    expect(session.status).toBe('done');
+    const after = h.hub.received.slice(before);
+    expect(after[0]?.type).toBe('daemon.hello');
+    await waitUntil(() => persistedEnded().length === 0, '送完才移除');
     await h.hub.waitFor('session.event', (m) => m.event.type === 'exit');
+  });
+
+  it('斷線中結束、daemon 又重啟：紀錄不會丟，不會被接回，welcome 後補送一次', async () => {
+    await h.createAndSubscribe('s1');
+    h.hub.autoWelcome = false;
+    h.hub.dropConnection();
+    await waitUntil(() => !h.daemons[0]?.['hub'].connected, '斷線');
+    h.daemons[0]?.['sessions'].get('s1')?.write('exit 6\r');
+    await waitUntil(() => h.trackers.created[0]?.exitCode === 6, 'PTY 結束');
+
+    // 這時立刻重啟，最後一次畫面更新也可能還沒跑完。
+    await h.restartDaemon();
+    expect(h.runs()).toHaveLength(1);
+    const before = h.hub.received.length;
+    await waitUntil(() => h.hellos().at(-1)?.sessions.length === 0, '新 daemon hello');
+    h.hub.autoWelcome = true;
+    expect(persistedEnded().map((r) => r.status)).toEqual(['error']);
+    h.hub.dropConnection();
+    const { session } = await h.hub.waitFor(
+      'session.runtime',
+      (m) => m.session.id === 's1' && m.session.endedAt !== null,
+      { includePast: false, timeoutMs: 15_000 },
+    );
+    expect(session.status).toBe('error');
+    await waitUntil(() => persistedEnded().length === 0, '送完才移除');
+    expect(h.hub.received.slice(before).filter((m) => m.type === 'session.created')).toEqual([]);
+
+    // 再重啟一次，不會重複補送，也不會接回。
+    await h.restartDaemon();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(h.hellos().at(-1)?.sessions).toEqual([]);
+    expect(h.runs()).toHaveLength(1);
+  });
+
+  it('待補送的舊結果在接續同一個 session 後不會蓋掉新狀態', async () => {
+    await h.createAndSubscribe('s1');
+    h.hub.autoWelcome = false;
+    h.hub.dropConnection();
+    await waitUntil(() => !h.daemons[0]?.['hub'].connected, '斷線');
+    h.daemons[0]?.['sessions'].get('s1')?.write('exit 0\r');
+    await waitUntil(() => persistedEnded().length === 1, '結果記下');
+    await h.hub.waitFor('daemon.hello', () => true, { includePast: false, timeoutMs: 15_000 });
+    const session = h.daemons[0];
+    await session?.['createSession']('r2', 's1', h.spec({ resumeClaudeSessionId: 'old' }));
+    expect(persistedEnded()).toEqual([]);
+    h.hub.send({ type: 'hub.welcome', machineId: 'm', dangerRules: [], stuckMinutes: 5 });
+    await h.hub.waitFor('session.created', (m) => m.requestId === 'r2');
+    expect(
+      h.hub.received.filter(
+        (m, i) =>
+          i > 0 && m.type === 'session.runtime' && m.session.id === 's1' && !!m.session.endedAt,
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -575,6 +696,27 @@ describe('daemon 重啟', () => {
     ).toEqual(['alive']);
     await waitUntil(() => h.runs().length === runsBefore + 1, '只重開一個');
     expect(persisted().sessions.map((s) => s.sessionId)).toEqual(['alive']);
+  });
+
+  it('重啟時 hook 設定壞掉：不開 PTY、清單保留；修好後接回', async () => {
+    await h.createAndSubscribe('s1');
+    h.installHooks = async () => {
+      throw new Error('壞了');
+    };
+    await h.restartDaemon();
+    expect(h.hellos().at(-1)?.sessions).toEqual([]);
+    expect(h.runs()).toHaveLength(1);
+    expect(persisted().sessions.map((s) => s.sessionId)).toEqual(['s1']);
+
+    h.installHooks = async () => {};
+    await h.restartDaemon();
+    expect(
+      h
+        .hellos()
+        .at(-1)
+        ?.sessions.map((s) => s.id),
+    ).toEqual(['s1']);
+    await waitUntil(() => h.runs().length === 2, '接回');
   });
 
   it('壞掉的 sessions.json 不擋啟動', async () => {
@@ -716,6 +858,42 @@ describe('hook 與 approval（走真的 socket）', () => {
         permissionDecisionReason: '不行',
       },
     });
+  });
+
+  it('危險指令命中：tracker 依序收到 PreToolUse、PermissionRequest，狀態顯示等人；未命中不多送', async () => {
+    const command = (text: string) => ({ tool_name: 'Bash', tool_input: { command: text } });
+    await client.request('s1', 'PreToolUse', command('ls'));
+    const tracker = h.trackers.created[0];
+    expect(tracker?.hooks.map((x) => x.event)).toEqual(['PreToolUse']);
+
+    const pending = client.request('s1', 'PreToolUse', command('rm -rf /'));
+    const { approval } = await h.hub.waitFor('approval.requested');
+    expect(tracker?.hooks.map((x) => x.event)).toEqual([
+      'PreToolUse',
+      'PreToolUse',
+      'PermissionRequest',
+    ]);
+    const forwarded = tracker?.hooks.at(-1)?.payload;
+    expect(forwarded?.hook_event_name).toBe('PermissionRequest');
+    expect(forwarded?.tool_name).toBe('Bash');
+    expect(tracker?.status).toBe('waiting_permission');
+    await waitUntil(() => lastRuntime('s1')?.status === 'waiting_permission', 'runtime');
+    // 這是內部轉送，不要多一筆 hook 事件。
+    expect(
+      h.hub.received.filter(
+        (m) =>
+          m.type === 'session.event' &&
+          m.event.type === 'hook' &&
+          m.event.payload.event === 'PermissionRequest',
+      ),
+    ).toEqual([]);
+    h.hub.send({
+      type: 'approval.decide',
+      approvalId: approval.id,
+      sessionId: 's1',
+      decision: { behavior: 'deny', reason: 'no' },
+    });
+    await pending;
   });
 
   it('危險指令超時回 deny（真實等待時間注入縮短）', async () => {

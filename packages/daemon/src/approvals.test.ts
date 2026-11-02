@@ -11,17 +11,19 @@ const payload = (fields: Record<string, unknown>): HookPayload => ({
 
 function setup(waitMs = 10_000) {
   const sent: DaemonToHub[] = [];
+  const dangerPending: string[] = [];
   const manager = new ApprovalManager({
     send: (message) => sent.push(message),
     dangerRules: () => ['rm -rf /', 'git push --force'],
     waitMs,
+    onDangerPending: (sessionId) => dangerPending.push(sessionId),
   });
   const requested = () => {
     const message = sent.find((m) => m.type === 'approval.requested');
     if (message?.type !== 'approval.requested') throw new Error('沒有 approval.requested');
     return message.approval;
   };
-  return { sent, manager, requested, signal: new AbortController().signal };
+  return { sent, dangerPending, manager, requested, signal: new AbortController().signal };
 }
 
 const decisionOf = (output: HookOutput) =>
@@ -191,6 +193,19 @@ describe('PreToolUse 危險指令', () => {
       permissionDecision: 'deny',
       permissionDecisionReason: '會蓋掉別人的 commit',
     });
+  });
+
+  it('只有命中才通知等人，且在 approval 建立之後；權限請求不觸發', async () => {
+    const hit = setup();
+    void hit.manager.handleHook('PreToolUse', 's1', danger, hit.signal);
+    expect(hit.dangerPending).toEqual(['s1']);
+    expect(hit.manager.pending()).toHaveLength(1);
+
+    const miss = setup();
+    const safe = payload({ tool_name: 'Bash', tool_input: { command: 'ls' } });
+    await miss.manager.handleHook('PreToolUse', 's1', safe, miss.signal);
+    void miss.manager.handleHook('PermissionRequest', 's1', payload({}), miss.signal);
+    expect(miss.dangerPending).toEqual([]);
   });
 
   it('對危險指令送 answer 也不會放行', async () => {

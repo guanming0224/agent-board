@@ -11,6 +11,9 @@ export class FakeHub {
   readonly invalid: unknown[] = [];
   readonly authHeaders: (string | undefined)[] = [];
   autoWelcome = true;
+  /** 設定後升級請求一律回這個狀態碼（模擬 token 被撤銷）。 */
+  rejectStatus: number | null = null;
+  upgradeAttempts = 0;
   dangerRules = ['rm -rf /', 'git push --force'];
   stuckMinutes = 7;
   private wss!: WebSocketServer;
@@ -19,7 +22,16 @@ export class FakeHub {
   port = 0;
 
   async start(port = 0): Promise<void> {
-    this.wss = new WebSocketServer({ host: '127.0.0.1', port, path: '/ws/daemon' });
+    this.wss = new WebSocketServer({
+      host: '127.0.0.1',
+      port,
+      path: '/ws/daemon',
+      verifyClient: (_info, done) => {
+        this.upgradeAttempts += 1;
+        if (this.rejectStatus !== null) done(false, this.rejectStatus);
+        else done(true);
+      },
+    });
     await new Promise<void>((resolve) => this.wss.once('listening', () => resolve()));
     this.port = (this.wss.address() as AddressInfo).port;
     this.wss.on('connection', (socket, request) => {

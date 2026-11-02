@@ -6,6 +6,8 @@ import { errorMessage, log } from './log';
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 const BACKOFF_JITTER = 0.2;
+/** token 被撤銷時重試也沒用，只偶爾確認一下（例如 owner 復原或重新配對後）。 */
+const AUTH_REJECTED_RETRY_MS = 5 * 60_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const MAX_PAYLOAD_BYTES = 32 * 1024 * 1024;
 const OUTBOX_LIMIT = 2_000;
@@ -26,9 +28,6 @@ function mustDeliver(message: DaemonToHub): boolean {
     case 'session.created':
     case 'session.createFailed':
       return true;
-    case 'session.runtime':
-      // hello 只列活著的 session，已結束的最後狀態只有這一則。
-      return message.session.endedAt !== null;
     default:
       return false;
   }
@@ -41,6 +40,7 @@ export interface HubClientOptions {
   onMessage: (message: HubToDaemon) => void;
   onDisconnected: () => void;
   heartbeatMs?: number;
+  authRetryMs?: number;
 }
 
 export class HubClient {
@@ -85,6 +85,15 @@ export class HubClient {
     this.ws.send(JSON.stringify(message));
   }
 
+  /** 寫進 socket 才算送出；連不上或寫入失敗回報 false，由呼叫方決定之後重送。 */
+  sendConfirmed(message: DaemonToHub, onResult: (sent: boolean) => void): void {
+    if (!this.ready || this.ws?.readyState !== WebSocket.OPEN) {
+      onResult(false);
+      return;
+    }
+    this.ws.send(JSON.stringify(message), (error) => onResult(!error));
+  }
+
   private enqueue(message: DaemonToHub): void {
     if (this.outbox.length >= OUTBOX_LIMIT) {
       this.outbox.shift();
@@ -101,7 +110,21 @@ export class HubClient {
       maxPayload: MAX_PAYLOAD_BYTES,
     });
     this.ws = ws;
+    let authRejected = false;
 
+    ws.on('unexpected-response', (_request, response) => {
+      const status = response.statusCode;
+      authRejected = status === 401 || status === 403;
+      if (authRejected) {
+        const minutes = Math.round((this.options.authRetryMs ?? AUTH_REJECTED_RETRY_MS) / 60_000);
+        log.error(
+          `hub 拒絕這台機器的 token（HTTP ${status}），可能已被撤銷。session 繼續執行，約每 ${minutes} 分鐘重試一次；請到中控台產生配對碼，重新執行 agent-board-daemon pair。`,
+        );
+      } else {
+        log.warn(`hub 連線被拒（HTTP ${status}）`);
+      }
+      ws.terminate();
+    });
     ws.on('open', () => {
       this.startHeartbeat(ws);
       ws.send(JSON.stringify(this.options.buildHello()));
@@ -110,14 +133,16 @@ export class HubClient {
       if (!isBinary) this.handleRaw(raw.toString());
     });
     // close 一定會跟在 error 之後，重連統一在 close 處理。
-    ws.on('error', (error) => log.warn(`hub 連線錯誤：${errorMessage(error)}`));
+    ws.on('error', (error) => {
+      if (!authRejected) log.warn(`hub 連線錯誤：${errorMessage(error)}`);
+    });
     ws.on('close', () => {
       if (this.ws !== ws) return;
       this.ws = null;
       this.ready = false;
       this.stopHeartbeat();
       this.options.onDisconnected();
-      this.scheduleReconnect();
+      this.scheduleReconnect(authRejected);
     });
   }
 
@@ -153,10 +178,15 @@ export class HubClient {
     for (const message of pending) this.send(message);
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(authRejected: boolean): void {
     if (this.stopped) return;
-    const delay = backoffDelay(this.attempt);
-    this.attempt += 1;
+    let delay: number;
+    if (authRejected) {
+      delay = (this.options.authRetryMs ?? AUTH_REJECTED_RETRY_MS) * (0.9 + Math.random() * 0.2);
+    } else {
+      delay = backoffDelay(this.attempt);
+      this.attempt += 1;
+    }
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 

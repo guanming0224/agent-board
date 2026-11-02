@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backoffDelay, HubClient } from './hubClient';
 import { FAKE_CAPABILITIES, waitUntil } from './test-support/harness';
 import { FakeHub } from './test-support/fakeHub';
@@ -28,7 +28,7 @@ describe('HubClient', () => {
     for (const fn of cleanups.splice(0)) await fn();
   });
 
-  async function setup(heartbeatMs?: number) {
+  async function setup(heartbeatMs?: number, authRetryMs?: number) {
     const hub = new FakeHub();
     await hub.start();
     const messages: HubToDaemon[] = [];
@@ -37,6 +37,7 @@ describe('HubClient', () => {
       url: hub.url,
       token: 'secret',
       heartbeatMs,
+      authRetryMs,
       buildHello: () => ({
         type: 'daemon.hello',
         name: 'm',
@@ -121,6 +122,53 @@ describe('HubClient', () => {
     const raw = hub as unknown as { socket: { pause: () => void } };
     raw.socket.pause();
     await waitUntil(() => disconnects() >= 1, '偵測到半開連線');
+  });
+
+  it('401：不走退避狂打 hub，改長間隔，log 說明原因與做法，不含 token', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    cleanups.push(() => logged.mockRestore());
+    const { hub, client } = await setup(undefined, 60_000);
+    hub.rejectStatus = 401;
+    client.start();
+    await waitUntil(() => hub.upgradeAttempts === 1, '第一次嘗試');
+    // 一般退避 1 秒內就會重試；這裡等 2.5 秒仍只有一次。
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    expect(hub.upgradeAttempts).toBe(1);
+    expect(client.connected).toBe(false);
+    const text = logged.mock.calls.flat().join('\n');
+    expect(text).toContain('撤銷');
+    expect(text).toContain('agent-board-daemon pair');
+    expect(text).not.toContain('secret');
+  });
+
+  it('401 恢復後能連上；其他錯誤碼（502）維持一般退避', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    cleanups.push(() => logged.mockRestore());
+    const revoked = await setup(undefined, 100);
+    revoked.hub.rejectStatus = 401;
+    revoked.client.start();
+    await waitUntil(() => revoked.hub.upgradeAttempts >= 2, '長間隔到期後再試');
+    revoked.hub.rejectStatus = null;
+    await waitUntil(() => revoked.client.connected, '恢復');
+
+    const outage = await setup(undefined, 60_000);
+    outage.hub.rejectStatus = 502;
+    outage.client.start();
+    await waitUntil(() => outage.hub.upgradeAttempts >= 2, '一般退避重試', 3_000);
+  });
+
+  it('sendConfirmed：沒連上回 false；連上且寫入成功回 true', async () => {
+    const { hub, client } = await setup();
+    const results: boolean[] = [];
+    client.sendConfirmed(event('a'), (sent) => results.push(sent));
+    expect(results).toEqual([false]);
+    client.start();
+    await waitUntil(() => client.connected, '連上');
+    client.sendConfirmed(event('b'), (sent) => results.push(sent));
+    await waitUntil(() => results.length === 2, '回報');
+    expect(results).toEqual([false, true]);
+    await hub.waitFor('session.event', (m) => m.event.id === 'b');
+    expect(hub.received.some((m) => m.type === 'session.event' && m.event.id === 'a')).toBe(false);
   });
 
   it('stop 之後不再重連', async () => {

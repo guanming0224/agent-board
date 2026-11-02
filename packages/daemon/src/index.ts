@@ -1,9 +1,11 @@
 // agent-board-daemon 入口。見 CONTRACTS.md。
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from './config';
+import { loadConfig, resolveDataDir } from './config';
 import { Daemon } from './daemon';
 import { errorMessage, log } from './log';
+import { pairMachine, parsePairArgs } from './pair';
+import { probeCapabilities } from './resources';
 import type { CreateStatusTracker } from './status/types';
 
 export { Daemon, type DaemonDeps } from './daemon';
@@ -23,7 +25,30 @@ const placeholderStatusTracker: CreateStatusTracker = () => ({
 // Phase 2 接線：換成 Agent B 的 installHooks（packages/hook）。
 const placeholderInstallHooks = async (_cwd: string): Promise<void> => {};
 
+async function pair(argv: string[]): Promise<void> {
+  const { hub, code } = parsePairArgs(argv);
+  const { machineId, path } = await pairMachine({
+    hub,
+    code,
+    dataDir: resolveDataDir(process.env),
+    capabilities: await probeCapabilities(
+      process.env.AGENT_BOARD_CLAUDE_BIN || 'claude',
+      process.env,
+    ),
+  });
+  console.log(
+    `配對成功。機器 ID：${machineId}；憑證已存到 ${path}。現在可以啟動 agent-board-daemon。`,
+  );
+}
+
 async function main(): Promise<void> {
+  const [command, ...rest] = process.argv.slice(2);
+  if (command === 'pair') return pair(rest);
+  if (command !== undefined) {
+    throw new Error(
+      `不認得的指令「${command}」。可用：agent-board-daemon、agent-board-daemon pair`,
+    );
+  }
   const config = loadConfig();
   // 讀完就清掉，git hook、nvidia-smi 等所有子程序才不會繼承到 token。
   delete process.env.AGENT_BOARD_MACHINE_TOKEN;

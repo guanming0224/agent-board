@@ -1,7 +1,7 @@
 // 本機保存 daemon 重啟後要接回的 session（CONTRACTS §3.2）。不含 token 與終端機內容。
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Id, IsoTime, SessionSpec } from '@agent-board/protocol';
+import { Id, IsoTime, SessionRuntime, SessionSpec } from '@agent-board/protocol';
 import { z } from 'zod';
 import { errorMessage, log } from './log';
 
@@ -24,6 +24,8 @@ const PersistedState = z.object({
   dangerRules: z.array(z.string()).nullable(),
   stuckMinutes: z.number().int().positive().nullable(),
   sessions: z.array(PersistedSession),
+  /** 已結束但結果還沒送到 hub 的 session。hello 只列活著的，hub 只能靠這個知道結果。 */
+  endedRuntimes: z.array(SessionRuntime).default([]),
 });
 type PersistedState = z.infer<typeof PersistedState>;
 
@@ -34,6 +36,7 @@ export class SessionStore {
     dangerRules: null,
     stuckMinutes: null,
     sessions: [],
+    endedRuntimes: [],
   };
 
   constructor(dataDir: string) {
@@ -85,6 +88,27 @@ export class SessionStore {
   setHubSettings(dangerRules: string[], stuckMinutes: number): void {
     this.state.dangerRules = dangerRules;
     this.state.stuckMinutes = stuckMinutes;
+    this.save();
+  }
+
+  get endedRuntimes(): readonly SessionRuntime[] {
+    return this.state.endedRuntimes;
+  }
+
+  isCurrentEnded(runtime: SessionRuntime): boolean {
+    return this.state.endedRuntimes.includes(runtime);
+  }
+
+  setEnded(runtime: SessionRuntime): void {
+    const rest = this.state.endedRuntimes.filter((r) => r.id !== runtime.id);
+    this.state.endedRuntimes = [...rest, runtime];
+    this.save();
+  }
+
+  removeEnded(sessionId: string): void {
+    const rest = this.state.endedRuntimes.filter((r) => r.id !== sessionId);
+    if (rest.length === this.state.endedRuntimes.length) return;
+    this.state.endedRuntimes = rest;
     this.save();
   }
 

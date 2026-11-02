@@ -91,6 +91,8 @@ interface PendingApproval {
 export interface ApprovalManagerOptions {
   send: (message: DaemonToHub) => void;
   dangerRules: () => readonly string[];
+  /** 危險指令開始等人決定。合約的狀態表只有 PreToolUse→running，畫面要靠這個顯示在等人。 */
+  onDangerPending?: (sessionId: string, payload: HookPayload) => void;
   now?: () => Date;
   waitMs?: number;
 }
@@ -176,7 +178,7 @@ export class ApprovalManager {
     if (payload.tool_name !== 'Bash' || typeof command !== 'string') return Promise.resolve(null);
     const matchedRule = matchDangerRule(command, this.options.dangerRules());
     if (matchedRule === null) return Promise.resolve(null);
-    return this.wait(
+    const result = this.wait(
       {
         sessionId,
         kind: 'danger',
@@ -200,6 +202,8 @@ export class ApprovalManager {
       (why) => preToolUseOutput('deny', `危險指令未獲核准：${why}（規則：${matchedRule}）`),
       signal,
     );
+    if (!signal.aborted) this.options.onDangerPending?.(sessionId, payload);
+    return result;
   }
 
   private wait(

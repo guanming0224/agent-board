@@ -23,6 +23,7 @@ export class StubTracker implements StatusTracker {
 
   onHook(event: HookEventName, payload: HookPayload): void {
     this.hooks.push({ event, payload });
+    if (event === 'PermissionRequest') this.change('waiting_permission', 'hook:PermissionRequest');
     if (event === 'SessionStart') this.claudeSessionId = payload.session_id;
     if (event === 'UserPromptSubmit' || event === 'PreToolUse') {
       this.change('running', `hook:${event}`);
@@ -35,8 +36,10 @@ export class StubTracker implements StatusTracker {
   }
 
   onExit(exitCode: number): void {
+    // 和 B 的 tracker 一樣：dispose 之後的 onExit 會被忽略。
+    if (this.disposed) return;
     this.exitCode = exitCode;
-    if (exitCode !== 0) this.change('error', 'pty:exit');
+    this.change(exitCode === 0 ? 'done' : 'error', 'pty:exit');
   }
 
   setStuckMinutes(minutes: number): void {

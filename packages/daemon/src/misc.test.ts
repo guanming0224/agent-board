@@ -40,12 +40,17 @@ describe('config', () => {
   });
 
   it('必要變數缺少就報錯；可覆寫項目生效', () => {
-    expect(() => loadConfig({})).toThrow('AGENT_BOARD_HUB_URL');
-    expect(() => loadConfig({ AGENT_BOARD_HUB_URL: 'http://h' })).toThrow(
+    const AGENT_BOARD_DATA_DIR = temp(); // 不碰 ~/.agent-board
+    expect(() => loadConfig({ AGENT_BOARD_DATA_DIR })).toThrow('AGENT_BOARD_HUB_URL');
+    expect(() => loadConfig({ AGENT_BOARD_DATA_DIR, AGENT_BOARD_HUB_URL: 'http://h' })).toThrow(
       'AGENT_BOARD_MACHINE_TOKEN',
     );
     expect(
-      loadConfig({ AGENT_BOARD_HUB_URL: 'http://h', AGENT_BOARD_MACHINE_TOKEN: 't' }).hookBin,
+      loadConfig({
+        AGENT_BOARD_DATA_DIR,
+        AGENT_BOARD_HUB_URL: 'http://h',
+        AGENT_BOARD_MACHINE_TOKEN: 't',
+      }).hookBin,
     ).toBe('agent-board-hook');
     const config = loadConfig({
       AGENT_BOARD_HUB_URL: 'http://h',
@@ -101,6 +106,38 @@ describe('SessionStore', () => {
     worktreePath: null,
     pendingFirstPrompt: null,
     createdAt: new Date().toISOString(),
+  });
+
+  it('endedRuntimes 跨重新載入保留；舊格式的檔案也讀得進來', () => {
+    const dir = temp();
+    const runtime = {
+      id: 'a',
+      cwd: '/w',
+      branch: null,
+      worktreePath: null,
+      status: 'done' as const,
+      statusDetail: null,
+      claudeSessionId: 'c',
+      lastLines: [],
+      lastOutputAt: null,
+      statusSince: new Date().toISOString(),
+      contextTokens: null,
+      endedAt: new Date().toISOString(),
+    };
+    const store = new SessionStore(dir);
+    store.setEnded(runtime);
+    expect(new SessionStore(dir).endedRuntimes).toEqual([runtime]);
+    store.removeEnded('a');
+    expect(new SessionStore(dir).endedRuntimes).toEqual([]);
+
+    const old = temp();
+    writeFileSync(
+      join(old, 'sessions.json'),
+      JSON.stringify({ version: 1, dangerRules: null, stuckMinutes: null, sessions: [] }),
+    );
+    const loaded = new SessionStore(old);
+    expect(loaded.endedRuntimes).toEqual([]);
+    expect(readdirSync(old).some((name) => name.includes('corrupt'))).toBe(false);
   });
 
   it('寫入後重新載入內容相同；不留暫存檔', () => {
