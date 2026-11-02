@@ -893,7 +893,11 @@ export class Hub {
 
   private afterChange(prev: Session, next: Session, mayNotify: boolean): void {
     this.broadcast({ type: 'session.updated', session: next });
-    if (mayNotify && prev.status !== next.status && needsAttention(next.status)) {
+    // 「結果不明」當時沒推播；daemon 補送真正的結果時才算第一次得知，所以就算同樣是 error 也要發。
+    const outcomeLearned =
+      prev.statusDetail === SESSION_DETAIL_LOST && next.statusDetail !== SESSION_DETAIL_LOST;
+    const entered = prev.status !== next.status || outcomeLearned;
+    if (mayNotify && entered && needsAttention(next.status)) {
       this.notifyAttention(next);
     }
     if (holdsSlot(prev) && !holdsSlot(next)) this.drainQueue();
