@@ -104,13 +104,13 @@ describe('PermissionRequest', () => {
     expect(manager.pending()).toEqual([]);
   });
 
-  it('hook 連線斷掉視為使用者已在終端機處理', async () => {
+  it('hook 連線斷掉：hook 已不在，收掉 approval 並送 by:timeout', async () => {
     const { manager, sent } = setup();
     const abort = new AbortController();
     const result = manager.handleHook('PermissionRequest', 's1', request, abort.signal);
     abort.abort();
     expect(await result).toBeNull();
-    expect(sent.at(-1)).toMatchObject({ type: 'approval.resolved', by: 'terminal' });
+    expect(sent.at(-1)).toMatchObject({ type: 'approval.resolved', by: 'timeout' });
   });
 
   it('重複決定或 sessionId 不符都不生效', async () => {

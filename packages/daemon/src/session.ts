@@ -103,6 +103,7 @@ export class ManagedSession {
   private seq = 0;
   private subscription: 'none' | 'pending' | 'live' = 'none';
   private subscribeToken = 0;
+  private pendingSnapshots = 0;
   /** 快照產生前的輸出先留著，保證收方先收到快照。 */
   private held: Extract<TerminalMessage, { type: 'terminal.output' }>[] = [];
 
@@ -197,16 +198,17 @@ export class ManagedSession {
 
   // ── hub 指令 ──────────────────────────────────────────────
 
+  /** 冪等：hub 可能重送，每次都回一份新快照（第二個瀏覽器加入、慢 client、重連）。 */
   subscribe(): void {
     if (this.termDisposed) return;
-    const token = ++this.subscribeToken;
+    const token = this.subscribeToken;
     this.subscription = 'pending';
-    this.held = [];
+    this.pendingSnapshots += 1;
     const seq = this.seq;
     // xterm 的 write 是非同步的。這個 callback 跑的當下，緩衝區剛好反映到 seq 為止的
     // 所有輸出（FIFO，下一塊還沒解析），快照與序號才對得上。
     this.term.write('', () => {
-      if (token !== this.subscribeToken || this.subscription !== 'pending') return;
+      if (token !== this.subscribeToken || this.termDisposed) return;
       this.options.onTerminal({
         type: 'terminal.snapshot',
         sessionId: this.id,
@@ -215,6 +217,10 @@ export class ManagedSession {
         rows: this.term.rows,
         data: this.serializer.serialize({ scrollback: SCROLLBACK_LINES }),
       });
+      this.pendingSnapshots -= 1;
+      if (this.pendingSnapshots > 0) return;
+      // 所有快照都送完才放行：任一份快照的持有者接著收到的都是連續的 seq，
+      // 比快照舊的由收方丟棄（CONTRACTS §6.1）。
       for (const message of this.held) this.options.onTerminal(message);
       this.held = [];
       this.subscription = 'live';
@@ -224,6 +230,7 @@ export class ManagedSession {
   /** 全部 client 退訂；headless 繼續更新。 */
   unsubscribe(): void {
     this.subscribeToken += 1;
+    this.pendingSnapshots = 0;
     this.subscription = 'none';
     this.held = [];
   }

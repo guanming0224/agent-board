@@ -57,6 +57,18 @@ export async function removeWorktree(info: WorktreeInfo): Promise<void> {
   await git(['-C', info.repo, 'branch', '-d', info.branch]);
 }
 
+/** cwd 所在的是 linked worktree 就回傳它的根目錄，否則 null（接續舊對話時還原 worktreePath 用）。 */
+export async function findLinkedWorktree(cwd: string): Promise<string | null> {
+  try {
+    const gitDir = resolve(cwd, await git(['-C', cwd, 'rev-parse', '--git-dir']));
+    const commonDir = resolve(cwd, await git(['-C', cwd, 'rev-parse', '--git-common-dir']));
+    if (gitDir === commonDir) return null;
+    return await git(['-C', cwd, 'rev-parse', '--show-toplevel']);
+  } catch {
+    return null;
+  }
+}
+
 export async function currentBranch(cwd: string): Promise<string | null> {
   try {
     const branch = await git(['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD']);

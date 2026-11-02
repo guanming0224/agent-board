@@ -51,6 +51,15 @@ export function writeFakeClaude(dir: string): string {
   return bin;
 }
 
+/** 假 hook：只要檔名對、可執行就通過檢查，測試不會真的呼叫它。 */
+export function writeFakeHook(dir: string, name = 'agent-board-hook'): string {
+  mkdirSync(dir, { recursive: true });
+  const bin = join(dir, name);
+  writeFileSync(bin, '#!/bin/sh\nexit 0\n');
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
 export interface FakeClaudeRun {
   argv: string[];
   cwd: string;
@@ -78,6 +87,8 @@ export class Harness {
   readonly claudeDir = join(this.root, 'claude-config');
   readonly logFile = join(this.root, 'fake-claude.log');
   readonly bin = writeFakeClaude(this.root);
+  readonly hookDir = join(this.root, 'hook-bin');
+  readonly hookBin = writeFakeHook(this.hookDir);
   readonly hub = new FakeHub();
   readonly trackers = stubTrackerFactory();
   readonly daemons: Daemon[] = [];
@@ -100,6 +111,7 @@ export class Harness {
         token: 'test-machine-token',
         dataDir: this.dataDir,
         claudeBin: this.bin,
+        hookBin: this.hookBin,
         machineName: 'test-machine',
         claudeConfigDir: this.claudeDir,
       },

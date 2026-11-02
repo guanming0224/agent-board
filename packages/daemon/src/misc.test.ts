@@ -44,14 +44,23 @@ describe('config', () => {
     expect(() => loadConfig({ AGENT_BOARD_HUB_URL: 'http://h' })).toThrow(
       'AGENT_BOARD_MACHINE_TOKEN',
     );
+    expect(
+      loadConfig({ AGENT_BOARD_HUB_URL: 'http://h', AGENT_BOARD_MACHINE_TOKEN: 't' }).hookBin,
+    ).toBe('agent-board-hook');
     const config = loadConfig({
       AGENT_BOARD_HUB_URL: 'http://h',
       AGENT_BOARD_MACHINE_TOKEN: 't',
+      AGENT_BOARD_HOOK_BIN: '/bin/agent-board-hook',
       AGENT_BOARD_DATA_DIR: '/d',
       AGENT_BOARD_CLAUDE_BIN: '/bin/c',
       CLAUDE_CONFIG_DIR: '/c',
     });
-    expect(config).toMatchObject({ dataDir: '/d', claudeBin: '/bin/c', claudeConfigDir: '/c' });
+    expect(config).toMatchObject({
+      dataDir: '/d',
+      claudeBin: '/bin/c',
+      hookBin: '/bin/agent-board-hook',
+      claudeConfigDir: '/c',
+    });
   });
 });
 

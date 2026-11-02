@@ -1,12 +1,14 @@
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
-import { WS_PATHS } from '@agent-board/protocol';
+import { HOOK_COMMAND, WS_PATHS } from '@agent-board/protocol';
 
 export interface DaemonConfig {
   hubUrl: string;
   token: string;
   dataDir: string;
   claudeBin: string;
+  /** agent-board-hook 的路徑或指令名。 */
+  hookBin: string;
   machineName: string;
   /** 預設帳號的 CLAUDE_CONFIG_DIR，用量統計會讀。 */
   claudeConfigDir: string;
@@ -34,6 +36,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     token,
     dataDir: env.AGENT_BOARD_DATA_DIR || join(homedir(), '.agent-board'),
     claudeBin: env.AGENT_BOARD_CLAUDE_BIN || 'claude',
+    hookBin: env.AGENT_BOARD_HOOK_BIN || HOOK_COMMAND,
     machineName: env.AGENT_BOARD_MACHINE_NAME || hostname(),
     claudeConfigDir: env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
   };

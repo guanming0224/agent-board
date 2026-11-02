@@ -197,7 +197,7 @@ export class ApprovalManager {
       createdAt: now().toISOString(),
     };
     return new Promise((settle) => {
-      const onAbort = () => this.finish(pending, giveUp('hook 已離開'), 'terminal');
+      const onAbort = () => this.finish(pending, giveUp('hook 已離開'), 'timeout');
       const timer = setTimeout(
         () => this.finish(pending, giveUp('等待逾時'), 'timeout'),
         this.options.waitMs ?? APPROVAL_WAIT_MS,

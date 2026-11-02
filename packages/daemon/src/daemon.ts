@@ -1,10 +1,11 @@
 // 把 PTY、hub 連線、hook socket、approval、資源與用量接在一起。狀態機與 hook 安裝由外部注入。
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, statSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { basename, delimiter, dirname, extname, resolve } from 'node:path';
 import {
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
+  HOOK_COMMAND,
   HOOK_ENV,
   MachineOs,
   type DaemonToHub,
@@ -25,7 +26,13 @@ import { buildClaudeArgs, ManagedSession } from './session';
 import type { CreateStatusTracker } from './status/types';
 import { SessionStore, type PersistedSession } from './store';
 import { summarizeUsage } from './usage';
-import { createWorktree, currentBranch, removeWorktree, type WorktreeInfo } from './worktree';
+import {
+  createWorktree,
+  currentBranch,
+  findLinkedWorktree,
+  removeWorktree,
+  type WorktreeInfo,
+} from './worktree';
 
 const USAGE_INTERVAL_MS = 15 * 60_000;
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60_000;
@@ -51,21 +58,44 @@ export interface DaemonDeps {
   approvalWaitMs?: number;
 }
 
-function assertExecutable(bin: string, env: NodeJS.ProcessEnv): void {
-  // Windows 要考慮 PATHEXT，交給 node-pty 自己報錯。
-  if (process.platform === 'win32') return;
-  const candidates = bin.includes('/')
-    ? [bin]
-    : (env.PATH ?? '').split(delimiter).map((dir) => join(dir, bin));
-  for (const candidate of candidates) {
-    try {
-      accessSync(candidate, constants.X_OK);
-      return;
-    } catch {
-      // 繼續找
+const pathKey = (env: NodeJS.ProcessEnv): string =>
+  // Windows 的環境變數不分大小寫，實際鍵名常是 Path。
+  process.platform === 'win32'
+    ? (Object.keys(env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH')
+    : 'PATH';
+
+/** 回傳實際找到的絕對路徑，找不到丟例外。 */
+function findExecutable(bin: string, env: NodeJS.ProcessEnv): string {
+  const hasDir = bin.includes('/') || bin.includes('\\');
+  const dirs = hasDir ? [''] : (env[pathKey(env)] ?? '').split(delimiter).filter(Boolean);
+  const exts =
+    process.platform === 'win32' ? ['', ...(env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';')] : [''];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = resolve(dir, bin + ext);
+      try {
+        accessSync(candidate, constants.X_OK);
+        if (statSync(candidate).isFile()) return candidate;
+      } catch {
+        // 繼續找
+      }
     }
   }
   throw new Error(`找不到可執行的 ${bin}`);
+}
+
+/**
+ * hook 找不到時 Claude Code 只當成非阻擋錯誤、照常執行工具，危險指令檢查會被靜默跳過，
+ * 所以找不到就不開 session（CONTRACTS §4.3）。settings 裡寫死的指令是 agent-board-hook，
+ * 靠 PATH 解析，覆寫的檔案不叫這個名字一樣會找不到。
+ */
+function findHook(bin: string, env: NodeJS.ProcessEnv): string {
+  const found = findExecutable(bin, env);
+  const name = basename(found, extname(found));
+  if (name !== HOOK_COMMAND) {
+    throw new Error(`hook 執行檔必須命名為 ${HOOK_COMMAND}，目前是 ${basename(found)}`);
+  }
+  return found;
 }
 
 function assertDirectory(path: string): void {
@@ -106,6 +136,7 @@ export class Daemon {
   private capabilities: MachineCapabilities | null = null;
   private usageTimer: NodeJS.Timeout | null = null;
   private usageRunning = false;
+  private usageReportedOnConnect = false;
   private stopping = false;
 
   constructor(private readonly deps: DaemonDeps) {
@@ -187,6 +218,7 @@ export class Daemon {
   }
 
   private handleHubDisconnected(): void {
+    this.usageReportedOnConnect = false;
     // hub 重連後會重新訂閱（CONTRACTS §6.1），這裡回到沒人看的狀態。
     this.resources.stop();
     for (const session of this.sessions.values()) session.unsubscribe();
@@ -195,8 +227,12 @@ export class Daemon {
   private handleHubMessage(message: HubToDaemon): void {
     switch (message.type) {
       case 'hub.welcome':
+        // 設定變更時 hub 會重送 welcome；用量每條連線只需要補報一次。
         this.applyHubSettings(message.dangerRules, message.stuckMinutes);
-        void this.reportUsage();
+        if (!this.usageReportedOnConnect) {
+          this.usageReportedOnConnect = true;
+          void this.reportUsage();
+        }
         return;
       case 'session.create':
         void this.createSession(message.requestId, message.sessionId, message.spec);
@@ -277,14 +313,14 @@ export class Daemon {
     spec: SessionSpec,
   ): Promise<void> {
     const existing = this.sessions.get(sessionId);
-    if (existing) {
+    if (existing?.isAlive) {
       this.send({ type: 'session.created', requestId, session: existing.runtime() });
       return;
     }
     let worktree: WorktreeInfo | null = null;
     try {
       if (this.stopping) throw new Error('daemon 正在關閉');
-      assertExecutable(this.deps.config.claudeBin, this.childEnv());
+      this.assertCanLaunch();
       assertDirectory(spec.cwd);
       if (spec.useWorktree) worktree = await createWorktree(spec.cwd, spec.name, sessionId);
       const persisted: PersistedSession = {
@@ -293,10 +329,18 @@ export class Daemon {
         claudeSessionId: spec.resumeClaudeSessionId ?? randomUUID(),
         cwd: worktree?.cwd ?? spec.cwd,
         branch: worktree?.branch ?? (await currentBranch(spec.cwd)),
-        worktreePath: worktree?.worktreePath ?? null,
+        // 接續舊對話時 hub 把原 worktree 當 cwd 傳來，worktreePath 不能因此變成 null。
+        worktreePath:
+          worktree?.worktreePath ??
+          (spec.resumeClaudeSessionId ? await findLinkedWorktree(spec.cwd) : null),
         pendingFirstPrompt: spec.firstPrompt,
         createdAt: new Date().toISOString(),
       };
+      // 已結束的同一個 session 被接續（/api/sessions/:id/resume）：換成新的 PTY 與畫面。
+      if (existing) {
+        existing.dispose();
+        this.sessions.delete(sessionId);
+      }
       const session = await this.launch(
         persisted,
         spec.resumeClaudeSessionId
@@ -315,10 +359,23 @@ export class Daemon {
     }
   }
 
+  private assertCanLaunch(): void {
+    const env = this.childEnv();
+    findExecutable(this.deps.config.claudeBin, env);
+    findHook(this.deps.config.hookBin, env);
+  }
+
   private async resumePersistedSessions(): Promise<void> {
+    if (this.store.sessions.length === 0) return;
+    try {
+      this.assertCanLaunch();
+    } catch (error) {
+      // 環境問題（PATH 沒設好之類）修好就能接回，清單要留著；這次只是都不開。
+      log.error(`本次不接回任何 session：${errorMessage(error)}`);
+      return;
+    }
     for (const entry of [...this.store.sessions]) {
       try {
-        assertExecutable(this.deps.config.claudeBin, this.childEnv());
         assertDirectory(entry.cwd);
         await this.launch(entry, { resumeId: entry.claudeSessionId });
       } catch (error) {
@@ -411,8 +468,13 @@ export class Daemon {
   }
 
   private sessionEnv(sessionId: string, spec: SessionSpec): Record<string, string> {
+    const env = this.childEnv();
+    // 確保 settings 裡的 agent-board-hook 解析到剛才檢查過的那一支。
+    const hookDir = dirname(findHook(this.deps.config.hookBin, env));
+    const key = pathKey(env);
     return {
-      ...this.childEnv(),
+      ...env,
+      [key]: [hookDir, env[key]].filter(Boolean).join(delimiter),
       [HOOK_ENV.sessionId]: sessionId,
       [HOOK_ENV.socket]: this.hookServer.path,
       TERM: 'xterm-256color',
@@ -434,7 +496,10 @@ export class Daemon {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.onHook(event, payload);
-      this.emitEvent(sessionId, 'hook', summarizeHook(event, payload));
+      // 每次工具呼叫都有，太吵；狀態變化另有 status 事件。
+      if (event !== 'PostToolUse' && event !== 'PostToolUseFailure') {
+        this.emitEvent(sessionId, 'hook', summarizeHook(event, payload));
+      }
     } else if (event !== 'PreToolUse') {
       return null;
     }

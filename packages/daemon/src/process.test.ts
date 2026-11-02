@@ -25,6 +25,7 @@ function startProcess(env: Record<string, string> = {}): ChildProcess {
       AGENT_BOARD_MACHINE_TOKEN: 'process-test-token',
       AGENT_BOARD_DATA_DIR: h.dataDir,
       AGENT_BOARD_CLAUDE_BIN: h.bin,
+      AGENT_BOARD_HOOK_BIN: h.hookBin,
       CLAUDE_CONFIG_DIR: h.claudeDir,
       FAKE_CLAUDE_LOG: h.logFile,
       ...env,

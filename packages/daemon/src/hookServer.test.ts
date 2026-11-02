@@ -83,6 +83,36 @@ describe('HookServer', () => {
     expect((await client.request('s', 'Stop')).output).toBeNull();
   });
 
+  it('非阻擋事件送完就關（socket.end）或立刻斷線：事件照收，回寫失敗不影響 server', async () => {
+    const seen: string[] = [];
+    const { server } = await setup(async (request) => {
+      seen.push(request.requestId);
+      // 等對方真的關了才回寫，製造 EPIPE 的時機。
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { ignored: true };
+    });
+    const line = (id: string) =>
+      `${JSON.stringify({
+        type: 'hook',
+        requestId: id,
+        sessionId: 's',
+        event: 'Stop',
+        payload: { session_id: 'c', hook_event_name: 'Stop' },
+      })}\n`;
+    const ended = connect(server.path);
+    ended.on('error', () => {});
+    ended.end(line('ended'));
+    const destroyed = connect(server.path);
+    destroyed.on('error', () => {});
+    destroyed.write(line('destroyed'), () => destroyed.destroy());
+    await waitUntil(() => seen.length === 2, '兩則都收到');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const client = await HookClient.connect(server.path);
+    cleanups.push(() => client.close());
+    expect((await client.request('s', 'Stop')).output).toEqual({ ignored: true });
+  });
+
   it('連線關閉時 abort 等待中的請求', async () => {
     let aborted = false;
     const { server } = await setup(

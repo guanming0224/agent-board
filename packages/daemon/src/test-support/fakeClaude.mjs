@@ -20,6 +20,7 @@ if (process.env.FAKE_CLAUDE_LOG) {
         AGENT_BOARD_MACHINE_TOKEN: process.env.AGENT_BOARD_MACHINE_TOKEN ?? null,
         CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null,
         TERM: process.env.TERM ?? null,
+        PATH: process.env.PATH ?? null,
       },
     })}\n`,
   );

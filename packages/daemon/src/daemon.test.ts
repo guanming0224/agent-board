@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { delimiter, dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { DaemonToHub } from '@agent-board/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import {
   HookClient,
   Terminal,
   waitUntil,
+  writeFakeHook,
 } from './test-support/harness';
 
 const require = createRequire(import.meta.url);
@@ -150,6 +151,7 @@ describe('session 建立', () => {
         token: 't',
         dataDir: h.dataDir,
         claudeBin: join(h.root, 'no-such-claude'),
+        hookBin: h.hookBin,
         machineName: 'm',
         claudeConfigDir: h.claudeDir,
       },
@@ -628,6 +630,24 @@ describe('hook 與 approval（走真的 socket）', () => {
     expect(JSON.stringify(hookEvent.event)).not.toContain('secret prompt'); // prompt 不進事件
   });
 
+  it('PostToolUse、PostToolUseFailure：轉給 tracker、立刻回 null、不建 approval、不送 hook 事件', async () => {
+    for (const event of ['PostToolUse', 'PostToolUseFailure'] as const) {
+      const reply = await client.request('s1', event, {
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /' },
+      });
+      expect(reply.output).toBeNull();
+    }
+    expect(h.trackers.created[0]?.hooks.map((x) => x.event)).toEqual([
+      'PostToolUse',
+      'PostToolUseFailure',
+    ]);
+    expect(h.hub.received.some((m) => m.type === 'approval.requested')).toBe(false);
+    expect(h.hub.received.some((m) => m.type === 'session.event' && m.event.type === 'hook')).toBe(
+      false,
+    );
+  });
+
   it('SessionStart：更新 contextTokens、claudeSessionId；firstPrompt 只送一次且送完清掉', async () => {
     await h.createAndSubscribe('fp', { firstPrompt: 'do the thing' });
     expect(persisted().sessions.find((s) => s.sessionId === 'fp')?.pendingFirstPrompt).toBe(
@@ -730,14 +750,14 @@ describe('hook 與 approval（走真的 socket）', () => {
     });
   });
 
-  it('hook 程式離開 → approval.resolved by terminal；PTY 結束 → 等待中的 approval 被取消', async () => {
+  it('hook 程式離開 → approval.resolved by timeout；PTY 結束 → 等待中的 approval 被取消', async () => {
     const other = await HookClient.connect(h.daemons[0]?.hookSocketPath as string);
     void other.request('s1', 'PermissionRequest', { tool_name: 'Edit' });
     const first = await h.hub.waitFor('approval.requested');
     other.close();
     await h.hub.waitFor(
       'approval.resolved',
-      (m) => m.approvalId === first.approval.id && m.by === 'terminal',
+      (m) => m.approvalId === first.approval.id && m.by === 'timeout',
     );
 
     const pending = client.request('s1', 'PreToolUse', {
@@ -822,6 +842,272 @@ describe('其他 hub 指令', () => {
     await h.startDaemon();
     const usage = await h.hub.waitFor('usage', (m) => m.summary.inputTokens === 11);
     expect(usage.summary.outputTokens).toBe(22);
+  });
+});
+
+describe('hook 執行檔檢查（CONTRACTS §4.3）', () => {
+  beforeEach(() => h.start().then(() => undefined));
+
+  const baseConfig = () => ({
+    hubUrl: h.hub.url,
+    token: 't',
+    dataDir: h.dataDir,
+    claudeBin: h.bin,
+    machineName: 'm',
+    claudeConfigDir: h.claudeDir,
+  });
+
+  it('PTY 的 PATH 最前面是 hook 所在資料夾', async () => {
+    await h.createAndSubscribe('s1');
+    expect(h.runs()[0]?.env.PATH?.split(delimiter)[0]).toBe(h.hookDir);
+  });
+
+  it('hook 找不到：createFailed、不開 PTY、不建 worktree', async () => {
+    const repo = join(h.root, 'repo');
+    mkdirSync(repo);
+    await h.restartDaemon({
+      config: { ...baseConfig(), hookBin: join(h.root, 'nope', 'agent-board-hook') },
+    });
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'r1',
+      sessionId: 's1',
+      spec: h.spec({ cwd: repo, useWorktree: true }),
+    });
+    const failed = await h.hub.waitFor('session.createFailed', (m) => m.requestId === 'r1');
+    expect(failed.error).toContain('找不到可執行');
+    expect(h.runs()).toEqual([]);
+    expect(existsSync(join(h.root, '.agent-board-wt'))).toBe(false);
+  });
+
+  it('bare 指令名不在 PATH 上也算找不到', async () => {
+    await h.restartDaemon({ config: { ...baseConfig(), hookBin: 'agent-board-hook' } });
+    h.hub.send({ type: 'session.create', requestId: 'r1', sessionId: 's1', spec: h.spec() });
+    await h.hub.waitFor('session.createFailed', (m) => m.requestId === 'r1');
+    expect(h.runs()).toEqual([]);
+  });
+
+  it('bare 指令名在 PATH 上就通過', async () => {
+    h.extraEnv.PATH = `${h.hookDir}${delimiter}${process.env.PATH}`;
+    await h.restartDaemon({ config: { ...baseConfig(), hookBin: 'agent-board-hook' } });
+    await h.createAndSubscribe('s1');
+  });
+
+  it('覆寫的檔案可執行但檔名不對：settings 的指令解析不到，同樣拒絕', async () => {
+    const wrong = writeFakeHook(join(h.root, 'other'), 'my-hook');
+    await h.restartDaemon({ config: { ...baseConfig(), hookBin: wrong } });
+    h.hub.send({ type: 'session.create', requestId: 'r1', sessionId: 's1', spec: h.spec() });
+    const failed = await h.hub.waitFor('session.createFailed', (m) => m.requestId === 'r1');
+    expect(failed.error).toContain('必須命名為');
+    expect(h.runs()).toEqual([]);
+  });
+
+  it('沒有執行權限也算找不到', async () => {
+    const noExec = join(h.root, 'noexec', 'agent-board-hook');
+    mkdirSync(dirname(noExec));
+    writeFileSync(noExec, '');
+    await h.restartDaemon({ config: { ...baseConfig(), hookBin: noExec } });
+    h.hub.send({ type: 'session.create', requestId: 'r1', sessionId: 's1', spec: h.spec() });
+    await h.hub.waitFor('session.createFailed', (m) => m.requestId === 'r1');
+  });
+
+  it('重啟時 hook 暫時找不到：不開 PTY、清單保留；修好後再啟動就接回', async () => {
+    await h.createAndSubscribe('s1');
+    await h.restartDaemon({
+      config: { ...baseConfig(), hookBin: join(h.root, 'nope', 'agent-board-hook') },
+    });
+    expect(h.hellos().at(-1)?.sessions).toEqual([]);
+    expect(h.runs()).toHaveLength(1);
+    expect(persisted().sessions.map((s) => s.sessionId)).toEqual(['s1']);
+
+    await h.restartDaemon();
+    expect(
+      h
+        .hellos()
+        .at(-1)
+        ?.sessions.map((s) => s.id),
+    ).toEqual(['s1']);
+    await waitUntil(() => h.runs().length === 2, '接回');
+    expect(h.runs()[1]?.argv[0]).toBe('--resume');
+  });
+});
+
+describe('與 hub 的語意（Agent C）', () => {
+  beforeEach(() => h.start().then(() => undefined));
+
+  it('terminal.subscribe 冪等：每次都回新快照；一次 unsubscribe 就停止', async () => {
+    await h.createAndSubscribe('s1');
+    const snapshots = () => h.hub.received.filter((m) => m.type === 'terminal.snapshot').length;
+    const start = snapshots();
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 's1' });
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 's1' });
+    await waitUntil(() => snapshots() === start + 2, '兩份新快照');
+
+    h.hub.send({ type: 'terminal.unsubscribe', sessionId: 's1' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const outputs = () => h.hub.received.filter((m) => m.type === 'terminal.output').length;
+    const before = outputs();
+    input('s1', 'quiet');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(outputs()).toBe(before);
+  });
+
+  it('連續 subscribe 中間夾著輸出：每份快照的 seq 正確，持有任一份都能接上連續的 output', async () => {
+    await h.createAndSubscribe('s1');
+    const session = h.daemons[0]?.['sessions'].get('s1');
+    if (!session) throw new Error('沒有 session');
+    const before = h.hub.received.length;
+    session.subscribe();
+    session['handleData']('one\r\n');
+    session.subscribe();
+    session['handleData']('two\r\n');
+    await waitUntil(
+      () => h.hub.received.slice(before).filter((m) => m.type === 'terminal.output').length === 2,
+      '兩則 output',
+    );
+    const messages = h.hub.received
+      .slice(before)
+      .filter((m) => m.type === 'terminal.snapshot' || m.type === 'terminal.output');
+    expect(messages.map((m) => m.type)).toEqual([
+      'terminal.snapshot',
+      'terminal.snapshot',
+      'terminal.output',
+      'terminal.output',
+    ]);
+    const [first, second, one, two] = messages as Extract<
+      DaemonToHub,
+      { type: 'terminal.snapshot' | 'terminal.output' }
+    >[];
+    expect(second?.seq).toBe((first?.seq as number) + 1);
+    expect(first?.data).not.toContain('one');
+    expect(second?.data).toContain('one');
+    expect(second?.data).not.toContain('two');
+    expect(one?.seq).toBe((first?.seq as number) + 1);
+    expect(two?.seq).toBe((one?.seq as number) + 1);
+  });
+
+  it('快照還沒送出就 unsubscribe：不送快照也不送暫存的輸出；之後還能再訂閱', async () => {
+    await h.createAndSubscribe('s1');
+    const session = h.daemons[0]?.['sessions'].get('s1');
+    if (!session) throw new Error('沒有 session');
+    const before = h.hub.received.length;
+    session.subscribe();
+    session['handleData']('dropped\r\n');
+    session.unsubscribe();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(
+      h.hub.received
+        .slice(before)
+        .some((m) => m.type === 'terminal.snapshot' || m.type === 'terminal.output'),
+    ).toBe(false);
+
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 's1' });
+    const snap = await h.hub.waitFor('terminal.snapshot', () => true, { includePast: false });
+    expect(snap.data).toContain('dropped');
+    input('s1', 'still-live');
+    await h.waitForOutput('s1', 'INPUT:still-live');
+  });
+
+  it('hub.welcome 重送時覆蓋 dangerRules；用量不重掃', async () => {
+    const client = await HookClient.connect(h.daemons[0]?.hookSocketPath as string);
+    const command = (text: string) => ({ tool_name: 'Bash', tool_input: { command: text } });
+    h.hub.send({
+      type: 'hub.welcome',
+      machineId: 'm',
+      dangerRules: ['brand new'],
+      stuckMinutes: 9,
+    });
+    await waitUntil(() => h.daemons[0]?.['dangerRules'].includes('brand new'), '規則更新');
+    // 舊規則失效
+    expect((await client.request('s', 'PreToolUse', command('rm -rf /'))).output).toBeNull();
+    void client.request('s', 'PreToolUse', command('do brand  new thing'));
+    const { approval } = await h.hub.waitFor('approval.requested');
+    expect(approval.matchedRule).toBe('brand new');
+    client.close();
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(h.hub.received.filter((m) => m.type === 'usage')).toHaveLength(1);
+  });
+
+  it('接續已結束的 session（同 sessionId、resumeClaudeSessionId）：新 PTY、新畫面、新 session.created', async () => {
+    await h.createAndSubscribe('s1');
+    input('s1', 'exit 2');
+    await h.hub.waitFor('session.runtime', (m) => m.session.id === 's1' && !!m.session.endedAt);
+    const oldId = h.runs()[0]?.argv[1] as string;
+
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'resume-1',
+      sessionId: 's1',
+      spec: h.spec({ resumeClaudeSessionId: oldId }),
+    });
+    const created = await h.hub.waitFor('session.created', (m) => m.requestId === 'resume-1');
+    expect(created.session).toMatchObject({ id: 's1', endedAt: null, claudeSessionId: oldId });
+    await waitUntil(() => h.runs().length === 2, '第二次啟動');
+    expect(h.runs()[1]?.argv.slice(0, 2)).toEqual(['--resume', oldId]);
+    expect(persisted().sessions.map((s) => s.sessionId)).toEqual(['s1']);
+
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 's1' });
+    const snap = await h.hub.waitFor('terminal.snapshot', () => true, { includePast: false });
+    expect(snap.seq).toBeLessThanOrEqual(1); // 新 PTY 的序號重新開始
+    input('s1', 'second-life');
+    await h.waitForOutput('s1', 'INPUT:second-life');
+  });
+
+  it('活著的 session 收到接續請求：不開第二個 PTY，回目前狀態', async () => {
+    await h.createAndSubscribe('s1');
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'resume-alive',
+      sessionId: 's1',
+      spec: h.spec({ resumeClaudeSessionId: 'whatever' }),
+    });
+    await h.hub.waitFor('session.created', (m) => m.requestId === 'resume-alive');
+    expect(h.runs()).toHaveLength(1);
+  });
+
+  it('接續 worktree session（cwd=原 worktreePath、useWorktree=false）：worktreePath、branch 不會遺失', async () => {
+    const repo = join(h.root, 'repo');
+    mkdirSync(repo);
+    writeFileSync(join(repo, 'f.txt'), 'x');
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+        stdio: 'ignore',
+      });
+    git('init', '-b', 'main');
+    git('add', '.');
+    git('commit', '-m', 'init');
+    await h.createAndSubscribe('wt', { cwd: repo, useWorktree: true, name: 'feat' });
+    const first = await h.hub.waitFor('session.created', (m) => m.requestId === 'req-wt');
+    input('wt', 'exit 0');
+    await h.hub.waitFor('session.runtime', (m) => m.session.id === 'wt' && !!m.session.endedAt);
+
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'resume-wt',
+      sessionId: 'wt',
+      spec: h.spec({
+        cwd: first.session.worktreePath as string,
+        useWorktree: false,
+        resumeClaudeSessionId: first.session.claudeSessionId,
+      }),
+    });
+    const created = await h.hub.waitFor('session.created', (m) => m.requestId === 'resume-wt');
+    expect(created.session).toMatchObject({
+      cwd: first.session.worktreePath,
+      worktreePath: first.session.worktreePath,
+      branch: first.session.branch,
+    });
+
+    // 一般 repo 的接續不會被誤標成 worktree。
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'resume-main',
+      sessionId: 'plain',
+      spec: h.spec({ cwd: repo, resumeClaudeSessionId: 'x' }),
+    });
+    const plain = await h.hub.waitFor('session.created', (m) => m.requestId === 'resume-main');
+    expect(plain.session.worktreePath).toBeNull();
   });
 });
 
