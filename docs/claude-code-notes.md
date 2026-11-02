@@ -110,6 +110,8 @@
 - **提問走 `PermissionRequest`，`tool_name` 是 `AskUserQuestion`**，`tool_input.questions[].question` 是問題原文。回 `allow` + `updatedInput.answers = { 問題原文: 答案 }`，模型就拿得到答案。
 - **`bypassPermissions` 下 `PreToolUse` 回 `deny` 有效**，指令不會執行。
 - `firstPrompt` 分開送 Enter 可行；`--resume` 接回同一段對話，舊內容還在；對話紀錄的 `message.usage`、`message.id` 欄位和實作一致。
+- **交接在真 claude 上可行**：`on_file` 觸發後，目標收到 `[Handoff] Summary: … | Detected file edits: … | Branch: …`，模型會接手工作。
+- **`!` 模式沒有定論**：輸入 `!git push --force origin main` 後，畫面出現一段別的指令、沒有 `UserPromptSubmit`、也沒有命中危險規則。指令實際怎麼執行還不清楚，視為未驗證。
 - `SessionStart` 在 `startup` 時沒有 `context_tokens`，所以 context 用量一開始是 null。
 - 這台機器上 `.claude/settings.local.json` 沒有顯示在 `git status`（原因未查，可能是全域 gitignore）。
 

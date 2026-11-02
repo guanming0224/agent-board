@@ -49,6 +49,24 @@ Phase 1 平行派工。
 - 額度顯示沒有資料來源；context 百分比暫以 200k 計算，且 `startup` 時沒有數值。
 - `CLAUDE_CONFIG_DIR` 多帳號未驗證。
 
+## Phase 3 — 團隊、安全、安裝
+
+三個分支由 Lead 重跑驗收後合併進 main。
+
+### 做了什麼
+
+- G：團隊工作台、任務板、請隊長拆解、交接規則引擎、`file.changed` 事件、worktree 檢查。
+- H：危險指令改解析實際執行的指令、遮蔽模式、監聽位址只接受私有 IP、Host 白名單（防 DNS rebinding）、收緊 CSP、audit 密碼遮蔽、資料保留、移除機器時停掉 session、`docs/security-checklist.md`。
+- I：打包（`corepack pnpm build:release`）、安裝腳本、launchd／systemd／工作排程器模板、中英 README、截圖、`THIRD_PARTY_NOTICES.md`。
+- 真 claude 驗過交接（`on_file`）。
+
+### 卡在哪
+
+- `!` 模式的危險指令行為沒有定論；agent 自己改 hook 設定、使用者層 hook 搶先允許都未驗證。
+- 真 launchd、Linux、Windows、實體第二台機器、真人照 README 走完 10 分鐘，都未驗證。
+- 同 repo 兩個不相干子資料夾（`repo/a`、`repo/b`）擋不到，hub 不知道 repo 根目錄。
+- 測試資料含金鑰形狀的假字串，轉公開時可能觸發 GitHub secret scanning。
+
 ### 下一步
 
-Phase 3：G 團隊、H 安全、I 安裝與文件。
+Phase 4 需要 GM 決定：公開 repo 位置、LICENSE、版本號；實機測試環境。
