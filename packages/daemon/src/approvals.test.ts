@@ -97,6 +97,23 @@ describe('PermissionRequest', () => {
     expect(decisionOf(await result)?.decision).toEqual({ behavior: 'deny', message: '不要改' });
   });
 
+  it('answer 暫時轉成 deny + message，內容寫明是使用者的回答', async () => {
+    const { manager, requested, signal, sent } = setup();
+    const result = manager.handleHook(
+      'PermissionRequest',
+      's1',
+      payload({ tool_name: 'AskUserQuestion', tool_input: { question: '哪個？' } }),
+      signal,
+    );
+    expect(requested().kind).toBe('question');
+    manager.decide(requested().id, 's1', { behavior: 'answer', text: '選 A' });
+    const decision = decisionOf(await result)?.decision as Record<string, string>;
+    expect(decision.behavior).toBe('deny');
+    expect(decision.message).toContain('使用者');
+    expect(decision.message).toContain('選 A');
+    expect(sent.at(-1)).toMatchObject({ type: 'approval.resolved', by: 'web' });
+  });
+
   it('超時回 null（交回原生對話框）並送 by:timeout', async () => {
     const { manager, signal, sent } = setup(20);
     expect(await manager.handleHook('PermissionRequest', 's1', request, signal)).toBeNull();
@@ -174,6 +191,13 @@ describe('PreToolUse 危險指令', () => {
       permissionDecision: 'deny',
       permissionDecisionReason: '會蓋掉別人的 commit',
     });
+  });
+
+  it('對危險指令送 answer 也不會放行', async () => {
+    const { manager, requested, signal } = setup();
+    const result = manager.handleHook('PreToolUse', 's1', danger, signal);
+    manager.decide(requested().id, 's1', { behavior: 'answer', text: '可以' });
+    expect(decisionOf(await result)?.permissionDecision).toBe('deny');
   });
 
   it('超時回 deny', async () => {

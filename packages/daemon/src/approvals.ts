@@ -42,16 +42,28 @@ function permissionKind(toolName: string | null): Approval['kind'] {
   return 'permission';
 }
 
+/**
+ * Claude Code 如何接收提問的答案尚未驗證，暫時轉成 deny + message，讓模型讀得到回答
+ * （CONTRACTS「權限與提問」）。Phase 2 查證後只換這裡。
+ */
+const answerAsDenyMessage = (text: string): string => `使用者透過 Agent Board 回答：${text}`;
+
 function permissionOutput(decision: ApprovalDecision, suggestions: unknown[]): HookOutput {
-  const rendered =
-    decision.behavior === 'allow'
-      ? {
-          behavior: 'allow',
-          ...(decision.remember && suggestions.length > 0
-            ? { updatedPermissions: suggestions }
-            : {}),
-        }
-      : { behavior: 'deny', message: decision.reason };
+  let rendered: Record<string, unknown>;
+  switch (decision.behavior) {
+    case 'allow':
+      rendered = {
+        behavior: 'allow',
+        ...(decision.remember && suggestions.length > 0 ? { updatedPermissions: suggestions } : {}),
+      };
+      break;
+    case 'deny':
+      rendered = { behavior: 'deny', message: decision.reason };
+      break;
+    case 'answer':
+      rendered = { behavior: 'deny', message: answerAsDenyMessage(decision.text) };
+      break;
+  }
   return {
     hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: rendered },
   };
@@ -174,10 +186,16 @@ export class ApprovalManager {
         matchedRule,
         message: null,
       },
-      (decision) =>
-        decision.behavior === 'allow'
-          ? preToolUseOutput('allow', `已在 Agent Board 核准（規則：${matchedRule}）`)
-          : preToolUseOutput('deny', decision.reason),
+      (decision) => {
+        if (decision.behavior === 'allow') {
+          return preToolUseOutput('allow', `已在 Agent Board 核准（規則：${matchedRule}）`);
+        }
+        // answer 不是核准：危險指令一律不放行。
+        return preToolUseOutput(
+          'deny',
+          decision.behavior === 'deny' ? decision.reason : answerAsDenyMessage(decision.text),
+        );
+      },
       // 不用 ask（dontAsk 模式下會被拒）；等不到人一律往安全的方向。
       (why) => preToolUseOutput('deny', `危險指令未獲核准：${why}（規則：${matchedRule}）`),
       signal,

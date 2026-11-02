@@ -113,6 +113,19 @@ describe('HookServer', () => {
     expect((await client.request('s', 'Stop')).output).toEqual({ ignored: true });
   });
 
+  it('socket 發生 EPIPE／ECONNRESET 不會變成 uncaught exception', async () => {
+    const { server } = await setup(async () => ({ ok: true }));
+    const client = await HookClient.connect(server.path);
+    cleanups.push(() => client.close());
+    await client.request('s', 'Stop');
+    const [accepted] = [...server['sockets']];
+    if (!accepted) throw new Error('沒有連線');
+    // 沒有 error listener 時 emit 會直接丟例外，相當於 daemon 崩潰。
+    expect(() =>
+      accepted.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })),
+    ).not.toThrow();
+  });
+
   it('連線關閉時 abort 等待中的請求', async () => {
     let aborted = false;
     const { server } = await setup(
