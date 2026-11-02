@@ -9,6 +9,7 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import type { Session } from '@agent-board/protocol';
+import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { STATUS_VISUAL } from '../shared/status';
 import { useBoard } from '../shared/store';
@@ -144,6 +145,7 @@ export function SessionNode({
   positionAbsoluteY: y,
 }: NodeProps<SessionNodeType>) {
   const t = useT();
+  const mask = useMaskText();
   const { sessions, backend } = useBoard();
   const session = sessions.find((s) => s.id === data.sessionId);
   const w = width ?? 0;
@@ -246,7 +248,7 @@ export function SessionNode({
           }}
         >
           <CardHead session={session} />
-          <pre className="tail">{session.lastLines.join('\n')}</pre>
+          <pre className="tail">{mask(session.lastLines.join('\n'))}</pre>
           {session.status !== 'offline' && <ContextUsage tokens={session.contextTokens} />}
           <Actions
             session={session}

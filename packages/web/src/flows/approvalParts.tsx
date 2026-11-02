@@ -1,6 +1,7 @@
 // 審核中心與收件匣共用：把 approval 內容畫出來、送出決定。
 import { useState } from 'react';
 import type { Approval, ApprovalDecision, Machine, User } from '@agent-board/protocol';
+import { useMaskText } from '../security';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { errorText, Callsign, type Loaded, type Note } from './common';
@@ -10,6 +11,8 @@ export function DiffBlock({ lines }: { lines: DiffLine[] }) {
   const t = useT();
   const added = lines.filter((l) => l.type === 'add').length;
   const removed = lines.filter((l) => l.type === 'del').length;
+  // 整段一起遮：多行私鑰拆開來就認不出來了。遮蔽不改行數。
+  const texts = useMaskText()(lines.map((l) => l.text).join('\n')).split('\n');
   return (
     <div
       className="diff"
@@ -23,7 +26,7 @@ export function DiffBlock({ lines }: { lines: DiffLine[] }) {
             <span className="sign" aria-hidden="true">
               {line.type === 'add' ? '+' : line.type === 'del' ? '−' : ' '}
             </span>
-            {line.text}
+            {texts[i]}
           </div>
         ))}
       </div>
@@ -34,6 +37,7 @@ export function DiffBlock({ lines }: { lines: DiffLine[] }) {
 export function ToolBody({ approval }: { approval: Approval }) {
   const t = useT();
   const view: ToolView = summarizeTool(approval.toolName, approval.toolInput);
+  const mask = useMaskText();
   return (
     <>
       <div className="tool">
@@ -45,10 +49,10 @@ export function ToolBody({ approval }: { approval: Approval }) {
           </>
         ) : null}
       </div>
-      {approval.message && <p className="body-text">{approval.message}</p>}
+      {approval.message && <p className="body-text">{mask(approval.message)}</p>}
       {view.kind === 'diff' && <DiffBlock lines={view.lines} />}
-      {view.kind === 'command' && <pre className="command">{view.text}</pre>}
-      {view.kind === 'raw' && <pre className="command">{view.text}</pre>}
+      {view.kind === 'command' && <pre className="command">{mask(view.text)}</pre>}
+      {view.kind === 'raw' && <pre className="command">{mask(view.text)}</pre>}
     </>
   );
 }

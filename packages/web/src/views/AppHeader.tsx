@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { MaskChip } from '../security';
 import { useLocale, useT, type Locale } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { nextInQueue, pendingQueue } from './queue';
@@ -107,6 +108,7 @@ export function AppHeader({ tab }: { tab: TabName }) {
           </span>
           <span title={t('views.quota.title')}>{t('views.quota.short')}</span>
         </span>
+        <MaskChip />
         <div className="seg" role="group" aria-label={t('views.locale.aria')}>
           {LOCALES.map((l) => (
             <button

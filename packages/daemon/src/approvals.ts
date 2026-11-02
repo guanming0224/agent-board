@@ -9,25 +9,16 @@ import {
   type HookEventName,
   type HookPayload,
 } from '@agent-board/protocol';
+import { matchDangerRule } from './dangerRules';
 import type { HookOutput } from './hookServer';
+
+export { matchDangerRule };
 
 /**
  * 比 CLI 的 HOOK_WAIT_MS 早一點，確保 daemon 的答案（尤其 danger 的 deny）先到，
  * 不會變成 CLI 自己逾時、不輸出就放行。
  */
 export const APPROVAL_WAIT_MS = HOOK_WAIT_MS - 5_000;
-
-const normalizeWhitespace = (text: string): string => text.trim().replace(/\s+/g, ' ');
-
-/** 空白正規化後的子字串比對；回傳命中的規則。 */
-export function matchDangerRule(command: string, rules: readonly string[]): string | null {
-  const normalized = normalizeWhitespace(command);
-  for (const rule of rules) {
-    const needle = normalizeWhitespace(rule);
-    if (needle && normalized.includes(needle)) return rule;
-  }
-  return null;
-}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

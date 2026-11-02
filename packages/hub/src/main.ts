@@ -9,6 +9,7 @@ async function main(): Promise<void> {
     host: config.host,
     port: config.port,
     logger: true,
+    retention: config.retention,
   });
   const shutdown = () => {
     hub.close().then(

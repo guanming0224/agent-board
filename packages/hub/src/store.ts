@@ -788,6 +788,34 @@ export class Store {
     for (const row of rows) yield toAudit(row as AuditRow);
   }
 
+  /** 最舊的 limit 筆（要匯出再清的那批）。 */
+  auditOlderThan(cutoff: string, limit: number): AuditEntry[] {
+    const rows = this.db
+      .prepare('SELECT * FROM audit_log WHERE at < ? ORDER BY at, rowid LIMIT ?')
+      .all(cutoff, limit) as AuditRow[];
+    return rows.map(toAudit);
+  }
+
+  deleteAudit(ids: readonly string[]): void {
+    const statement = this.db.prepare('DELETE FROM audit_log WHERE id = ?');
+    this.db.transaction(() => {
+      for (const id of ids) statement.run(id);
+    })();
+  }
+
+  /** 先依時間清，再把總量壓到 maxRows 以內。回傳刪了幾筆。 */
+  pruneEvents(cutoff: string, maxRows: number): number {
+    const byAge = this.db.prepare('DELETE FROM session_events WHERE at < ?').run(cutoff).changes;
+    const byCount = this.db
+      .prepare(
+        `DELETE FROM session_events WHERE rowid IN (
+           SELECT rowid FROM session_events ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET ?
+         )`,
+      )
+      .run(maxRows).changes;
+    return byAge + byCount;
+  }
+
   // ── 設定與 VAPID ──────────────────────────────────────
   getSettings(): Settings {
     const rows = this.db.prepare('SELECT key, value FROM settings').all() as {

@@ -1,4 +1,5 @@
 import type { Session } from '@agent-board/protocol';
+import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { STATUS_VISUAL } from '../shared/status';
 import { useBoard } from '../shared/store';
@@ -27,6 +28,7 @@ function QueueRow({ session }: { session: Session }) {
   const danger = dangerApproval(approvals, session.id);
   const approval = danger ?? approvals.find((a) => a.sessionId === session.id);
   const command = approval?.toolInput?.command;
+  const mask = useMaskText();
   const you = STATUS_VISUAL[session.status].holder === 'you';
 
   return (
@@ -57,7 +59,7 @@ function QueueRow({ session }: { session: Session }) {
         {approval?.toolName && (
           <div className="tool">
             {approval.toolName}{' '}
-            {typeof command === 'string' && <span className="callsign">{command}</span>}
+            {typeof command === 'string' && <span className="callsign">{mask(command)}</span>}
           </div>
         )}
       </a>

@@ -308,6 +308,24 @@ describe('fs.list', () => {
     expect(result.entries).toEqual([]);
     expect(result.error).toContain('ENOENT');
   });
+
+  it('../ 會先正規化，回傳的是實際路徑；只有名稱與類型，沒有檔案內容；NUL 不會讓 daemon 掛掉', async () => {
+    const dir = temp();
+    mkdirSync(join(dir, 'a'));
+    writeFileSync(join(dir, 'secret.txt'), 'CONTENT_MARKER');
+    const result = await listDirectory('r3', join(dir, 'a', '..', 'a', '..'));
+    expect(result.path).toBe(dir);
+    expect(JSON.stringify(result)).not.toContain('CONTENT_MARKER');
+    expect(Object.keys(result.entries[0]!).sort()).toEqual(['isDir', 'isGitRepo', 'name']);
+
+    const nul = await listDirectory('r4', `${dir}\0/x`);
+    expect(nul.entries).toEqual([]);
+    expect(nul.error).toBeTruthy();
+    // 指向檔案：回錯誤，不是內容。
+    const file = await listDirectory('r5', join(dir, 'secret.txt'));
+    expect(file.entries).toEqual([]);
+    expect(JSON.stringify(file)).not.toContain('CONTENT_MARKER');
+  });
 });
 
 describe('usage', () => {

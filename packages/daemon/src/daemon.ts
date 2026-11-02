@@ -73,7 +73,16 @@ export interface DaemonDeps {
   terminateGraceMs?: number;
   heartbeatMs?: number;
   approvalWaitMs?: number;
+  authRetryMs?: number;
+  revokedGraceMs?: number;
 }
+
+/**
+ * token 被拒多久後停掉本機 session。機器在離線時被移除，hub 沒機會送 session.stop，
+ * 沒人看管的 claude 不能一直跑；等一下是為了 hub 只是暫時設定錯（換資料庫、還原備份）時有機會修。
+ * 對話紀錄還在，重新配對後可用 --resume 接回。
+ */
+const REVOKED_GRACE_MS = 10 * 60_000;
 
 const pathKey = (env: NodeJS.ProcessEnv): string =>
   // Windows 的環境變數不分大小寫，實際鍵名常是 Path。
@@ -155,6 +164,7 @@ export class Daemon {
   private usageRunning = false;
   private usageReportedOnConnect = false;
   private stopping = false;
+  private revokedTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly deps: DaemonDeps) {
     const { config } = deps;
@@ -167,6 +177,8 @@ export class Daemon {
       url: config.hubUrl,
       token: config.token,
       heartbeatMs: deps.heartbeatMs,
+      authRetryMs: deps.authRetryMs,
+      onAuthRejected: () => this.handleAuthRejected(),
       buildHello: () => this.buildHello(),
       onMessage: (message) => this.handleHubMessage(message),
       onDisconnected: () => this.handleHubDisconnected(),
@@ -219,6 +231,7 @@ export class Daemon {
     this.stopping = true;
     if (this.usageTimer) clearInterval(this.usageTimer);
     this.usageTimer = null;
+    this.clearRevokedTimer();
     this.resources.stop();
     await Promise.allSettled(this.creating.values());
     this.approvals.dispose();
@@ -247,6 +260,22 @@ export class Daemon {
     };
   }
 
+  private handleAuthRejected(): void {
+    if (this.revokedTimer || this.stopping) return;
+    this.revokedTimer = setTimeout(() => {
+      this.revokedTimer = null;
+      const alive = [...this.sessions.values()].filter((s) => s.isAlive);
+      log.error(`token 持續被 hub 拒絕，機器應已被移除：停止本機 ${alive.length} 個 session。`);
+      for (const session of alive) session.terminate();
+    }, this.deps.revokedGraceMs ?? REVOKED_GRACE_MS);
+    this.revokedTimer.unref();
+  }
+
+  private clearRevokedTimer(): void {
+    if (this.revokedTimer) clearTimeout(this.revokedTimer);
+    this.revokedTimer = null;
+  }
+
   private handleHubDisconnected(): void {
     this.usageReportedOnConnect = false;
     // hub 重連後會重新訂閱（CONTRACTS §6.1），這裡回到沒人看的狀態。
@@ -257,6 +286,7 @@ export class Daemon {
   private handleHubMessage(message: HubToDaemon): void {
     switch (message.type) {
       case 'hub.welcome':
+        this.clearRevokedTimer();
         // 設定變更時 hub 會重送 welcome；用量每條連線只需要補報一次。
         this.applyHubSettings(message.dangerRules, message.stuckMinutes);
         for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
