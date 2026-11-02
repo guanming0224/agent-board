@@ -164,7 +164,8 @@ export const zhTW: Record<string, string> = {
   'flows.machine.lastSeen': '最後讀到 {time}',
   'flows.machine.remove': '移除',
   'flows.machine.removeAgain': '再按一次移除',
-  'flows.machine.removeHint': '4 秒內再按一次：撤銷這台的 token。這台上有 {n} 個 session。',
+  'flows.machine.removeHint':
+    '4 秒內再按一次：撤銷這台的 token，上面 {n} 個 session 會一起停止（機器離線時，它重新連上並被拒絕 10 分鐘後才停）。',
   'flows.machine.removeFailed': '移除失敗：{error}',
   'flows.machine.none': '還沒有機器',
   'flows.machine.noneNext': '按「產生配對碼」，到要加入的機器上執行指令。',
@@ -213,6 +214,8 @@ export const zhTW: Record<string, string> = {
   'flows.security.listenHint': '填 127.0.0.1 或這台機器的私有 IP。不接受對所有網卡開放。',
   'flows.security.listenErr.required': '要填監聽位址',
   'flows.security.listenErr.unspecified': '不可以綁定所有網卡（0.0.0.0、::），請填指定的 IP。',
+  'flows.security.listenErr.public':
+    '這是公開網路位址。只能填 127.0.0.1 或私有 IP（區網、Tailscale）。',
   'flows.security.listenErr.format': '這不是 IP 位址，只填 IP，不要帶 port。',
   'flows.security.origin': '對外網址',
   'flows.security.originHint':
@@ -221,7 +224,8 @@ export const zhTW: Record<string, string> = {
   'flows.security.stuck': '幾分鐘沒輸出算卡住',
   'flows.security.positiveInt': '要填正整數',
   'flows.security.rules': '危險指令清單',
-  'flows.security.rulesHint': '指令包含這些字串（空白不計多寡）就要人工核准，權限模式再寬也一樣。',
+  'flows.security.rulesHint':
+    '實際會執行的指令符合這些規則就要人工核准，權限模式再寬也一樣。旗標順序、sudo、/bin/rm、bash -c、&& 串接都認得；echo、grep、提交訊息裡的文字不算。要比對原始文字（含引號內）用 text: 開頭。腳本檔裡的內容看不到。',
   'flows.security.rulesEmpty': '清單是空的：不會攔下任何指令。',
   'flows.security.newRule': '新增規則，例如 git push --force',
   'flows.security.add': '新增規則',
@@ -458,7 +462,7 @@ export const en: Record<string, string> = {
   'flows.machine.remove': 'Remove',
   'flows.machine.removeAgain': 'Press again to remove',
   'flows.machine.removeHint':
-    "Press again within 4 seconds to revoke this machine's token. It has {n} session(s).",
+    "Press again within 4 seconds to revoke this machine's token and stop its {n} session(s). If it's offline, they stop 10 minutes after it reconnects and is refused.",
   'flows.machine.removeFailed': "Couldn't remove it: {error}",
   'flows.machine.none': 'No machines yet',
   'flows.machine.noneNext': 'Press "Create pairing code" and run the command on the new machine.',
@@ -508,6 +512,8 @@ export const en: Record<string, string> = {
   'flows.security.listenHint':
     "Use 127.0.0.1 or this machine's private IP. Listening on all interfaces is not allowed.",
   'flows.security.listenErr.required': 'Enter a listen address',
+  'flows.security.listenErr.public':
+    'This is a public address. Use 127.0.0.1 or a private IP (LAN, Tailscale).',
   'flows.security.listenErr.unspecified':
     'All interfaces (0.0.0.0, ::) are not allowed. Enter a specific IP.',
   'flows.security.listenErr.format': "That isn't an IP address. Enter the IP only, without a port.",
@@ -519,7 +525,7 @@ export const en: Record<string, string> = {
   'flows.security.positiveInt': 'Enter a positive whole number',
   'flows.security.rules': 'Dangerous command list',
   'flows.security.rulesHint':
-    'Commands containing these strings (extra spaces ignored) need manual approval in every permission mode.',
+    'Commands that would actually run and match these rules need manual approval in every permission mode. Flag order, sudo, /bin/rm, bash -c and && chains are recognized; text in echo, grep or commit messages is not a match. Start a rule with text: to match raw text, quotes included. Script file contents are not visible.',
   'flows.security.rulesEmpty': 'The list is empty, so no command will be stopped.',
   'flows.security.newRule': 'New rule, e.g. git push --force',
   'flows.security.add': 'Add rule',

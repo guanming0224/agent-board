@@ -1,6 +1,7 @@
 // 手機 PWA 收件匣：只列待處理項目，大按鈕；複雜操作回電腦（DISPATCH §5.3-6）。
 import { useRef, useState } from 'react';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
+import { MaskChip, useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import {
@@ -95,6 +96,7 @@ function PermissionItem({ approval, disabled }: { approval: Approval; disabled: 
   const [denying, setDenying] = useState(false);
   const danger = approval.kind === 'danger';
   const view = summarizeTool(approval.toolName, approval.toolInput);
+  const mask = useMaskText();
   const off = disabled || decide.busy;
   const allow = () => {
     if (!danger) return void decide.decide({ behavior: 'allow', remember: false });
@@ -128,7 +130,7 @@ function PermissionItem({ approval, disabled }: { approval: Approval; disabled: 
         <div className="armed" role="status">
           <div>{t('flows.review.armedHint')}</div>
           {(view.kind === 'command' || view.kind === 'raw') && (
-            <pre className="command">{view.text}</pre>
+            <pre className="command">{mask(view.text)}</pre>
           )}
         </div>
       )}
@@ -207,6 +209,7 @@ function ReplyBox({
 }
 
 function QuestionItem({ approval, disabled }: { approval: Approval; disabled: boolean }) {
+  const mask = useMaskText();
   const decide = useDecide(approval);
   const questions = parseQuestions(approval);
   // 多題的提問一鍵按不完，只能打字一次回答；單題才給選項按鈕。
@@ -215,7 +218,7 @@ function QuestionItem({ approval, disabled }: { approval: Approval; disabled: bo
     <>
       {questions.map((q) => (
         <p key={q.question} className="body-text">
-          {q.question}
+          {mask(q.question)}
         </p>
       ))}
       <ReplyBox
@@ -233,9 +236,10 @@ function SessionReply({ session, disabled }: { session: Session; disabled: boole
   const t = useT();
   const { backend } = useBoard();
   const [note, setNote] = useState<Note | null>(null);
+  const mask = useMaskText();
   return (
     <>
-      <pre className="command">{session.lastLines.join('\n')}</pre>
+      <pre className="command">{mask(session.lastLines.join('\n'))}</pre>
       <ReplyBox
         options={[]}
         disabled={disabled}
@@ -334,6 +338,7 @@ export function InboxPage() {
         <span className="waiting-slot">
           <Waiting count={items.length} />
         </span>
+        <MaskChip />
       </header>
       {projects.error && (
         <ErrorBox

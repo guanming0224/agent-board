@@ -385,6 +385,7 @@ describe('listening address', () => {
       port: 9000,
       dataDir: '/fake/data',
       dbPath: join('/fake/data', 'hub.db'),
+      retention: { eventDays: 30, auditDays: 180 },
     });
     expect(loadEnvConfig({ AGENT_BOARD_DATA_DIR: '/fake/data' }).port).toBe(8787);
     expect(() => loadEnvConfig({ AGENT_BOARD_PORT: 'abc' })).toThrow();

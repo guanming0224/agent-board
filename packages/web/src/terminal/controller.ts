@@ -4,6 +4,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
+import { TerminalMaskGate, useMaskMode } from '../security';
 import type { TerminalStream } from '../shared/terminal-contract';
 import { TerminalFeed, type TerminalSnapshotMessage } from './feed';
 import { ImeInputGuard, classifyKey, isOpenableLink } from './input';
@@ -35,6 +36,12 @@ export class TerminalController {
   private readonly resizeDebounce = debounce(() => this.fitAndReport(), RESIZE_DEBOUNCE_MS);
   private readonly observer = new ResizeObserver(() => this.resizeDebounce.call());
   private readonly listeners = new AbortController();
+  /** 遮蔽要在寫進 xterm 之前做：畫面裡不能疊任何東西（STYLE 規則三之一）。 */
+  private readonly mask = new TerminalMaskGate(
+    (data) => this.term.write(data),
+    () => useMaskMode.getState().masking,
+  );
+  private readonly unsubscribeMask: () => void;
   private webgl: WebglAddon | null = null;
   /** 正在還原的快照數；xterm 的 write 是非同步的，還原完才能 fit。 */
   private restoring = 0;
@@ -73,11 +80,15 @@ export class TerminalController {
       sessionId,
       {
         snapshot: (message) => this.applySnapshot(message),
-        output: (data) => this.term.write(data),
+        output: (data) => this.mask.output(data),
       },
       visible,
     );
     this.feed.start();
+    // 切換時已經畫上去的內容要換掉，重拿一次快照最直接。
+    this.unsubscribeMask = useMaskMode.subscribe((state, previous) => {
+      if (state.masking !== previous.masking) this.feed.resync();
+    });
   }
 
   setVisible(visible: boolean): void {
@@ -93,6 +104,8 @@ export class TerminalController {
 
   dispose(): void {
     this.disposed = true;
+    this.unsubscribeMask();
+    this.mask.dispose();
     this.feed.stop();
     this.resizeDebounce.cancel();
     this.observer.disconnect();
@@ -162,7 +175,7 @@ export class TerminalController {
     this.term.resize(message.cols, message.rows);
     this.gate.sync(message.cols, message.rows);
     this.restoring += 1;
-    this.term.write(message.data, () => {
+    this.term.write(this.mask.snapshot(message.data), () => {
       this.restoring -= 1;
       this.fitAndReport();
     });

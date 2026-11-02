@@ -20,7 +20,7 @@ import {
   type User,
 } from '@agent-board/protocol';
 import type { z } from 'zod';
-import { InputLineBuffer } from './audit';
+import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from './audit';
 import { conflict, HttpError, notFound } from './errors';
 import { attentionPayload, inQuietHours, type PushTransport, type VapidKeys } from './push';
 import { TerminalRelay, type RelayClient } from './relay';
@@ -125,6 +125,7 @@ export class Hub {
   private readonly usage = new Map<string, UsageSummary>();
   private readonly pushes = new Set<Promise<void>>();
   private readonly relay: TerminalRelay<ClientConn>;
+  private readonly prompts = new PromptWatcher();
   private heartbeat: NodeJS.Timeout | null = null;
   private closed = false;
 
@@ -266,11 +267,13 @@ export class Hub {
         return;
       case 'terminal.output':
         if (this.ownsSession(conn, msg.sessionId)) {
+          this.prompts.onOutput(msg.sessionId, msg.data);
           this.relay.onOutput(msg.sessionId, JSON.stringify(msg));
         }
         return;
       case 'terminal.snapshot':
         if (this.ownsSession(conn, msg.sessionId)) {
+          this.prompts.onSnapshot(msg.sessionId, msg.data);
           this.relay.onSnapshot(msg.sessionId, JSON.stringify(msg));
         }
         return;
@@ -512,7 +515,8 @@ export class Hub {
       client.inputs.set(sessionId, buffer);
     }
     for (const line of buffer.push(data)) {
-      this.audit(client.userId, sessionId, 'terminal.input', line);
+      const atPrompt = this.prompts.atPasswordPrompt(sessionId);
+      this.audit(client.userId, sessionId, 'terminal.input', atPrompt ? REDACTED_INPUT : line);
     }
   }
 
@@ -524,7 +528,14 @@ export class Hub {
     // 還沒按 Enter 就離開的內容還留在 PTY 輸入列，也要留下紀錄。
     for (const [sessionId, buffer] of client.inputs) {
       const partial = buffer.flush();
-      if (partial !== null) this.audit(client.userId, sessionId, 'terminal.input.partial', partial);
+      if (partial === null) continue;
+      const atPrompt = this.prompts.atPasswordPrompt(sessionId);
+      this.audit(
+        client.userId,
+        sessionId,
+        'terminal.input.partial',
+        atPrompt ? REDACTED_INPUT : partial,
+      );
     }
   }
 
@@ -926,6 +937,13 @@ export class Hub {
     this.store.deleteMachine(id);
     const conn = this.daemons.get(id);
     if (conn) {
+      // token 撤銷後沒人管得到那邊的 claude，連線還在就請它一起停。
+      // 機器離線時送不到：daemon 重連被 401 持續拒絕後會自己停（daemon.ts REVOKED_GRACE_MS）。
+      for (const session of sessions) {
+        if (session.endedAt === null && conn.helloed) {
+          this.send(conn.ws, { type: 'session.stop', sessionId: session.id });
+        }
+      }
       this.daemons.delete(id);
       this.retireDaemon(conn);
       conn.ws.close(CLOSE_REVOKED, 'machine removed');
@@ -953,6 +971,7 @@ export class Hub {
       this.broadcast({ type: 'approval.resolved', approvalId, sessionId, by: 'timeout' });
     }
     for (const session of sessions) {
+      this.prompts.forget(session.id);
       this.relay.dropSession(session.id);
       this.broadcast({ type: 'session.removed', sessionId: session.id });
     }
@@ -1076,7 +1095,7 @@ export class Hub {
       userId,
       sessionId,
       action,
-      detail,
+      detail: redactSecrets(detail),
       at: this.nowIso(),
     });
   }

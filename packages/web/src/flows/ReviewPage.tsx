@@ -1,6 +1,7 @@
 // 審核中心：按「允許」之前先確認呼號（STYLE.md 邏輯 2、6）。
 import { useEffect, useRef, useState } from 'react';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
+import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import {
@@ -91,6 +92,7 @@ function PermissionActions({
   const canRemember = approval.suggestions.length > 0;
   const view = summarizeTool(approval.toolName, approval.toolInput);
   const fullText = view.kind === 'command' || view.kind === 'raw' ? view.text : null;
+  const mask = useMaskText();
 
   const deny = () => {
     const text = reason.trim();
@@ -137,7 +139,7 @@ function PermissionActions({
       {twoStep.armed && (
         <div className="armed" role="status">
           <div>{t('flows.review.armedHint')}</div>
-          {fullText !== null && <pre className="command">{fullText}</pre>}
+          {fullText !== null && <pre className="command">{mask(fullText)}</pre>}
         </div>
       )}
       {!danger && !canRemember && <p className="hint">{t('flows.review.noSuggestions')}</p>}
@@ -218,6 +220,7 @@ function QuestionActions({
   decide: ReturnType<typeof useDecide>;
 }) {
   const t = useT();
+  const mask = useMaskText();
   const [answer, setAnswer] = useState('');
   const [invalid, setInvalid] = useState(false);
   const answerRef = useRef<HTMLTextAreaElement>(null);
@@ -236,7 +239,7 @@ function QuestionActions({
     <>
       {questions.map((q) => (
         <div key={q.question} className="question">
-          <p className="body-text">{q.question}</p>
+          <p className="body-text">{mask(q.question)}</p>
           {q.options.length > 0 && (
             <div className="acts">
               {q.options.map((option) => (
@@ -329,6 +332,7 @@ function ReviewCard({
   targeted: boolean;
 }) {
   const t = useT();
+  const mask = useMaskText();
   const cardRef = useRef<HTMLElement>(null);
   // 從畫布的「檢視並決定」進來：只在變成目標時捲動與聚焦一次，之後的資料更新不搶焦點。
   useEffect(() => {
@@ -385,10 +389,10 @@ function ReviewCard({
       )}
       {approval?.kind === 'plan' && (
         <pre className="command plan">
-          {planText(approval) ?? approval.message ?? session?.lastLines.join('\n')}
+          {mask(planText(approval) ?? approval.message ?? session?.lastLines.join('\n') ?? '')}
         </pre>
       )}
-      {!approval && session && <pre className="command">{session.lastLines.join('\n')}</pre>}
+      {!approval && session && <pre className="command">{mask(session.lastLines.join('\n'))}</pre>}
 
       {blocked && <p className="blocked">{blocked}</p>}
 

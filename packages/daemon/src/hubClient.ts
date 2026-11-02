@@ -39,6 +39,8 @@ export interface HubClientOptions {
   buildHello: () => HelloMessage;
   onMessage: (message: HubToDaemon) => void;
   onDisconnected: () => void;
+  /** hub 拒絕 token（HTTP 401／403）。每次被拒都會叫。 */
+  onAuthRejected?: () => void;
   heartbeatMs?: number;
   authRetryMs?: number;
 }
@@ -117,6 +119,7 @@ export class HubClient {
       authRejected = status === 401 || status === 403;
       if (authRejected) {
         const minutes = Math.round((this.options.authRetryMs ?? AUTH_REJECTED_RETRY_MS) / 60_000);
+        this.options.onAuthRejected?.();
         log.error(
           `hub 拒絕這台機器的 token（HTTP ${status}），可能已被撤銷。session 繼續執行，約每 ${minutes} 分鐘重試一次；請到中控台產生配對碼，重新執行 agent-board-daemon pair。`,
         );

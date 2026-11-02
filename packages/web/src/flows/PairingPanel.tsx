@@ -1,5 +1,6 @@
 // 配對指令：設定與首次引導共用。
 import { useState } from 'react';
+import { useMaskText } from '../security';
 import type { BoardBackend } from '../shared/backend';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
@@ -10,6 +11,7 @@ type Pairing = Awaited<ReturnType<BoardBackend['createPairingCode']>>;
 export function PairingPanel() {
   const t = useT();
   const locale = useLocale((s) => s.locale);
+  const mask = useMaskText();
   const { backend, connected } = useBoard();
   const [pairing, setPairing] = useState<Pairing | null>(null);
   const [busy, setBusy] = useState(false);
@@ -31,12 +33,12 @@ export function PairingPanel() {
         <>
           <p className="sub">{t('flows.pair.step')}</p>
           <pre className="command" data-testid="pair-command">
-            {pairing.installCommand}
+            {mask(pairing.installCommand)}
           </pre>
           <CopyButton text={pairing.installCommand} />
           <p className="hint">
             {t('flows.pair.code', {
-              code: pairing.code,
+              code: mask(`--code ${pairing.code}`).replace('--code ', ''),
               time: new Date(pairing.expiresAt).toLocaleTimeString(locale),
             })}
           </p>

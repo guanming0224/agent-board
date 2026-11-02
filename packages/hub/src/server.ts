@@ -10,13 +10,26 @@ import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import { WebSocketServer } from 'ws';
 import { WS_PATHS } from '@agent-board/protocol';
 import { z } from 'zod';
-import { DEFAULT_PASSWORD_PARAMS, isAllowedOrigin, sha256, type PasswordParams } from './auth';
-import { assertBindableHost, DEFAULT_HOST, DEFAULT_PORT } from './config';
+import {
+  DEFAULT_PASSWORD_PARAMS,
+  isAllowedHost,
+  isAllowedOrigin,
+  sha256,
+  type PasswordParams,
+} from './auth';
+import {
+  assertBindableHost,
+  DEFAULT_HOST,
+  DEFAULT_PORT,
+  DEFAULT_RETENTION,
+  type RetentionDays,
+} from './config';
 import { openDatabase, type Db } from './db';
 import { HttpError } from './errors';
 import { DEFAULT_TIMING, Hub, type Timing } from './hub';
 import { generateVapidKeys, webPushTransport, type PushTransport } from './push';
 import { AUTH_COOKIE, registerRest } from './rest';
+import { runRetention, RETENTION_INTERVAL_MS } from './retention';
 import { Store } from './store';
 
 export interface HubOptions {
@@ -33,6 +46,8 @@ export interface HubOptions {
   timing?: Partial<Timing>;
   loginLimit?: { perAccount: number; perIp: number };
   pairingLimit?: { perIp: number; global: number };
+  /** undefined 用預設天數；null 不跑（測試用）。 */
+  retention?: RetentionDays | null;
 }
 
 export interface RunningHub {
@@ -53,10 +68,17 @@ const SECURITY_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
   'x-frame-options': 'DENY',
   'referrer-policy': 'no-referrer',
-  'content-security-policy':
-    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
-    "connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 };
+
+/** ws: wss: 全開等於 XSS 可以把東西送到任何地方，所以只放行自己的主機。 */
+function contentSecurityPolicy(host: string | undefined): string {
+  const self = host && /^[\w.:[\]-]+$/.test(host) ? ` ws://${host} wss://${host}` : '';
+  return (
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+    `connect-src 'self'${self}; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; ` +
+    "form-action 'self'"
+  );
+}
 
 function rejectUpgrade(socket: Duplex, status: number, text: string): void {
   socket.on('error', () => undefined);
@@ -133,8 +155,19 @@ export function createHub(options: HubOptions): RunningHub {
     return reply.status(500).send({ code: 'internal', message: 'Internal server error' });
   });
 
-  app.addHook('onSend', async (_req, reply) => {
+  app.addHook('onSend', async (req, reply) => {
     for (const [key, value] of Object.entries(SECURITY_HEADERS)) reply.header(key, value);
+    reply.header('content-security-policy', contentSecurityPolicy(req.headers.host));
+  });
+
+  app.addHook('onRequest', async (req) => {
+    if (!isAllowedHost(req.headers.host, () => store.getSettings().publicOrigin)) {
+      throw new HttpError(
+        421,
+        'bad_host',
+        'Host not allowed. Open the hub by IP or localhost, or set publicOrigin in settings.',
+      );
+    }
   });
 
   app.register(fastifyCookie);
@@ -186,6 +219,9 @@ export function createHub(options: HubOptions): RunningHub {
         return;
       }
       if (path === WS_PATHS.client) {
+        if (!isAllowedHost(req.headers.host, () => store.getSettings().publicOrigin)) {
+          return rejectUpgrade(socket, 421, 'Misdirected Request');
+        }
         // 先認證再看 Origin：未登入一律 401。
         const token = fastifyCookie.parse(req.headers.cookie ?? '')[AUTH_COOKIE];
         const tokenHash = token ? sha256(token) : null;
@@ -206,6 +242,21 @@ export function createHub(options: HubOptions): RunningHub {
   };
   app.server.on('upgrade', onUpgrade);
 
+  const retentionDays = options.retention === undefined ? DEFAULT_RETENTION : options.retention;
+  let retentionTimer: NodeJS.Timeout | null = null;
+  const retain = () => {
+    if (!retentionDays) return;
+    try {
+      const result = runRetention(store, retentionDays, options.dbPath, now());
+      if (result.archive) {
+        hub.audit(null, null, 'audit.retention', JSON.stringify(result));
+      }
+    } catch (error) {
+      // 匯出失敗就不清（runRetention 先寫檔才刪），留到下一輪。
+      app.log.error({ err: error }, 'retention failed');
+    }
+  };
+
   let closing: Promise<void> | null = null;
 
   return {
@@ -217,12 +268,16 @@ export function createHub(options: HubOptions): RunningHub {
       const host = options.host ?? store.getSettings().listenAddress;
       assertBindableHost(host);
       await app.listen({ host, port: options.port ?? DEFAULT_PORT });
+      retain();
+      retentionTimer = setInterval(retain, RETENTION_INTERVAL_MS);
+      retentionTimer.unref();
       const { port } = app.server.address() as AddressInfo;
       const urlHost = host.includes(':') ? `[${host}]` : host;
       return { host, port, url: `http://${urlHost}:${port}` };
     },
     close() {
       closing ??= (async () => {
+        if (retentionTimer) clearInterval(retentionTimer);
         app.server.off('upgrade', onUpgrade);
         await hub.close();
         daemonWss.close();

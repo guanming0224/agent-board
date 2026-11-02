@@ -1,5 +1,6 @@
 // 密碼、權杖與限速。長期權杖與配對碼是高熵亂數，存 SHA-256 即可；密碼才用 argon2。
 import { createHash, randomBytes, randomInt } from 'node:crypto';
+import { isIP } from 'node:net';
 import argon2 from 'argon2';
 
 export interface PasswordParams {
@@ -101,4 +102,24 @@ export function isAllowedOrigin(
   if (parsed.origin === new URL(publicOrigin).origin) return true;
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
   return sameHost && loopback;
+}
+
+/**
+ * DNS rebinding：惡意網域解析到 127.0.0.1 後，它的頁面對 hub 就是「同源」，還沒設定的 hub 會被搶先建立管理員。
+ * 這種請求的 Host 一定是那個網域名稱，所以只接受 IP、localhost 與 publicOrigin 的主機名稱。
+ */
+export function isAllowedHost(
+  host: string | undefined,
+  publicOrigin: () => string | null,
+): boolean {
+  if (host === undefined) return true;
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${host}`).hostname;
+  } catch {
+    return false;
+  }
+  if (hostname === 'localhost' || isIP(hostname.replace(/^\[|\]$/g, '')) !== 0) return true;
+  const origin = publicOrigin();
+  return origin !== null && new URL(origin).hostname === hostname;
 }

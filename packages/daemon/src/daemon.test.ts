@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { delimiter, dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { DaemonToHub } from '@agent-board/protocol';
+import type { Daemon } from './daemon';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   dumpScreen,
@@ -1369,5 +1370,67 @@ describe('capabilities', () => {
     expect(hello.version).toBe('0.0.0');
     expect(hello.name).toBe('test-machine');
     expect(hello.os).toBe(process.platform);
+  });
+});
+
+describe('機器被移除（token 被拒）', () => {
+  const alive = (daemon: Daemon, id: string) => daemon['sessions'].get(id)?.isAlive;
+
+  it('持續被拒超過寬限期：停掉本機 session，重啟也不接回', async () => {
+    await h.hub.start();
+    mkdirSync(h.workDir, { recursive: true });
+    const daemon = await h.startDaemon({ revokedGraceMs: 100, authRetryMs: 50 });
+    await h.createAndSubscribe('s1');
+    expect(alive(daemon, 's1')).toBe(true);
+
+    h.hub.rejectStatus = 401;
+    h.hub.dropConnection();
+    await waitUntil(() => alive(daemon, 's1') === false, 'PTY 被停掉');
+    expect(persistedEnded().map((r) => r.id)).toEqual(['s1']);
+
+    const runs = h.runs().length;
+    h.hub.rejectStatus = null;
+    await h.restartDaemon({ revokedGraceMs: 100, authRetryMs: 50 });
+    await h.hub.waitFor(
+      'session.runtime',
+      (m) => m.session.id === 's1' && m.session.endedAt !== null,
+    );
+    expect(h.runs()).toHaveLength(runs);
+  });
+
+  it('寬限期內恢復（例如 hub 設定修好了）：session 不受影響', async () => {
+    await h.hub.start();
+    mkdirSync(h.workDir, { recursive: true });
+    const daemon = await h.startDaemon({ revokedGraceMs: 1500, authRetryMs: 30 });
+    await h.createAndSubscribe('s1');
+    h.hub.rejectStatus = 401;
+    h.hub.dropConnection();
+    await waitUntil(() => daemon['revokedTimer'] !== null, '第一次被拒');
+    h.hub.rejectStatus = null;
+    await waitUntil(() => daemon['revokedTimer'] === null, 'welcome 取消計時');
+    await new Promise((resolve) => setTimeout(resolve, 1700));
+    expect(alive(daemon, 's1')).toBe(true);
+  });
+
+  it('hub 只是掛了（502、連不上）不會停 session', async () => {
+    await h.hub.start();
+    mkdirSync(h.workDir, { recursive: true });
+    const daemon = await h.startDaemon({ revokedGraceMs: 30 });
+    await h.createAndSubscribe('s1');
+    h.hub.rejectStatus = 502;
+    h.hub.dropConnection();
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    expect(daemon['revokedTimer']).toBeNull();
+    expect(alive(daemon, 's1')).toBe(true);
+  });
+
+  it('hub 送 session.stop（移除機器的正常路徑）：PTY 結束', async () => {
+    await h.start();
+    await h.createAndSubscribe('s1');
+    h.hub.send({ type: 'session.stop', sessionId: 's1' });
+    await h.hub.waitFor(
+      'session.runtime',
+      (m) => m.session.id === 's1' && m.session.endedAt !== null,
+    );
   });
 });

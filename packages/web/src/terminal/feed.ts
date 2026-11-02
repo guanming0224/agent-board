@@ -44,6 +44,12 @@ export class TerminalFeed {
     this.unsubscribe = null;
   }
 
+  /** 丟掉畫面重拿快照（遮蔽模式切換時用）。 */
+  resync(): void {
+    this.clearPending();
+    this.subscribe();
+  }
+
   setVisible(visible: boolean): void {
     if (visible === this.visible) return;
     this.visible = visible;
