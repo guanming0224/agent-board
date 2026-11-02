@@ -2,16 +2,22 @@
 import { DEFAULT_DANGER_RULES, DEFAULT_STUCK_MINUTES } from '@agent-board/protocol';
 import type {
   Approval,
+  HandoffRule,
   Layout,
   Machine,
   ResourceSample,
   Session,
+  SessionEvent,
   Settings,
+  Task,
+  Team,
+  TeamMember,
   Template,
   User,
 } from '@agent-board/protocol';
 import type { BoardBackend, BoardListener, BoardSnapshot } from './backend';
 import type { TerminalServerMessage, TerminalStream } from './terminal-contract';
+import { DECOMPOSE_PROMPT_START } from './decomposePrompt';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -66,6 +72,7 @@ export function demoSnapshot(): BoardSnapshot {
         machineId: 'm-studio',
         status: 'waiting_permission',
         branch: 'ab/fix-auth',
+        worktreePath: '/home/demo/.agent-board-wt/fix-auth',
         statusSince: minutesAgo(12),
         lastLines: ['Bash  npm test -- auth', 'Do you want to proceed?', '> 1. Yes', '  2. No'],
       }),
@@ -76,6 +83,7 @@ export function demoSnapshot(): BoardSnapshot {
         status: 'running',
         branch: 'ab/auth-tests',
         permissionMode: 'acceptEdits',
+        worktreePath: '/home/demo/.agent-board-wt/auth-tests',
         lastLines: ['Edit  tests/auth.test.ts', '  + 42 lines', 'Running vitest', '  18 passed'],
       }),
       session({
@@ -192,8 +200,84 @@ const defaultSettings: Settings = {
   notifications: { enabled: true, quietHours: null },
 };
 
-export function createFakeBackend(): BoardBackend {
+/** 測試可以改掉 demoReply，模擬隊長回了無法解析的內容。 */
+export interface FakeBackendControls {
+  /** null 模擬隊長這回合失敗（StopFailure）。 */
+  demoReply: string | null;
+  /** 模擬 daemon 回報的狀態變化。 */
+  setSessionStatus(id: string, status: Session['status']): void;
+  addSessionEvent(sessionId: string, type: string, payload: Record<string, unknown>): void;
+}
+
+/** 假隊長的回覆，請隊長拆解在 demo 模式下也能走完。 */
+const DEMO_DECOMPOSE_REPLY = `Here is the breakdown:
+
+\`\`\`json
+[{"title":"Map the login redirect paths"},{"title":"Write regression tests"},{"title":"Fix the redirect"}]
+\`\`\``;
+
+const DEMO_DECOMPOSE_DELAY_MS = 300;
+
+export function createFakeBackend(): BoardBackend & FakeBackendControls {
   const state = demoSnapshot();
+  const teams: Team[] = [
+    {
+      id: 'team-demo-auth',
+      name: '登入重構',
+      goal: 'Fix the login redirect loop and cover it with tests.',
+      doneCriteria: 'All auth tests pass and the redirect works on mobile.',
+      color: 'teal',
+      contextMd: '# Team notes\n\nKeep the session cookie format unchanged.\n',
+    },
+  ];
+  const members: TeamMember[] = [
+    { teamId: 'team-demo-auth', sessionId: 's-tests', role: 'lead' },
+    { teamId: 'team-demo-auth', sessionId: 's-auth', role: 'worker' },
+  ];
+  const tasks: Task[] = [
+    {
+      id: 'task-1',
+      teamId: 'team-demo-auth',
+      title: 'Reproduce the redirect loop',
+      ownerSessionId: 's-auth',
+      column: 'doing',
+    },
+    {
+      id: 'task-2',
+      teamId: 'team-demo-auth',
+      title: 'Check mobile Safari',
+      ownerSessionId: null,
+      column: 'todo',
+    },
+  ];
+  const rules: HandoffRule[] = [
+    {
+      id: 'rule-1',
+      teamId: 'team-demo-auth',
+      fromSessionId: 's-auth',
+      trigger: 'on_done',
+      action: { toSessionId: 's-tests' },
+      enabled: true,
+    },
+  ];
+  const events: SessionEvent[] = [];
+  const addEvent = (sessionId: string, type: string, payload: Record<string, unknown>) => {
+    events.push({
+      id: crypto.randomUUID(),
+      sessionId,
+      type,
+      payload,
+      at: new Date().toISOString(),
+    });
+  };
+  const findIn = <T extends { id: string }>(list: T[], id: string, label: string): T => {
+    const item = list.find((x) => x.id === id);
+    if (!item) throw new Error(`unknown ${label} ${id}`);
+    return item;
+  };
+  const removeFrom = <T>(list: T[], match: (item: T) => boolean) => {
+    for (let i = list.length - 1; i >= 0; i -= 1) if (match(list[i]!)) list.splice(i, 1);
+  };
   const listeners = new Set<BoardListener>();
   const terminal = new FakeTerminalStream();
   let settings = defaultSettings;
@@ -276,7 +360,23 @@ export function createFakeBackend(): BoardBackend {
       terminal.emit(sessionId, `${text}\r\n`);
       find(sessionId).status = 'running';
       publish();
+      if (!text.startsWith(DECOMPOSE_PROMPT_START)) return;
+      setTimeout(() => {
+        find(sessionId).status = 'waiting_input';
+        if (this.demoReply === null) {
+          addEvent(sessionId, 'hook', { event: 'StopFailure', error: 'server_error' });
+        } else {
+          addEvent(sessionId, 'hook', { event: 'Stop', last_assistant_message: this.demoReply });
+        }
+        publish();
+      }, DEMO_DECOMPOSE_DELAY_MS);
     },
+    demoReply: DEMO_DECOMPOSE_REPLY as string | null,
+    setSessionStatus(id, status) {
+      find(id).status = status;
+      publish();
+    },
+    addSessionEvent: addEvent,
     async decideApproval(approval: Approval) {
       state.approvals = state.approvals.filter((a) => a.id !== approval.id);
       find(approval.sessionId).status = 'running';
@@ -315,5 +415,63 @@ export function createFakeBackend(): BoardBackend {
       settings = { ...settings, ...patch };
       return settings;
     },
+
+    listTeams: async () => teams.map((x) => ({ ...x })),
+    async createTeam(input) {
+      const team = { ...input, id: crypto.randomUUID() };
+      teams.push(team);
+      return team;
+    },
+    async updateTeam(id, patch) {
+      return Object.assign(findIn(teams, id, 'team'), patch);
+    },
+    async deleteTeam(id) {
+      removeFrom(teams, (x) => x.id === id);
+      removeFrom(members, (x) => x.teamId === id);
+      removeFrom(tasks, (x) => x.teamId === id);
+      removeFrom(rules, (x) => x.teamId === id);
+    },
+    listTeamMembers: async (teamId) => members.filter((x) => x.teamId === teamId),
+    async putTeamMember(teamId, sessionId, role) {
+      const member = { teamId, sessionId, role };
+      removeFrom(members, (x) => x.teamId === teamId && x.sessionId === sessionId);
+      members.push(member);
+      return member;
+    },
+    async deleteTeamMember(teamId, sessionId) {
+      removeFrom(members, (x) => x.teamId === teamId && x.sessionId === sessionId);
+    },
+    listTasks: async (teamId) => tasks.filter((x) => x.teamId === teamId).map((x) => ({ ...x })),
+    async createTask(teamId, input) {
+      const task: Task = { ...input, id: crypto.randomUUID(), teamId, column: 'todo' };
+      tasks.push(task);
+      return task;
+    },
+    async updateTask(id, patch) {
+      const task = findIn(tasks, id, 'task');
+      const next = { ...task, ...patch };
+      // 和 hub 相同的規則（rest.ts tasksUpdate）。
+      if (next.column !== 'todo' && next.ownerSessionId === null) {
+        throw new Error('Assign the task before moving it');
+      }
+      return Object.assign(task, next);
+    },
+    async deleteTask(id) {
+      removeFrom(tasks, (x) => x.id === id);
+    },
+    listHandoffRules: async (teamId) =>
+      rules.filter((x) => x.teamId === teamId).map((x) => ({ ...x })),
+    async createHandoffRule(teamId, input) {
+      const rule = { ...input, id: crypto.randomUUID(), teamId };
+      rules.push(rule);
+      return rule;
+    },
+    async updateHandoffRule(id, patch) {
+      return Object.assign(findIn(rules, id, 'rule'), patch);
+    },
+    async deleteHandoffRule(id) {
+      removeFrom(rules, (x) => x.id === id);
+    },
+    sessionEvents: async (sessionId) => events.filter((x) => x.sessionId === sessionId),
   };
 }

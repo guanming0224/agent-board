@@ -64,6 +64,10 @@ process.stdin.on('data', (chunk) => {
     hook('UserPromptSubmit', { prompt: line });
     if (line === 'ask-permission') tool('Bash', { command: 'npm test' });
     if (line === 'danger') tool('Bash', { command: 'git push --force origin main' });
-    hook('Stop', { last_assistant_message: `done: ${line}`, stop_hook_active: false });
+    // 團隊測試：假隊長回一份任務清單。
+    const reply = line.startsWith('Break this team goal')
+      ? 'Plan:\n```json\n[{"title":"Integration task one"},{"title":"Integration task two"}]\n```'
+      : `done: ${line}`;
+    hook('Stop', { last_assistant_message: reply, stop_hook_active: false });
   }
 });

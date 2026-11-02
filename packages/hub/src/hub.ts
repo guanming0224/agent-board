@@ -22,6 +22,7 @@ import {
 import type { z } from 'zod';
 import { InputLineBuffer } from './audit';
 import { conflict, HttpError, notFound } from './errors';
+import { HandoffEngine } from './handoff';
 import { attentionPayload, inQuietHours, type PushTransport, type VapidKeys } from './push';
 import { TerminalRelay, type RelayClient } from './relay';
 import type { Store } from './store';
@@ -37,6 +38,8 @@ export interface Timing {
   hardClientBufferBytes: number;
   drainPollMs: number;
   drainTimeoutMs: number;
+  /** 送進 TUI 的文字和 Enter 之間的間隔，太短會被當成貼上。 */
+  handoffEnterDelayMs: number;
 }
 
 export const DEFAULT_TIMING: Timing = {
@@ -49,6 +52,7 @@ export const DEFAULT_TIMING: Timing = {
   hardClientBufferBytes: 16 * 1024 * 1024,
   drainPollMs: 200,
   drainTimeoutMs: 60_000,
+  handoffEnterDelayMs: 100,
 };
 
 export const CLOSE_REVOKED = 4401;
@@ -125,6 +129,7 @@ export class Hub {
   private readonly usage = new Map<string, UsageSummary>();
   private readonly pushes = new Set<Promise<void>>();
   private readonly relay: TerminalRelay<ClientConn>;
+  private readonly handoff: HandoffEngine;
   private heartbeat: NodeJS.Timeout | null = null;
   private closed = false;
 
@@ -141,6 +146,20 @@ export class Hub {
       drainPollMs: deps.timing.drainPollMs,
       drainTimeoutMs: deps.timing.drainTimeoutMs,
       now: () => deps.now().getTime(),
+    });
+    this.handoff = new HandoffEngine({
+      store: deps.store,
+      now: deps.now,
+      enterDelayMs: deps.timing.handoffEnterDelayMs,
+      audit: (sessionId, action, detail) => this.audit(null, sessionId, action, detail),
+      addEvent: (sessionId, type, payload, at) => this.addEvent(sessionId, type, payload, at),
+      isReachable: (sessionId) => {
+        const machineId = this.store.sessionMachineId(sessionId);
+        return machineId !== null && this.daemonFor(machineId) !== null;
+      },
+      sendInput: (sessionId, data) =>
+        this.toSessionDaemon(sessionId, { type: 'terminal.input', sessionId, data }),
+      guarded: (label, fn) => this.guarded(label, fn),
     });
     // 上次關機時的連線都不在了：機器與 session 先視為離線，等 daemon 回來對帳。
     for (const machine of this.store.listMachines()) this.markMachineOffline(machine.id);
@@ -262,6 +281,7 @@ export class Hub {
       case 'session.event':
         if (this.ownsSession(conn, msg.event.sessionId) && this.store.insertEvent(msg.event)) {
           this.broadcast({ type: 'session.event', event: msg.event });
+          this.guarded('handoff', () => this.handoff.onEvent(msg.event));
         }
         return;
       case 'terminal.output':
@@ -492,6 +512,7 @@ export class Hub {
       case 'terminal.input':
         // 先寫 audit 再轉送：寫失敗就不送進終端機（例外由外層回 error）。
         this.auditInput(client, msg.sessionId, msg.data);
+        if (/[\r\n]/.test(msg.data)) this.handoff.onUserInput(msg.sessionId);
         this.toSessionDaemon(msg.sessionId, msg);
         return;
       case 'terminal.resize':
@@ -499,6 +520,7 @@ export class Hub {
         return;
       case 'terminal.signal':
         client.inputs.get(msg.sessionId)?.clear();
+        if (msg.signal === 'terminate') this.handoff.onUserStop(msg.sessionId);
         this.audit(client.userId, msg.sessionId, 'terminal.signal', msg.signal);
         this.toSessionDaemon(msg.sessionId, msg);
         return;
@@ -770,6 +792,7 @@ export class Hub {
     const conn = this.daemonFor(session.machineId);
     if (!conn) throw conflict('machine_offline', 'Machine is offline');
     this.audit(user.id, id, 'session.stop', '');
+    this.handoff.onUserStop(id);
     this.send(conn.ws, { type: 'session.stop', sessionId: id });
     return session;
   }
@@ -907,11 +930,17 @@ export class Hub {
     if (mayNotify && entered && needsAttention(next.status)) {
       this.notifyAttention(next);
     }
+    this.guarded('handoff', () => this.handoff.onSessionChange(prev, next, mayNotify && entered));
     if (holdsSlot(prev) && !holdsSlot(next)) this.drainQueue();
   }
 
-  private addEvent(sessionId: string, type: string, payload: Record<string, unknown>): void {
-    const event = { id: randomUUID(), sessionId, type, payload, at: this.nowIso() };
+  private addEvent(
+    sessionId: string,
+    type: string,
+    payload: Record<string, unknown>,
+    at: string = this.nowIso(),
+  ): void {
+    const event = { id: randomUUID(), sessionId, type, payload, at };
     this.store.insertEvent(event);
     this.broadcast({ type: 'session.event', event });
   }
@@ -1144,6 +1173,7 @@ export class Hub {
       if (conn.helloed) this.store.touchMachine(conn.machineId, now);
     }
     this.store.pruneExpired(now);
+    this.handoff.flush();
   }
 
   async close(): Promise<void> {
@@ -1160,6 +1190,7 @@ export class Hub {
     this.closed = true;
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.relay.close();
+    this.handoff.close();
     for (const pending of this.pendingCreates.values()) clearTimeout(pending.timer);
     this.pendingCreates.clear();
     for (const pending of this.pendingBrowses.values()) {

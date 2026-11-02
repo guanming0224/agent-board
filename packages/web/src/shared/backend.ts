@@ -2,14 +2,19 @@
 import type {
   Approval,
   ApprovalDecision,
+  HandoffRule,
   Layout,
   Machine,
   Note,
   Project,
   ResourceSample,
   Session,
+  SessionEvent,
   SessionSpec,
   Settings,
+  Task,
+  Team,
+  TeamMember,
   Template,
   User,
 } from '@agent-board/protocol';
@@ -62,4 +67,32 @@ export interface BoardBackend {
   getNotes(workspace: string): Promise<Note[]>;
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
+
+  /** 團隊工作台與畫布的團隊框、交接線（Phase 3）。 */
+  listTeams(): Promise<Team[]>;
+  createTeam(input: Omit<Team, 'id'>): Promise<Team>;
+  updateTeam(id: string, patch: Partial<Omit<Team, 'id'>>): Promise<Team>;
+  deleteTeam(id: string): Promise<void>;
+  listTeamMembers(teamId: string): Promise<TeamMember[]>;
+  putTeamMember(teamId: string, sessionId: string, role: TeamMember['role']): Promise<TeamMember>;
+  deleteTeamMember(teamId: string, sessionId: string): Promise<void>;
+  listTasks(teamId: string): Promise<Task[]>;
+  createTask(teamId: string, input: Pick<Task, 'title' | 'ownerSessionId'>): Promise<Task>;
+  updateTask(
+    id: string,
+    patch: Partial<Pick<Task, 'title' | 'ownerSessionId' | 'column'>>,
+  ): Promise<Task>;
+  deleteTask(id: string): Promise<void>;
+  listHandoffRules(teamId: string): Promise<HandoffRule[]>;
+  createHandoffRule(
+    teamId: string,
+    input: Omit<HandoffRule, 'id' | 'teamId'>,
+  ): Promise<HandoffRule>;
+  updateHandoffRule(
+    id: string,
+    patch: Partial<Omit<HandoffRule, 'id' | 'teamId'>>,
+  ): Promise<HandoffRule>;
+  deleteHandoffRule(id: string): Promise<void>;
+  /** 由舊到新。請隊長拆解從這裡讀回覆；最近的交接紀錄也是。 */
+  sessionEvents(sessionId: string): Promise<SessionEvent[]>;
 }

@@ -1,0 +1,269 @@
+/* 團隊工作台（STYLE.md §3、§4）。團隊色不是狀態色，只用在識別色塊。 */
+:root {
+  --team-teal: #3cc4b0;
+  --team-lime: #a8c957;
+  --team-indigo: #8b93f5;
+  --team-apricot: #e8a87c;
+}
+
+.chip.cost {
+  border-color: var(--quota);
+  color: var(--quota);
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 3px;
+  background: var(--team);
+}
+
+.team-page h1 {
+  margin: 0;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.team-page h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.team-page h3 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+}
+.team-page p {
+  margin: 0 0 8px;
+}
+.team-page ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.team-page label {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.team-page input,
+.team-page select,
+.team-page textarea {
+  min-height: 36px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+.team-page textarea {
+  display: block;
+  width: 100%;
+  margin-bottom: 10px;
+  resize: vertical;
+}
+.team-page textarea.mono {
+  font: 13px/1.5 var(--font-mono);
+}
+.team-page .msg {
+  overflow-wrap: anywhere;
+}
+.team-page .msg.err {
+  color: var(--fault);
+}
+.team-page button.link {
+  min-height: 28px;
+  padding: 0 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+}
+.team-page .row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.team-page .spacer {
+  flex: 1;
+}
+.panel {
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  min-width: 0;
+}
+.crumb {
+  font-size: 13px;
+}
+.crumb a {
+  color: var(--muted);
+}
+.team-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.team-head h1 .swatch {
+  width: 12px;
+  height: 12px;
+}
+.team-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.new-team {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  margin-top: 12px;
+}
+.new-team label {
+  flex: 1 1 220px;
+  margin: 0;
+}
+.team-row {
+  display: grid;
+  gap: 2px;
+  color: inherit;
+  text-decoration: none;
+  border-left: 3px solid var(--team);
+}
+.team-row:hover {
+  background: var(--surface-2);
+}
+.member {
+  padding: 8px 10px 10px 14px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.member .row {
+  margin-top: 8px;
+}
+.member-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+.add-member {
+  margin-top: 8px;
+}
+.you-alert {
+  margin-top: 10px;
+  border-color: color-mix(in srgb, var(--you) 55%, transparent);
+  background: color-mix(in srgb, var(--you) 10%, transparent);
+}
+.you-alert > span {
+  color: var(--you);
+}
+.you-alert button {
+  margin-top: 8px;
+}
+.decompose {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.decompose p {
+  margin: 0;
+}
+.columns {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.column {
+  min-width: 0;
+  padding: 2px 10px 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg);
+}
+.new-task {
+  margin-bottom: 8px;
+}
+.new-task input {
+  flex: 1 1 100px;
+}
+.task {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
+.task select {
+  width: 100%;
+}
+.task-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.team-page .task-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--you);
+}
+.task-actions {
+  margin-top: 6px;
+}
+.team-page button.move {
+  min-height: 28px;
+  padding: 0 10px;
+}
+.rule {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.rule-route {
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.rule button[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.new-rule {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.activity li {
+  padding: 2px 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.team-delete {
+  justify-content: flex-end;
+}
+
+@media (max-width: 1040px) {
+  .team-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

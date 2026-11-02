@@ -4,13 +4,13 @@ import { useBoard } from '../shared/store';
 import { nextInQueue, pendingQueue } from './queue';
 import { useViewsUi } from './uiStore';
 
-export type TabName = 'canvas' | 'queue' | 'review' | 'settings';
+export type TabName = 'canvas' | 'queue' | 'review' | 'team' | 'settings';
 
-const TABS: { name: TabName | 'team'; labelKey: string; hash?: string }[] = [
+const TABS: { name: TabName; labelKey: string; hash?: string }[] = [
   { name: 'canvas', labelKey: 'views.tab.canvas', hash: '#/canvas' },
   { name: 'queue', labelKey: 'views.tab.queue', hash: '#/queue' },
   { name: 'review', labelKey: 'views.tab.review', hash: '#/review' },
-  { name: 'team', labelKey: 'views.tab.team' },
+  { name: 'team', labelKey: 'views.tab.team', hash: '#/team' },
   { name: 'settings', labelKey: 'views.tab.settings', hash: '#/settings' },
 ];
 

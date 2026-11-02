@@ -7,7 +7,7 @@ import {
 } from '@xyflow/react';
 import { useT } from '../shared/i18n';
 
-export type HandoffEdgeType = Edge<{ labelKey: string }, 'handoff'>;
+export type HandoffEdgeType = Edge<{ labelKeys: string[]; enabled: boolean }, 'handoff'>;
 
 /** 線是流程，不是狀態：不上色（STYLE.md §5）。 */
 export function HandoffEdge(props: EdgeProps<HandoffEdgeType>) {
@@ -24,12 +24,15 @@ export function HandoffEdge(props: EdgeProps<HandoffEdgeType>) {
       <EdgeLabelRenderer>
         <div
           className="edge-label"
-          data-testid={`handoff-${props.source}-${props.target}`}
+          data-enabled={props.data?.enabled}
           style={{
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px) scale(calc(1 / var(--z, 1)))`,
           }}
         >
-          {t(props.data?.labelKey ?? '')}
+          <span data-testid={`handoff-${props.source}-${props.target}`}>
+            {(props.data?.labelKeys ?? []).map((key) => t(key)).join('、')}
+          </span>
+          {!props.data?.enabled && <span className="edge-off">{t('canvas.handoff.off')}</span>}
         </div>
       </EdgeLabelRenderer>
     </>

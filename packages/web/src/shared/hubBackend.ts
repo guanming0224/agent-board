@@ -301,6 +301,32 @@ export function createHubBackend() {
     getSettings: () => call('settingsGet'),
     updateSettings: (patch) => call('settingsUpdate', { body: patch }),
 
+    listTeams: () => call('teamsList'),
+    createTeam: (input) => call('teamsCreate', { body: input }),
+    updateTeam: (id, patch) => call('teamsUpdate', { params: { id }, body: patch }),
+    async deleteTeam(id) {
+      await call('teamsDelete', { params: { id } });
+    },
+    listTeamMembers: (id) => call('teamMembersList', { params: { id } }),
+    putTeamMember: (id, sessionId, role) =>
+      call('teamMembersPut', { params: { id, sessionId }, body: { role } }),
+    async deleteTeamMember(id, sessionId) {
+      await call('teamMembersDelete', { params: { id, sessionId } });
+    },
+    listTasks: (id) => call('tasksList', { params: { id } }),
+    createTask: (id, input) => call('tasksCreate', { params: { id }, body: input }),
+    updateTask: (id, patch) => call('tasksUpdate', { params: { id }, body: patch }),
+    async deleteTask(id) {
+      await call('tasksDelete', { params: { id } });
+    },
+    listHandoffRules: (id) => call('handoffRulesList', { params: { id } }),
+    createHandoffRule: (id, input) => call('handoffRulesCreate', { params: { id }, body: input }),
+    updateHandoffRule: (id, patch) => call('handoffRulesUpdate', { params: { id }, body: patch }),
+    async deleteHandoffRule(id) {
+      await call('handoffRulesDelete', { params: { id } });
+    },
+    sessionEvents: (id) => call('sessionEvents', { params: { id } }),
+
     // 設定頁以選用方式使用（flows/SettingsPage.tsx）
     listUsers: () => call('usersList'),
     createUser: (input: RouteBody<'usersCreate'>) => call('usersCreate', { body: input }),
