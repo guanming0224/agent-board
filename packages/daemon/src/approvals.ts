@@ -48,7 +48,25 @@ function permissionKind(toolName: string | null): Approval['kind'] {
  */
 const answerAsDenyMessage = (text: string): string => `使用者透過 Agent Board 回答：${text}`;
 
-function permissionOutput(decision: ApprovalDecision, suggestions: unknown[]): HookOutput {
+/**
+ * 提問的答案放進 updatedInput.answers，Claude Code 當作使用者在對話框裡選的。
+ * 答案的鍵是問題原文（AskUserQuestion 的 input 格式）；有多題時同一個回答給每一題。
+ */
+function answerInput(toolInput: Record<string, unknown> | null, text: string) {
+  const questions = Array.isArray(toolInput?.questions) ? toolInput.questions : [];
+  const answers: Record<string, string> = {};
+  for (const item of questions) {
+    const question = asRecord(item)?.question;
+    if (typeof question === 'string') answers[question] = text;
+  }
+  return { ...toolInput, answers };
+}
+
+function permissionOutput(
+  decision: ApprovalDecision,
+  suggestions: unknown[],
+  toolInput: Record<string, unknown> | null,
+): HookOutput {
   let rendered: Record<string, unknown>;
   switch (decision.behavior) {
     case 'allow':
@@ -61,7 +79,7 @@ function permissionOutput(decision: ApprovalDecision, suggestions: unknown[]): H
       rendered = { behavior: 'deny', message: decision.reason };
       break;
     case 'answer':
-      rendered = { behavior: 'deny', message: answerAsDenyMessage(decision.text) };
+      rendered = { behavior: 'allow', updatedInput: answerInput(toolInput, decision.text) };
       break;
   }
   return {
@@ -193,7 +211,7 @@ export class ApprovalManager {
         matchedRule: null,
         message: null,
       },
-      (decision) => permissionOutput(decision, suggestions),
+      (decision) => permissionOutput(decision, suggestions, asRecord(payload.tool_input)),
       () => null, // 交回原生對話框
       signal,
     );

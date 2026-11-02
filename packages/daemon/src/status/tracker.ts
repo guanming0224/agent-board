@@ -11,12 +11,6 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
  * idle_prompt 只代表「閒置中」。這些狀態已經說明了為什麼閒置，被蓋成 waiting_input 反而是誤報：
  * 限流會看不到、計畫審核會變成一般等待。
  */
-/**
- * 新資料夾的信任對話框。回答前 hook 不會跑，只能從輸出判斷；不偵測的話會一直顯示「啟動中」，
- * 使用者不知道它在等人。字串取自 claude 2.1.316，換版比對不到就退回 starting，不會誤報。
- */
-const TRUST_PROMPT = /Yes, I trust this folder/;
-
 const KEEP_ON_IDLE_PROMPT: readonly SessionStatus[] = ['plan_review', 'rate_limited', 'error'];
 
 /** 等人決定的權限請求。Notification 不帶工具資訊，所以 toolName、toolInput 可能是 null。 */
@@ -99,7 +93,7 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     if (to === status) return;
     const change: StatusChange = { from: status, to, reason, detail, at: now() };
     status = to;
-    if (to !== 'waiting_permission') pendingPermissions = [];
+    if (to !== 'waiting_permission' && to !== 'plan_review') pendingPermissions = [];
     if (to === 'running') {
       lastActivityAt = change.at.getTime();
       armStuckTimer();
@@ -126,7 +120,7 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
       transition('running', reason, null);
     } else if (status === 'stuck' || (status === 'starting' && agentId === null)) {
       transition('running', reason, null);
-    } else if (status === 'waiting_permission') {
+    } else if (status === 'waiting_permission' || status === 'plan_review') {
       settlePermission(event, payload, agentId);
       if (pendingPermissions.length === 0) transition('running', reason, null);
     }
@@ -154,7 +148,11 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
       ...known,
       { agentId: stringField(payload, 'agent_id'), toolName, toolInput: toolInputOf(payload) },
     ];
-    transition('waiting_permission', 'hook:PermissionRequest', toolName);
+    transition(
+      toolName === 'ExitPlanMode' ? 'plan_review' : 'waiting_permission',
+      'hook:PermissionRequest',
+      toolName,
+    );
   }
 
   function onHook(event: HookEventName, payload: HookPayload): void {
@@ -194,11 +192,9 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
         break;
       }
       case 'Stop':
-        transition(
-          payload.permission_mode === 'plan' ? 'plan_review' : 'waiting_input',
-          reason,
-          null,
-        );
+        // 計畫是用 ExitPlanMode 的權限請求送出的（實測 2.1.316）。plan 模式下的 Stop 可能只是提問
+        // 或計畫剛被拒絕，當成審計畫會誤報。
+        transition('waiting_input', reason, null);
         break;
       case 'StopFailure': {
         const error = stringField(payload, 'error');
@@ -221,9 +217,6 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
 
   function detectUsageLimit(data: string): void {
     for (const line of splitLines(data)) {
-      if (status === 'starting' && TRUST_PROMPT.test(line)) {
-        transition('waiting_input', 'output:trust-prompt', 'trust');
-      }
       if (!matchesUsageLimit(line, 'idle')) continue;
       const key = line.trim();
       if (seenLimitLines.has(key)) continue;
@@ -238,6 +231,11 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
   function onOutput(data: string): void {
     if (closed || data.length === 0) return;
     detectUsageLimit(data);
+  }
+
+  function onTrustPrompt(): void {
+    if (!closed && status === 'starting')
+      transition('waiting_input', 'output:trust-prompt', 'trust');
   }
 
   function onProgress(): void {
@@ -275,6 +273,7 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     onHook,
     onOutput,
     onProgress,
+    onTrustPrompt,
     onExit,
     setStuckMinutes,
     dispose,

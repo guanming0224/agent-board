@@ -33,6 +33,8 @@ export class StubTracker implements StatusTracker {
 
   onProgress(): void {}
 
+  onTrustPrompt(): void {}
+
   onOutput(data: string): void {
     this.outputs.push(data);
   }

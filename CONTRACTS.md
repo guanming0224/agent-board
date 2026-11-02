@@ -31,7 +31,7 @@ Phase 1 各 agent 只看這份就能開工。型別的唯一來源是 `packages/
 ### 權限與提問
 
 - 任何登入使用者都能操作 session 與一般核准；**`kind: 'danger'` 的 approval 只有 `owner` 能決定**，hub 必須擋，前端要停用並說明。
-- `behavior: 'answer'` 用來回答提問。Claude Code 如何接收答案尚未驗證，daemon 暫時轉成 deny + message（內容寫明這是使用者的回答）；audit 與事件仍記為 answer。實作集中在 `approvals.ts`，Phase 2 再換。
+- `behavior: 'answer'` 用來回答提問：`PermissionRequest` 回 `allow`，`updatedInput.answers` 以問題原文為鍵（實測 2.1.316 可行）。audit 與事件記為 answer。
 - 配對指令固定為 `agent-board-daemon pair --hub '<origin>' --code <code>`。
 
 ## 3. Session 生命週期
@@ -111,23 +111,23 @@ PermissionRequest hook → daemon（建 Approval，卡住）→ hub → 瀏覽�
 
 ## 5. 狀態機（DISPATCH §4）
 
-| 事件                                                                            | 新狀態                        |
-| ------------------------------------------------------------------------------- | ----------------------------- |
-| PTY 開啟                                                                        | `starting`                    |
-| `SessionStart`（`source` 為 startup 或 resume）且目前是 `starting`              | `waiting_input`               |
-| `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`           | `running`                     |
-| `Notification` + `permission_prompt`，或 `PermissionRequest`                    | `waiting_permission`          |
-| `Notification` + `idle_prompt`（不覆蓋 `plan_review`、`rate_limited`、`error`） | `waiting_input`               |
-| `Stop` 且 `permission_mode == 'plan'`                                           | `plan_review`                 |
-| `Stop` 其他                                                                     | `waiting_input`               |
-| `StopFailure` + `rate_limit`，或輸出比對到用量上限                              | `rate_limited`                |
-| `StopFailure` 其他                                                              | `error`                       |
-| PTY exit ≠ 0                                                                    | `error`                       |
-| PTY exit 0（使用者自己離開）                                                    | `done`，並設 `endedAt`        |
-| `running` 且超過 `stuckMinutes` 沒輸出                                          | `stuck`；有新輸出回 `running` |
-| 使用者標記（hub）                                                               | `done`                        |
-| 機器斷線（hub）                                                                 | `offline`                     |
-| 超過併發上限（hub）                                                             | `queued`                      |
+| 事件                                                                            | 新狀態                                                                                         |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| PTY 開啟                                                                        | `starting`                                                                                     |
+| `SessionStart`（`source` 為 startup 或 resume）且目前是 `starting`              | `waiting_input`                                                                                |
+| `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`           | `running`                                                                                      |
+| `Notification` + `permission_prompt`，或 `PermissionRequest`                    | `waiting_permission`                                                                           |
+| `Notification` + `idle_prompt`（不覆蓋 `plan_review`、`rate_limited`、`error`） | `waiting_input`                                                                                |
+| `PermissionRequest` 且 `tool_name == 'ExitPlanMode'`                            | `plan_review`（實測：計畫是這樣送出的；plan 模式下的 `Stop` 可能只是提問或計畫剛被拒絕，不算） |
+| `Stop`                                                                          | `waiting_input`                                                                                |
+| `StopFailure` + `rate_limit`，或輸出比對到用量上限                              | `rate_limited`                                                                                 |
+| `StopFailure` 其他                                                              | `error`                                                                                        |
+| PTY exit ≠ 0                                                                    | `error`                                                                                        |
+| PTY exit 0（使用者自己離開）                                                    | `done`，並設 `endedAt`                                                                         |
+| `running` 且超過 `stuckMinutes` 沒輸出                                          | `stuck`；有新輸出回 `running`                                                                  |
+| 使用者標記（hub）                                                               | `done`                                                                                         |
+| 機器斷線（hub）                                                                 | `offline`                                                                                      |
+| 超過併發上限（hub）                                                             | `queued`                                                                                       |
 
 判斷不出來就維持或回到 `running`，**不要誤報**。其他 `notification_type` 只記錄不改狀態。每次變化寫 `session.event`（type `status`，payload 含 from、to、原因）並更新 `session.runtime`。
 

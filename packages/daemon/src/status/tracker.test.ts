@@ -15,6 +15,12 @@ function payload(event: HookEventName, extra: Record<string, unknown> = {}): Hoo
   return { ...common, hook_event_name: event, ...extra };
 }
 
+const planRequest = payload('PermissionRequest', {
+  tool_name: 'ExitPlanMode',
+  tool_input: { plan: 'one line' },
+  permission_mode: 'plan',
+});
+
 const toolCall = { tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'toolu_1' };
 /** 文件範例的 Notification 沒有 permission_mode。 */
 function notification(type: string): HookPayload {
@@ -60,23 +66,16 @@ describe('createStatusTracker', () => {
   }
 
   describe('信任對話框', () => {
-    const dialog = '\x1b[2m  Yes, I trust this folder\x1b[0m\r\n';
-
     it('啟動中看到對話框就是在等人，不會一直顯示啟動中', () => {
-      tracker.onOutput(dialog);
+      tracker.onTrustPrompt();
       expect(tracker.status).toBe('waiting_input');
       expect(last()).toMatchObject({ reason: 'output:trust-prompt', detail: 'trust' });
     });
 
-    it('已經在工作時，輸出提到同一句話不算（agent 可能正在讀這段文字）', () => {
+    it('已經在工作時不算（對話裡可能剛好提到這句話）', () => {
       toRunning();
-      tracker.onOutput(dialog);
+      tracker.onTrustPrompt();
       expect(tracker.status).toBe('running');
-    });
-
-    it('一般啟動輸出不改狀態', () => {
-      tracker.onOutput('Claude Code v2\r\n');
-      expect(tracker.status).toBe('starting');
     });
   });
 
@@ -114,11 +113,12 @@ describe('createStatusTracker', () => {
       ['Notification idle_prompt', 'Notification', notification('idle_prompt'), 'waiting_input'],
       ['Stop', 'Stop', payload('Stop', { last_assistant_message: 'ok' }), 'waiting_input'],
       [
-        'Stop 在 plan 模式',
+        'Stop 在 plan 模式：可能只是提問或計畫剛被拒絕，不算審計畫',
         'Stop',
         payload('Stop', { permission_mode: 'plan', last_assistant_message: 'plan' }),
-        'plan_review',
+        'waiting_input',
       ],
+      ['ExitPlanMode 的權限請求才是交出計畫', 'PermissionRequest', planRequest, 'plan_review'],
       [
         'StopFailure rate_limit',
         'StopFailure',
@@ -162,7 +162,7 @@ describe('createStatusTracker', () => {
           rate_limited: () =>
             tracker.onHook('StopFailure', payload('StopFailure', { error: 'rate_limit' })),
           error: () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'x' })),
-          plan_review: () => tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' })),
+          plan_review: () => tracker.onHook('PermissionRequest', planRequest),
           waiting_input: () => tracker.onHook('Stop', payload('Stop')),
         };
         events[status]?.();
@@ -373,7 +373,7 @@ describe('createStatusTracker', () => {
       });
 
       it.each([
-        ['plan_review', () => tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' }))],
+        ['plan_review', () => tracker.onHook('PermissionRequest', planRequest)],
         ['waiting_input', () => tracker.onHook('Stop', payload('Stop'))],
         [
           'rate_limited',
@@ -412,7 +412,7 @@ describe('createStatusTracker', () => {
 
     describe('子代理的 PreToolUse', () => {
       it.each([
-        ['plan_review', () => tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' }))],
+        ['plan_review', () => tracker.onHook('PermissionRequest', planRequest)],
         ['waiting_input', () => tracker.onHook('Stop', payload('Stop'))],
         [
           'rate_limited',
@@ -455,7 +455,7 @@ describe('createStatusTracker', () => {
 
     describe('主線的 PreToolUse', () => {
       it.each([
-        ['plan_review', () => tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' }))],
+        ['plan_review', () => tracker.onHook('PermissionRequest', planRequest)],
         ['waiting_input', () => tracker.onHook('Stop', payload('Stop'))],
         [
           'rate_limited',
@@ -480,9 +480,26 @@ describe('createStatusTracker', () => {
     });
   });
 
-  describe('Notification 沒有 permission_mode', () => {
-    it('plan 模式下 Stop 之後的 idle_prompt 不會把 plan_review 蓋掉', () => {
+  describe('審計畫', () => {
+    it('在終端機批准（工具跑完）就離開 plan_review', () => {
+      tracker.onHook('PermissionRequest', planRequest);
+      tracker.onHook(
+        'PostToolUse',
+        payload('PostToolUse', { tool_name: 'ExitPlanMode', tool_input: { plan: 'one line' } }),
+      );
+      expect(tracker.status).toBe('running');
+    });
+
+    it('計畫被拒絕後的 Stop 是等你回覆，不是等你審計畫', () => {
+      tracker.onHook('PermissionRequest', planRequest);
       tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' }));
+      expect(tracker.status).toBe('waiting_input');
+    });
+  });
+
+  describe('Notification 沒有 permission_mode', () => {
+    it('交出計畫後的 idle_prompt 不會把 plan_review 蓋掉', () => {
+      tracker.onHook('PermissionRequest', planRequest);
       tracker.onHook('Notification', notification('idle_prompt'));
       expect(tracker.status).toBe('plan_review');
     });
@@ -908,7 +925,7 @@ describe('createStatusTracker', () => {
         'waiting_permission',
         () => tracker.onHook('PermissionRequest', payload('PermissionRequest')),
       ],
-      ['plan_review', () => tracker.onHook('Stop', payload('Stop', { permission_mode: 'plan' }))],
+      ['plan_review', () => tracker.onHook('PermissionRequest', planRequest)],
       [
         'rate_limited',
         () => tracker.onHook('StopFailure', payload('StopFailure', { error: 'rate_limit' })),

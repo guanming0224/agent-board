@@ -29,6 +29,8 @@
   --diff-add: #46c26a;
   --diff-del: #f0665f;
 
+  --team-teal: #3cc4b0;
+
   --term-bg: #0a0c10;
   --canvas-dot: #1b212b;
   --hatch: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.09) 0 4px, transparent 4px 8px);

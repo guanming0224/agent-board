@@ -106,13 +106,14 @@
 - **長指令期間每秒重畫**（計時器、spinner、提示輪換、工具行前的 `⏺` 每 0.6 秒閃爍），所以不能用「有沒有輸出」判斷卡住，要比對排除動畫後的畫面（`screenFingerprint`）。
 - **從 Claude Code 裡啟動 daemon 時會繼承 session 標記**（`CLAUDE_CODE_CHILD_SESSION` 等，含憑證 `CLAUDE_CODE_MESSAGING_TOKEN`）：子 session 不存對話紀錄。daemon 開 PTY 前要濾掉。
 - 閒置時畫面也可能出現新對話框（例如 `Teach auto mode about your environment?`），狀態仍是 `waiting_input`。
+- **計畫走 `PermissionRequest`，`tool_name` 是 `ExitPlanMode`。** plan 模式下的 `Stop` 不代表交出計畫。
+- **提問走 `PermissionRequest`，`tool_name` 是 `AskUserQuestion`**，`tool_input.questions[].question` 是問題原文。回 `allow` + `updatedInput.answers = { 問題原文: 答案 }`，模型就拿得到答案。
+- **`bypassPermissions` 下 `PreToolUse` 回 `deny` 有效**，指令不會執行。
+- `firstPrompt` 分開送 Enter 可行；`--resume` 接回同一段對話，舊內容還在；對話紀錄的 `message.usage`、`message.id` 欄位和實作一致。
 - `SessionStart` 在 `startup` 時沒有 `context_tokens`，所以 context 用量一開始是 null。
 - 這台機器上 `.claude/settings.local.json` 沒有顯示在 `git status`（原因未查，可能是全域 gitignore）。
 
 ## 未驗證（Phase 2 要測）
 
 - [ ] `PermissionRequest` hook 卡住等待時，終端機的原生權限對話框會不會顯示、使用者直接在終端機回答時 hook 會怎樣。**這決定「網頁核准」和「畫面與 CLI 一致」能否並存**；若衝突，退路是只用 `Notification` 偵測，核准時對 PTY 送按鍵。
-- [ ] plan 模式交出計畫時，是走 `Stop` 還是 `PermissionRequest`（`tool_name` 是否為 `ExitPlanMode`）。
-- [ ] `bypassPermissions` 下 PreToolUse 回 `deny` 是否生效。
 - [ ] `CLAUDE_CONFIG_DIR` 在 macOS 是否真能隔離帳號。
-- [ ] 對話紀錄 JSONL 內的 usage 欄位（用量統計要讀）。

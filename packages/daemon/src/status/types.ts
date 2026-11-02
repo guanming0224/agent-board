@@ -26,6 +26,8 @@ export interface StatusTracker {
   onOutput(data: string): void;
   /** 畫面內容真的變了（排除計時器與動畫），stuck 的計時以此為準。 */
   onProgress(): void;
+  /** 畫面上出現新資料夾的信任對話框。回答前 hook 不會跑，不偵測的話會一直顯示「啟動中」。 */
+  onTrustPrompt(): void;
   onExit(exitCode: number): void;
   setStuckMinutes(minutes: number): void;
   dispose(): void;

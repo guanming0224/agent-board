@@ -1,7 +1,6 @@
 /* 畫布與航班條（STYLE.md §5）。 */
 .canvas {
   /* 團隊框色是使用者選的色盤（STYLE.md §4），不是狀態色；之後應搬進 tokens.css。 */
-  --team-teal: #3cc4b0;
   --z: 1;
   position: absolute;
   inset: 0;
@@ -326,4 +325,9 @@ input.cmd:disabled {
   .canvas .zoom {
     margin: 0 8px 8px 0;
   }
+}
+
+/* 小地圖只是定位用，色塊淡化，亮度留給卡片本身（STYLE §2 邏輯 5）。 */
+.minimap .react-flow__minimap-node {
+  opacity: 0.45;
 }

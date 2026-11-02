@@ -259,6 +259,30 @@ test('關掉分頁再開，session 還在、畫面還原', async ({ page, contex
   expect(await readScreen(again, session.id)).toContain('GOT ask-permission');
 });
 
+test('在瀏覽器的真終端機打字，輸入真的送進 claude，畫面也畫得出來', async ({ page }) => {
+  const problems: string[] = [];
+  page.on('console', (m) => {
+    if (m.type() === 'error') problems.push(m.text());
+  });
+  page.on('pageerror', (e) => problems.push(String(e)));
+
+  await page.goto('/#/canvas');
+  await page.getByText('integration').first().dblclick();
+  const terminal = page.locator(`[data-terminal-session="${session.id}"]`);
+  await expect(terminal).toBeVisible();
+  await page.waitForTimeout(500);
+  await terminal.click();
+  await page.keyboard.type('typed-in-xterm');
+  await page.keyboard.press('Enter');
+  await expect
+    .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
+    .toContain('GOT typed-in-xterm');
+  if (process.env.AB_E2E_SHOTS) {
+    await page.screenshot({ path: `${process.env.AB_E2E_SHOTS}/real-terminal.png` });
+  }
+  expect(problems).toEqual([]);
+});
+
 test('audit 有送入的指令與核准決定', async ({ page }) => {
   const entries = (await (await page.request.get('/api/audit?limit=200')).json()) as {
     action: string;

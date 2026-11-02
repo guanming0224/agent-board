@@ -100,6 +100,9 @@ export function screenFingerprint(lines: readonly string[]): string {
   );
 }
 
+/** 字串取自 claude 2.1.316，換版比對不到就退回 starting，不會誤報。要讀渲染後的畫面：輸出裡是分散的游標移動。 */
+const TRUST_PROMPT = /Yes, I trust this folder/;
+
 const RULE_LINE = /^[\s─╌━-]+(?:\S+[\s─╌━-]+)?$/;
 
 /**
@@ -477,7 +480,11 @@ export class ManagedSession {
 
   private noteProgress(): void {
     if (this.termDisposed) return;
-    const fingerprint = screenFingerprint(readScreen(this.term));
+    const screen = readScreen(this.term);
+    if (screen.some((line) => TRUST_PROMPT.test(line))) {
+      this.guardTracker(() => this.tracker.onTrustPrompt());
+    }
+    const fingerprint = screenFingerprint(screen);
     if (fingerprint === this.fingerprint) return;
     this.fingerprint = fingerprint;
     this.guardTracker(() => this.tracker.onProgress());
