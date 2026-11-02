@@ -99,7 +99,7 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     type: z.literal('approval.resolved'),
     approvalId: Id,
     sessionId: Id,
-    /** terminal：使用者直接在終端機處理了；timeout：等太久交回原生對話框。 */
+    /** web：網頁決定；terminal：在終端機處理了或 session 已結束；timeout：等太久、hook 已離開或機器被移除。 */
     by: z.enum(['web', 'terminal', 'timeout']),
   }),
   z.object({ type: z.literal('resources'), sample: ResourceSample.omit({ machineId: true }) }),
