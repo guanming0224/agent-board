@@ -1,0 +1,21 @@
+# 由 scripts/installer.mjs 產生。
+[Unit]
+Description={{DESCRIPTION}}
+# 還沒配對的 daemon 會一直失敗重試，配對完自動連上，所以不設重啟次數上限。
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart={{EXEC_START}}
+WorkingDirectory={{WORKDIR}}
+{{ENV}}
+Restart=on-failure
+RestartSec=10
+# 先讓 daemon 自己收尾，再清掉 cgroup 內剩下的程序。
+KillMode=mixed
+TimeoutStopSec=15
+StandardOutput=append:{{LOG}}
+StandardError=append:{{LOG}}
+
+[Install]
+WantedBy=default.target
