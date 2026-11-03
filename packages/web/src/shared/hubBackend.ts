@@ -300,6 +300,13 @@ export function createHubBackend() {
     getNotes: (workspace) => call('notesList', { query: { workspace } }),
     getSettings: () => call('settingsGet'),
     updateSettings: (patch) => call('settingsUpdate', { body: patch }),
+    pushVapidKey: async () => (await call('pushVapidKey')).publicKey,
+    async pushSubscribe(subscription) {
+      await call('pushSubscribe', { body: subscription });
+    },
+    async pushUnsubscribe(endpoint) {
+      await call('pushUnsubscribe', { body: { endpoint } });
+    },
 
     listTeams: () => call('teamsList'),
     createTeam: (input) => call('teamsCreate', { body: input }),

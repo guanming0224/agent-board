@@ -19,6 +19,7 @@ import {
 } from './common';
 import { applyLocaleChoice, savedLocaleChoice, type LocaleChoice } from './locale';
 import { PairingPanel } from './PairingPanel';
+import { currentSubscription, disablePush, enablePush, pushSupport, readPushEnv } from './push';
 import { listenAddressError, originError } from './validation';
 
 /**
@@ -407,6 +408,135 @@ function LanguageSection() {
   );
 }
 
+type PushState = 'checking' | 'on' | 'off';
+
+/**
+ * 推播是每台裝置各自訂閱的，和下面「有 session 等你時推播」（hub 端總開關）分開。
+ * 按下去才要通知權限：瀏覽器只准在使用者點擊時問，問了被拒就要使用者自己去設定改回來。
+ */
+function PushDeviceSection() {
+  const t = useT();
+  const { backend, connected } = useBoard();
+  const [support] = useState(() => pushSupport(readPushEnv()));
+  const [state, setState] = useState<PushState>('checking');
+  const [blocked, setBlocked] = useState(
+    () => support === 'ok' && Notification.permission === 'denied',
+  );
+  const [publicKey, setPublicKey] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<Note | null>(null);
+
+  useEffect(() => {
+    if (support !== 'ok') return;
+    let cancelled = false;
+    currentSubscription()
+      .then((subscription) => {
+        if (!cancelled) setState(subscription ? 'on' : 'off');
+      })
+      .catch(() => {
+        if (!cancelled) setState('off');
+      });
+    // 先拿好公鑰，點擊後才能立刻要權限（Safari 不准先 await 網路）。
+    backend
+      .pushVapidKey()
+      .then((key) => {
+        if (!cancelled) setPublicKey(key);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [backend, support]);
+
+  const enable = async () => {
+    setBusy(true);
+    setNote({ text: t('flows.push.enabling') });
+    try {
+      const result = await enablePush(backend, publicKey);
+      if (result === 'on') {
+        setState('on');
+        setNote({ text: t('flows.push.enabled') });
+      } else if (result === 'denied') {
+        setBlocked(true);
+        setNote(null);
+      } else {
+        setNote({ text: t('flows.push.dismissed'), tone: 'err' });
+      }
+    } catch (e) {
+      setNote({ text: t('flows.push.failed', { error: errorText(e) }), tone: 'err' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    setBusy(true);
+    setNote({ text: t('flows.push.disabling') });
+    try {
+      const { hubError } = await disablePush(backend);
+      setState('off');
+      setNote(
+        hubError
+          ? { text: t('flows.push.disableHubFailed', { error: errorText(hubError) }), tone: 'err' }
+          : { text: t('flows.push.disabled') },
+      );
+    } catch (e) {
+      setNote({ text: t('flows.push.disableFailed', { error: errorText(e) }), tone: 'err' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let body: ReactNode;
+  if (support !== 'ok') {
+    body = (
+      <p className="blocked" data-testid="push-unavailable">
+        {t(`flows.push.${support}`, { origin: location.origin })}
+      </p>
+    );
+  } else if (blocked) {
+    body = (
+      <p className="blocked" data-testid="push-unavailable">
+        {t('flows.push.denied')}
+      </p>
+    );
+  } else if (state === 'checking') {
+    body = <Loading />;
+  } else {
+    body = (
+      <>
+        <p className="hint" data-testid="push-state">
+          {t(state === 'on' ? 'flows.push.isOn' : 'flows.push.isOff')}
+        </p>
+        <div className="acts">
+          {state === 'on' ? (
+            <button type="button" disabled={busy} onClick={() => void disable()}>
+              {t('flows.push.disable')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || !connected}
+              onClick={() => void enable()}
+            >
+              {t('flows.push.enable')}
+            </button>
+          )}
+          <Msg note={note} />
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <Section id="push" title={t('flows.push.title')}>
+      {body}
+      <p className="hint">{t('flows.push.hint')}</p>
+    </Section>
+  );
+}
+
 type SettingsKey = keyof Settings;
 
 const sameValue = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -742,6 +872,7 @@ export function SettingsPage() {
           <TemplatesSection />
         </div>
         <div className="settings-col">
+          <PushDeviceSection />
           {settings.error ? (
             <ErrorBox
               what={t('flows.settings.loadFailed', { error: settings.error })}

@@ -210,6 +210,31 @@ export const zhTW: Record<string, string> = {
   'flows.notify.end': '結束',
   'flows.notify.needTimes': '勿擾時段要填開始與結束時間',
 
+  'flows.push.title': '這台裝置的推播',
+  'flows.push.isOn': '這台裝置會收到推播。',
+  'flows.push.isOff': '這台裝置目前不收推播。',
+  'flows.push.enable': '在這台裝置開啟推播',
+  'flows.push.disable': '關閉這台裝置的推播',
+  'flows.push.enabling': '開啟中…',
+  'flows.push.disabling': '關閉中…',
+  'flows.push.enabled': '已開啟。有 session 等你時，這台裝置會跳通知。',
+  'flows.push.disabled': '已關閉，這台裝置不再收推播。',
+  'flows.push.dismissed': '沒有允許通知，所以沒開。想收推播時再按一次。',
+  'flows.push.failed': '開不了：{error}。稍後再按一次。',
+  'flows.push.disableFailed': '關不了：{error}。稍後再按一次。',
+  'flows.push.disableHubFailed':
+    '這台裝置已經不收推播，但沒能通知 hub：{error}。hub 下次推播時會自己清掉。',
+  'flows.push.insecure':
+    '推播只能在 HTTPS 下開啟，現在是 {origin}。改用 HTTPS 網址（例如 tailscale serve）打開後再來這裡開啟。',
+  'flows.push.ios-install':
+    'iPhone、iPad 要先加到主畫面才收得到推播：在 Safari 按分享 → 加入主畫面，從主畫面的圖示打開後再來這裡開啟（需要 iOS 16.4 以上）。',
+  'flows.push.unsupported':
+    '這個瀏覽器不支援推播。改用 Chrome、Edge、Firefox 或 Safari 的新版本再開啟。',
+  'flows.push.denied':
+    '瀏覽器封鎖了這個網站的通知。到瀏覽器（手機則是系統設定）的網站權限把通知改成允許，重新整理後再開啟。',
+  'flows.push.hint':
+    '每台裝置、每個瀏覽器要各自開啟。管理員關掉「有 session 等你時推播」或在勿擾時段內就不會送。通知只有 session 名稱與狀態，不含終端機內容。',
+
   'flows.security.listen': '監聽位址',
   'flows.security.listenHint': '填 127.0.0.1 或這台機器的私有 IP。不接受對所有網卡開放。',
   'flows.security.listenErr.required': '要填監聽位址',
@@ -507,6 +532,33 @@ export const en: Record<string, string> = {
   'flows.notify.start': 'Start',
   'flows.notify.end': 'End',
   'flows.notify.needTimes': 'Quiet hours need a start and an end time',
+
+  'flows.push.title': 'Push on this device',
+  'flows.push.isOn': 'This device gets push notifications.',
+  'flows.push.isOff': 'This device does not get push notifications.',
+  'flows.push.enable': 'Turn on push for this device',
+  'flows.push.disable': 'Turn off push for this device',
+  'flows.push.enabling': 'Turning on…',
+  'flows.push.disabling': 'Turning off…',
+  'flows.push.enabled':
+    'On. This device will show a notification when a session is waiting on you.',
+  'flows.push.disabled': 'Off. This device no longer gets push notifications.',
+  'flows.push.dismissed':
+    'Notifications were not allowed, so push stays off. Press again when you want it.',
+  'flows.push.failed': "Couldn't turn on push: {error}. Try again shortly.",
+  'flows.push.disableFailed': "Couldn't turn off push: {error}. Try again shortly.",
+  'flows.push.disableHubFailed':
+    "This device no longer gets push, but the hub wasn't told: {error}. The hub cleans it up on its next push.",
+  'flows.push.insecure':
+    'Push only works over HTTPS, and this page is {origin}. Open the board on its HTTPS address (for example via tailscale serve), then turn it on here.',
+  'flows.push.ios-install':
+    'On iPhone and iPad, add the board to the Home Screen first: in Safari tap Share → Add to Home Screen, open it from the Home Screen icon, then turn push on here (iOS 16.4 or later).',
+  'flows.push.unsupported':
+    'This browser does not support push. Use a recent Chrome, Edge, Firefox or Safari instead.',
+  'flows.push.denied':
+    "The browser blocks notifications for this site. Allow them in the browser's site settings (on phones, the system settings), reload, then turn push on.",
+  'flows.push.hint':
+    'Turn it on for each device and browser. Nothing is sent while the owner has "Notify me when a session is waiting" off, or during quiet hours. Notifications carry only the session name and status, never terminal output.',
 
   'flows.security.listen': 'Listen address',
   'flows.security.listenHint':

@@ -679,6 +679,22 @@ test.describe('手機收件匣', () => {
     ],
   });
 
+  test('#/inbox/<sessionId>（點推播通知進來）：捲到並標出那一項', async ({ page }) => {
+    await open(page, 'inbox/reply', inboxSeed());
+    const item = page.getByTestId('inbox-reply');
+    await expect(item).toBeFocused();
+    await expect(item).toBeInViewport();
+    await expect(item).toHaveClass(/targeted/);
+    await expect(page.locator('.inbox-item.targeted')).toHaveCount(1);
+
+    // approval 也只帶 session id 就對得到。
+    await page.evaluate(() => {
+      location.hash = '#/inbox/plan';
+    });
+    await expect(page.getByTestId('inbox-a-plan')).toHaveClass(/targeted/);
+    await expect(item).not.toHaveClass(/targeted/);
+  });
+
   test('只列待處理、順序對、按鈕 56px、呼號完整', async ({ page }) => {
     await open(page, 'inbox', inboxSeed());
     const ids = await page

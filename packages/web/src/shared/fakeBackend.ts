@@ -218,8 +218,13 @@ const DEMO_DECOMPOSE_REPLY = `Here is the breakdown:
 
 const DEMO_DECOMPOSE_DELAY_MS = 300;
 
+/** 格式正確的 P-256 公鑰，沒有對應私鑰：demo 只走訂閱流程，不會真的送推播。 */
+const DEMO_VAPID_PUBLIC_KEY =
+  'BGFytsGGh7T9Tx6fiDSmrbB3n0Y_cmHcn6AA6kEE_rz2bzBRefjIZZ2RAGw92MUS2pHU30Zae8RAFRArPZYiDH0';
+
 export function createFakeBackend(): BoardBackend & FakeBackendControls {
   const state = demoSnapshot();
+  const pushEndpoints = new Set<string>();
   const teams: Team[] = [
     {
       id: 'team-demo-auth',
@@ -414,6 +419,13 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     async updateSettings(patch) {
       settings = { ...settings, ...patch };
       return settings;
+    },
+    pushVapidKey: async () => DEMO_VAPID_PUBLIC_KEY,
+    async pushSubscribe(subscription) {
+      pushEndpoints.add(subscription.endpoint);
+    },
+    async pushUnsubscribe(endpoint) {
+      pushEndpoints.delete(endpoint);
     },
 
     listTeams: async () => teams.map((x) => ({ ...x })),

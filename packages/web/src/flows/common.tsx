@@ -300,3 +300,24 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
     </span>
   );
 }
+
+/** `#/review/<sessionId>`、`#/inbox/<sessionId>`：畫布卡片的按鈕與推播通知用它指定要看哪個 session。 */
+function targetFromHash(): string | null {
+  const segment = location.hash.replace(/^#\/?/, '').split('/')[1];
+  if (!segment) return null;
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
+export function useTargetSession(): string | null {
+  const [target, setTarget] = useState(targetFromHash);
+  useEffect(() => {
+    const onChange = () => setTarget(targetFromHash());
+    addEventListener('hashchange', onChange);
+    return () => removeEventListener('hashchange', onChange);
+  }, []);
+  return target;
+}

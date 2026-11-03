@@ -82,12 +82,13 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 
 ## CSP 與標頭
 
-| 項目                                                                                                          | 檢查方式                                                                                       | 結果                 |
-| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------- |
-| `default-src 'self'`，沒有 `unsafe-eval`；注入的 inline script 不執行；正常載入無違規                         | `E -g "CSP：頁面"`                                                                             | 通過                 |
-| WebSocket 與 fetch 只能連自己。**本次發現並修正**：原本 `connect-src ws: wss:` 全開，XSS 能把資料送到任何主機 | `E -g "CSP：不能"`；`H src/test/security.test.ts -t "CSP limits"`                              | 通過                 |
-| `style-src 'unsafe-inline'` 還在                                                                              | xterm 與 React Flow 用 inline style。影響：CSS 注入仍可能，但前面的 XSS 檢查沒有注入點         | 未通過（接受的風險） |
-| `nosniff`、`X-Frame-Options: DENY`、`frame-ancestors 'none'`、`no-referrer`、`object-src 'none'`              | `H src/test/rest.test.ts -t "security headers"`；`H src/test/security.test.ts -t "CSP limits"` | 通過                 |
+| 項目                                                                                                          | 檢查方式                                                                                                                            | 結果                 |
+| ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| `default-src 'self'`，沒有 `unsafe-eval`；注入的 inline script 不執行；正常載入無違規                         | `E -g "CSP：頁面"`                                                                                                                  | 通過                 |
+| WebSocket 與 fetch 只能連自己。**本次發現並修正**：原本 `connect-src ws: wss:` 全開，XSS 能把資料送到任何主機 | `E -g "CSP：不能"`；`H src/test/security.test.ts -t "CSP limits"`                                                                   | 通過                 |
+| `style-src 'unsafe-inline'` 還在                                                                              | xterm 與 React Flow 用 inline style。影響：CSS 注入仍可能，但前面的 XSS 檢查沒有注入點                                              | 未通過（接受的風險） |
+| `nosniff`、`X-Frame-Options: DENY`、`frame-ancestors 'none'`、`no-referrer`、`object-src 'none'`              | `H src/test/rest.test.ts -t "security headers"`；`H src/test/security.test.ts -t "CSP limits"`                                      | 通過                 |
+| service worker 只能是同源檔案（`worker-src 'self'`），`/sw.js` 不快取；推播內容只有 session 名稱與狀態        | `H src/test/rest.test.ts -t "service worker"`；`corepack pnpm --filter @agent-board/web exec playwright test -c e2e/push.config.ts` | 通過                 |
 
 ## 路徑穿越
 
