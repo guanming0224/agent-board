@@ -1,5 +1,5 @@
 // 手機 PWA 收件匣：只列待處理項目，大按鈕；複雜操作回電腦（DISPATCH §5.3-6）。
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { MaskChip, useMaskText } from '../security';
 import { useT } from '../shared/i18n';
@@ -26,6 +26,7 @@ import {
   useListSettling,
   useNow,
   useProjects,
+  useTargetSession,
   useTwoStep,
   WaitAge,
   Waiting,
@@ -254,8 +255,23 @@ function SessionReply({ session, disabled }: { session: Session; disabled: boole
   );
 }
 
-function InboxItem({ item, context }: { item: WorkItem; context: ItemContext }) {
+function InboxItem({
+  item,
+  context,
+  targeted,
+}: {
+  item: WorkItem;
+  context: ItemContext;
+  targeted: boolean;
+}) {
   const t = useT();
+  const itemRef = useRef<HTMLElement>(null);
+  // 從推播通知點進來：只在變成目標時捲到那一項，之後的資料更新不再搶畫面。
+  useEffect(() => {
+    if (!targeted) return;
+    itemRef.current?.scrollIntoView({ block: 'center' });
+    itemRef.current?.focus({ preventScroll: true });
+  }, [targeted]);
   const { approval, session } = item;
   const machine = context.machines.find((m) => m.id === session?.machineId);
   const blocked = useBlockedReason(session !== null, machine, approval, context.me);
@@ -280,7 +296,9 @@ function InboxItem({ item, context }: { item: WorkItem; context: ItemContext }) 
 
   return (
     <article
-      className={`inbox-item ${session ? handsClass(session.permissionMode) : ''}${fault ? ' is-fault' : ''}${gone ? ' gone' : ''}`}
+      ref={itemRef}
+      tabIndex={-1}
+      className={`inbox-item ${session ? handsClass(session.permissionMode) : ''}${fault ? ' is-fault' : ''}${gone ? ' gone' : ''}${targeted ? ' targeted' : ''}`}
       data-testid={`inbox-${item.key}`}
     >
       {approval?.kind === 'danger' && (
@@ -320,8 +338,13 @@ export function InboxPage() {
   const board = useBoard();
   const projects = useProjects();
   const me = useCurrentUser();
+  const target = useTargetSession();
   const now = useNow();
   const items = workItems(board);
+  // 推播只帶 session id；同一個 session 有多項時指向排最前面的那項。
+  const targetKey = items.find(
+    (item) => (item.approval?.sessionId ?? item.session?.id) === target,
+  )?.key;
   const settling = useListSettling(items.map((item) => item.key).join('|'));
   const context: ItemContext = {
     machines: board.machines,
@@ -354,7 +377,12 @@ export function InboxPage() {
       ) : (
         <div className="phone">
           {items.map((item) => (
-            <InboxItem key={item.key} item={item} context={context} />
+            <InboxItem
+              key={item.key}
+              item={item}
+              context={context}
+              targeted={item.key === targetKey}
+            />
           ))}
         </div>
       )}

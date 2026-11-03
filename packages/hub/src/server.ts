@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
@@ -64,6 +64,9 @@ const CLIENT_MAX_PAYLOAD = 4 * 1024 * 1024;
 /** 快照可能含整段 scrollback。 */
 const DAEMON_MAX_PAYLOAD = 64 * 1024 * 1024;
 
+/** 推播用的 service worker，放在網站根目錄，scope 才涵蓋整個 app（web 的 flows/pwa/sw.js）。 */
+const SERVICE_WORKER_FILE = 'sw.js';
+
 const SECURITY_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
   'x-frame-options': 'DENY',
@@ -73,8 +76,10 @@ const SECURITY_HEADERS: Record<string, string> = {
 /** ws: wss: 全開等於 XSS 可以把東西送到任何地方，所以只放行自己的主機。 */
 function contentSecurityPolicy(host: string | undefined): string {
   const self = host && /^[\w.:[\]-]+$/.test(host) ? ` ws://${host} wss://${host}` : '';
+  // worker-src 本來就會退回 default-src；寫明是為了推播的 service worker 只能是同源檔案。
   return (
     "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+    "worker-src 'self'; manifest-src 'self'; " +
     `connect-src 'self'${self}; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; ` +
     "form-action 'self'"
   );
@@ -186,7 +191,17 @@ export function createHub(options: HubOptions): RunningHub {
   const webDir =
     options.webDir === undefined ? resolve(import.meta.dirname, '../../web/dist') : options.webDir;
   const serveWeb = webDir !== null && existsSync(webDir);
-  if (serveWeb) app.register(fastifyStatic, { root: webDir, wildcard: false });
+  if (serveWeb) {
+    app.register(fastifyStatic, {
+      root: webDir,
+      wildcard: false,
+      // service worker 每次都要回來問有沒有新版，不然改了推播處理要等快取過期。
+      setHeaders: (reply, path) => {
+        if (path.endsWith(`${sep}${SERVICE_WORKER_FILE}`))
+          reply.header('cache-control', 'no-cache');
+      },
+    });
+  }
 
   app.setNotFoundHandler((req, reply) => {
     const path = req.url.split('?')[0] ?? '';

@@ -514,6 +514,21 @@ describe('static web', () => {
     expect(readFileSync(join(webDir, 'app.js'), 'utf8')).toBe('ok();');
   });
 
+  it('serves the service worker as JavaScript that is always revalidated', async () => {
+    const webDir = mkdtempSync(join(tmpdir(), 'agent-board-web-'));
+    writeFileSync(join(webDir, 'index.html'), '<title>board</title>');
+    writeFileSync(join(webDir, 'sw.js'), 'self.addEventListener("push", () => {});');
+    writeFileSync(join(webDir, 'app.js'), 'ok();');
+    hub = await startHub({ webDir });
+    const sw = await hub.api('GET', '/sw.js');
+    expect(sw.status).toBe(200);
+    expect(sw.headers.get('content-type')).toMatch(/^(text|application)\/javascript/);
+    expect(sw.headers.get('cache-control')).toBe('no-cache');
+    expect(sw.headers.get('content-security-policy')).toContain("worker-src 'self'");
+    // 其他靜態檔不受影響。
+    expect((await hub.api('GET', '/app.js')).headers.get('cache-control')).not.toBe('no-cache');
+  });
+
   it('runs fine without a web build', async () => {
     hub = await startHub({ webDir: join('/nonexistent', 'dist') });
     expect((await hub.api('GET', '/')).status).toBe(404);

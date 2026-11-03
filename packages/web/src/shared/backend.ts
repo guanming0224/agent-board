@@ -68,6 +68,14 @@ export interface BoardBackend {
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
 
+  /** 這台裝置的 Web Push 訂閱（flows/push.ts）。 */
+  pushVapidKey(): Promise<string>;
+  pushSubscribe(subscription: {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+  }): Promise<void>;
+  pushUnsubscribe(endpoint: string): Promise<void>;
+
   /** 團隊工作台與畫布的團隊框、交接線（Phase 3）。 */
   listTeams(): Promise<Team[]>;
   createTeam(input: Omit<Team, 'id'>): Promise<Team>;
