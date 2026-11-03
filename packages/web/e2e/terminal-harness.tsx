@@ -15,9 +15,12 @@ class HarnessStream extends FakeTerminalStream {
   sent: Sent[] = [];
   subscribes = 0;
   dropNextOutput = false;
+  /** 假 PTY 不送 terminal.size；測試用這個模擬 hub 告知尺寸擁有者。 */
+  latest: ((m: TerminalServerMessage) => void) | null = null;
 
   override subscribe(sessionId: string, onMessage: (m: TerminalServerMessage) => void) {
     this.subscribes += 1;
+    this.latest = onMessage;
     return super.subscribe(sessionId, (message) => {
       if (this.dropNextOutput && message.type === 'terminal.output') {
         this.dropNextOutput = false;
@@ -52,6 +55,15 @@ const api = {
     stream.sent.flatMap((m) =>
       m.type === 'terminal.resize' ? [{ cols: m.cols, rows: m.rows }] : [],
     ),
+  /** 送出的訊息種類照順序，claim 的 resize 記成 claim。 */
+  sentKinds: () =>
+    stream.sent.map((m) =>
+      m.type === 'terminal.resize' && m.claim ? 'claim' : m.type.replace('terminal.', ''),
+    ),
+  sizeMessage: (owner: 'you' | 'other' | 'none', cols: number, rows: number) =>
+    stream.latest?.({ type: 'terminal.size', sessionId: SESSION, cols, rows, owner }),
+  sizeOwner: () => container().dataset.sizeOwner,
+  followScale: () => container().dataset.followScale,
   clearSent: () => {
     stream.sent = [];
   },

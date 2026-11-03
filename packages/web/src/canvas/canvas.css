@@ -35,8 +35,18 @@
   outline-offset: calc(4px / var(--z));
 }
 
-/* 摘要條：邏輯寬 320，整張等比放大填滿外框 */
+/*
+ * 摘要條：邏輯寬 320，整張等比放大填滿外框（--fill = 外框寬 / 320）。
+ * 只用 --fill 的話，畫布 70–89% 時字在螢幕上是規格的 1.5–1.9 倍（外框 680 是為了 xterm 的 80 欄）。
+ * 所以螢幕上的倍率（--strip-scale × --z）封頂在 --strip-max：放大時摘要條改成變寬變高，
+ * 多出來的空間給最後幾行，字維持接近規格的大小。約 54% 以下兩者相同，維持原本的樣子。
+ */
 .strip {
+  --strip-max: 1.15;
+  --strip-scale: min(var(--fill, 1), calc(var(--strip-max) / var(--z, 1)));
+  width: calc(var(--card-w, 320px) / var(--strip-scale));
+  height: calc(var(--card-h, 640px) / var(--strip-scale));
+  transform: scale(var(--strip-scale));
   transform-origin: 0 0;
   display: flex;
   flex-direction: column;
@@ -119,6 +129,17 @@ input.cmd:disabled {
 .cmd-row .msg {
   flex-shrink: 0;
   white-space: nowrap;
+}
+/* 原生對話框在等決定：輸入框停用，下面一行說明要去哪裡處理 */
+.cmd-row.blocked {
+  flex-wrap: wrap;
+}
+.cmd-hint {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--you);
 }
 .danger-tag {
   font-size: 12px;
@@ -345,4 +366,12 @@ input.cmd:disabled {
 /* 小地圖只是定位用，色塊淡化，亮度留給卡片本身（STYLE §2 邏輯 5）。 */
 .minimap .react-flow__minimap-node {
   opacity: 0.45;
+}
+
+/* 尺寸由另一個畫面決定（CONTRACTS §6.1 第 6 點）。在 xterm 外框之外，不疊在終端機上 */
+.size-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
 }

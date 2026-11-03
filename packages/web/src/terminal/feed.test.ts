@@ -37,6 +37,7 @@ function setup(visible = true) {
   const sink: TerminalSink = {
     snapshot: (m) => log.push(m.data),
     output: (data) => log.push(data),
+    size: (m) => log.push(`size ${m.cols}x${m.rows} ${m.owner}`),
   };
   const feed = new TerminalFeed(stream, SESSION, sink, visible);
   return { stream, log, feed };
@@ -175,5 +176,28 @@ describe('TerminalFeed', () => {
     expect(log).toEqual(['snap@1']);
     stream.snapshot(4);
     expect(log).toEqual(['snap@1', 'snap@4']);
+  });
+
+  it('尺寸訊息不受 seq 與可見性影響，看不見時也立刻交給終端機', () => {
+    const { stream, log, feed } = setup(false);
+    feed.start();
+    stream.snapshot(1);
+    stream.listener?.({
+      type: 'terminal.size',
+      sessionId: SESSION,
+      cols: 90,
+      rows: 30,
+      owner: 'other',
+    });
+    stream.listener?.({
+      type: 'terminal.size',
+      sessionId: 'someone-else',
+      cols: 1,
+      rows: 1,
+      owner: 'you',
+    });
+    expect(log).toEqual(['size 90x30 other']);
+    feed.setVisible(true);
+    expect(log).toEqual(['size 90x30 other', 'snap@1']);
   });
 });

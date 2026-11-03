@@ -1,4 +1,4 @@
-import { useRef, useState, type RefObject } from 'react';
+import { useRef, useState, type CSSProperties, type RefObject } from 'react';
 import {
   Handle,
   Position,
@@ -13,6 +13,7 @@ import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { STATUS_VISUAL } from '../shared/status';
 import { useBoard } from '../shared/store';
+import type { TerminalViewProps } from '../shared/terminal-contract';
 import { TerminalView } from '../terminal';
 import {
   Age,
@@ -128,6 +129,21 @@ export function CardHead({ session }: { session: Session }) {
   );
 }
 
+type SizeOwner = Parameters<NonNullable<TerminalViewProps['onSizeOwnerChange']>>[0];
+
+/** 尺寸由另一個畫面決定時，在 xterm 外框之外說明為什麼縮放、怎麼改回來。 */
+export function useSizeNote() {
+  const t = useT();
+  const [owner, setOwner] = useState<SizeOwner>(null);
+  const note =
+    owner === 'other' ? (
+      <p className="size-note" role="status" data-testid="size-note">
+        {t('canvas.size.other')}
+      </p>
+    ) : null;
+  return { note, onSizeOwnerChange: setOwner };
+}
+
 export const cardClass = (base: string, session: Session) =>
   [
     base,
@@ -166,6 +182,7 @@ export function SessionNode({
   const flow = useReactFlow();
   const store = useStoreApi();
   const inputRef = useRef<HTMLInputElement>(null);
+  const size = useSizeNote();
   // 還沒進過畫面的卡不開 xterm，一次放大不會同時建幾十個終端機。
   const everOnScreen = useRef(false);
   if (onScreen) everOnScreen.current = true;
@@ -174,7 +191,8 @@ export function SessionNode({
 
   // 失聯的機器沒有串流可接，維持凍結的最後畫面（規則四）。
   const isTerminal = session.status !== 'offline' && (zoomedIn || expanded);
-  const scale = w / STRIP_W;
+  // 摘要條填滿外框的倍率。實際倍率在 CSS 依畫布縮放（--z）封頂，見 canvas.css 的 .strip。
+  const fill = w / STRIP_W;
   // 外框留在原地，只移動鏡頭；停在 xterm 門檻以下，其他卡維持摘要條。
   const openTerminal = () => {
     toggleExpanded(session.id);
@@ -244,15 +262,17 @@ export function SessionNode({
                 stream={backend.terminal}
                 visible={onScreen}
                 autoFocus={expanded}
+                onSizeOwnerChange={size.onSizeOwnerChange}
               />
             )}
           </div>
+          {size.note}
           {canType && <CommandInput session={session} inputRef={inputRef} />}
         </article>
       ) : (
         <article
           className={cardClass('strip', session)}
-          style={{ width: STRIP_W, height: h / scale, transform: `scale(${scale})` }}
+          style={{ '--fill': fill, '--card-w': `${w}px`, '--card-h': `${h}px` } as CSSProperties}
           onDoubleClick={(e) => {
             if (session.status !== 'offline' && !fromControl(e.target)) openTerminal();
           }}

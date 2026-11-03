@@ -294,7 +294,7 @@ export class Hub {
       case 'terminal.snapshot':
         if (this.ownsSession(conn, msg.sessionId)) {
           this.prompts.onSnapshot(msg.sessionId, msg.data);
-          this.relay.onSnapshot(msg.sessionId, JSON.stringify(msg));
+          this.relay.onSnapshot(msg.sessionId, JSON.stringify(msg), msg);
         }
         return;
       case 'approval.requested':
@@ -518,9 +518,24 @@ export class Hub {
         if (/[\r\n]/.test(msg.data)) this.handoff.onUserInput(msg.sessionId);
         this.toSessionDaemon(msg.sessionId, msg);
         return;
-      case 'terminal.resize':
-        this.toSessionDaemon(msg.sessionId, msg);
+      case 'terminal.resize': {
+        // 只有尺寸擁有者的 resize 會套用（CONTRACTS §6.1 第 6 點）；claim 只在 hub 用，不轉給 daemon。
+        const size = this.relay.resize(
+          client,
+          msg.sessionId,
+          msg.cols,
+          msg.rows,
+          msg.claim === true,
+        );
+        if (size) {
+          this.toSessionDaemon(msg.sessionId, {
+            type: 'terminal.resize',
+            sessionId: msg.sessionId,
+            ...size,
+          });
+        }
         return;
+      }
       case 'terminal.signal':
         client.inputs.get(msg.sessionId)?.clear();
         if (msg.signal === 'terminate') this.handoff.onUserStop(msg.sessionId);

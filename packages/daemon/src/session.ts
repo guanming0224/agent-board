@@ -30,6 +30,12 @@ const LAST_LINES_SCAN = 200;
 const RUNTIME_THROTTLE_MS = 1_000;
 const TERMINATE_GRACE_MS = 5_000;
 const SHUTDOWN_GRACE_MS = 2_000;
+/**
+ * 最後一個人離開後，PTY 回到預設尺寸前等多久。全尺寸頁、展開的卡關掉時 PTY 不該一直維持超大尺寸
+ * （摘要卡的最後幾行是照 PTY 寬度排版的）；等一下是因為從畫布切到全尺寸頁會先退訂再馬上訂閱，
+ * 立刻縮回去會讓 TUI 多重畫兩次。
+ */
+const IDLE_RESIZE_MS = 30_000;
 /** prompt 和 Enter 分開送，黏在一起 TUI 可能當成貼上而不送出（未驗證，Phase 2 接真 claude 確認）。 */
 const FIRST_PROMPT_ENTER_DELAY_MS = 100;
 const SIGKILL = 9;
@@ -135,6 +141,8 @@ export interface ManagedSessionOptions {
   now?: () => Date;
   runtimeThrottleMs?: number;
   terminateGraceMs?: number;
+  /** 沒人看之後多久回到預設尺寸；測試用。 */
+  idleResizeMs?: number;
   onRuntime: (runtime: SessionRuntime) => void;
   onStatusChange: (change: StatusChange) => void;
   onTerminal: (message: TerminalMessage) => void;
@@ -165,6 +173,7 @@ export class ManagedSession {
   private trackerDisposed = false;
   private killTimer: NodeJS.Timeout | null = null;
   private runtimeTimer: NodeJS.Timeout | null = null;
+  private idleResizeTimer: NodeJS.Timeout | null = null;
   private exited: Promise<void>;
   private resolveExited: () => void = () => {};
 
@@ -257,6 +266,7 @@ export class ManagedSession {
   /** 冪等：hub 可能重送，每次都回一份新快照（第二個瀏覽器加入、慢 client、重連）。 */
   subscribe(): void {
     if (this.termDisposed) return;
+    this.cancelIdleResize();
     const token = this.subscribeToken;
     this.subscription = 'pending';
     this.pendingSnapshots += 1;
@@ -289,6 +299,7 @@ export class ManagedSession {
     this.pendingSnapshots = 0;
     this.subscription = 'none';
     this.held = [];
+    this.scheduleIdleResize();
   }
 
   write(data: string): void {
@@ -296,6 +307,7 @@ export class ManagedSession {
   }
 
   resize(cols: number, rows: number): void {
+    this.cancelIdleResize();
     if (!this.alive) return;
     const safeCols = Math.min(cols, MAX_COLS);
     const safeRows = Math.min(rows, MAX_ROWS);
@@ -410,6 +422,7 @@ export class ManagedSession {
 
   private handleExit(exitCode: number, signal: number): void {
     this.alive = false;
+    this.cancelIdleResize();
     if (this.killTimer) clearTimeout(this.killTimer);
     this.resolveExited();
     if (this.detached) return;
@@ -511,7 +524,25 @@ export class ManagedSession {
     this.runtimeTimer.unref();
   }
 
+  /** 沒人看時回到預設尺寸（見 IDLE_RESIZE_MS）。已經是預設尺寸就不用動。 */
+  private scheduleIdleResize(): void {
+    this.cancelIdleResize();
+    if (!this.alive || this.termDisposed) return;
+    if (this.term.cols === DEFAULT_COLS && this.term.rows === DEFAULT_ROWS) return;
+    this.idleResizeTimer = setTimeout(() => {
+      this.idleResizeTimer = null;
+      if (this.subscription === 'none') this.resize(DEFAULT_COLS, DEFAULT_ROWS);
+    }, this.options.idleResizeMs ?? IDLE_RESIZE_MS);
+    this.idleResizeTimer.unref();
+  }
+
+  private cancelIdleResize(): void {
+    if (this.idleResizeTimer) clearTimeout(this.idleResizeTimer);
+    this.idleResizeTimer = null;
+  }
+
   private disposeTerm(): void {
+    this.cancelIdleResize();
     if (this.termDisposed) return;
     this.termDisposed = true;
     this.term.dispose();

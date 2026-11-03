@@ -59,6 +59,14 @@ registerMessages('zh-TW', {
   'canvas.done.unreachable': '連不到這台機器，恢復後才能送 /clear。',
   'canvas.done.busy':
     '標記完成時它不在等輸入，直接送可能插進工作中。到終端機確認停下來後，自己輸入 /clear。',
+  'canvas.cmd.blocked': '先處理上方的決定',
+  'canvas.cmd.hint.permission':
+    '對話框在等你決定，這裡打的字會被當成選項。按「檢視並決定」，或放大進終端機直接回答。',
+  'canvas.cmd.hint.question': '在等你回答提問。按「檢視並決定」作答，或放大進終端機直接回答。',
+  'canvas.cmd.hint.plan': '在等你審計畫。按「審核計畫」，或放大進終端機直接回答。',
+  'canvas.cmd.blockedSend': '沒送出：對話框在等你決定，這裡打的字會被當成選項。',
+  'canvas.size.other':
+    '這個終端機的尺寸由另一個畫面決定，這裡縮放顯示。在終端機裡點一下或打字，就改用這個畫面的大小。',
 });
 
 registerMessages('en', {
@@ -128,4 +136,14 @@ registerMessages('en', {
   'canvas.done.unreachable': 'Cannot reach this machine. /clear can be sent once it is back.',
   'canvas.done.busy':
     'It was not waiting for input when marked done, so sending now may cut into its work. Check the terminal, then type /clear yourself once it stops.',
+  'canvas.cmd.blocked': 'Decide above first',
+  'canvas.cmd.hint.permission':
+    'A dialog is waiting on you, and text typed here would pick an option. Press "Review and decide", or zoom into the terminal to answer there.',
+  'canvas.cmd.hint.question':
+    'A question is waiting on you. Press "Review and decide" to answer, or zoom into the terminal to answer there.',
+  'canvas.cmd.hint.plan':
+    'A plan is waiting for review. Press "Review plan", or zoom into the terminal to answer there.',
+  'canvas.cmd.blockedSend': 'Not sent: a dialog is waiting, and this text would pick an option.',
+  'canvas.size.other':
+    "Another screen sets this terminal's size, so it is scaled to fit here. Click or type in the terminal to use this screen's size.",
 });

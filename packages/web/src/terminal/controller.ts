@@ -6,9 +6,9 @@ import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { TerminalMaskGate, useMaskMode } from '../security';
 import type { TerminalStream } from '../shared/terminal-contract';
-import { TerminalFeed, type TerminalSnapshotMessage } from './feed';
+import { TerminalFeed, type TerminalSizeMessage, type TerminalSnapshotMessage } from './feed';
 import { ImeInputGuard, classifyKey, isOpenableLink } from './input';
-import { ResizeGate, debounce } from './resize';
+import { ResizeGate, SizeOwnership, debounce, followScale, type SizeOwner } from './resize';
 
 const RESIZE_DEBOUNCE_MS = 100;
 const FONT_SIZE = 13;
@@ -32,6 +32,8 @@ export class TerminalController {
   private readonly fit = new FitAddon();
   private readonly feed: TerminalFeed;
   private readonly gate = new ResizeGate();
+  /** 尺寸擁有權（CONTRACTS §6.1 第 6 點）：別人擁有時照遠端尺寸顯示，不送 resize。 */
+  private readonly size = new SizeOwnership();
   private readonly ime = new ImeInputGuard();
   private readonly resizeDebounce = debounce(() => this.fitAndReport(), RESIZE_DEBOUNCE_MS);
   private readonly observer = new ResizeObserver(() => this.resizeDebounce.call());
@@ -52,6 +54,7 @@ export class TerminalController {
     private readonly sessionId: string,
     private readonly stream: TerminalStream,
     private visible: boolean,
+    private readonly onSizeOwner: (owner: SizeOwner | null) => void = () => {},
   ) {
     // 16 色 ANSI 不設定，用 xterm 預設（STYLE 規則三之一）。
     this.term = new Terminal({
@@ -69,8 +72,16 @@ export class TerminalController {
 
     this.term.attachCustomKeyEventHandler((event) => this.handleKey(event));
     this.term.onData((data) => this.handleData(data));
-    this.term.onBinary((data) => this.sendInput(data));
+    this.term.onBinary((data) => {
+      this.claimSize();
+      this.sendInput(data);
+    });
     this.listenComposition();
+    // 點進這個終端機就是要在這裡操作：搶下尺寸。程式自動 focus（放大、全尺寸頁）不算。
+    container.addEventListener('pointerdown', () => this.claimSize(), {
+      capture: true,
+      signal: this.listeners.signal,
+    });
 
     this.observer.observe(container);
     if (visible) this.fitLocally();
@@ -81,6 +92,7 @@ export class TerminalController {
       {
         snapshot: (message) => this.applySnapshot(message),
         output: (data) => this.mask.output(data),
+        size: (message) => this.applySize(message),
       },
       visible,
     );
@@ -162,7 +174,9 @@ export class TerminalController {
   }
 
   private handleData(data: string): void {
-    if (data && this.ime.accept(data, performance.now())) this.sendInput(data);
+    if (!data || !this.ime.accept(data, performance.now())) return;
+    this.claimSize();
+    this.sendInput(data);
   }
 
   private sendInput(data: string): void {
@@ -181,6 +195,72 @@ export class TerminalController {
     });
   }
 
+  /** hub 告訴我們 PTY 目前的尺寸與擁有者。 */
+  private applySize(message: TerminalSizeMessage): void {
+    this.size.update(message.owner, message.cols, message.rows);
+    // 這是 PTY 的實際尺寸：自己 fit 出來不一樣才需要送。還沒人擁有時一定送一次，
+    // 否則尺寸剛好相同的第一個人永遠不會成為擁有者，後來的人反而搶走。
+    if (message.owner === 'none') this.gate.reset();
+    else this.gate.sync(message.cols, message.rows);
+    this.container.dataset.sizeOwner = message.owner;
+    this.onSizeOwner(message.owner);
+    this.fitAndReport();
+  }
+
+  /** 使用者在這個終端機打字或點擊：尺寸屬於別人時搶過來，改用自己的畫面大小。 */
+  private claimSize(): void {
+    if (this.disposed || !this.size.claim()) return;
+    this.container.dataset.sizeOwner = 'you';
+    this.onSizeOwner('you');
+    this.unfollow();
+    if (this.visible && this.restoring === 0) this.fitLocally();
+    const { cols, rows } = this.term;
+    this.gate.sync(cols, rows);
+    this.stream.send({
+      type: 'terminal.resize',
+      sessionId: this.sessionId,
+      cols,
+      rows,
+      claim: true,
+    });
+  }
+
+  /** 尺寸屬於別人：xterm 用遠端的 cols/rows（輸出是照它排版的），等比縮小放進容器，比較小就留白。 */
+  private follow(cols: number, rows: number): void {
+    if (this.term.cols !== cols || this.term.rows !== rows) this.term.resize(cols, rows);
+    this.scaleToFit();
+    // renderer 可能下一個 frame 才更新畫面尺寸，再量一次。
+    requestAnimationFrame(() => {
+      if (!this.disposed && this.size.following) this.scaleToFit();
+    });
+  }
+
+  private scaleToFit(): void {
+    const element = this.term.element;
+    const screen = element?.querySelector<HTMLElement>('.xterm-screen');
+    if (!element || !screen) return;
+    const natural = { width: screen.offsetWidth, height: screen.offsetHeight };
+    const scale = followScale(natural, {
+      width: this.container.clientWidth,
+      height: this.container.clientHeight,
+    });
+    element.style.width = `${natural.width}px`;
+    element.style.height = `${natural.height}px`;
+    element.style.transformOrigin = '0 0';
+    element.style.transform = `scale(${scale})`;
+    this.container.dataset.followScale = scale.toFixed(3);
+  }
+
+  private unfollow(): void {
+    const element = this.term.element;
+    if (!element || this.container.dataset.followScale === undefined) return;
+    element.style.width = '';
+    element.style.height = '';
+    element.style.transformOrigin = '';
+    element.style.transform = '';
+    delete this.container.dataset.followScale;
+  }
+
   private fitLocally(): boolean {
     if (this.container.clientWidth === 0 || this.container.clientHeight === 0) return false;
     if (!this.fit.proposeDimensions()) {
@@ -193,7 +273,14 @@ export class TerminalController {
   }
 
   private fitAndReport(): void {
-    if (this.disposed || !this.visible || this.restoring > 0 || !this.fitLocally()) return;
+    if (this.disposed || !this.visible || this.restoring > 0) return;
+    const remote = this.size.remote;
+    if (this.size.following && remote) {
+      this.follow(remote.cols, remote.rows);
+      return;
+    }
+    this.unfollow();
+    if (!this.fitLocally()) return;
     const { cols, rows } = this.term;
     if (this.gate.shouldSend(cols, rows)) {
       this.stream.send({ type: 'terminal.resize', sessionId: this.sessionId, cols, rows });

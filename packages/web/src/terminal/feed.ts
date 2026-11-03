@@ -2,10 +2,13 @@
 import type { TerminalServerMessage, TerminalStream } from '../shared/terminal-contract';
 
 export type TerminalSnapshotMessage = Extract<TerminalServerMessage, { type: 'terminal.snapshot' }>;
+export type TerminalSizeMessage = Extract<TerminalServerMessage, { type: 'terminal.size' }>;
 
 export interface TerminalSink {
   snapshot(message: TerminalSnapshotMessage): void;
   output(data: string): void;
+  /** 尺寸擁有者（CONTRACTS §6.1 第 6 點）。不分看不看得見都立刻交出去，由終端機決定何時套用。 */
+  size(message: TerminalSizeMessage): void;
 }
 
 /** 看不見時最多累積這麼多字元，超過就丟掉，重新可見時改拿新快照。 */
@@ -72,6 +75,10 @@ export class TerminalFeed {
 
   private handle(message: TerminalServerMessage): void {
     if (message.sessionId !== this.sessionId) return;
+    if (message.type === 'terminal.size') {
+      this.sink.size(message);
+      return;
+    }
     if (message.type === 'terminal.snapshot') {
       this.lastSeq = message.seq;
       if (this.visible) {

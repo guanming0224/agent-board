@@ -260,6 +260,87 @@ test.describe('尺寸', () => {
   });
 });
 
+test.describe('尺寸擁有者（CONTRACTS §6.1 第 6 點）', () => {
+  test('尺寸屬於別人：照遠端 cols/rows 縮放顯示，容器變了也不送 resize', async ({ page }) => {
+    await open(page);
+    await expectResizeSettled(page);
+    await page.evaluate(() => {
+      window.__harness.clearSent();
+      window.__harness.sizeMessage('other', 200, 60);
+    });
+    await expect
+      .poll(() => page.evaluate(() => window.__harness.size()))
+      .toEqual({
+        cols: 200,
+        rows: 60,
+      });
+    await expect
+      .poll(async () => Number(await page.evaluate(() => window.__harness.followScale())))
+      .toBeLessThan(1);
+    expect(await page.evaluate(() => window.__harness.sizeOwner())).toBe('other');
+    // 縮放後整個放得進容器
+    const slot = (await page.locator('[data-terminal-session]').boundingBox())!;
+    const screen = (await page.locator('.xterm-screen').boundingBox())!;
+    expect(screen.width).toBeLessThanOrEqual(slot.width + 1);
+    expect(screen.height).toBeLessThanOrEqual(slot.height + 1);
+
+    await page.evaluate(() => window.__harness.setFrame(1000, 600));
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => window.__harness.resizes())).toEqual([]);
+    expect(await page.evaluate(() => window.__harness.size())).toEqual({ cols: 200, rows: 60 });
+    // 程式 focus（autoFocus）不算使用者動作，不搶
+    expect(await page.evaluate(() => window.__harness.focusIsInTerminal())).toBe(true);
+    expect(await page.evaluate(() => window.__harness.sentKinds())).toEqual([]);
+  });
+
+  test('跟隨時打字：先搶尺寸再送輸入，回到自己的大小', async ({ page }) => {
+    await open(page);
+    await expectResizeSettled(page);
+    const own = await page.evaluate(() => window.__harness.size());
+    await page.evaluate(() => {
+      window.__harness.clearSent();
+      window.__harness.sizeMessage('other', 200, 60);
+    });
+    await expect.poll(() => page.evaluate(() => window.__harness.followScale())).toBeDefined();
+    await page.keyboard.type('a');
+    await expect.poll(() => page.evaluate(() => window.__harness.inputs())).toEqual(['a']);
+    expect(await page.evaluate(() => window.__harness.sentKinds())).toEqual(['claim', 'input']);
+    expect(await page.evaluate(() => window.__harness.resizes())).toEqual([own]);
+    expect(await page.evaluate(() => window.__harness.size())).toEqual(own);
+    expect(await page.evaluate(() => window.__harness.followScale())).toBeUndefined();
+    expect(await page.evaluate(() => window.__harness.sizeOwner())).toBe('you');
+
+    // 已經是自己的就不再搶
+    await page.keyboard.type('b');
+    await expect.poll(() => page.evaluate(() => window.__harness.inputs())).toEqual(['a', 'b']);
+    expect(await page.evaluate(() => window.__harness.sentKinds())).toEqual([
+      'claim',
+      'input',
+      'input',
+    ]);
+  });
+
+  test('跟隨時點一下終端機就搶；還沒人擁有時同尺寸也送一次', async ({ page }) => {
+    await open(page);
+    await expectResizeSettled(page);
+    const own = await page.evaluate(() => window.__harness.size());
+    await page.evaluate(() => {
+      window.__harness.clearSent();
+      window.__harness.sizeMessage('other', 50, 10);
+    });
+    await expect.poll(() => page.evaluate(() => window.__harness.followScale())).toBe('1.000');
+    await page.locator('.xterm-screen').click();
+    await expect.poll(() => page.evaluate(() => window.__harness.sentKinds())).toEqual(['claim']);
+    expect(await page.evaluate(() => window.__harness.resizes())).toEqual([own]);
+
+    await page.evaluate((size) => {
+      window.__harness.clearSent();
+      window.__harness.sizeMessage('none', size.cols, size.rows);
+    }, own);
+    await expect.poll(() => page.evaluate(() => window.__harness.resizes())).toEqual([own]);
+  });
+});
+
 test.describe('visible', () => {
   test('看不見時不繪製也不退訂，切回後補齊', async ({ page }) => {
     await open(page);

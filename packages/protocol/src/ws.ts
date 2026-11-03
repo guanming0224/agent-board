@@ -140,12 +140,22 @@ export const HubToDaemon = z.discriminatedUnion('type', [
 ]);
 export type HubToDaemon = z.infer<typeof HubToDaemon>;
 
+/**
+ * 終端機尺寸由誰決定（CONTRACTS §6.1 第 6 點）。you：你的 resize 會套用到 PTY；
+ * other：另一個瀏覽器擁有尺寸，你照 cols/rows 顯示、不要送 resize；none：還沒人擁有，第一個送 resize 的就是。
+ */
+export const TerminalSizeOwner = z.enum(['you', 'other', 'none']);
+
 // ── browser → hub ────────────────────────────────────────────
 export const ClientToHub = z.discriminatedUnion('type', [
   z.object({ type: z.literal('terminal.subscribe'), sessionId: Id }),
   z.object({ type: z.literal('terminal.unsubscribe'), sessionId: Id }),
   z.object({ type: z.literal('terminal.input'), sessionId: Id, data: z.string() }),
-  Resize.extend({ type: z.literal('terminal.resize') }),
+  Resize.extend({
+    type: z.literal('terminal.resize'),
+    /** 使用者在這個終端機打字或點擊：搶下尺寸擁有權。沒帶時只有擁有者（或還沒人擁有）的 resize 會生效。 */
+    claim: z.boolean().optional(),
+  }),
   z.object({ type: z.literal('terminal.signal'), sessionId: Id, signal: TerminalSignal }),
   z.object({
     type: z.literal('approval.decide'),
@@ -168,6 +178,8 @@ export const HubToClient = z.discriminatedUnion('type', [
   }),
   TerminalData.extend({ type: z.literal('terminal.output') }),
   TerminalSnapshot.extend({ type: z.literal('terminal.snapshot') }),
+  /** PTY 目前的尺寸與擁有者。快照之後、尺寸或擁有者改變時送給該 session 的每個訂閱者。 */
+  Resize.extend({ type: z.literal('terminal.size'), owner: TerminalSizeOwner }),
   z.object({ type: z.literal('session.updated'), session: Session }),
   z.object({ type: z.literal('session.removed'), sessionId: Id }),
   z.object({ type: z.literal('session.event'), event: SessionEvent }),

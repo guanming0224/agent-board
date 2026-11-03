@@ -5,6 +5,7 @@ import {
   ClientToHub,
   DaemonToHub,
   HookPayload,
+  HubToClient,
   needsAttention,
   routes,
   SessionStatus,
@@ -91,6 +92,20 @@ describe('websocket messages', () => {
   it('rejects unknown message types', () => {
     expect(ClientToHub.safeParse({ type: 'nope' }).success).toBe(false);
     expect(DaemonToHub.safeParse({ type: 'nope' }).success).toBe(false);
+  });
+
+  it('resize can claim the size; old clients without claim still parse', () => {
+    const base = { type: 'terminal.resize', sessionId: 's', cols: 80, rows: 24 };
+    expect(ClientToHub.parse(base)).toEqual(base);
+    expect(ClientToHub.parse({ ...base, claim: true })).toMatchObject({ claim: true });
+  });
+
+  it('terminal.size tells each viewer who owns the PTY size', () => {
+    const size = { type: 'terminal.size', sessionId: 's', cols: 80, rows: 24 };
+    for (const owner of ['you', 'other', 'none']) {
+      expect(HubToClient.safeParse({ ...size, owner }).success).toBe(true);
+    }
+    expect(HubToClient.safeParse({ ...size, owner: 'me' }).success).toBe(false);
   });
 });
 
