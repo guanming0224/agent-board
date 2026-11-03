@@ -142,3 +142,8 @@
 
 - [ ] `PermissionRequest` hook 卡住等待時，終端機的原生權限對話框會不會顯示、使用者直接在終端機回答時 hook 會怎樣。**這決定「網頁核准」和「畫面與 CLI 一致」能否並存**；若衝突，退路是只用 `Notification` 偵測，核准時對 PTY 送按鍵。
 - [ ] `CLAUDE_CONFIG_DIR` 在 macOS 是否真能隔離帳號。
+
+## 2026-11-03 真 `claude`（2.1.317）補驗
+
+- **`/clear`：** 照網頁的送法（文字、等 100ms、Enter）送出後確實清掉對話，`claudeSessionId` 換新（`214022fc` → `01d9c1ff`），狀態回到等輸入。斜線選單沒有吃掉 Enter。
+- **`!` 模式：** 先單獨送 `!`、等 800ms 再送 `git push --force origin main` 與 Enter，`claude` 把整串當成一般提問交給模型（模型去查 remote），沒有進 bash 模式。走模型這條路時危險指令會經過 `PreToolUse`。**真正進入 bash 模式時 hook 是否會攔仍未驗證，視為攔不到**（見 security-checklist）。

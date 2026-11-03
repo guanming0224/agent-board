@@ -231,3 +231,5 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 - `glob`（GHSA-3g3m-2fjr-6pw4，AbortSignal 逾時後仍走訪）：`hub > @fastify/static > glob`。
 
 兩者都只在 hub 啟動時掃描自己的 `web/dist`，pattern 不來自使用者（`wildcard: false`），判斷打不到。`@fastify/static` 已是最新 10.1.8，沒有可升的版本；用 `overrides` 跨大版本強升未測過，沒有動。上游出新版時再升。
+
+中控台本身不呼叫 LLM 的審查與重跑方式見 `docs/no-llm-review.md`（`corepack pnpm check:no-llm`）。
