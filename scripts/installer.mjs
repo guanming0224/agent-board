@@ -378,7 +378,12 @@ function startService(role, ctx, { restart }) {
     if (loaded && !restart) return true;
     if (loaded) run('launchctl', ['bootout', target]);
     run('launchctl', ['enable', target]);
-    const boot = run('launchctl', ['bootstrap', guiDomain(), launchdFile(paths, role)]);
+    let boot = run('launchctl', ['bootstrap', guiDomain(), launchdFile(paths, role)]);
+    // 剛 bootout 完，launchd 還沒收乾淨時會回 5: Input/output error；等一下再試就好。
+    for (let retry = 0; loaded && boot.status !== 0 && retry < 3; retry++) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+      boot = run('launchctl', ['bootstrap', guiDomain(), launchdFile(paths, role)]);
+    }
     if (boot.status !== 0) {
       say(
         t(
