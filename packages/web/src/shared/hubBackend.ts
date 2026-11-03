@@ -274,6 +274,11 @@ export function createHubBackend() {
     async changePassword({ userId, currentPassword, password }) {
       await call('usersUpdate', { params: { id: userId }, body: { currentPassword, password } });
     },
+    async saveLocale(locale) {
+      // 每次先問目前是誰：切換帳號後不會改到上一個人的設定。
+      const { user } = await call('authStatus');
+      if (user) await call('usersUpdate', { params: { id: user.id }, body: { locale } });
+    },
 
     createSession: (input) => call('sessionsCreate', { body: input }),
     updateSession: (id, patch) => call('sessionsUpdate', { params: { id }, body: patch }),
@@ -321,7 +326,12 @@ export function createHubBackend() {
     },
     listAudit: (filter) => call('auditList', { query: { limit: 100, ...filter } }),
     // 用 blob 保留 hub 加的 BOM（Excel 才認得 UTF-8 中文）；text() 會把它吃掉。
-    exportAudit: async () => (await request('auditExport')).blob(),
+    async exportAudit(filter = {}) {
+      // limit 只對列表有意義；匯出要符合條件的全部。
+      const query = { ...filter };
+      delete query.limit;
+      return (await request('auditExport', { query })).blob();
+    },
 
     listTeams: () => call('teamsList'),
     createTeam: (input) => call('teamsCreate', { body: input }),
@@ -354,6 +364,10 @@ export function createHubBackend() {
     createUser: (input: RouteBody<'usersCreate'>) => call('usersCreate', { body: input }),
     async deleteUser(id: string) {
       await call('usersDelete', { params: { id } });
+    },
+    /** 管理員重設別人的密碼（不需要對方的舊密碼）；對方所有裝置登出。 */
+    async resetUserPassword(id: string, password: string) {
+      await call('usersResetPassword', { params: { id }, body: { password } });
     },
     async deleteTemplate(id: string) {
       await call('templatesDelete', { params: { id } });

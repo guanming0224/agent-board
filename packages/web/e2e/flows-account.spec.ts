@@ -206,7 +206,8 @@ test.describe('操作紀錄', () => {
     await box.getByLabel('動作', { exact: true }).selectOption('');
     await box.getByLabel('使用者', { exact: true }).selectOption({ label: '系統' });
     await expect(rows).toHaveCount(2);
-    await expect(box).toContainText('使用者篩選只套用在已載入的 7 筆');
+    // 使用者也交給後端篩，不再有「只套用在已載入的筆數」的但書。
+    await expect(box).not.toContainText('已載入');
 
     await box.getByLabel('使用者', { exact: true }).selectOption('');
     await box.getByLabel('Session', { exact: true }).selectOption('s-tests');
@@ -236,10 +237,18 @@ test.describe('操作紀錄', () => {
     await expect(rows).toHaveCount(7);
   });
 
-  test('匯出 CSV：下載整份、帶 BOM，並說明不套用篩選', async ({ page }) => {
-    await open(page, 'settings');
+  test('匯出 CSV：沒有篩選時下載整份、帶 BOM；有篩選時只匯出符合的', async ({ page }) => {
+    await open(
+      page,
+      'settings',
+      `const exportAudit = backend.exportAudit;
+       backend.exportAudit = async (filter) => {
+         window.__calls.push({ type: 'export', filter });
+         return exportAudit(filter);
+       };`,
+    );
     const box = page.locator('#s-audit');
-    await expect(box).toContainText('匯出全部紀錄，不套用上面的篩選');
+    await expect(box).toContainText('匯出符合上面篩選的全部紀錄');
     const [download] = await Promise.all([
       page.waitForEvent('download'),
       box.getByRole('button', { name: '匯出 CSV' }).click(),
@@ -249,6 +258,32 @@ test.describe('操作紀錄', () => {
     expect(content.startsWith('﻿"id"') || content.startsWith('﻿id')).toBe(true);
     expect(content.split('\r\n').filter(Boolean)).toHaveLength(8);
     await expect(box.locator('.audit-export .msg')).toContainText('已下載 agent-board-audit-');
+
+    // 篩「系統」再匯出：只有那 2 筆，條件和列表一樣（不帶畫面的筆數上限）。
+    await box.getByLabel('使用者', { exact: true }).selectOption({ label: '系統' });
+    await expect(box.getByTestId('audit-row')).toHaveCount(2);
+    const [filtered] = await Promise.all([
+      page.waitForEvent('download'),
+      box.getByRole('button', { name: '匯出 CSV' }).click(),
+    ]);
+    const lines = readFileSync(await filtered.path(), 'utf8')
+      .split('\r\n')
+      .filter(Boolean);
+    expect(lines).toHaveLength(3);
+    expect(
+      lines
+        .slice(1)
+        .every(
+          (line) => line.includes('"approval.resolved"') || line.includes('"auth.login_failed"'),
+        ),
+    ).toBe(true);
+    const exports = (await calls(page)).filter((c) => c.type === 'export') as unknown as {
+      filter: Record<string, unknown>;
+    }[];
+    expect(exports.map((c) => c.filter)).toEqual([
+      { limit: 100 },
+      { limit: 100, userId: 'system' },
+    ]);
   });
 
   test('讀不到時說明怎麼辦；匯出失敗訊息貼著按鈕', async ({ page }) => {
@@ -289,5 +324,131 @@ test.describe('操作紀錄', () => {
     await expect(box.getByTestId('audit-row').first()).toContainText(secret);
     await page.getByRole('button', { name: /遮蔽/ }).first().click();
     await expect(box.getByTestId('audit-row').first()).not.toContainText(secret);
+  });
+});
+
+test.describe('管理員重設別人的密碼', () => {
+  test.use({ locale: 'zh-TW' });
+
+  const users = `
+    window.__resets = [];
+    backend.listUsers = async () => [
+      { id: 'u-demo', name: 'demo', role: 'owner', locale: 'zh-TW' },
+      { id: 'u-pat', name: 'pat', role: 'member', locale: 'zh-TW' },
+    ];
+    backend.resetUserPassword = async (id, password) => {
+      window.__resets.push({ id, password });
+    };`;
+  const resets = (page: Page) =>
+    page.evaluate(() => (window as unknown as { __resets: unknown[] }).__resets);
+
+  test('別人那一列有「重設密碼」，自己沒有；檢查欄位後送出，說明對方會被登出', async ({ page }) => {
+    await open(page, 'settings', users);
+    const section = page.locator('#s-users');
+    const rows = section.locator('li.rig-row');
+    await expect(rows).toHaveCount(2);
+    await expect(
+      rows.filter({ hasText: 'demo' }).getByRole('button', { name: '重設密碼' }),
+    ).toHaveCount(0);
+    await rows.filter({ hasText: 'pat' }).getByRole('button', { name: '重設密碼' }).click();
+
+    const form = page.getByTestId('reset-u-pat');
+    await expect(form).toContainText('幫 pat 設一個新密碼');
+    await expect(form).toContainText('不需要對方的舊密碼');
+    const submit = form.getByRole('button', { name: '設定新密碼' });
+    await form.getByLabel('新密碼').fill('short');
+    await submit.click();
+    await expect(form.locator('.msg.err')).toHaveText('密碼至少要 8 個字元');
+    await form.getByLabel('新密碼').fill('pat-new-password');
+    await form.getByLabel('再輸入一次').fill('pat-new-passwordX');
+    await submit.click();
+    await expect(form.locator('.msg.err')).toHaveText('兩次輸入的新密碼不一樣');
+    await form.getByLabel('再輸入一次').fill('pat-new-password');
+    await form.getByLabel('再輸入一次').press('Enter');
+
+    await expect(form).toHaveCount(0);
+    await expect(rows.filter({ hasText: 'pat' }).locator('.msg')).toHaveText(
+      '已設定新密碼，pat 的所有裝置都已登出。',
+    );
+    expect(await resets(page)).toEqual([{ id: 'u-pat', password: 'pat-new-password' }]);
+  });
+
+  test('失敗時說原因；取消不送', async ({ page }) => {
+    await open(
+      page,
+      'settings',
+      `${users}
+       backend.resetUserPassword = async () => { throw new Error('403'); };`,
+    );
+    const row = page.locator('#s-users li.rig-row', { hasText: 'pat' });
+    await row.getByRole('button', { name: '重設密碼' }).click();
+    await row.getByRole('button', { name: '取消' }).click();
+    await expect(page.getByTestId('reset-u-pat')).toHaveCount(0);
+    await row.getByRole('button', { name: '重設密碼' }).click();
+    const form = page.getByTestId('reset-u-pat');
+    await form.getByLabel('新密碼').fill('pat-new-password');
+    await form.getByLabel('再輸入一次').fill('pat-new-password');
+    await form.getByRole('button', { name: '設定新密碼' }).click();
+    await expect(form.locator('.msg.err')).toHaveText('重設失敗：403');
+  });
+
+  test('成員看不到重設按鈕', async ({ page }) => {
+    await open(
+      page,
+      'settings',
+      `${users}
+       backend.currentUser = async () => ({ id: 'u-pat', name: 'pat', role: 'member', locale: 'zh-TW' });`,
+    );
+    await expect(page.locator('#s-users li.rig-row')).toHaveCount(2);
+    await expect(page.getByRole('button', { name: '重設密碼' })).toHaveCount(0);
+  });
+});
+
+test.describe('語言存到帳號', () => {
+  test.use({ locale: 'zh-TW' });
+
+  const recordSave = `
+    window.__saved = [];
+    backend.saveLocale = async (locale) => { window.__saved.push(locale); };`;
+  const saved = (page: Page) =>
+    page.evaluate(() => (window as unknown as { __saved: unknown[] }).__saved);
+
+  test('頁首切換：畫面、這個瀏覽器、帳號一起改', async ({ page }) => {
+    await open(page, 'canvas', recordSave);
+    await page.locator('.seg button', { hasText: 'EN' }).click();
+    await expect(page.locator('.seg button', { hasText: 'EN' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(page.getByTestId('next-up')).toContainText('Next up');
+    expect(await saved(page)).toEqual(['en']);
+    expect(await page.evaluate(() => localStorage.getItem('agent-board.locale'))).toBe('en');
+    await page.locator('.seg button', { hasText: '中' }).click();
+    expect(await saved(page)).toEqual(['en', 'zh-TW']);
+  });
+
+  test('設定頁切換也存到帳號；存失敗時畫面照換並說明', async ({ page }) => {
+    await open(page, 'settings', recordSave);
+    const section = page.locator('#s-language');
+    await section.locator('label', { hasText: 'English' }).click();
+    await expect(section.getByRole('heading', { name: 'Language' })).toBeVisible();
+    expect(await saved(page)).toEqual(['en']);
+    await section.locator('label', { hasText: 'Follow browser' }).click();
+    // 瀏覽器是 zh-TW：帳號記成 zh-TW。
+    await expect(section.getByRole('heading', { name: '語言' })).toBeVisible();
+    expect(await saved(page)).toEqual(['en', 'zh-TW']);
+
+    await page.evaluate(() => {
+      const w = window as unknown as {
+        __board: { getState(): { backend: { saveLocale: unknown } } };
+      };
+      w.__board.getState().backend.saveLocale = async () => {
+        throw new Error('offline');
+      };
+    });
+    await section.locator('label', { hasText: 'English' }).click();
+    await expect(section.locator('.msg.err')).toContainText(
+      "couldn't save it to your account: offline",
+    );
   });
 });

@@ -1,4 +1,4 @@
-// 改自己的密碼（PATCH /api/users/:id 帶 currentPassword）。hub 不讓管理員改別人的密碼，所以只有這一種。
+// 改自己的密碼（PATCH /api/users/:id 帶 currentPassword）。管理員重設別人的密碼在使用者清單（ResetPassword.tsx）。
 import { useState } from 'react';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';

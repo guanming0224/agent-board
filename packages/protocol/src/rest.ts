@@ -42,7 +42,22 @@ interface RouteDef {
 const route = <const T extends RouteDef>(def: T): T => def;
 
 const Ok = z.object({ ok: z.literal(true) });
-const Password = z.string().min(8);
+/** 密碼最短長度；hub 的 reset-password 指令也用這個數字。 */
+export const MIN_PASSWORD_LENGTH = 8;
+const Password = z.string().min(MIN_PASSWORD_LENGTH);
+
+/** audit 依使用者篩選時，代表「沒有使用者」的紀錄（daemon、交接引擎、登入失敗、reset-password 指令）。 */
+export const AUDIT_SYSTEM_USER = 'system';
+
+/** 操作紀錄的篩選，列表與匯出共用。userId 是使用者 id 或 AUDIT_SYSTEM_USER。 */
+export const AuditQuery = z.object({
+  sessionId: Id.optional(),
+  action: z.string().optional(),
+  userId: Id.optional(),
+  from: IsoTime.optional(),
+  to: IsoTime.optional(),
+});
+export type AuditQuery = z.infer<typeof AuditQuery>;
 
 export const ApiError = z.object({ code: z.string(), message: z.string() });
 export type ApiError = z.infer<typeof ApiError>;
@@ -93,6 +108,17 @@ export const routes = {
       })
       .refine((b) => !b.password || b.currentPassword, { path: ['currentPassword'] }),
     response: User,
+  }),
+  /**
+   * 管理員重設「別人」的密碼：不需要對方的舊密碼，對方所有裝置登出。
+   * 改自己的密碼一律走 usersUpdate（要附目前的密碼），這裡回 400 own_password。
+   */
+  usersResetPassword: route({
+    method: 'POST',
+    path: '/api/users/:id/reset-password',
+    auth: 'owner',
+    body: z.object({ password: Password }),
+    response: Ok,
   }),
   usersDelete: route({ method: 'DELETE', path: '/api/users/:id', auth: 'owner', response: Ok }),
 
@@ -380,20 +406,17 @@ export const routes = {
     method: 'GET',
     path: '/api/audit',
     auth: 'owner',
-    query: z.object({
-      sessionId: Id.optional(),
-      action: z.string().optional(),
-      from: IsoTime.optional(),
-      to: IsoTime.optional(),
+    query: AuditQuery.extend({
       limit: z.coerce.number().int().positive().max(1000).default(100),
     }),
     response: z.array(AuditEntry),
   }),
-  /** 回傳 text/csv，不經過 JSON；response 僅描述內容。 */
+  /** 回傳 text/csv，不經過 JSON；response 僅描述內容。篩選同 auditList，但沒有筆數上限。 */
   auditExport: route({
     method: 'GET',
     path: '/api/audit/export',
     auth: 'owner',
+    query: AuditQuery,
     response: z.string(),
   }),
   settingsGet: route({ method: 'GET', path: '/api/settings', auth: 'owner', response: Settings }),

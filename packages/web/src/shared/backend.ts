@@ -30,10 +30,14 @@ export interface BoardSnapshot {
 
 export type BoardListener = (snapshot: BoardSnapshot) => void;
 
-/** GET /api/audit 的篩選；hub 只支援這幾個欄位，沒有依使用者查詢。時間是 ISO 字串。 */
+/**
+ * GET /api/audit 的篩選；匯出（/api/audit/export）吃同一組條件但沒有 limit。時間是 ISO 字串。
+ * userId 是使用者 id，或 AUDIT_SYSTEM_USER（protocol）代表沒有使用者的紀錄。
+ */
 export interface AuditFilter {
   sessionId?: string;
   action?: string;
+  userId?: string;
   from?: string;
   to?: string;
   /** 1–1000，hub 預設 100。 */
@@ -54,12 +58,14 @@ export interface BoardBackend {
   setup(input: { name: string; password: string; locale: User['locale'] }): Promise<User>;
   login(input: { name: string; password: string }): Promise<User>;
   logout(): Promise<void>;
-  /** 只能改自己的密碼，要附目前的密碼；hub 不讓管理員改別人的密碼。 */
+  /** 改自己的密碼，要附目前的密碼。管理員重設別人的密碼見 hubBackend 的選用方法 resetUserPassword。 */
   changePassword(input: {
     userId: string;
     currentPassword: string;
     password: string;
   }): Promise<void>;
+  /** 把語言存到目前登入的帳號（User.locale），登入後畫面跟著它。沒登入時什麼都不做。 */
+  saveLocale(locale: User['locale']): Promise<void>;
 
   createSession(input: SessionSpec & { machineId: string }): Promise<Session>;
   updateSession(
@@ -89,8 +95,8 @@ export interface BoardBackend {
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   /** 操作紀錄（只有 owner）。由新到舊。 */
   listAudit(filter: AuditFilter): Promise<AuditEntry[]>;
-  /** CSV 檔（含 BOM）。hub 的匯出不吃篩選，一律是全部紀錄。 */
-  exportAudit(): Promise<Blob>;
+  /** CSV 檔（含 BOM），由舊到新。只匯出符合篩選的紀錄，不受 limit 限制（filter 的 limit 會被忽略）。 */
+  exportAudit(filter?: AuditFilter): Promise<Blob>;
 
   /** 這台裝置的 Web Push 訂閱（flows/push.ts）。 */
   pushVapidKey(): Promise<string>;

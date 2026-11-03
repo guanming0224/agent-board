@@ -8,6 +8,7 @@ import {
   ReviewPage,
   SettingsPage,
 } from './flows';
+import { applyAccountLocale } from './flows/locale';
 import { isDemo, useBoard } from './shared/store';
 import { TeamPage } from './team';
 import { AppHeader, type TabName } from './views';
@@ -85,9 +86,14 @@ export function App() {
     let cancelled = false;
     void (async () => {
       try {
-        if (await backend.needsSetup()) location.hash = '#/onboarding';
-        else if (!(await backend.currentUser())) location.hash = '#/login';
-        else if (PUBLIC_ROUTES.has(currentRoute())) location.hash = '#/canvas';
+        const user = (await backend.needsSetup()) ? undefined : await backend.currentUser();
+        if (user === undefined) location.hash = '#/onboarding';
+        else if (!user) location.hash = '#/login';
+        else {
+          // 已登入：畫面用帳號的語言（只在開頁時套一次，之後切換由頁首／設定頁負責）。
+          if (!cancelled) applyAccountLocale(user);
+          if (PUBLIC_ROUTES.has(currentRoute())) location.hash = '#/canvas';
+        }
       } catch {
         // hub 連不上時停在登入頁，那裡會說明怎麼辦。
         location.hash = '#/login';

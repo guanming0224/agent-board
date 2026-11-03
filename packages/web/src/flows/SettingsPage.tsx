@@ -18,10 +18,11 @@ import {
   type Note,
 } from './common';
 import { AuditSection } from './AuditSection';
-import { applyLocaleChoice, savedLocaleChoice, type LocaleChoice } from './locale';
+import { chooseLocale, savedLocaleChoice, type LocaleChoice } from './locale';
 import { PairingPanel } from './PairingPanel';
 import { currentSubscription, disablePush, enablePush, pushSupport, readPushEnv } from './push';
 import { PasswordSection } from './PasswordSection';
+import { ResetPassword } from './ResetPassword';
 import { listenAddressError, originError } from './validation';
 
 /**
@@ -137,7 +138,18 @@ function MachinesSection() {
   );
 }
 
-function UserRow({ user, onDeleted, self }: { user: User; onDeleted: () => void; self: boolean }) {
+function UserRow({
+  user,
+  onDeleted,
+  self,
+  canReset = false,
+}: {
+  user: User;
+  onDeleted: () => void;
+  self: boolean;
+  /** 目前登入的是 owner：可以重設別人的密碼（自己的走「改密碼」）。 */
+  canReset?: boolean;
+}) {
   const t = useT();
   const { backend } = useBoard();
   const admin = backend as AdminBackend;
@@ -170,6 +182,7 @@ function UserRow({ user, onDeleted, self }: { user: User; onDeleted: () => void;
           <Msg note={note} />
         </div>
       )}
+      {!self && canReset && <ResetPassword user={user} />}
     </li>
   );
 }
@@ -289,6 +302,7 @@ function UsersSection() {
                 key={user.id}
                 user={user}
                 self={user.id === me.data?.id}
+                canReset={me.data?.role === 'owner'}
                 onDeleted={users.reload}
               />
             ))}
@@ -381,7 +395,10 @@ function TemplatesSection() {
 
 function LanguageSection() {
   const t = useT();
+  const { backend } = useBoard();
   const [choice, setChoice] = useState<LocaleChoice>(savedLocaleChoice);
+  // 只存錯誤本身，訊息在畫面上翻譯：語言剛換過，送出當下的 t 是舊語言。
+  const [saveError, setSaveError] = useState<string | null>(null);
   const options: { value: LocaleChoice; label: string }[] = [
     { value: 'auto', label: t('flows.language.auto') },
     { value: 'zh-TW', label: '繁體中文' },
@@ -398,7 +415,11 @@ function LanguageSection() {
               checked={choice === option.value}
               onChange={() => {
                 setChoice(option.value);
-                applyLocaleChoice(option.value);
+                setSaveError(null);
+                // 畫面先換；存到帳號失敗時照實說，下次登入可能會變回去。
+                chooseLocale(backend, option.value).catch((e: unknown) =>
+                  setSaveError(errorText(e)),
+                );
               }}
             />
             {option.label}
@@ -406,6 +427,13 @@ function LanguageSection() {
         ))}
       </div>
       <p className="hint">{t('flows.language.hint')}</p>
+      <Msg
+        note={
+          saveError === null
+            ? null
+            : { text: t('flows.language.saveFailed', { error: saveError }), tone: 'err' }
+        }
+      />
     </Section>
   );
 }

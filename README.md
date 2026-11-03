@@ -158,6 +158,18 @@ More about auto-start, including why Windows uses a scheduled task: [docs/instal
 | Linux: doesn't start after reboot until you log in           | Run `loginctl enable-linger $USER`. The installer tries this for you.                                                                                                                         |
 | Services stopped after removing a Node version (nvm etc.)    | Run the install command again with the new Node version.                                                                                                                                      |
 | Log files are large                                          | Logs aren't rotated yet. Deleting them is safe; restart the service afterwards.                                                                                                               |
+| Forgot your password                                         | See [Forgot your password](#forgot-your-password) below.                                                                                                                                      |
+
+### Forgot your password
+
+- **Someone else is an owner:** they open **Settings → Users**, press **Reset password** on your row, and give you the new password. Your current password isn't needed. You are logged out on every device.
+- **You are the only owner:** on the hub machine, as the account that runs the hub, run
+
+  ```sh
+  agent-board-hub reset-password <name>
+  ```
+
+  It asks for the new password twice without showing it, saves it, and logs that account out everywhere; pages already open lose their connection within about 30 seconds and need to log in again. The hub can keep running. To script it, pipe the password in: `printf '%s\n' "$NEW_PASSWORD" | agent-board-hub reset-password <name>`. If the hub uses a different data folder, set `AGENT_BOARD_DATA_DIR` to it first. Either way the reset is recorded in the audit log, without the password.
 
 ## Uninstall
 

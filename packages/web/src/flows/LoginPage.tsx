@@ -4,6 +4,7 @@ import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { errorText, Msg, Page, type Note, type T } from './common';
 import { LanguagePicker } from './LanguagePicker';
+import { applyAccountLocale } from './locale';
 
 /** 後端丟出的錯誤帶 HTTP 狀態與 ApiError.code；限速時另有 retry-after 秒數。 */
 interface LoginError {
@@ -39,7 +40,9 @@ export function LoginPage() {
     setBusy(true);
     setNote({ text: t('flows.login.sending') });
     try {
-      await backend.login({ name: name.trim(), password });
+      const user = await backend.login({ name: name.trim(), password });
+      // 登入後畫面跟帳號的語言，不再跟登入前選的。
+      applyAccountLocale(user);
       setPassword('');
       setNote(null);
       location.hash = '#/canvas';
@@ -112,6 +115,11 @@ export function LoginPage() {
           <Msg note={note} />
         </div>
       </form>
+      {/* 忘記密碼：別的管理員可以在設定頁重設；只有一個管理員時只能在 hub 機器上用指令。 */}
+      <p className="hint" data-testid="login-forgot">
+        {t('flows.login.forgotOwner')} {t('flows.login.forgotCli')}{' '}
+        <code>{`agent-board-hub reset-password <${t('flows.login.forgotArg')}>`}</code>
+      </p>
     </Page>
   );
 }

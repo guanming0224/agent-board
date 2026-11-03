@@ -58,6 +58,20 @@ describe('rest bodies', () => {
     ).toBe(true);
     expect(routes.usersUpdate.body.safeParse({ locale: 'en' }).success).toBe(true);
   });
+
+  it('owner reset takes only a new password of the usual minimum length', () => {
+    expect(routes.usersResetPassword.body.safeParse({ password: 'short' }).success).toBe(false);
+    expect(routes.usersResetPassword.body.safeParse({ password: 'long-enough' }).success).toBe(
+      true,
+    );
+  });
+
+  it('audit list and export share the same filters, export has no limit', () => {
+    const filter = { userId: 'system', action: 'auth.login', from: '2026-01-01T00:00:00.000Z' };
+    expect(routes.auditList.query.parse(filter)).toEqual({ ...filter, limit: 100 });
+    expect(routes.auditExport.query.parse({ ...filter, limit: '5' })).toEqual(filter);
+    expect(routes.auditExport.query.safeParse({ from: 'yesterday' }).success).toBe(false);
+  });
 });
 
 describe('hook payload', () => {

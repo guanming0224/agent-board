@@ -10,7 +10,6 @@ import {
   AUDIT_PAGE,
   EMPTY_AUDIT_FORM,
   exportFileName,
-  filterByUser,
   localInputToIso,
   rangeReversed,
   SYSTEM_USER,
@@ -114,7 +113,8 @@ function AuditBody() {
     id === null ? null : (sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8));
 
   const loaded = entries.data ?? [];
-  const shown = filterByUser(loaded, form.userId);
+  // 使用者也由 hub 篩，載入的就是要顯示的。
+  const shown = loaded;
   // 使用者選單：清單 API 給的，加上紀錄裡出現過、但清單沒有的（例如已刪除的帳號）。
   const userIds = [
     ...new Set([...names.keys(), ...loaded.flatMap((e) => (e.userId ? [e.userId] : []))]),
@@ -127,7 +127,8 @@ function AuditBody() {
     setExporting(true);
     setNote({ text: t('flows.audit.exporting') });
     try {
-      const blob = await backend.exportAudit();
+      // 和列表同一組條件（不含 limit）：畫面篩了什麼就匯出什麼，不只是已載入的筆數。
+      const blob = await backend.exportAudit(query);
       const name = exportFileName(new Date());
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -220,9 +221,6 @@ function AuditBody() {
       </div>
       {(badFrom || badTo) && <p className="field-error">{t('flows.audit.badTime')}</p>}
       {reversed && <p className="field-error">{t('flows.audit.reversed')}</p>}
-      {form.userId && (
-        <p className="hint">{t('flows.audit.userFilterHint', { n: loaded.length })}</p>
-      )}
       <div className="acts">
         <button
           type="button"
