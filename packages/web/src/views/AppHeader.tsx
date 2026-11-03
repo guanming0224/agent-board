@@ -4,6 +4,8 @@ import { useLocale, useT, type Locale } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { nextInQueue, pendingQueue } from './queue';
 import { useViewsUi } from './uiStore';
+import { formatTokens, formatTokensFull, usageTotals } from './usage';
+import { useUsagePolling, useUsageStore } from './usageStore';
 
 export type TabName = 'canvas' | 'queue' | 'review' | 'team' | 'settings';
 
@@ -27,12 +29,43 @@ function isTyping(target: EventTarget | null): boolean {
   );
 }
 
+/** 各機器近 N 天的 token 合計。不是額度百分比：沒有上限可比，所以只是灰字。 */
+function UsageSummaryText() {
+  const t = useT();
+  const { locale } = useLocale();
+  const machines = useBoard((s) => s.machines);
+  const byMachine = useUsageStore((s) => s.byMachine);
+  const totals = usageTotals(machines.map((m) => byMachine[m.id]));
+  if (!totals) {
+    return (
+      <span title={t('views.usage.noneTitle')} data-testid="usage-total">
+        {t('views.usage.none')}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="num"
+      data-testid="usage-total"
+      title={t('views.usage.title', {
+        days: totals.days,
+        tokens: formatTokensFull(totals.tokens, locale),
+        cache: formatTokensFull(totals.cacheTokens, locale),
+        machines: totals.machines,
+      })}
+    >
+      {t('views.usage.short', { days: totals.days, tokens: formatTokens(totals.tokens, locale) })}
+    </span>
+  );
+}
+
 export function AppHeader({ tab }: { tab: TabName }) {
   const t = useT();
   const { sessions, approvals, machines } = useBoard();
   const { locale, setLocale } = useLocale();
   const focusSession = useViewsUi((s) => s.focusSession);
   const [announce, setAnnounce] = useState('');
+  useUsagePolling();
   const queue = pendingQueue(sessions, approvals);
   const online = machines.filter((m) => m.online).length;
   const off = machines.length - online;
@@ -106,7 +139,7 @@ export function AppHeader({ tab }: { tab: TabName }) {
               ? t('views.machines.summaryOff', { online, off })
               : t('views.machines.summary', { online })}
           </span>
-          <span title={t('views.quota.title')}>{t('views.quota.short')}</span>
+          <UsageSummaryText />
         </span>
         <MaskChip />
         <div className="seg" role="group" aria-label={t('views.locale.aria')}>

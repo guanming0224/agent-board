@@ -17,8 +17,10 @@ import {
   useTwoStep,
   type Note,
 } from './common';
+import { AuditSection } from './AuditSection';
 import { applyLocaleChoice, savedLocaleChoice, type LocaleChoice } from './locale';
 import { PairingPanel } from './PairingPanel';
+import { PasswordSection } from './PasswordSection';
 import { listenAddressError, originError } from './validation';
 
 /**
@@ -739,6 +741,7 @@ export function SettingsPage() {
           <LanguageSection />
           <MachinesSection />
           <UsersSection />
+          <PasswordSection />
           <TemplatesSection />
         </div>
         <div className="settings-col">
@@ -755,6 +758,7 @@ export function SettingsPage() {
           )}
         </div>
       </div>
+      <AuditSection />
     </Page>
   );
 }

@@ -34,6 +34,14 @@ async function call<N extends RouteName>(
   name: N,
   options: CallOptions<N> = {},
 ): Promise<RouteResponse<N>> {
+  return (await request(name, options).then((res) => res.json())) as RouteResponse<N>;
+}
+
+/** 送出並檢查狀態碼，回傳原始 Response；不是 JSON 的路由（audit 匯出）直接用這個。 */
+async function request<N extends RouteName>(
+  name: N,
+  options: CallOptions<N> = {},
+): Promise<Response> {
   const route = routes[name];
   let path: string = route.path;
   for (const [key, value] of Object.entries(options.params ?? {})) {
@@ -66,7 +74,7 @@ async function call<N extends RouteName>(
       Number.isFinite(retry) && retry > 0 ? retry : undefined,
     );
   }
-  return (await res.json()) as RouteResponse<N>;
+  return res;
 }
 
 const RECONNECT_MAX_MS = 30_000;
@@ -263,6 +271,9 @@ export function createHubBackend() {
       await call('authLogout');
       hub.stop();
     },
+    async changePassword({ userId, currentPassword, password }) {
+      await call('usersUpdate', { params: { id: userId }, body: { currentPassword, password } });
+    },
 
     createSession: (input) => call('sessionsCreate', { body: input }),
     updateSession: (id, patch) => call('sessionsUpdate', { params: { id }, body: patch }),
@@ -292,6 +303,7 @@ export function createHubBackend() {
     async removeMachine(id) {
       await call('machinesDelete', { params: { id } });
     },
+    machineUsage: (id) => call('machineUsage', { params: { id } }),
 
     getLayouts: (workspace) => call('layoutsGet', { query: { workspace } }),
     async saveLayouts(layouts) {
@@ -300,6 +312,9 @@ export function createHubBackend() {
     getNotes: (workspace) => call('notesList', { query: { workspace } }),
     getSettings: () => call('settingsGet'),
     updateSettings: (patch) => call('settingsUpdate', { body: patch }),
+    listAudit: (filter) => call('auditList', { query: { limit: 100, ...filter } }),
+    // 用 blob 保留 hub 加的 BOM（Excel 才認得 UTF-8 中文）；text() 會把它吃掉。
+    exportAudit: async () => (await request('auditExport')).blob(),
 
     listTeams: () => call('teamsList'),
     createTeam: (input) => call('teamsCreate', { body: input }),
