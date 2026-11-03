@@ -40,6 +40,9 @@ const session = (over: Partial<Session> & Pick<Session, 'id' | 'name' | 'machine
   lastOutputAt: minutesAgo(0),
   statusSince: minutesAgo(1),
   contextTokens: 1000,
+  contextWindow: null,
+  repoRoot: null,
+  repoCommonDir: null,
   createdAt: minutesAgo(30),
   endedAt: null,
   archived: false,
@@ -1044,6 +1047,8 @@ test.describe('新增 session', () => {
         quotaGuards: { denyReadPaths: [], maxConcurrentSessions: 1 } });`,
     });
     const warnings = page.getByTestId('quota-warnings');
+    // 限流看的是同一台機器上的同帳號。
+    await page.getByLabel('機器', { exact: true }).selectOption('m-a');
     await expect(warnings).toContainText('已有 1 個 session 在跑，上限 1');
     await expect(warnings).toContainText('同帳號已有 1 個 session 額度用完');
     await expect(warnings).toContainText('沒有設定禁讀路徑');
@@ -1052,6 +1057,65 @@ test.describe('新增 session', () => {
       .first()
       .evaluate((el) => getComputedStyle(el).color);
     expect(color).toBe('rgb(229, 139, 224)');
+  });
+
+  test('同 repo 不同子資料夾也建議 worktree；各自 worktree 的只告知，不預設打開', async ({
+    page,
+  }) => {
+    const repo = { repoRoot: '/work/repo', repoCommonDir: '/work/repo/.git' };
+    await open(page, 'new', {
+      machines: [rigA],
+      sessions: [
+        session({ id: 's1', name: '後端', machineId: 'm-a', cwd: '/work/repo/api', ...repo }),
+        session({
+          id: 's3',
+          name: '另一條分支',
+          machineId: 'm-a',
+          cwd: '/work/.agent-board-wt/x',
+          worktreePath: '/work/.agent-board-wt/x',
+          repoRoot: '/work/.agent-board-wt/x',
+          repoCommonDir: '/work/repo/.git',
+        }),
+      ],
+      approvals: [],
+      // daemon 的資料夾瀏覽回報 repo；/work/repo 底下都是同一個 working tree。
+      patch: `backend.browseDirectory = async (_m, path) => ({ path, entries: [],
+        repo: path.startsWith('/work/repo') ? { root: '/work/repo', commonDir: '/work/repo/.git' } : null });`,
+    });
+    const toggle = page.getByLabel('使用 worktree');
+    await page.getByLabel('工作目錄').fill('/work/repo/web');
+    await expect(toggle).toBeChecked();
+    await expect(page.getByTestId('worktree-hint')).toContainText(
+      '同一個 repo 已有 1 個 session 在改檔案（後端）',
+    );
+    await expect(page.getByTestId('worktree-siblings')).toContainText(
+      '另有 1 個 session 在各自的 worktree（另一條分支）',
+    );
+    await page.getByLabel('工作目錄').fill('/work/elsewhere');
+    await expect(toggle).not.toBeChecked();
+    await expect(page.getByTestId('worktree-hint')).toHaveCount(0);
+    await expect(page.getByTestId('worktree-siblings')).toHaveCount(0);
+  });
+
+  test('同帳號限流且設定會排隊：預覽說明會排隊；別台機器不算同帳號', async ({ page }) => {
+    await open(page, 'new', {
+      machines: [rigA, rigGpu],
+      sessions: [
+        session({ id: 's2', name: 'b', machineId: 'm-a', cwd: '/b', status: 'rate_limited' }),
+      ],
+      approvals: [],
+      patch: `backend.getSettings = async () => ({ listenAddress: '127.0.0.1', publicOrigin: null,
+        stuckMinutes: 10, dangerRules: [], notifications: { enabled: true, quietHours: null },
+        quotaGuards: { denyReadPaths: ['data/'], maxConcurrentSessions: null, queueWhenRateLimited: true } });`,
+    });
+    const warnings = page.getByTestId('quota-warnings');
+    await page.getByLabel('機器', { exact: true }).selectOption('m-a');
+    await expect(warnings).toContainText('同帳號有 1 個 session 額度用完：這個會先排隊');
+    await page.getByLabel('帳號').fill('/home/me/.claude-b');
+    await expect(warnings).not.toContainText('額度用完');
+    await page.getByLabel('帳號').fill('');
+    await page.getByLabel('機器', { exact: true }).selectOption('m-g');
+    await expect(warnings).not.toContainText('額度用完');
   });
 
   test('預覽靠上對齊表單，捲動時 sticky 跟著', async ({ page }) => {
@@ -1165,6 +1229,18 @@ test.describe('設定', () => {
     await expect(bar.locator('.msg')).toHaveText('已儲存');
     const patch = ((await calls(page))[0] as { patch: Record<string, unknown> }).patch;
     expect(Object.keys(patch).sort()).toEqual(['notifications', 'quotaGuards']);
+  });
+
+  test('帳號限流時排隊：預設打開，可以關掉並存檔', async ({ page }) => {
+    await open(page, 'settings');
+    const toggle = page.getByLabel('帳號額度用完時，新任務先排隊');
+    await expect(toggle).toBeChecked();
+    await toggle.uncheck();
+    await expect(page.locator('#s-quota .chip.unsaved')).toHaveText('未存檔');
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    const patch = ((await calls(page))[0] as { patch: { quotaGuards: unknown } }).patch;
+    expect(patch.quotaGuards).toMatchObject({ queueWhenRateLimited: false });
   });
 
   test('危險指令清單：新增、去重、移除、清空警告', async ({ page }) => {

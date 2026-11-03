@@ -1,15 +1,14 @@
 // 航班條、待處理清單共用的小元件（STYLE.md §5）。
 import { useEffect, useState } from 'react';
+import { QUEUE_DETAIL_RATE_LIMITED } from '@agent-board/protocol';
 import type { Machine, PermissionMode, Project, Session } from '@agent-board/protocol';
 import { useT, useLocale } from '../shared/i18n';
 import { HANDS_LINE, STATUS_VISUAL } from '../shared/status';
 import { useBoard } from '../shared/store';
+import { contextPercent, formatTokens } from './usage';
 import { useProjects } from './useBoardLoad';
 
 type T = ReturnType<typeof useT>;
-
-/** Session 沒有帶模型的 context 上限，先用標準 200k 算比例。 */
-const CONTEXT_WINDOW_TOKENS = 200_000;
 
 export function handsClass(mode: PermissionMode): string {
   return `h-${HANDS_LINE[mode]}`;
@@ -66,13 +65,33 @@ export function Meter({ percent, label }: { percent: number; label: string }) {
   );
 }
 
-export function ContextUsage({ tokens }: { tokens: number | null }) {
-  const percent = tokens === null ? null : Math.round((tokens / CONTEXT_WINDOW_TOKENS) * 100);
+/**
+ * context 用量。上限由 daemon 依模型回報；不知道上限時只寫 token 數，不畫比例，
+ * 提示框說明原因（多數模型是 1M，用 200k 硬算會誤報）。
+ */
+export function ContextUsage({
+  tokens,
+  window = null,
+}: {
+  tokens: number | null;
+  window?: number | null;
+}) {
+  const t = useT();
+  const locale = useLocale((s) => s.locale);
+  const percent = contextPercent(tokens, window);
+  const text =
+    percent !== null ? `${percent}%` : tokens !== null ? formatTokens(tokens, locale) : '—';
+  const title =
+    window !== null
+      ? t('views.ctx.window', { window: formatTokens(window, locale) })
+      : tokens !== null
+        ? t('views.ctx.unknownWindow')
+        : undefined;
   return (
-    <div className="ctx">
+    <div className="ctx" title={title} data-testid="context-usage">
       <span>context</span>
       <Meter percent={percent ?? 0} label="context" />
-      <span className="num">{percent === null ? '—' : `${percent}%`}</span>
+      <span className="num">{text}</span>
     </div>
   );
 }
@@ -134,7 +153,10 @@ export function Age({ session }: { session: Session }) {
       }
       break;
     case 'agent':
-      if (session.status === 'running') {
+      if (session.status === 'queued' && session.statusDetail === QUEUE_DETAIL_RATE_LIMITED) {
+        // §8-5：說清楚在等什麼，不然看起來像卡住。
+        text = t('views.age.queuedLimit', { span: span(session.statusSince) });
+      } else if (session.status === 'running') {
         at = output;
         text = output ? t('views.age.output', { span: span(output) }) : t('views.age.noOutput');
       } else {

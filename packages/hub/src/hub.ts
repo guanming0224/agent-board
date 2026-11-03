@@ -6,8 +6,10 @@ import {
   ClientToHub,
   DaemonToHub,
   needsAttention,
+  QUEUE_DETAIL_RATE_LIMITED,
   type Approval,
   type DirEntry,
+  type RepoInfo,
   type HubToClient,
   type HubToDaemon,
   type Machine,
@@ -24,6 +26,7 @@ import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from '.
 import { conflict, HttpError, notFound } from './errors';
 import { HandoffEngine } from './handoff';
 import { attentionPayload, inQuietHours, type PushTransport, type VapidKeys } from './push';
+import { parseRateLimitReset } from './rateLimitReset';
 import { TerminalRelay, type RelayClient } from './relay';
 import type { Store } from './store';
 
@@ -94,8 +97,14 @@ interface PendingCreate {
 interface PendingBrowse {
   machineId: string;
   timer: NodeJS.Timeout;
-  resolve(value: { path: string; entries: z.infer<typeof DirEntry>[] }): void;
+  resolve(value: BrowseResult): void;
   reject(error: Error): void;
+}
+
+interface BrowseResult {
+  path: string;
+  entries: z.infer<typeof DirEntry>[];
+  repo: RepoInfo | null;
 }
 
 const SESSION_DETAIL_LOST = 'ended while the machine was disconnected; outcome unknown';
@@ -107,6 +116,14 @@ const HUB_ONLY_STATUSES: readonly SessionStatus[] = ['queued', 'done', 'offline'
 
 const holdsSlot = (s: Session): boolean =>
   s.endedAt === null && s.status !== 'queued' && s.status !== 'done';
+
+/** 同一個 Claude 帳號：同機器、同 CLAUDE_CONFIG_DIR（null 是該機器的預設帳號）。 */
+type AccountKey = Pick<Session, 'machineId' | 'accountProfile'>;
+const sameAccount = (a: AccountKey, b: AccountKey): boolean =>
+  a.machineId === b.machineId && (a.accountProfile || null) === (b.accountProfile || null);
+
+/** 重置時間到了之後多等一下再開，時鐘差一點就開會馬上又撞到限流。 */
+const RATE_LIMIT_RESET_GRACE_MS = 60_000;
 
 export interface HubDeps {
   store: Store;
@@ -132,6 +149,8 @@ export class Hub {
   private readonly prompts = new PromptWatcher();
   private readonly handoff: HandoffEngine;
   private heartbeat: NodeJS.Timeout | null = null;
+  /** 限流帳號的重置時間到時重新排隊（§8-5）。 */
+  private resetTimer: NodeJS.Timeout | null = null;
   private closed = false;
 
   constructor(private readonly deps: HubDeps) {
@@ -716,17 +735,25 @@ export class Hub {
       permissionMode: spec.permissionMode,
       model: spec.model,
       accountProfile: spec.accountProfile,
-      status: this.slotAvailable() ? 'starting' : 'queued',
+      status: 'starting',
       statusDetail: null,
       claudeSessionId: spec.resumeClaudeSessionId,
       lastLines: [],
       lastOutputAt: null,
       statusSince: now,
       contextTokens: null,
+      contextWindow: null,
+      repoRoot: null,
+      repoCommonDir: null,
       createdAt: now,
       endedAt: null,
       archived: false,
     };
+    const blocked = this.queueReason(session);
+    if (blocked !== undefined) {
+      session.status = 'queued';
+      session.statusDetail = blocked;
+    }
     this.store.db.transaction(() => {
       this.store.insertSession(session, spec);
       this.audit(
@@ -749,12 +776,73 @@ export class Hub {
     })();
     this.broadcast({ type: 'session.updated', session });
     if (session.status === 'starting') this.dispatchCreate(session, spec);
+    else this.scheduleResetDrain();
     return session;
   }
 
   private slotAvailable(): boolean {
     const max = this.store.getSettings().quotaGuards.maxConcurrentSessions;
     return max === null || this.store.countActiveSessions() < max;
+  }
+
+  /**
+   * 現在不能開的原因（寫進 statusDetail）；undefined 表示可以開。帳號限流比較具體，先看；
+   * 併發上限沿用舊行為，detail 是 null。
+   */
+  private queueReason(target: Session): string | null | undefined {
+    if (this.limitedSessions(target).length > 0) return QUEUE_DETAIL_RATE_LIMITED;
+    if (!this.slotAvailable()) return null;
+    return undefined;
+  }
+
+  /**
+   * 擋住 target 的限流中 session（§8-5）：同帳號、還活著、狀態是 rate_limited，
+   * 而且訊息裡的重置時間（認得出來的話）還沒到。設定關掉就一律不擋。
+   */
+  private limitedSessions(target: Session): Session[] {
+    if (!this.store.getSettings().quotaGuards.queueWhenRateLimited) return [];
+    const now = this.deps.now().getTime();
+    return this.store
+      .listMachineSessions(target.machineId)
+      .filter(
+        (s) =>
+          s.id !== target.id &&
+          s.endedAt === null &&
+          s.status === 'rate_limited' &&
+          sameAccount(s, target) &&
+          !this.resetPassed(s, now),
+      );
+  }
+
+  private resetAt(session: Session): number | null {
+    return parseRateLimitReset(session.statusDetail, new Date(session.statusSince));
+  }
+
+  private resetPassed(session: Session, now: number): boolean {
+    const at = this.resetAt(session);
+    return at !== null && now >= at + RATE_LIMIT_RESET_GRACE_MS;
+  }
+
+  /** 排隊中有人在等限流帳號、而且知道重置時間時，到時候再跑一次 drainQueue。 */
+  private scheduleResetDrain(): void {
+    if (this.resetTimer) clearTimeout(this.resetTimer);
+    this.resetTimer = null;
+    if (this.closed) return;
+    let earliest: number | null = null;
+    for (const { session } of this.store.queuedSessions()) {
+      for (const limited of this.limitedSessions(session)) {
+        const at = this.resetAt(limited);
+        if (at !== null && (earliest === null || at < earliest)) earliest = at;
+      }
+    }
+    if (earliest === null) return;
+    const delay = earliest + RATE_LIMIT_RESET_GRACE_MS - this.deps.now().getTime();
+    // setTimeout 上限約 24.8 天；超過就先睡到上限，醒來會重算。
+    this.resetTimer = setTimeout(
+      () => this.guarded('rate limit reset', () => this.drainQueue()),
+      Math.min(Math.max(delay, 0), 2 ** 31 - 1),
+    );
+    this.resetTimer.unref();
   }
 
   private dispatchCreate(session: Session, spec: SessionSpec): void {
@@ -794,15 +882,24 @@ export class Hub {
     this.setStatus(session, 'error', detail, 'create_failed', { endedAt: this.nowIso() });
   }
 
-  /** 有名額就依序開始；機器離線的先跳過，不擋後面的人。 */
+  /**
+   * 有名額就依序開始；機器離線的先跳過，不擋後面的人。帳號限流的也跳過（別的帳號照開），
+   * 排隊原因變了就更新 statusDetail，畫面才說得出現在在等什麼。
+   */
   private drainQueue(): void {
     if (this.closed) return;
     for (const { session, spec } of this.store.queuedSessions()) {
-      if (!this.slotAvailable()) return;
-      if (!this.daemonFor(session.machineId)) continue;
-      const started = this.setStatus(session, 'starting', null, 'dequeued');
-      this.dispatchCreate(started, spec);
+      const reason = this.queueReason(session);
+      if (reason === undefined && this.daemonFor(session.machineId)) {
+        const started = this.setStatus(session, 'starting', null, 'dequeued');
+        this.dispatchCreate(started, spec);
+        continue;
+      }
+      // 名額滿了但這個帳號沒限流：維持 null（等名額）。
+      const detail = reason ?? null;
+      if (session.statusDetail !== detail) this.updateFields(session, { statusDetail: detail });
     }
+    this.scheduleResetDrain();
   }
 
   stopSession(id: string, user: User): Session {
@@ -844,11 +941,17 @@ export class Hub {
     };
     this.audit(user.id, id, 'session.resume', '');
     this.store.setPendingSpec(id, spec);
-    const available = this.slotAvailable();
-    const next = this.setStatus(session, available ? 'starting' : 'queued', null, 'user_resumed', {
-      endedAt: null,
-    });
+    const blocked = this.queueReason(session);
+    const available = blocked === undefined;
+    const next = this.setStatus(
+      session,
+      available ? 'starting' : 'queued',
+      available ? null : blocked,
+      'user_resumed',
+      { endedAt: null },
+    );
     if (available) this.dispatchCreate(next, spec);
+    else this.scheduleResetDrain();
     return next;
   }
 
@@ -910,6 +1013,9 @@ export class Hub {
       lastLines: runtime.lastLines,
       lastOutputAt: runtime.lastOutputAt,
       contextTokens: runtime.contextTokens,
+      contextWindow: runtime.contextWindow,
+      repoRoot: runtime.repoRoot,
+      repoCommonDir: runtime.repoCommonDir,
       endedAt: runtime.endedAt,
       ...(keepStatus
         ? {}
@@ -966,7 +1072,13 @@ export class Hub {
       this.notifyAttention(next);
     }
     this.guarded('handoff', () => this.handoff.onSessionChange(prev, next, mayNotify && entered));
-    if (holdsSlot(prev) && !holdsSlot(next)) this.drainQueue();
+    // 離開限流（例如重置後繼續工作）也可能放出同帳號排隊中的 session（§8-5）；
+    // 進入限流或重置時間變了，要重排計時器。
+    const limitChanged =
+      prev.status === 'rate_limited' || next.status === 'rate_limited'
+        ? prev.status !== next.status || prev.statusDetail !== next.statusDetail
+        : false;
+    if ((holdsSlot(prev) && !holdsSlot(next)) || limitChanged) this.drainQueue();
   }
 
   private addEvent(
@@ -1046,10 +1158,7 @@ export class Hub {
     return this.usage.get(machineId) ?? null;
   }
 
-  browse(
-    machineId: string,
-    path: string,
-  ): Promise<{ path: string; entries: z.infer<typeof DirEntry>[] }> {
+  browse(machineId: string, path: string): Promise<BrowseResult> {
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     const conn = this.daemonFor(machineId);
     if (!conn) throw conflict('machine_offline', 'Machine is offline');
@@ -1074,7 +1183,7 @@ export class Hub {
     clearTimeout(pending.timer);
     this.pendingBrowses.delete(msg.requestId);
     if (msg.error !== null) pending.reject(new HttpError(400, 'fs_error', msg.error));
-    else pending.resolve({ path: msg.path, entries: msg.entries });
+    else pending.resolve({ path: msg.path, entries: msg.entries, repo: msg.repo });
   }
 
   private rejectBrowses(machineId: string, error: Error): void {
@@ -1232,6 +1341,7 @@ export class Hub {
     }
     this.closed = true;
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.resetTimer) clearTimeout(this.resetTimer);
     this.relay.close();
     this.handoff.close();
     for (const pending of this.pendingCreates.values()) clearTimeout(pending.timer);

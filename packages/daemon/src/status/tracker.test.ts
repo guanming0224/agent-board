@@ -711,6 +711,44 @@ describe('createStatusTracker', () => {
     });
   });
 
+  describe('限流的重置時間（§8-5 排隊放行用）', () => {
+    it('StopFailure 先到、畫面訊息後到：補上帶重置時間的 detail，不改狀態也不重算等待時間', () => {
+      toRunning();
+      vi.advanceTimersByTime(1_000);
+      tracker.onHook(
+        'StopFailure',
+        payload('StopFailure', { error: 'rate_limit', error_details: '429 Too Many Requests' }),
+      );
+      const entered = last()!;
+      vi.advanceTimersByTime(1_000);
+      tracker.onOutput(`${LIMIT_LINE}\n`);
+      expect(tracker.status).toBe('rate_limited');
+      expect(last()).toMatchObject({
+        from: 'rate_limited',
+        to: 'rate_limited',
+        reason: 'output:rate-limit',
+        detail: LIMIT_LINE,
+      });
+      expect(last()!.at).toEqual(entered.at);
+    });
+
+    it('detail 已經有重置時間就不再補；沒有重置時間的訊息也不補', () => {
+      toRunning();
+      tracker.onOutput(`${LIMIT_LINE}\n`);
+      const count = changes.length;
+      tracker.onOutput("You've hit your weekly limit · resets Nov 5, 3pm (Asia/Taipei)\n");
+      expect(changes).toHaveLength(count);
+
+      const other = createStatusTracker({ stuckMinutes: 1, onChange: (c) => changes.push(c) });
+      other.onHook('UserPromptSubmit', payload('UserPromptSubmit'));
+      other.onHook('StopFailure', payload('StopFailure', { error: 'rate_limit' }));
+      const before = changes.length;
+      other.onOutput('Usage limit reached\n');
+      expect(changes).toHaveLength(before);
+      other.dispose();
+    });
+  });
+
   describe('輸出偵測限流', () => {
     it('running 時符合 CLI 完整格式就算', () => {
       toRunning();

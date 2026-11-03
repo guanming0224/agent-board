@@ -1,7 +1,14 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { UsageSummary } from '@agent-board/protocol';
-import { conversationTokens, fetchUsage, formatTokens, usageTotals, windowDays } from './usage';
+import {
+  contextPercent,
+  conversationTokens,
+  fetchUsage,
+  formatTokens,
+  usageTotals,
+  windowDays,
+} from './usage';
 
 const DAY = 24 * 60 * 60_000;
 
@@ -71,5 +78,17 @@ describe('formatTokens', () => {
     expect(formatTokens(1_234_567, 'en')).toBe('1.2M');
     expect(formatTokens(950, 'en')).toBe('950');
     expect(formatTokens(1_200_000, 'zh-TW')).toBe('120萬');
+  });
+});
+
+describe('contextPercent', () => {
+  it('以 daemon 回報的上限計算，不假設 200k', () => {
+    expect(contextPercent(300_000, 1_000_000)).toBe(30);
+    expect(contextPercent(150_000, 200_000)).toBe(75);
+  });
+
+  it('不知道上限或還沒有用量時是 null，不猜', () => {
+    expect(contextPercent(300_000, null)).toBeNull();
+    expect(contextPercent(null, 1_000_000)).toBeNull();
   });
 });

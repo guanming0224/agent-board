@@ -46,7 +46,7 @@ Phase 1 平行派工。
 
 - 只用一台機器跑兩個 daemon，沒有實體第二台。macOS 以外沒測過。
 - 真實注音、拼音未驗證（只有 CDP 模擬）；手機實機、真實 Web Push、PWA 安裝未驗證。
-- 額度顯示沒有資料來源；context 百分比暫以 200k 計算，且 `startup` 時沒有數值。
+- 額度顯示沒有資料來源；context 百分比暫以 200k 計算，且 `startup` 時沒有數值。（2026-11-03 已改，見下方「額度排隊、context 上限、同 repo」）
 - `CLAUDE_CONFIG_DIR` 多帳號未驗證。
 
 ## Phase 3 — 團隊、安全、安裝
@@ -64,7 +64,7 @@ Phase 1 平行派工。
 
 - `!` 模式的危險指令行為沒有定論；agent 自己改 hook 設定、使用者層 hook 搶先允許都未驗證。
 - 真 launchd、Linux、Windows、實體第二台機器、真人照 README 走完 10 分鐘，都未驗證。
-- 同 repo 兩個不相干子資料夾（`repo/a`、`repo/b`）擋不到，hub 不知道 repo 根目錄。
+- 同 repo 兩個不相干子資料夾（`repo/a`、`repo/b`）擋不到，hub 不知道 repo 根目錄。（2026-11-03 已改，daemon 回報 `repoRoot`）
 - 測試資料含金鑰形狀的假字串，轉公開時可能觸發 GitHub secret scanning。
 
 ### 下一步
@@ -94,3 +94,10 @@ GM 決定先自用，尚未公開發布。步驟、驗證結果與缺口在上�
 - 畫布 54%–89%：摘要條在螢幕上的倍率封頂 1.15（`canvas.css` 的 `.strip`），70% 字從 17.9px 降到 13.8px。
 - 多瀏覽器尺寸：改成尺寸擁有者制（CONTRACTS §6.1 第 6 點），新增 `terminal.size`、`terminal.resize.claim`；沒人看 30 秒後 PTY 回預設尺寸。
 - 未驗證：真 claude 在跟隨端縮放顯示時的滑鼠選取位置；手機實機。
+
+## 額度排隊、context 上限、同 repo（2026-11-03）
+
+- §8-5：同帳號（同機器＋同 `accountProfile`）有 session 限流時，新建與接續的 session 排隊，`statusDetail` 為 `queue:rate_limited`，卡片寫「等帳號額度恢復」；限流 session 離開 `rate_limited` 或訊息裡的重置時間過了就自動開始。設定 `quotaGuards.queueWhenRateLimited`（預設開），設定頁可關，新 session 預覽會說明會排隊。規則見 CONTRACTS §3.4。
+- context：daemon 依模型 id 推上限（`[1m]` 或內建模型目錄表），回報 `contextWindow`；不知道就不畫百分比。`Stop` 時從對話紀錄更新用量，新對話不再一直沒有數值。來源見 `docs/claude-code-notes.md`「Context 上限」。
+- 同 repo：daemon 回報 `repoRoot`、`repoCommonDir`（session 與資料夾瀏覽），新 session 頁與團隊成員檢查改用 working tree 根目錄判斷；同 repo 但各自在 linked worktree 的不算衝突，新 session 頁只告知。
+- 未驗證：真實限流訊息與重置時間格式、`SessionStart.model` 是否帶 `[1m]`、`CLAUDE_CODE_DISABLE_1M_CONTEXT`。

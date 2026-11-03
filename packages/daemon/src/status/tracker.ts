@@ -4,6 +4,8 @@ import { createLineSplitter, matchesUsageLimit } from './rate-limit';
 import type { CreateStatusTracker, StatusChange } from './types';
 
 const MS_PER_MINUTE = 60_000;
+/** 限流訊息裡的重置時間（格式見 hub/src/rateLimitReset.ts）。 */
+const RESET_HINT = /\bresets? .*\d(?::\d{2})?\s?[ap]m\b/i;
 /** setTimeout 的上限，超過會立刻觸發。到期時會重新檢查，所以截短沒有影響。 */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
@@ -47,6 +49,8 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
   const seenLimitLines = new Set<string>();
 
   let status: SessionStatus = 'starting';
+  let statusDetail: string | null = null;
+  let statusAt = now();
   let claudeSessionId: string | null = null;
   let stuckMs = options.stuckMinutes * MS_PER_MINUTE;
   let lastActivityAt = now().getTime();
@@ -93,6 +97,8 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     if (to === status) return;
     const change: StatusChange = { from: status, to, reason, detail, at: now() };
     status = to;
+    statusDetail = detail;
+    statusAt = change.at;
     if (to !== 'waiting_permission' && to !== 'plan_review') pendingPermissions = [];
     if (to === 'running') {
       lastActivityAt = change.at.getTime();
@@ -215,13 +221,34 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     }
   }
 
+  /**
+   * StopFailure 的 error_details 沒有重置時間（例如 `429 Too Many Requests`），hook 又可能比畫面的
+   * 訊息先到。已經是 rate_limited 時看到帶重置時間的訊息，就補上 detail（hub 靠它決定何時放行排隊，§8-5）。
+   * 狀態沒變，所以沿用進入限流的時間，「等了多久」不會被重算。
+   */
+  function refineLimitDetail(line: string): void {
+    if (!RESET_HINT.test(line) || (statusDetail !== null && RESET_HINT.test(statusDetail))) return;
+    statusDetail = line;
+    options.onChange({
+      from: status,
+      to: status,
+      reason: 'output:rate-limit',
+      detail: line,
+      at: statusAt,
+    });
+  }
+
   function detectUsageLimit(data: string): void {
     for (const line of splitLines(data)) {
       if (!matchesUsageLimit(line, 'idle')) continue;
       const key = line.trim();
       if (seenLimitLines.has(key)) continue;
       seenLimitLines.add(key);
-      if (!hasWorked || status === 'rate_limited') continue;
+      if (!hasWorked) continue;
+      if (status === 'rate_limited') {
+        refineLimitDetail(key);
+        continue;
+      }
       const working = status === 'running' || status === 'stuck';
       if (working && !matchesUsageLimit(line, 'strict')) continue;
       transition('rate_limited', 'output:rate-limit', key);

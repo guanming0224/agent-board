@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { DaemonToHub } from '@agent-board/protocol';
@@ -245,6 +245,9 @@ describe('session 建立', () => {
     });
     expect(h.runs()[0]?.cwd).toBe(expected);
     expect(h.installHookCalls).toEqual([expected]);
+    // 開在 linked worktree：根目錄是 worktree 自己，commonDir 是原 repo 的（同 repo 判斷用）。
+    expect(created.session.repoRoot).toBe(realpathSync(expected));
+    expect(created.session.repoCommonDir).toBe(join(realpathSync(repo), '.git'));
 
     h.hub.send({
       type: 'session.create',
@@ -935,6 +938,36 @@ describe('hook 與 approval（走真的 socket）', () => {
     expect(persisted().sessions.find((s) => s.sessionId === 'fp')?.pendingFirstPrompt).toBeNull();
     await waitUntil(() => lastRuntime('fp')?.contextTokens === 1300, 'contextTokens');
     expect(lastRuntime('fp')?.claudeSessionId).toBe('real-id');
+  });
+
+  it('context 上限：SessionStart 的 model 決定；Stop 時從對話紀錄更新用量與模型', async () => {
+    await h.createAndSubscribe('cw', { model: 'opus' });
+    // 別名推不出上限，不猜。
+    expect(lastRuntime('cw')?.contextWindow ?? null).toBeNull();
+    expect(lastRuntime('cw')?.repoRoot ?? null).toBeNull(); // workDir 不是 git
+
+    await client.request('cw', 'SessionStart', { session_id: 'c', model: 'claude-opus-4-6[1m]' });
+    await waitUntil(() => lastRuntime('cw')?.contextWindow === 1_000_000, '[1m] → 1M');
+
+    const transcript = join(h.root, 'cw.jsonl');
+    writeFileSync(
+      transcript,
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          model: 'claude-opus-4-6',
+          usage: {
+            input_tokens: 5,
+            cache_read_input_tokens: 40_000,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      }) + '\n',
+    );
+    await client.request('cw', 'Stop', { session_id: 'c', transcript_path: transcript });
+    await waitUntil(() => lastRuntime('cw')?.contextTokens === 40_005, '用量來自對話紀錄');
+    // hook 的模型帶 [1m]，對話紀錄只寫基本 id，上限維持 1M。
+    expect(lastRuntime('cw')?.contextWindow).toBe(1_000_000);
   });
 
   it('PermissionRequest → approval.requested → approval.decide → hook 拿到決定', async () => {

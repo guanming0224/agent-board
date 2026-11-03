@@ -1,7 +1,7 @@
 // 新增 session：左邊表單，右邊即時預覽實際執行的指令與額度警告（DISPATCH §5.3-2）。
 import { useCallback, useEffect, useState } from 'react';
-import { PermissionMode } from '@agent-board/protocol';
-import type { Machine, Session, Settings } from '@agent-board/protocol';
+import { PermissionMode, sameWorkingTree } from '@agent-board/protocol';
+import type { Machine, RepoInfo, Session, Settings } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { commandPreview } from './commandPreview';
@@ -24,7 +24,13 @@ const TASK_TYPES = ['general', 'gpu', 'heavy'] as const;
 type TaskType = (typeof TASK_TYPES)[number];
 
 const LONG_CONTEXT_TOKENS = 100_000;
-const NO_GUARDS: Settings['quotaGuards'] = { denyReadPaths: [], maxConcurrentSessions: null };
+const NO_GUARDS: Settings['quotaGuards'] = {
+  denyReadPaths: [],
+  maxConcurrentSessions: null,
+  queueWhenRateLimited: true,
+};
+/** 打字時不要每個字都去問 daemon。 */
+const REPO_LOOKUP_DELAY_MS = 400;
 const MODEL_ALIASES = ['sonnet', 'opus', 'haiku'];
 
 const isActive = (s: Session) => !s.archived && s.status !== 'done';
@@ -60,12 +66,42 @@ function suggestionReason(t: T, machine: Machine, task: TaskType): string {
 
 const trimSlash = (path: string) => path.replace(/[\\/]+$/, '');
 
-/** 同一個資料夾，或一個在另一個裡面；這是目前前端能判斷「同 repo」的極限，repo 根目錄只有 daemon 知道。 */
+/** 同一個資料夾，或一個在另一個裡面。 */
 function samePlace(a: string, b: string): boolean {
   const x = trimSlash(a);
   const y = trimSlash(b);
   if (!x || !y) return false;
   return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+/** session 實際改檔案的地方：有自己的 worktree 就是那裡。 */
+const workDir = (s: Session) => s.worktreePath ?? s.cwd;
+
+/**
+ * 選定資料夾所在的 repo（daemon 跑 `git rev-parse`，借用資料夾瀏覽的回應）。
+ * undefined：還沒問到；null：不是 git、問不到或機器離線，退回只比資料夾。
+ */
+function useRepoOf(machine: Machine | undefined, path: string): RepoInfo | null | undefined {
+  const { backend } = useBoard();
+  const [found, setFound] = useState<{ key: string; repo: RepoInfo | null } | null>(null);
+  const machineId = machine?.online ? machine.id : '';
+  const key = machineId && path ? `${machineId}\n${path}` : '';
+  useEffect(() => {
+    if (!key) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      backend.browseDirectory(machineId, path).then(
+        (listing) => !cancelled && setFound({ key, repo: listing.repo ?? null }),
+        () => !cancelled && setFound({ key, repo: null }),
+      );
+    }, REPO_LOOKUP_DELAY_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [backend, key, machineId, path]);
+  if (!key) return null;
+  return found?.key === key ? found.repo : undefined;
 }
 
 function FolderBrowser({
@@ -177,6 +213,7 @@ function quotaWarnings(
   t: T,
   guards: Settings['quotaGuards'] | null,
   sessions: readonly Session[],
+  machineId: string,
   accountProfile: string,
   resumed: Session | undefined,
 ): Warning[] {
@@ -199,11 +236,22 @@ function quotaWarnings(
       list.push({ key: 'noDeny', text: t('flows.new.warn.noDeny'), tone: 'quota' });
     }
   }
+  // 帳號＝機器＋設定資料夾：另一台機器的同名資料夾是另一個帳號（§8-5）。
   const limited = sessions.filter(
-    (s) => s.status === 'rate_limited' && (s.accountProfile ?? '') === accountProfile,
+    (s) =>
+      s.status === 'rate_limited' &&
+      s.endedAt === null &&
+      s.machineId === machineId &&
+      (s.accountProfile ?? '') === accountProfile,
   ).length;
   if (limited > 0) {
-    list.push({ key: 'limited', text: t('flows.new.warn.limited', { n: limited }), tone: 'quota' });
+    // 沒讀到設定（非管理員）時不知道會不會排隊，只說可能停住。
+    const queues = guards?.queueWhenRateLimited === true;
+    list.push({
+      key: 'limited',
+      text: t(queues ? 'flows.new.warn.limitedQueue' : 'flows.new.warn.limited', { n: limited }),
+      tone: 'quota',
+    });
   }
   if ((resumed?.contextTokens ?? 0) >= LONG_CONTEXT_TOKENS) {
     list.push({
@@ -248,9 +296,18 @@ export function NewSessionPage() {
   const suggestion = suggestMachine(machines, sessions, taskType);
   const machineId = chosenMachine ?? suggestion?.id ?? '';
   const machine = machines.find((m) => m.id === machineId);
-  const related = sessions.filter(
-    (s) => s.machineId === machineId && isActive(s) && samePlace(s.cwd, cwd),
+  const cwdRepo = useRepoOf(machine, cwd.trim());
+  const here = { dir: cwd.trim(), repoRoot: cwdRepo?.root ?? null };
+  const sameMachine = sessions.filter((s) => s.machineId === machineId && isActive(s));
+  // 同一個 working tree 才會互相改到檔案：同 repo 的不同子資料夾也算（daemon 回報的根目錄）。
+  const related = sameMachine.filter((s) =>
+    sameWorkingTree({ dir: workDir(s), repoRoot: s.repoRoot }, here),
   );
+  const relatedByRepo = related.some((s) => !samePlace(workDir(s), cwd));
+  // 同 repo 但各自在 linked worktree 的，不會衝突，只告知。
+  const siblings = cwdRepo
+    ? sameMachine.filter((s) => s.repoCommonDir === cwdRepo.commonDir && !related.includes(s))
+    : [];
   const useWorktree = worktreeChoice ?? related.length > 0;
   const resumable = sessions.filter((s) => s.claudeSessionId);
   const resumed = sessions.find((s) => s.claudeSessionId === resume.trim());
@@ -287,7 +344,7 @@ export function NewSessionPage() {
     resumeClaudeSessionId: resume.trim() || null,
   });
   const settingsPending = settings.loading && !settings.data;
-  const warnings = quotaWarnings(t, guards, sessions, trimmedAccount, resumed);
+  const warnings = quotaWarnings(t, guards, sessions, machineId, trimmedAccount, resumed);
 
   const applyTemplate = (id: string) => {
     setTemplateId(id);
@@ -557,9 +614,17 @@ export function NewSessionPage() {
             </label>
             {related.length > 0 && (
               <p className="hint you" data-testid="worktree-hint">
-                {t('flows.new.worktreeHint', {
+                {t(relatedByRepo ? 'flows.new.worktreeRepoHint' : 'flows.new.worktreeHint', {
                   n: related.length,
                   names: related.map((s) => s.name).join('、'),
+                })}
+              </p>
+            )}
+            {siblings.length > 0 && (
+              <p className="hint" data-testid="worktree-siblings">
+                {t('flows.new.worktreeSiblings', {
+                  n: siblings.length,
+                  names: siblings.map((s) => s.name).join('、'),
                 })}
               </p>
             )}

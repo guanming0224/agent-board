@@ -47,3 +47,55 @@ describe('worktreeConflicts', () => {
     expect(worktreeConflicts(c, [session('a', { worktreePath: '/wt/x' })])).toHaveLength(1);
   });
 });
+
+const base: Session = {
+  id: 'a',
+  machineId: 'm',
+  projectId: null,
+  name: 'a',
+  cwd: '/r/a',
+  branch: null,
+  worktreePath: null,
+  permissionMode: 'default',
+  model: null,
+  accountProfile: null,
+  status: 'running',
+  statusDetail: null,
+  claudeSessionId: null,
+  lastLines: [],
+  lastOutputAt: null,
+  statusSince: '2026-11-03T00:00:00Z',
+  contextTokens: null,
+  contextWindow: null,
+  repoRoot: '/r',
+  repoCommonDir: '/r/.git',
+  createdAt: '2026-11-03T00:00:00Z',
+  endedAt: null,
+  archived: false,
+};
+const at = (over: Partial<Session>): Session => ({ ...base, ...over });
+
+describe('worktreeConflicts：daemon 回報的 repo 根目錄', () => {
+  it('同 repo 的不同子資料夾算衝突（依 daemon 回報的根目錄）', () => {
+    const member = at({ id: 'b', name: 'b', cwd: '/r/b' });
+    expect(worktreeConflicts(base, [member])).toEqual([member]);
+  });
+
+  it('同 repo 但各自在 linked worktree 不算；另一台機器也不算', () => {
+    const linked = at({
+      id: 'b',
+      cwd: '/r/.wt/x',
+      worktreePath: '/r/.wt/x',
+      repoRoot: '/r/.wt/x',
+    });
+    const remote = at({ id: 'c', machineId: 'other', cwd: '/r/b' });
+    expect(worktreeConflicts(base, [linked, remote])).toEqual([]);
+  });
+
+  it('根目錄還不知道時退回比資料夾', () => {
+    const unknown = { repoRoot: null, repoCommonDir: null };
+    const nested = at({ id: 'b', cwd: '/r/a/deep', ...unknown });
+    const sibling = at({ id: 'c', cwd: '/r/b', ...unknown });
+    expect(worktreeConflicts(at(unknown), [nested, sibling])).toEqual([nested]);
+  });
+});

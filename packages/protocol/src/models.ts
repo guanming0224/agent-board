@@ -103,6 +103,15 @@ export const Session = z.object({
   /** 進入目前狀態的時間，用來算「等了多久」。 */
   statusSince: IsoTime,
   contextTokens: z.number().int().nonnegative().nullable(),
+  /**
+   * 目前模型的 context 上限（tokens），由 daemon 依模型 id 推得；不知道就是 null，前端不顯示百分比。
+   * 來源與限制見 docs/claude-code-notes.md「Context 上限」。
+   */
+  contextWindow: z.number().int().positive().nullable().default(null),
+  /** 實際工作資料夾所在 working tree 的根目錄（`git rev-parse --show-toplevel`）；不是 git 就是 null。 */
+  repoRoot: z.string().nullable().default(null),
+  /** 同一個 repo 的所有 worktree 共用這個值（`git rev-parse --git-common-dir` 的絕對路徑）。 */
+  repoCommonDir: z.string().nullable().default(null),
   createdAt: IsoTime,
   endedAt: IsoTime.nullable(),
   archived: z.boolean(),
@@ -174,7 +183,15 @@ export type HandoffRule = z.infer<typeof HandoffRule>;
 export const QuotaGuards = z.object({
   denyReadPaths: z.array(z.string()),
   maxConcurrentSessions: z.number().int().positive().nullable(),
+  /**
+   * §8-5：同一個帳號（同機器 + 同 accountProfile）有 session 限流時，新開或接續的 session 先排隊，
+   * 等該帳號沒有限流中的 session（或已知的重置時間過了）才開始。舊設定沒有這個鍵，預設開。
+   */
+  queueWhenRateLimited: z.boolean().default(true),
 });
+
+/** 排隊原因寫在 `statusDetail`；併發上限排隊維持 null（沿用舊行為）。 */
+export const QUEUE_DETAIL_RATE_LIMITED = 'queue:rate_limited';
 
 export const TemplateConfig = z.object({
   machineId: Id.nullable(),

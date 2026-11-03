@@ -1,7 +1,12 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DaemonToHub, HubToClient, HubToDaemon } from '@agent-board/protocol';
+import {
+  DaemonToHub,
+  HubToClient,
+  HubToDaemon,
+  QUEUE_DETAIL_RATE_LIMITED,
+} from '@agent-board/protocol';
 import {
   approval,
   connect,
@@ -1849,7 +1854,26 @@ describe('directory browsing', () => {
     });
     const res = await pending;
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ path: '/fake', entries });
+    // 舊版 daemon 不帶 repo：補 null。
+    expect(res.body).toEqual({ path: '/fake', entries, repo: null });
+  });
+
+  it('passes along the repo of the listed folder (same-repo worktree suggestion)', async () => {
+    hub = await startHub();
+    const cookie = await hub.setupOwner();
+    const { daemon, machineId } = await hub.onlineDaemon(cookie);
+    const pending = hub.api('GET', `/api/machines/${machineId}/fs?path=/r/a`, { cookie });
+    const req = await daemon.next('fs.list');
+    const repo = { root: '/r', commonDir: '/r/.git' };
+    daemon.send({
+      type: 'fs.listResult',
+      requestId: req.requestId,
+      path: '/r/a',
+      entries: [],
+      repo,
+      error: null,
+    });
+    expect((await pending).body).toEqual({ path: '/r/a', entries: [], repo });
   });
 
   it('surfaces daemon errors, timeouts, disconnects, and offline machines', async () => {
@@ -2466,5 +2490,179 @@ describe('protocol sanity', () => {
     expect(
       DaemonToHub.safeParse({ type: 'approval.requested', approval: approval('x') }).success,
     ).toBe(true);
+  });
+});
+
+describe('runtime fields from the daemon', () => {
+  it('stores context window and repo identity, and broadcasts them', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    const client = await hub.client(cookie);
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(session.id, {
+        contextTokens: 300_000,
+        contextWindow: 1_000_000,
+        repoRoot: '/r',
+        repoCommonDir: '/r/.git',
+      }),
+    });
+    const updated = await client.next(
+      'session.updated',
+      (m) => (m.session as { contextWindow: number | null }).contextWindow === 1_000_000,
+    );
+    expect(updated.session).toMatchObject({ repoRoot: '/r', repoCommonDir: '/r/.git' });
+    expect(hub.running.store.getSession(session.id)).toMatchObject({
+      contextWindow: 1_000_000,
+      repoRoot: '/r',
+      repoCommonDir: '/r/.git',
+    });
+  });
+});
+
+describe('rate-limit queue (§8-5)', () => {
+  const LIMIT = "You've hit your 5-hour limit · resets 3pm (UTC)";
+
+  const limit = (daemon: Peer, id: string, over = {}) =>
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(id, { status: 'rate_limited', statusDetail: '429', ...over }),
+    });
+
+  const statusOf = (id: string) => hub.running.store.getSession(id);
+
+  it('queues new sessions on the same account with a reason; other accounts and machines start', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession({
+      accountProfile: '/acct/a',
+    });
+    limit(daemon, session.id);
+    await until(() => statusOf(session.id)?.status === 'rate_limited', 'limited');
+
+    const same = await newSession(cookie, machineId, { accountProfile: '/acct/a' });
+    expect(same.status).toBe('queued');
+    expect(statusOf(same.id)?.statusDetail).toBe(QUEUE_DETAIL_RATE_LIMITED);
+
+    // 別的帳號（含預設帳號）不受影響。
+    const other = await newSession(cookie, machineId, { accountProfile: '/acct/b' });
+    const fallback = await newSession(cookie, machineId, { accountProfile: null });
+    expect([other.status, fallback.status]).toEqual(['starting', 'starting']);
+    // 另一台機器的同名設定資料夾是另一個帳號。
+    const remote = await hub.onlineDaemon(cookie);
+    const elsewhere = await newSession(cookie, remote.machineId, { accountProfile: '/acct/a' });
+    expect(elsewhere.status).toBe('starting');
+
+    expect(daemon.of('session.create').map((m) => m.sessionId)).not.toContain(same.id);
+    // 限流的 session 重新開始工作：同帳號排隊的自動開始。
+    daemon.send({ type: 'session.runtime', session: runtime(session.id, { status: 'running' }) });
+    await until(() => daemon.of('session.create').some((m) => m.sessionId === same.id), 'dequeued');
+    expect(statusOf(same.id)).toMatchObject({ status: 'starting', statusDetail: null });
+  });
+
+  it('null and empty accountProfile are the same default account', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession({ accountProfile: null });
+    limit(daemon, session.id);
+    await until(() => statusOf(session.id)?.status === 'rate_limited', 'limited');
+    expect((await newSession(cookie, machineId, { accountProfile: '' })).status).toBe('queued');
+  });
+
+  it('a session that ended while rate limited does not block', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession();
+    limit(daemon, session.id, { endedAt: new Date().toISOString() });
+    await until(() => statusOf(session.id)?.endedAt !== null, 'ended');
+    expect((await newSession(cookie, machineId)).status).toBe('starting');
+  });
+
+  it('resume on a limited account queues too', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession();
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(session.id, { status: 'error', endedAt: new Date().toISOString() }),
+    });
+    await until(() => statusOf(session.id)?.endedAt !== null, 'ended');
+    const other = await newSession(cookie, machineId);
+    const create = await daemon.next('session.create');
+    daemon.send({
+      type: 'session.created',
+      requestId: create.requestId,
+      session: runtime(other.id),
+    });
+    limit(daemon, other.id);
+    await until(() => statusOf(other.id)?.status === 'rate_limited', 'limited');
+
+    const res = await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie });
+    expect(res.body).toMatchObject({ status: 'queued', statusDetail: QUEUE_DETAIL_RATE_LIMITED });
+  });
+
+  it('the setting can be turned off; turning it off releases the queue', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession();
+    limit(daemon, session.id);
+    await until(() => statusOf(session.id)?.status === 'rate_limited', 'limited');
+    const queued = await newSession(cookie, machineId);
+    expect(queued.status).toBe('queued');
+
+    const off = await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: {
+        quotaGuards: {
+          denyReadPaths: [],
+          maxConcurrentSessions: null,
+          queueWhenRateLimited: false,
+        },
+      },
+    });
+    expect(off.body.quotaGuards.queueWhenRateLimited).toBe(false);
+    expect((await daemon.next('session.create')).sessionId).toBe(queued.id);
+    expect((await newSession(cookie, machineId)).status).toBe('starting');
+  });
+
+  it('defaults to on for settings saved before the option existed', async () => {
+    hub = await startHub();
+    const cookie = await hub.setupOwner();
+    hub.running.store.db
+      .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('quotaGuards', ?)")
+      .run(JSON.stringify({ denyReadPaths: [], maxConcurrentSessions: null }));
+    const res = await hub.api('GET', '/api/settings', { cookie });
+    expect(res.body.quotaGuards.queueWhenRateLimited).toBe(true);
+  });
+
+  it('a slot-queued session shows the rate-limit reason once its account is limited', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession();
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { quotaGuards: { denyReadPaths: [], maxConcurrentSessions: 1 } },
+    });
+    const queued = await newSession(cookie, machineId);
+    expect(statusOf(queued.id)).toMatchObject({ status: 'queued', statusDetail: null });
+    limit(daemon, session.id);
+    await until(
+      () => statusOf(queued.id)?.statusDetail === QUEUE_DETAIL_RATE_LIMITED,
+      'reason updated',
+    );
+  });
+
+  it('starts the queue when the known reset time passes, even if the limited session stays idle', async () => {
+    // 時鐘照真實時間走，但起點設在重置前 50ms（加上 60 秒緩衝）。
+    const reset = Date.parse('2026-11-03T15:00:00Z');
+    let offset = 0;
+    hub = await startHub({ now: () => new Date(Date.now() + offset) });
+    const { cookie, daemon, machineId, session } = await startedSession();
+    offset = reset + 60_000 - 300 - Date.now();
+    limit(daemon, session.id, { statusDetail: LIMIT, statusSince: '2026-11-03T10:00:00Z' });
+    await until(() => statusOf(session.id)?.status === 'rate_limited', 'limited');
+    const queued = await newSession(cookie, machineId);
+    expect(queued.status).toBe('queued');
+    await until(
+      () => daemon.of('session.create').some((m) => m.sessionId === queued.id),
+      'started after reset',
+    );
+    expect(statusOf(session.id)?.status).toBe('rate_limited');
+    // 重置時間已過：新的也不再排隊。
+    expect((await newSession(cookie, machineId)).status).toBe('starting');
   });
 });

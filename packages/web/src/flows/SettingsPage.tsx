@@ -858,6 +858,22 @@ function SettingsForm({ initial }: { initial: Settings }) {
           <p className="hint">{t('flows.quota.maxHint')}</p>
           {!maxValid && <p className="field-error">{t('flows.security.positiveInt')}</p>}
         </div>
+        <div className="field">
+          <label className="check">
+            <input
+              type="checkbox"
+              data-testid="quota-queue-limited"
+              checked={draft.quotaGuards.queueWhenRateLimited}
+              onChange={(e) =>
+                patch({
+                  quotaGuards: { ...draft.quotaGuards, queueWhenRateLimited: e.target.checked },
+                })
+              }
+            />
+            {t('flows.quota.queueLimited')}
+          </label>
+          <p className="hint">{t('flows.quota.queueLimitedHint')}</p>
+        </div>
       </Section>
 
       <div className={`save-bar${dirtyKeys.length > 0 ? ' on' : ''}`} data-testid="save-bar">

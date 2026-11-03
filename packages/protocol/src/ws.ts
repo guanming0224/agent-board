@@ -59,6 +59,13 @@ export type SessionSpec = z.infer<typeof SessionSpec>;
 
 export const DirEntry = z.object({ name: z.string(), isDir: z.boolean(), isGitRepo: z.boolean() });
 
+/**
+ * 資料夾所在的 git working tree。`root` 相同才是同一份檔案（會互相改到）；
+ * `commonDir` 相同代表同一個 repo，但可能是不同的 linked worktree。
+ */
+export const RepoInfo = z.object({ root: z.string(), commonDir: z.string() });
+export type RepoInfo = z.infer<typeof RepoInfo>;
+
 /** daemon 回報的 session 欄位：hub 擁有的（archived、projectId…）不在內。 */
 export const SessionRuntime = Session.pick({
   id: true,
@@ -72,6 +79,9 @@ export const SessionRuntime = Session.pick({
   lastOutputAt: true,
   statusSince: true,
   contextTokens: true,
+  contextWindow: true,
+  repoRoot: true,
+  repoCommonDir: true,
   endedAt: true,
 });
 export type SessionRuntime = z.infer<typeof SessionRuntime>;
@@ -109,6 +119,8 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     requestId: Id,
     path: z.string(),
     entries: z.array(DirEntry),
+    /** 列出的資料夾本身所在的 repo；不是 git 或舊版 daemon 為 null。 */
+    repo: RepoInfo.nullable().default(null),
     error: z.string().nullable(),
   }),
 ]);

@@ -5,12 +5,14 @@ import type {
   HookEventName,
   HookPayload,
   PermissionMode,
+  RepoInfo,
   SessionRuntime,
   SessionStatus,
 } from '@agent-board/protocol';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import type { Terminal as TerminalType } from '@xterm/headless';
 import { spawn as spawnPty, type IPty } from 'node-pty';
+import { readLastTurn, resolveContextWindow } from './contextWindow';
 import { errorMessage, log } from './log';
 import type { CreateStatusTracker, StatusChange, StatusTracker } from './status/types';
 
@@ -134,6 +136,10 @@ export interface ManagedSessionOptions {
   cwd: string;
   branch: string | null;
   worktreePath: string | null;
+  /** cwd 所在的 git working tree；不是 git 就是 null。 */
+  repo?: RepoInfo | null;
+  /** `--model` 指定的值，用來推 context 上限。 */
+  model?: string | null;
   claudeSessionId: string;
   pendingFirstPrompt: string | null;
   stuckMinutes: number;
@@ -184,6 +190,10 @@ export class ManagedSession {
   private fingerprint = '';
   private lastOutputAt: string | null = null;
   private contextTokens: number | null = null;
+  private hookModel: string | null = null;
+  private transcriptModel: string | null = null;
+  /** 讀對話紀錄是非同步的；只採用最後一次發出的結果。 */
+  private transcriptReads = 0;
   private endedAt: string | null = null;
   private exitCode: number | null = null;
   private claudeSessionId: string;
@@ -257,6 +267,14 @@ export class ManagedSession {
       lastOutputAt: this.lastOutputAt,
       statusSince: this.statusSince,
       contextTokens: this.contextTokens,
+      contextWindow: resolveContextWindow({
+        hookModel: this.hookModel,
+        specModel: this.options.model ?? null,
+        transcriptModel: this.transcriptModel,
+        contextTokens: this.contextTokens,
+      }),
+      repoRoot: this.options.repo?.root ?? null,
+      repoCommonDir: this.options.repo?.commonDir ?? null,
       endedAt: this.endedAt,
     };
   }
@@ -377,8 +395,27 @@ export class ManagedSession {
         this.contextTokens = Math.floor(payload.context_tokens);
         this.scheduleRuntime();
       }
+      // 文件：model 可能省略（/clear 之後、對話復原時），沒有就沿用舊值。
+      if (typeof payload.model === 'string' && payload.model) {
+        this.hookModel = payload.model;
+        this.scheduleRuntime();
+      }
       this.sendFirstPrompt();
     }
+    // 回合結束時對話紀錄已寫好最後一則回覆：context 用量與實際模型從這裡更新。
+    // SessionStart 只在 resume 時給 context_tokens，沒有這步新對話會一直沒有數值。
+    if ((event === 'Stop' || event === 'StopFailure') && payload.transcript_path) {
+      void this.refreshFromTranscript(payload.transcript_path);
+    }
+  }
+
+  private async refreshFromTranscript(transcriptPath: string): Promise<void> {
+    const ticket = (this.transcriptReads += 1);
+    const turn = await readLastTurn(transcriptPath);
+    if (!turn || ticket !== this.transcriptReads || !this.alive) return;
+    this.contextTokens = turn.contextTokens;
+    if (turn.model) this.transcriptModel = turn.model;
+    this.scheduleRuntime();
   }
 
   private sendFirstPrompt(): void {

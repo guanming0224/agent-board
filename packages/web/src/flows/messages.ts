@@ -97,6 +97,10 @@ export const zhTW: Record<string, string> = {
   'flows.new.worktree': '使用 worktree（獨立分支與資料夾）',
   'flows.new.worktreeHint':
     '這個資料夾已有 {n} 個 session（{names}），已預設打開 worktree，避免互相改到檔案。',
+  'flows.new.worktreeRepoHint':
+    '同一個 repo 已有 {n} 個 session 在改檔案（{names}），已預設打開 worktree，避免互相改到檔案。',
+  'flows.new.worktreeSiblings':
+    '同一個 repo 另有 {n} 個 session 在各自的 worktree（{names}），不會改到同一份檔案。',
   'flows.new.mode': '權限模式',
   'flows.new.model': '模型',
   'flows.new.modelHint': '留空用預設；可填別名或完整名稱。',
@@ -137,6 +141,8 @@ export const zhTW: Record<string, string> = {
   'flows.new.warn.noDeny':
     '沒有設定禁讀路徑，agent 可能直接讀大型資料夾花額度。到設定的省額度預設可以加。',
   'flows.new.warn.limited': '同帳號已有 {n} 個 session 額度用完，這個可能一開始就停住。',
+  'flows.new.warn.limitedQueue':
+    '這台機器上同帳號有 {n} 個 session 額度用完：這個會先排隊，額度恢復後自動開始。',
   'flows.new.warn.longContext': '接續的對話已有約 {tokens}k tokens，之後每則訊息都要帶著它們。',
   'flows.new.warn.noSettings': '讀不到省額度設定，這裡無法判斷併發上限與禁讀路徑。',
 
@@ -353,6 +359,9 @@ export const zhTW: Record<string, string> = {
     '一行一個，例如 data/ 或 *.parquet。讓 agent 寫程式處理資料，而不是直接讀進對話。',
   'flows.quota.max': '同時執行的 session 上限',
   'flows.quota.maxHint': '留空表示不限；超過時新 session 排隊。',
+  'flows.quota.queueLimited': '帳號額度用完時，新任務先排隊',
+  'flows.quota.queueLimitedHint':
+    '同一台機器、同一個帳號設定資料夾有 session 額度用完時，新開或接續的 session 先排隊；那個 session 恢復工作、或訊息寫的重置時間過了，就自動開始。沒有官方額度資料，這是唯一可靠的訊號。',
 
   'flows.language.auto': '跟隨瀏覽器',
   'flows.language.hint':
@@ -505,6 +514,10 @@ export const en: Record<string, string> = {
   'flows.new.worktree': 'Use a worktree (own branch and folder)',
   'flows.new.worktreeHint':
     'This folder already has {n} session(s) ({names}), so worktree is on by default to keep them from editing the same files.',
+  'flows.new.worktreeRepoHint':
+    'This repo already has {n} session(s) editing it ({names}), so worktree is on by default to keep them from editing the same files.',
+  'flows.new.worktreeSiblings':
+    '{n} other session(s) work in their own worktree of this repo ({names}); they will not edit the same files.',
   'flows.new.mode': 'Permission mode',
   'flows.new.model': 'Model',
   'flows.new.modelHint': 'Leave empty for the default. An alias or full name both work.',
@@ -550,6 +563,8 @@ export const en: Record<string, string> = {
     'No blocked read paths are set, so the agent may read large folders and spend quota. Add them under quota defaults in Settings.',
   'flows.new.warn.limited':
     '{n} session(s) on this account hit the rate limit, so this one may stall right away.',
+  'flows.new.warn.limitedQueue':
+    '{n} session(s) on this account and machine hit the rate limit, so this one will queue and start on its own once the limit clears.',
   'flows.new.warn.longContext':
     'The resumed conversation is about {tokens}k tokens, and every later message carries them.',
   'flows.new.warn.noSettings':
@@ -780,6 +795,9 @@ export const en: Record<string, string> = {
     'One per line, e.g. data/ or *.parquet. The agent writes code to process the data instead of reading it into the conversation.',
   'flows.quota.max': 'Concurrent session limit',
   'flows.quota.maxHint': 'Leave empty for no limit. New sessions queue beyond it.',
+  'flows.quota.queueLimited': 'Queue new tasks while their account is rate limited',
+  'flows.quota.queueLimitedHint':
+    'When a session on the same machine and account folder hits its usage limit, new and resumed sessions on that account queue. They start on their own once that session works again or the reset time in its message passes. There is no official quota data; this is the only reliable signal.',
 
   'flows.language.auto': 'Follow browser',
   'flows.language.hint':

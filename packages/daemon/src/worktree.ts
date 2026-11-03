@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import type { RepoInfo } from '@agent-board/protocol';
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 60_000;
@@ -64,6 +65,28 @@ export async function findLinkedWorktree(cwd: string): Promise<string | null> {
     const commonDir = resolve(cwd, await git(['-C', cwd, 'rev-parse', '--git-common-dir']));
     if (gitDir === commonDir) return null;
     return await git(['-C', cwd, 'rev-parse', '--show-toplevel']);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 資料夾所在的 working tree 根目錄與共用的 git 資料夾（同 repo 的 linked worktree 共用 commonDir）。
+ * 用 `--path-format=absolute`（git 2.31+）讓兩個值都是絕對路徑；不是 git 或 git 太舊就回 null。
+ */
+export async function repoInfo(dir: string): Promise<RepoInfo | null> {
+  try {
+    const [root, commonDir] = (
+      await git([
+        '-C',
+        dir,
+        'rev-parse',
+        '--path-format=absolute',
+        '--show-toplevel',
+        '--git-common-dir',
+      ])
+    ).split('\n');
+    return root && commonDir ? { root, commonDir } : null;
   } catch {
     return null;
   }
