@@ -39,6 +39,26 @@ registerMessages('zh-TW', {
   'queue.order': '順序：⛔ 危險指令 → ✕ ⚠ 故障 → ◆ ▣ ◇ 等最久的。點一列跳到畫布上那張卡。',
   'queue.empty': '沒有等你的。有 session 需要你時會排在這裡；要開工就按「新增 session」。',
   'queue.danger': '命中危險指令清單',
+  'canvas.act.full': '全尺寸',
+  'canvas.full.back': '回畫布',
+  'canvas.full.list': 'Session',
+  'canvas.full.side': '審核與交接',
+  'canvas.full.missing': '找不到這個 session，可能已經封存或移除。回畫布看其他 session。',
+  'canvas.full.handoff': '交接',
+  'canvas.full.handoffAdd': '新增交接',
+  'canvas.full.handoffAdded': '已新增，預設關著；要自動交接再按「開啟自動交接」。',
+  'canvas.full.handoffHint': '交接只送一句摘要、改過的檔案和分支，不貼整段對話。',
+  'canvas.done.text':
+    '任務完成。要接新工作先送 /clear 清掉對話，或封存這個 session，避免長對話一直累積。',
+  'canvas.done.clear': '送出 /clear',
+  'canvas.done.cleared': '已送出 /clear',
+  'canvas.done.archive': '封存',
+  'canvas.done.archiveFailed': '沒封存：{detail}',
+  'canvas.done.dismiss': '不用了',
+  'canvas.done.ended': 'session 已經結束，沒有對話可以清，封存就好。',
+  'canvas.done.unreachable': '連不到這台機器，恢復後才能送 /clear。',
+  'canvas.done.busy':
+    '標記完成時它不在等輸入，直接送可能插進工作中。到終端機確認停下來後，自己輸入 /clear。',
 });
 
 registerMessages('en', {
@@ -86,4 +106,26 @@ registerMessages('en', {
   'queue.empty':
     'Nothing waiting on you. Sessions that need you will line up here; press "New session" to start one.',
   'queue.danger': 'Matched the dangerous command list',
+  'canvas.act.full': 'Full size',
+  'canvas.full.back': 'Back to canvas',
+  'canvas.full.list': 'Sessions',
+  'canvas.full.side': 'Review and handoff',
+  'canvas.full.missing':
+    'This session was not found. It may have been archived or removed. Go back to the canvas to see the others.',
+  'canvas.full.handoff': 'Hand off',
+  'canvas.full.handoffAdd': 'Add handoff',
+  'canvas.full.handoffAdded': 'Added and off by default. Press "Turn on auto handoff" to use it.',
+  'canvas.full.handoffHint':
+    'A handoff sends only a one-line summary, changed files and the branch, never the whole conversation.',
+  'canvas.done.text':
+    'Task done. Send /clear before new work, or archive this session, so a long conversation does not keep growing.',
+  'canvas.done.clear': 'Send /clear',
+  'canvas.done.cleared': '/clear sent',
+  'canvas.done.archive': 'Archive',
+  'canvas.done.archiveFailed': 'Not archived: {detail}',
+  'canvas.done.dismiss': 'Not now',
+  'canvas.done.ended': 'The session has exited, so there is nothing to clear. Archive it.',
+  'canvas.done.unreachable': 'Cannot reach this machine. /clear can be sent once it is back.',
+  'canvas.done.busy':
+    'It was not waiting for input when marked done, so sending now may cut into its work. Check the terminal, then type /clear yourself once it stops.',
 });

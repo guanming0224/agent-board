@@ -486,3 +486,28 @@ export function ReviewPage() {
     </Page>
   );
 }
+
+/** 全尺寸終端機旁用：只列這個 session 待決的 approval，按鈕與規則和審核中心同一套。 */
+export function SessionReviewCards({ sessionId }: { sessionId: string }) {
+  const board = useBoard();
+  const projects = useProjects();
+  const me = useCurrentUser();
+  const now = useNow();
+  const items = workItems(board).filter((item) => item.approval?.sessionId === sessionId);
+  const settling = useListSettling(items.map((item) => item.key).join('|'));
+  if (items.length === 0) return null;
+  const context: CardContext = {
+    machines: board.machines,
+    projects: projects.data ?? [],
+    now,
+    me,
+    settling,
+  };
+  return (
+    <div className="flows session-reviews">
+      {items.map((item) => (
+        <ReviewCard key={item.key} item={item} context={context} targeted={false} />
+      ))}
+    </div>
+  );
+}

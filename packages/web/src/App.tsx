@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
-import { CanvasPage, QueuePage } from './canvas';
+import { CanvasPage, QueuePage, TerminalPage } from './canvas';
 import {
   InboxPage,
   LoginPage,
@@ -15,6 +15,7 @@ import { AppHeader, type TabName } from './views';
 const ROUTES: Record<string, ComponentType> = {
   canvas: CanvasPage,
   queue: QueuePage,
+  terminal: TerminalPage,
   team: TeamPage,
   new: NewSessionPage,
   review: ReviewPage,

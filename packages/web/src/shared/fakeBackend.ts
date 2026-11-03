@@ -351,7 +351,11 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       const s = find(id);
       if (patch.name) s.name = patch.name;
       if (patch.archived !== undefined) s.archived = patch.archived;
-      if (patch.markDone) s.status = 'done';
+      if (patch.markDone && s.status !== 'done') {
+        // 和 hub 一樣留狀態事件，完成提示靠它判斷標記前是不是在等輸入。
+        addEvent(id, 'status', { from: s.status, to: 'done', reason: 'user_marked_done' });
+        s.status = 'done';
+      }
       publish();
       return s;
     },

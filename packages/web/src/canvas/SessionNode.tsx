@@ -25,8 +25,10 @@ import {
   useViewsUi,
 } from '../views';
 import { CommandInput } from './CommandInput';
+import { DoneHint } from './DoneHint';
 import { fitCardZoom, STRIP_W } from './layout';
 import { motion } from './motion';
+import { terminalHash } from './terminalRoute';
 
 export const TERMINAL_ZOOM = 0.9;
 /** 低於這個倍率，展開的 xterm 字太小看不清。 */
@@ -35,7 +37,7 @@ const READABLE_ZOOM = 0.7;
 export type SessionNodeType = Node<{ sessionId: string }, 'session'>;
 
 /** 這些狀態沒有在跑的 PTY 可以收指令。 */
-const NO_INPUT: readonly Session['status'][] = ['offline', 'done', 'queued'];
+export const NO_INPUT: readonly Session['status'][] = ['offline', 'done', 'queued'];
 
 function Actions({
   session,
@@ -107,7 +109,7 @@ function Actions({
   );
 }
 
-function CardHead({ session }: { session: Session }) {
+export function CardHead({ session }: { session: Session }) {
   const t = useT();
   const danger = useBoard((s) => dangerApproval(s.approvals, session.id));
   return (
@@ -126,7 +128,7 @@ function CardHead({ session }: { session: Session }) {
   );
 }
 
-const cardClass = (base: string, session: Session) =>
+export const cardClass = (base: string, session: Session) =>
   [
     base,
     'hands-host',
@@ -181,6 +183,11 @@ export function SessionNode({
     const zoom = Math.min(TERMINAL_ZOOM - 0.05, fitCardZoom({ x, y, w, h }, width, height));
     void flow.setCenter(x + w / 2, y + h / 2, { zoom, duration: motion() });
   };
+  // 全尺寸頁會把畫布卸載（卡上的 xterm 也跟著退訂），記下鏡頭，回來時停在同一個地方。
+  const openFull = () => {
+    useViewsUi.getState().setCanvasReturn(flow.getViewport());
+    location.hash = terminalHash(session.id);
+  };
   const canType = !NO_INPUT.includes(session.status);
   const fromControl = (target: EventTarget) =>
     target instanceof Element && target.closest('button, input, a') !== null;
@@ -215,6 +222,9 @@ export function SessionNode({
             <CardHead session={session} />
             <div className="term-acts">
               <Actions session={session} isTerminal onOpenTerminal={() => {}} inputRef={inputRef} />
+              <button className="nodrag" onClick={openFull} data-testid="open-full">
+                {t('canvas.act.full')}
+              </button>
               {expanded && !zoomedIn && (
                 <button className="nodrag" onClick={() => toggleExpanded(session.id)}>
                   {t('canvas.act.summary')}
@@ -250,6 +260,7 @@ export function SessionNode({
           <CardHead session={session} />
           <pre className="tail">{mask(session.lastLines.join('\n'))}</pre>
           {session.status !== 'offline' && <ContextUsage tokens={session.contextTokens} />}
+          <DoneHint session={session} />
           <Actions
             session={session}
             isTerminal={false}

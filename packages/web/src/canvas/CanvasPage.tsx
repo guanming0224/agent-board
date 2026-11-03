@@ -131,6 +131,8 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
   const initialized = useNodesInitialized();
   const host = useRef<HTMLDivElement>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // 從全尺寸終端機回來：一開始就放在離開時的鏡頭，不先全部顯示再跳。
+  const [returnViewport] = useState(() => useViewsUi.getState().canvasReturn);
 
   const [cards, setCards] = useState<SessionNodeType[]>(() =>
     [...reconcileRects(sessions, new Map(), layouts)].map(([id, r]) => toNode(id, r)),
@@ -288,11 +290,12 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
         const zoom = Math.max(flow.getZoom(), Math.min(0.5, fit));
         void flow.setCenter(r.x + r.w / 2, r.y + r.h / 2, { zoom, duration: motion() });
       }
-    } else if (!fitted.current) {
+    } else if (!fitted.current && !returnViewport) {
       void flow.fitView({ ...FIT_OPTIONS, duration: 0 });
     }
     fitted.current = true;
-  }, [initialized, pendingFocus, flow]);
+    useViewsUi.getState().setCanvasReturn(null);
+  }, [initialized, pendingFocus, flow, returnViewport]);
 
   const minimapColor = (node: Node) => {
     const status = useBoard.getState().sessions.find((s) => s.id === node.id)?.status;
@@ -317,6 +320,7 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
         onConnect={onConnect}
         isValidConnection={(c) => c.source !== c.target}
         onPaneClick={clearFocus}
+        defaultViewport={returnViewport ?? undefined}
         colorMode="dark"
         minZoom={0.05}
         maxZoom={2}

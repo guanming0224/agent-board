@@ -11,5 +11,5 @@ export { InboxPage } from './InboxPage';
 export { LoginPage } from './LoginPage';
 export { NewSessionPage } from './NewSessionPage';
 export { OnboardingPage } from './OnboardingPage';
-export { ReviewPage } from './ReviewPage';
+export { ReviewPage, SessionReviewCards } from './ReviewPage';
 export { SettingsPage } from './SettingsPage';
