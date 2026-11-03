@@ -1,5 +1,9 @@
 // 假資料後端：只給 demo 模式（?demo=1）與測試使用，正式資料庫一開始是空的（DISPATCH §1.2）。
-import { DEFAULT_DANGER_RULES, DEFAULT_STUCK_MINUTES } from '@agent-board/protocol';
+import {
+  AUDIT_SYSTEM_USER,
+  DEFAULT_DANGER_RULES,
+  DEFAULT_STUCK_MINUTES,
+} from '@agent-board/protocol';
 import type {
   Approval,
   AuditEntry,
@@ -17,7 +21,7 @@ import type {
   UsageSummary,
   User,
 } from '@agent-board/protocol';
-import type { BoardBackend, BoardListener, BoardSnapshot } from './backend';
+import type { AuditFilter, BoardBackend, BoardListener, BoardSnapshot } from './backend';
 import type { TerminalServerMessage, TerminalStream } from './terminal-contract';
 import { DECOMPOSE_PROMPT_START } from './decomposePrompt';
 
@@ -345,6 +349,18 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   let layouts: Layout[] = [];
   const templates: Template[] = [];
   const audit = demoAudit();
+  const matchAudit = (filter: AuditFilter) =>
+    audit
+      .filter((e) => !filter.sessionId || e.sessionId === filter.sessionId)
+      .filter((e) => !filter.action || e.action === filter.action)
+      .filter(
+        (e) =>
+          !filter.userId ||
+          (filter.userId === AUDIT_SYSTEM_USER ? e.userId === null : e.userId === filter.userId),
+      )
+      .filter((e) => !filter.from || e.at >= filter.from)
+      .filter((e) => !filter.to || e.at <= filter.to);
+  let accountLocale: User['locale'] = demoUser.locale;
   let password = DEMO_PASSWORD;
   const publish = () => listeners.forEach((l) => l({ ...state }));
   const find = (id: string) => {
@@ -386,9 +402,9 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       return () => clearInterval(timer);
     },
     needsSetup: async () => false,
-    currentUser: async () => demoUser,
-    setup: async () => demoUser,
-    login: async () => demoUser,
+    currentUser: async () => ({ ...demoUser, locale: accountLocale }),
+    setup: async () => ({ ...demoUser, locale: accountLocale }),
+    login: async () => ({ ...demoUser, locale: accountLocale }),
     logout: async () => {},
     async changePassword({ currentPassword, password: next }) {
       // 和 hub 一樣的錯誤形狀（status、code），畫面才能分辨。
@@ -399,6 +415,9 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         });
       }
       password = next;
+    },
+    async saveLocale(locale) {
+      accountLocale = locale;
     },
     async createSession(input) {
       const created = session({
@@ -502,17 +521,14 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     },
     async listAudit(filter) {
       // 和 hub 的 store.listAudit 相同：完全相符、時間含兩端、由新到舊。
-      return audit
-        .filter((e) => !filter.sessionId || e.sessionId === filter.sessionId)
-        .filter((e) => !filter.action || e.action === filter.action)
-        .filter((e) => !filter.from || e.at >= filter.from)
-        .filter((e) => !filter.to || e.at <= filter.to)
+      return matchAudit(filter)
         .sort((a, b) => b.at.localeCompare(a.at))
         .slice(0, filter.limit ?? 100);
     },
-    async exportAudit() {
+    async exportAudit(filter = {}) {
+      // 和 hub 相同：同一組篩選、沒有筆數上限、由舊到新。
       const header = 'id,at,user_id,session_id,action,detail';
-      const rows = [...audit]
+      const rows = matchAudit(filter)
         .sort((a, b) => a.at.localeCompare(b.at))
         .map((e) => [e.id, e.at, e.userId, e.sessionId, e.action, e.detail].map(csvCell).join(','));
       return new Blob([`\uFEFF${[header, ...rows].join('\r\n')}\r\n`], { type: 'text/csv' });

@@ -198,6 +198,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       if (!target) throw notFound('User');
       if (ctx.body.password) {
         if (ctx.user.id !== id) {
+          // 管理員要重設別人的密碼走 usersResetPassword（不需要對方的舊密碼）。
           throw new HttpError(403, 'forbidden', 'Cannot change the password of another user');
         }
         // 舊密碼的猜測跟登入一樣要限速；key 綁帳號，換 IP 也繞不掉，也不會擋到正常登入。
@@ -226,6 +227,31 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
         hub.audit(ctx.user.id, null, 'user.password_change', id);
       }
       return store.getUser(id) as User;
+    },
+    usersResetPassword: async (ctx) => {
+      const id = param(ctx);
+      // 自己的密碼要附目前的密碼（usersUpdate），不能用 owner 身分繞過：cookie 被偷也改不掉。
+      if (id === ctx.user.id) {
+        throw new HttpError(
+          400,
+          'own_password',
+          'Change your own password with your current password instead',
+        );
+      }
+      const target = store.getUser(id);
+      if (!target) throw notFound('User');
+      const passwordHash = await hashPassword(ctx.body.password, passwordParams);
+      store.updateUser(id, { passwordHash });
+      // 對方所有裝置都登出，包括正連著的 WebSocket。
+      store.deleteUserAuthSessions(id, null);
+      hub.dropClients((c) => c.userId === id);
+      hub.audit(
+        ctx.user.id,
+        null,
+        'user.password_reset',
+        JSON.stringify({ id, name: target.name }),
+      );
+      return ok;
     },
     usersDelete: (ctx) => {
       const id = param(ctx);
@@ -465,8 +491,11 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
 
     auditList: (ctx) => store.listAudit(ctx.query),
     auditExport: (ctx) => {
-      const csv = auditToCsv(store.iterateAudit());
-      hub.audit(ctx.user.id, null, 'audit.export', '');
+      // 匯出畫面上篩選的結果；沒有筆數上限。detail 記下用了哪些條件，事後才知道匯出的是哪一份。
+      const filter = ctx.query;
+      const csv = auditToCsv(store.iterateAudit(filter));
+      const used = Object.keys(filter).length > 0 ? JSON.stringify(filter) : '';
+      hub.audit(ctx.user.id, null, 'audit.export', used);
       ctx.reply
         .type('text/csv; charset=utf-8')
         .header('content-disposition', 'attachment; filename="agent-board-audit.csv"');

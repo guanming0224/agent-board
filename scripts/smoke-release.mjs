@@ -410,6 +410,26 @@ async function main() {
   assert.ok(!existsSync(join(linuxHome, '.config/systemd/user/agent-board-hub.service')));
   step('Linux 流程演練：unit 內容正確、解除安裝會移除（未在真 systemd 上跑）');
 
+  // ── 忘記密碼：透過安裝的捷徑跑打包後的 reset-password（hub 還在跑）──
+  const resetTo = 'smoke-reset-password';
+  const reset = spawnSync(join(home, '.local/bin/agent-board-hub'), ['reset-password', 'owner'], {
+    env: cleanEnv,
+    input: `${resetTo}\n`,
+    encoding: 'utf8',
+  });
+  assert.equal(reset.status, 0, `${reset.stdout}${reset.stderr}`);
+  assert.match(reset.stdout, /was reset/);
+  assert.ok(!`${reset.stdout}${reset.stderr}`.includes(resetTo), '不可印出密碼');
+  const revoked = await fetch(`${hub}/api/sessions`, { headers: { cookie } });
+  assert.equal(revoked.status, 401);
+  const relogin = await fetch(`${hub}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'owner', password: resetTo }),
+  });
+  assert.ok(relogin.ok, `login ${relogin.status}`);
+  step('agent-board-hub reset-password：捷徑傳參數、打包的 argon2 可用、舊登入失效');
+
   // ── 解除安裝 ──
   hubProc.child.kill('SIGTERM');
   await new Promise((done) => hubProc.child.once('exit', done));

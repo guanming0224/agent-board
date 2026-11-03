@@ -1,5 +1,5 @@
 // 操作紀錄畫面的純函式：篩選條件轉成 hub 查詢、動作清單、下載檔名（DISPATCH §7「可查詢、可匯出」）。
-import type { AuditEntry } from '@agent-board/protocol';
+import { AUDIT_SYSTEM_USER } from '@agent-board/protocol';
 import type { AuditFilter } from '../shared/backend';
 
 /**
@@ -33,6 +33,7 @@ export const AUDIT_ACTIONS = [
   'user.delete',
   'user.password_change',
   'user.password_change_failed',
+  'user.password_reset',
   'machine.pairing_code',
   'machine.pair',
   'machine.pair_failed',
@@ -46,13 +47,13 @@ export const AUDIT_ACTIONS = [
 export const AUDIT_PAGE = 100;
 export const AUDIT_MAX = 1000;
 
-/** 「使用者」下拉的特殊值：沒有使用者的紀錄（daemon、交接引擎、登入失敗）。 */
-export const SYSTEM_USER = '__system__';
+/** 「使用者」下拉的特殊值：沒有使用者的紀錄（daemon、交接引擎、登入失敗、reset-password 指令）。hub 認得這個值。 */
+export const SYSTEM_USER = AUDIT_SYSTEM_USER;
 
 export interface AuditForm {
   action: string;
   sessionId: string;
-  /** '' 全部、SYSTEM_USER、或使用者 id。hub 不支援依使用者查詢，只能在已載入的紀錄裡篩。 */
+  /** '' 全部、SYSTEM_USER、或使用者 id。由 hub 篩選（列表與匯出都是）。 */
   userId: string;
   /** `<input type="datetime-local">` 的值，瀏覽器時區。 */
   from: string;
@@ -79,11 +80,12 @@ export function localInputToIso(value: string, end = false): string | null {
   return new Date(end && minuteOnly ? ms + 59_999 : ms).toISOString();
 }
 
-/** 表單轉成 hub 查詢；時間格式不對就不帶（畫面另外標紅）。 */
+/** 表單轉成 hub 查詢；時間格式不對就不帶（畫面另外標紅）。匯出用同一份條件，畫面看到什麼就匯出什麼。 */
 export function toAuditQuery(form: AuditForm, limit: number): AuditFilter {
   const filter: AuditFilter = { limit };
   if (form.action) filter.action = form.action;
   if (form.sessionId) filter.sessionId = form.sessionId;
+  if (form.userId) filter.userId = form.userId;
   const from = form.from ? localInputToIso(form.from) : null;
   const to = form.to ? localInputToIso(form.to, true) : null;
   if (from) filter.from = from;
@@ -96,12 +98,6 @@ export function rangeReversed(form: AuditForm): boolean {
   const from = form.from ? localInputToIso(form.from) : null;
   const to = form.to ? localInputToIso(form.to, true) : null;
   return from !== null && to !== null && from > to;
-}
-
-export function filterByUser(entries: readonly AuditEntry[], userId: string): AuditEntry[] {
-  if (!userId) return [...entries];
-  if (userId === SYSTEM_USER) return entries.filter((e) => e.userId === null);
-  return entries.filter((e) => e.userId === userId);
 }
 
 /** 下載檔名帶本地日期與時間，不同時間匯出的檔案不會同名。 */

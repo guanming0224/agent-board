@@ -1435,8 +1435,12 @@ test.describe('登入', () => {
     await page.getByLabel('密碼').fill('wrong-password');
     await page.getByRole('button', { name: '登入' }).click();
     await expect(page.locator('.msg.err')).toHaveText(
-      '帳號或密碼不對。確認後再試一次；忘記密碼請聯絡管理員。',
+      '帳號或密碼不對。確認後再試一次；忘記密碼見下方說明。',
     );
+    // 下方說明：請管理員重設，或唯一的管理員在 hub 機器上跑救援指令。
+    const forgot = page.getByTestId('login-forgot');
+    await expect(forgot).toContainText('設定 → 使用者');
+    await expect(forgot.locator('code')).toHaveText('agent-board-hub reset-password <帳號>');
     await expect(page.locator('.flows')).not.toContainText('not found');
     await expect(page.getByLabel('帳號')).toHaveValue('pat');
     await expect(page.getByLabel('密碼')).toHaveValue('');
@@ -1508,12 +1512,29 @@ test.describe('登入', () => {
     });
     await page.locator('.segmented label', { hasText: 'English' }).click();
     await expect(page.getByRole('heading', { name: 'Log in to Agent Board' })).toBeVisible();
+    await expect(page.getByTestId('login-forgot').locator('code')).toHaveText(
+      'agent-board-hub reset-password <name>',
+    );
     await page.getByLabel('Username').fill('pat');
     await page.getByLabel('Password').fill('wrong-password');
     await page.getByRole('button', { name: 'Log in' }).click();
     await expect(page.locator('.msg.err')).toContainText("The username or password isn't right");
     await page.locator('.segmented label', { hasText: '繁體中文' }).click();
     await expect(page.getByRole('heading', { name: '登入 Agent Board' })).toBeVisible();
+  });
+
+  test('登入前選的語言只管登入頁；登入後改用帳號的語言', async ({ page }) => {
+    await open(page, 'login', {
+      patch: `backend.login = async (input) => ({ id: 'u', name: input.name, role: 'owner', locale: 'en' });`,
+    });
+    await page.locator('.segmented label', { hasText: '繁體中文' }).click();
+    await page.getByLabel('帳號').fill('pat');
+    await page.getByLabel('密碼').fill('long-enough');
+    await page.getByRole('button', { name: '登入' }).click();
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/canvas');
+    // harness 只掛登入頁：它跟著換成帳號的語言（英文）。
+    await expect(page.getByRole('heading', { name: 'Log in to Agent Board' })).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem('agent-board.locale'))).toBe('en');
   });
 });
 

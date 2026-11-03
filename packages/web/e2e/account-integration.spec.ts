@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { expect, test as base, type BrowserContext, type Page } from '@playwright/test';
 import type { Machine, UsageSummary, User } from '@agent-board/protocol';
 
-const PORT = 5191;
+const PORT = Number(process.env.AB_ACCOUNT_E2E_PORT || 5191);
 const HUB = `http://127.0.0.1:${PORT}`;
 const DAEMON_DIR = resolve(import.meta.dirname, '../../daemon');
 const FAKE_CLAUDE = resolve(import.meta.dirname, 'fixtures/fake-claude.mjs');
@@ -197,7 +197,7 @@ test('改密碼：目前密碼錯誤不改；改好後其他裝置登出、舊�
   expect(errors).toEqual([]);
 });
 
-test('操作紀錄：列出、依動作篩選、匯出整份 CSV', async ({ page }) => {
+test('操作紀錄：列出、依動作與使用者篩選（hub 篩）、匯出篩選結果與整份 CSV', async ({ page }) => {
   const errors = expectNoErrors(page);
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/#/settings');
@@ -214,6 +214,28 @@ test('操作紀錄：列出、依動作篩選、匯出整份 CSV', async ({ page
 
   await box.getByLabel('使用者', { exact: true }).selectOption({ label: '系統' });
   await expect(box.locator('[data-state=empty]')).toContainText('沒有符合的紀錄');
+
+  // 只看「系統」（沒有使用者）的紀錄：配對是 daemon 做的。查詢真的帶到 hub。
+  const listed = page.waitForRequest(
+    (r) => r.url().includes('/api/audit?') && r.url().includes('userId=system'),
+  );
+  await box.getByLabel('動作', { exact: true }).selectOption('');
+  expect((await listed).url()).not.toContain('action=');
+  await expect(box.getByTestId('audit-list')).toContainText('machine.pair');
+  await expect(box.getByTestId('audit-list')).not.toContainText('user.password_change');
+  const [filtered] = await Promise.all([
+    page.waitForEvent('download'),
+    box.getByRole('button', { name: '匯出 CSV' }).click(),
+  ]);
+  const filteredCsv = readFileSync(await filtered.path(), 'utf8');
+  expect(filteredCsv.charCodeAt(0)).toBe(0xfeff);
+  expect(filteredCsv).toContain('"machine.pair"');
+  expect(filteredCsv).not.toContain('user.password_change');
+  expect(filteredCsv).not.toContain('auth.setup');
+  // 每一列的 user_id 欄都是空的。
+  for (const line of filteredCsv.trimEnd().split('\r\n').slice(1)) {
+    expect(line.split(',')[2]).toBe('""');
+  }
   await box.getByRole('button', { name: '清除篩選' }).click();
 
   const [download] = await Promise.all([
@@ -229,7 +251,7 @@ test('操作紀錄：列出、依動作篩選、匯出整份 CSV', async ({ page
   expect(errors).toEqual([]);
 });
 
-test('成員看不到操作紀錄、可改自己的密碼；管理員不能改別人的密碼（API 擋）', async ({
+test('成員看不到操作紀錄、可改自己的密碼；管理員從設定頁重設成員的密碼', async ({
   page,
   browser,
 }) => {
@@ -239,7 +261,7 @@ test('成員看不到操作紀錄、可改自己的密碼；管理員不能改�
   expect(created.ok()).toBe(true);
   const member = (await created.json()) as User;
 
-  // 管理員改別人的密碼：hub 回 403，所以介面沒有這個功能。
+  // 改密碼的 API（要附舊密碼）仍然只能改自己；管理員重設別人走另一條路由。
   const reset = await page.request.patch(`/api/users/${member.id}`, {
     data: { password: 'reset-by-owner', currentPassword: NEW_PASSWORD },
   });
@@ -266,6 +288,90 @@ test('成員看不到操作紀錄、可改自己的密碼；管理員不能改�
   await box.getByLabel('再輸入一次新密碼').fill('member-password-2');
   await box.getByRole('button', { name: '改密碼' }).click();
   await expect(box.locator('.msg')).toHaveText('已改好。其他裝置要用新密碼重新登入。');
+
+  // 成員不能重設任何人的密碼（hub 擋）。
+  const ownerId = ((await (await page.request.get('/api/auth/status')).json()) as { user: User })
+    .user.id;
+  expect(
+    (
+      await memberPage.request.post(`/api/users/${ownerId}/reset-password`, {
+        data: { password: 'taken-over-owner' },
+      })
+    ).status(),
+  ).toBe(403);
+
+  // 管理員在設定頁幫成員重設：不需要成員的密碼，成員被登出，新密碼可登入。
+  await page.goto('/#/settings');
+  const row = page.locator('#s-users li.rig-row', { hasText: 'member' });
+  await row.getByRole('button', { name: '重設密碼' }).click();
+  const form = page.getByTestId(`reset-${member.id}`);
+  await form.getByLabel('新密碼').fill('member-reset-by-owner');
+  await form.getByLabel('再輸入一次').fill('member-reset-by-owner');
+  await form.getByRole('button', { name: '設定新密碼' }).click();
+  await expect(row).toContainText('已設定新密碼，member 的所有裝置都已登出。');
+  expect((await memberPage.request.get('/api/sessions')).status()).toBe(401);
+  expect(
+    (
+      await memberPage.request.post('/api/auth/login', {
+        data: { name: 'member', password: 'member-password-2' },
+      })
+    ).status(),
+  ).toBe(401);
+  expect(
+    (
+      await memberPage.request.post('/api/auth/login', {
+        data: { name: 'member', password: 'member-reset-by-owner' },
+      })
+    ).ok(),
+  ).toBe(true);
+  // 管理員自己沒被登出；操作紀錄記一筆重設。
+  const audit = (await (
+    await page.request.get('/api/audit?action=user.password_reset')
+  ).json()) as { userId: string; detail: string }[];
+  expect(audit).toHaveLength(1);
+  expect(audit[0]!.userId).toBe(ownerId);
+  expect(audit[0]!.detail).not.toContain('member-reset-by-owner');
+  await context.close();
+  expect(errors).toEqual([]);
+});
+
+test('語言：登入前跟瀏覽器，登入後用帳號的；頁首切換會存到帳號，重新整理也一樣', async ({
+  browser,
+}) => {
+  // 英文瀏覽器、帳號是中文。
+  const context = await browser.newContext({ baseURL: HUB, locale: 'en-US' });
+  const page = await context.newPage();
+  const errors = expectNoErrors(page);
+  await page.goto('/#/login');
+  await expect(page.getByRole('heading', { name: 'Log in to Agent Board' })).toBeVisible();
+  await expect(page.getByTestId('login-forgot')).toContainText('reset-password');
+  await page.getByLabel('Username').fill('owner');
+  await page.getByLabel('Password').fill(NEW_PASSWORD);
+  await page.getByRole('button', { name: 'Log in' }).click();
+  await expect(page.getByTestId('next-up')).toContainText('下一個等我的');
+
+  const accountLocale = async () =>
+    ((await (await page.request.get('/api/auth/status')).json()) as { user: User }).user.locale;
+  await page.locator('.seg button', { hasText: 'EN' }).click();
+  await expect(page.getByTestId('next-up')).toContainText('Next up');
+  await expect.poll(accountLocale).toBe('en');
+
+  // 別的裝置（中文瀏覽器）登入也是英文。
+  const other = await browser.newContext({ baseURL: HUB, locale: 'zh-TW' });
+  const otherPage = await other.newPage();
+  await otherPage.goto('/#/login');
+  await otherPage.getByLabel('帳號').fill('owner');
+  await otherPage.getByLabel('密碼').fill(NEW_PASSWORD);
+  await otherPage.getByRole('button', { name: '登入' }).click();
+  await expect(otherPage.getByTestId('next-up')).toContainText('Next up');
+  // 重新整理：開頁時從帳號套用。
+  await otherPage.reload();
+  await expect(otherPage.getByTestId('next-up')).toContainText('Next up');
+  await other.close();
+
+  // 換回中文，後面的測試與帳號維持原狀。
+  await page.locator('.seg button', { hasText: '中' }).click();
+  await expect.poll(accountLocale).toBe('zh-TW');
   await context.close();
   expect(errors).toEqual([]);
 });

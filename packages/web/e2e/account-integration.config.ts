@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defineConfig } from '@playwright/test';
 
-export const PORT = 5191;
+// 預設 5191；同時跑多個 worktree 時用 AB_ACCOUNT_E2E_PORT 換一個（spec 讀同一個變數）。
+export const PORT = Number(process.env.AB_ACCOUNT_E2E_PORT || 5191);
 const hubDataDir =
   process.env.AB_ACCOUNT_E2E_HUB_DIR ?? mkdtempSync(join(tmpdir(), 'ab-account-e2e-hub-'));
 process.env.AB_ACCOUNT_E2E_HUB_DIR = hubDataDir;

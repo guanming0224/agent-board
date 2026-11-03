@@ -83,6 +83,11 @@ function retentionDays(raw: string | undefined, name: string, fallback: number):
   return days;
 }
 
+/** 資料夾：AGENT_BOARD_DATA_DIR，預設 ~/.agent-board。reset-password 指令也用這個，和服務找同一個資料庫。 */
+export function dataDirFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  return env.AGENT_BOARD_DATA_DIR || join(homedir(), '.agent-board');
+}
+
 export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
   const rawPort = env.AGENT_BOARD_PORT;
   const port = rawPort === undefined || rawPort === '' ? DEFAULT_PORT : Number(rawPort);
@@ -91,7 +96,7 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
   }
   const host = env.AGENT_BOARD_HOST === '' ? undefined : env.AGENT_BOARD_HOST;
   if (host !== undefined) assertBindableHost(host);
-  const dataDir = env.AGENT_BOARD_DATA_DIR || join(homedir(), '.agent-board');
+  const dataDir = dataDirFromEnv(env);
   return {
     host,
     port,

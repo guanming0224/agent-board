@@ -1,6 +1,7 @@
 // SQLite 存取層。欄位 snake_case ↔ API camelCase 的轉換集中在這裡。
 import { randomUUID } from 'node:crypto';
 import {
+  AUDIT_SYSTEM_USER,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   Settings,
@@ -181,9 +182,40 @@ const toAudit = (r: AuditRow): AuditEntry => ({
 export interface AuditFilter {
   sessionId?: string;
   action?: string;
+  /** 使用者 id；AUDIT_SYSTEM_USER 表示沒有使用者的紀錄。 */
+  userId?: string;
   from?: string;
   to?: string;
   limit?: number;
+}
+
+/** listAudit 與匯出共用的 WHERE；值一律走參數，不拼字串。 */
+function auditWhere(filter: AuditFilter): { clause: string; args: (string | number)[] } {
+  const where: string[] = [];
+  const args: (string | number)[] = [];
+  if (filter.sessionId) {
+    where.push('session_id = ?');
+    args.push(filter.sessionId);
+  }
+  if (filter.action) {
+    where.push('action = ?');
+    args.push(filter.action);
+  }
+  if (filter.userId === AUDIT_SYSTEM_USER) {
+    where.push('user_id IS NULL');
+  } else if (filter.userId) {
+    where.push('user_id = ?');
+    args.push(filter.userId);
+  }
+  if (filter.from) {
+    where.push('at >= ?');
+    args.push(filter.from);
+  }
+  if (filter.to) {
+    where.push('at <= ?');
+    args.push(filter.to);
+  }
+  return { clause: where.length > 0 ? `WHERE ${where.join(' AND ')}` : '', args };
 }
 
 export class Store {
@@ -278,10 +310,11 @@ export class Store {
     this.db.prepare('DELETE FROM auth_sessions WHERE token_hash = ?').run(tokenHash);
   }
 
-  deleteUserAuthSessions(userId: string, exceptTokenHash: string | null): void {
-    this.db
+  /** 回傳刪掉幾個登入（reset-password 指令要印出來）。 */
+  deleteUserAuthSessions(userId: string, exceptTokenHash: string | null): number {
+    return this.db
       .prepare('DELETE FROM auth_sessions WHERE user_id = ? AND token_hash IS NOT ?')
-      .run(userId, exceptTokenHash);
+      .run(userId, exceptTokenHash).changes;
   }
 
   pruneExpired(nowIso: string): void {
@@ -756,25 +789,7 @@ export class Store {
   }
 
   listAudit(filter: AuditFilter): AuditEntry[] {
-    const where: string[] = [];
-    const args: (string | number)[] = [];
-    if (filter.sessionId) {
-      where.push('session_id = ?');
-      args.push(filter.sessionId);
-    }
-    if (filter.action) {
-      where.push('action = ?');
-      args.push(filter.action);
-    }
-    if (filter.from) {
-      where.push('at >= ?');
-      args.push(filter.from);
-    }
-    if (filter.to) {
-      where.push('at <= ?');
-      args.push(filter.to);
-    }
-    const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const { clause, args } = auditWhere(filter);
     const limit = filter.limit === undefined ? '' : 'LIMIT ?';
     if (filter.limit !== undefined) args.push(filter.limit);
     const rows = this.db
@@ -783,8 +798,12 @@ export class Store {
     return rows.map(toAudit);
   }
 
-  *iterateAudit(): Generator<AuditEntry> {
-    const rows = this.db.prepare('SELECT * FROM audit_log ORDER BY at, rowid').iterate();
+  /** 匯出用：由舊到新逐筆讀，不一次載進記憶體；篩選同 listAudit，但不看 limit。 */
+  *iterateAudit(filter: AuditFilter = {}): Generator<AuditEntry> {
+    const { clause, args } = auditWhere(filter);
+    const rows = this.db
+      .prepare(`SELECT * FROM audit_log ${clause} ORDER BY at, rowid`)
+      .iterate(...args);
     for (const row of rows) yield toAudit(row as AuditRow);
   }
 

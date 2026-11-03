@@ -196,6 +196,17 @@ export const zhTW: Record<string, string> = {
   'flows.user.delete': '移除',
   'flows.user.deleteAgain': '再按一次移除',
   'flows.user.deleteFailed': '移除失敗：{error}',
+  'flows.user.reset': '重設密碼',
+  'flows.user.resetTitle': '幫 {name} 設一個新密碼',
+  'flows.user.resetNew': '新密碼',
+  'flows.user.resetConfirm': '再輸入一次',
+  'flows.user.resetSubmit': '設定新密碼',
+  'flows.user.resetCancel': '取消',
+  'flows.user.resetHint':
+    '不需要對方的舊密碼。設好後 {name} 在所有裝置都會被登出，請用安全的方式把新密碼交給他。',
+  'flows.user.resetSaving': '設定中…',
+  'flows.user.resetDone': '已設定新密碼，{name} 的所有裝置都已登出。',
+  'flows.user.resetFailed': '重設失敗：{error}',
 
   'flows.settings.password': '改密碼',
   'flows.password.current': '目前的密碼',
@@ -227,7 +238,6 @@ export const zhTW: Record<string, string> = {
   'flows.audit.refresh': '重新整理',
   'flows.audit.badTime': '時間格式不對，這個條件先不套用。',
   'flows.audit.reversed': '開始時間晚於結束時間，不會有任何紀錄。',
-  'flows.audit.userFilterHint': 'hub 不支援依使用者查詢，使用者篩選只套用在已載入的 {n} 筆。',
   'flows.audit.count': '{n} 筆，新的在上面',
   'flows.audit.none': '沒有符合的紀錄',
   'flows.audit.noneNext': '換個條件，或按「清除篩選」。',
@@ -239,7 +249,8 @@ export const zhTW: Record<string, string> = {
   'flows.audit.exporting': '匯出中…',
   'flows.audit.exported': '已下載 {name}',
   'flows.audit.exportFailed': '匯出失敗：{error}。確認 hub 還在執行後再按一次。',
-  'flows.audit.exportHint': '匯出全部紀錄，不套用上面的篩選；匯出這件事本身也會記一筆。',
+  'flows.audit.exportHint':
+    '匯出符合上面篩選的全部紀錄，不受畫面載入筆數限制；沒有篩選就是全部。匯出這件事本身也會記一筆。',
   'flows.audit.act.terminal.input': '送入終端機的指令',
   'flows.audit.act.terminal.input.partial': '沒按 Enter 就離開的輸入',
   'flows.audit.act.terminal.signal': '中斷或結束訊號',
@@ -266,6 +277,7 @@ export const zhTW: Record<string, string> = {
   'flows.audit.act.user.delete': '移除使用者',
   'flows.audit.act.user.password_change': '改密碼',
   'flows.audit.act.user.password_change_failed': '改密碼失敗',
+  'flows.audit.act.user.password_reset': '重設別人的密碼',
   'flows.audit.act.machine.pairing_code': '產生配對碼',
   'flows.audit.act.machine.pair': '配對機器',
   'flows.audit.act.machine.pair_failed': '配對失敗',
@@ -343,14 +355,19 @@ export const zhTW: Record<string, string> = {
   'flows.quota.maxHint': '留空表示不限；超過時新 session 排隊。',
 
   'flows.language.auto': '跟隨瀏覽器',
-  'flows.language.hint': '切換立刻生效，只存在這個瀏覽器。',
+  'flows.language.hint':
+    '切換立刻生效，也存到你的帳號：之後在任何裝置登入都用這個語言。選「跟隨瀏覽器」時，帳號會記成這個瀏覽器的語言。',
 
   'flows.login.title': '登入 Agent Board',
   'flows.login.name': '帳號',
   'flows.login.submit': '登入',
   'flows.login.sending': '登入中…',
   'flows.login.required': '要填帳號和密碼',
-  'flows.login.invalid': '帳號或密碼不對。確認後再試一次；忘記密碼請聯絡管理員。',
+  'flows.login.invalid': '帳號或密碼不對。確認後再試一次；忘記密碼見下方說明。',
+  'flows.language.saveFailed': '畫面已切換，但沒存到帳號：{error}。下次登入可能會變回原本的語言。',
+  'flows.login.forgotOwner': '忘記密碼：請管理員到「設定 → 使用者」幫你重設。',
+  'flows.login.forgotCli': '唯一的管理員忘記時，在 hub 那台電腦的終端機執行',
+  'flows.login.forgotArg': '帳號',
   'flows.login.limited': '嘗試太多次，暫時不能登入。請稍後再試。',
   'flows.login.limitedSec': '嘗試太多次，暫時不能登入。請等 {n} 秒後再試。',
   'flows.login.limitedMin': '嘗試太多次，暫時不能登入。請等 {n} 分鐘後再試。',
@@ -596,6 +613,17 @@ export const en: Record<string, string> = {
   'flows.user.delete': 'Remove',
   'flows.user.deleteAgain': 'Press again to remove',
   'flows.user.deleteFailed': "Couldn't remove the user: {error}",
+  'flows.user.reset': 'Reset password',
+  'flows.user.resetTitle': 'Set a new password for {name}',
+  'flows.user.resetNew': 'New password',
+  'flows.user.resetConfirm': 'Repeat it',
+  'flows.user.resetSubmit': 'Set new password',
+  'flows.user.resetCancel': 'Cancel',
+  'flows.user.resetHint':
+    "Their current password isn't needed. {name} will be logged out on every device; give them the new password in a safe way.",
+  'flows.user.resetSaving': 'Saving…',
+  'flows.user.resetDone': 'New password set. {name} has been logged out everywhere.',
+  'flows.user.resetFailed': "Couldn't reset the password: {error}",
 
   'flows.settings.password': 'Change password',
   'flows.password.current': 'Current password',
@@ -630,8 +658,6 @@ export const en: Record<string, string> = {
   'flows.audit.refresh': 'Refresh',
   'flows.audit.badTime': 'That time is not valid, so this filter is not applied.',
   'flows.audit.reversed': 'The start is after the end, so nothing can match.',
-  'flows.audit.userFilterHint':
-    "The hub can't query by user, so the user filter only applies to the {n} entries loaded.",
   'flows.audit.count': '{n} entries, newest first',
   'flows.audit.none': 'No matching entries',
   'flows.audit.noneNext': 'Change the filters, or press Clear filters.',
@@ -647,7 +673,7 @@ export const en: Record<string, string> = {
   'flows.audit.exportFailed':
     "Couldn't export: {error}. Check that the hub is running and try again.",
   'flows.audit.exportHint':
-    'Exports every entry and ignores the filters above. The export itself is recorded too.',
+    'Exports every entry that matches the filters above, not just the ones loaded here; with no filters, everything. The export itself is recorded too.',
   'flows.audit.act.terminal.input': 'Command sent to terminal',
   'flows.audit.act.terminal.input.partial': 'Input left without Enter',
   'flows.audit.act.terminal.signal': 'Interrupt or end signal',
@@ -674,6 +700,7 @@ export const en: Record<string, string> = {
   'flows.audit.act.user.delete': 'User removed',
   'flows.audit.act.user.password_change': 'Password changed',
   'flows.audit.act.user.password_change_failed': 'Password change failed',
+  'flows.audit.act.user.password_reset': 'Password reset',
   'flows.audit.act.machine.pairing_code': 'Pairing code created',
   'flows.audit.act.machine.pair': 'Machine paired',
   'flows.audit.act.machine.pair_failed': 'Pairing failed',
@@ -755,7 +782,8 @@ export const en: Record<string, string> = {
   'flows.quota.maxHint': 'Leave empty for no limit. New sessions queue beyond it.',
 
   'flows.language.auto': 'Follow browser',
-  'flows.language.hint': 'Takes effect at once and is stored in this browser only.',
+  'flows.language.hint':
+    "Takes effect at once and is saved to your account, so you get it after logging in on any device. With 'Follow browser', the account keeps this browser's language.",
 
   'flows.login.title': 'Log in to Agent Board',
   'flows.login.name': 'Username',
@@ -763,7 +791,12 @@ export const en: Record<string, string> = {
   'flows.login.sending': 'Logging in…',
   'flows.login.required': 'Enter your username and password',
   'flows.login.invalid':
-    "The username or password isn't right. Check them and try again. If you forgot your password, contact an owner.",
+    "The username or password isn't right. Check them and try again. Forgot your password? See below.",
+  'flows.language.saveFailed':
+    "Switched here, but couldn't save it to your account: {error}. You may get the old language next time you log in.",
+  'flows.login.forgotOwner': 'Forgot your password? Ask an owner to reset it in Settings → Users.',
+  'flows.login.forgotCli': 'If you are the only owner, run this in a terminal on the hub machine:',
+  'flows.login.forgotArg': 'name',
   'flows.login.limited': 'Too many attempts, so login is paused. Try again later.',
   'flows.login.limitedSec':
     'Too many attempts, so login is paused. Wait {n} seconds and try again.',

@@ -64,12 +64,14 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 
 ## session cookie
 
-| 項目                                               | 檢查方式                                                                                                                                                    | 結果   |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| 登出後舊 cookie 與既有 WebSocket 失效              | `H src/test/rest.test.ts -t "forged or logged-out"`；`H src/test/ws.test.ts`                                                                                | 通過   |
-| 改密碼後其他裝置登出                               | `H src/test/rest.test.ts -t "logs out other devices"`                                                                                                       | 通過   |
-| 資料庫只存 token 雜湊                              | `H src/test/rest.test.ts -t "never returns or stores"`（密碼）；`auth.ts` 的 `sha256`（token，讀程式確認）                                                  | 通過   |
-| 經 `tailscale serve` 實際走 https 的 Secure cookie | 要真的代理環境。重現：設 `publicOrigin` 為 `https://<機器>.ts.net`，用瀏覽器登入看 cookie。另外 Safari 用 `http://127.0.0.1` 登入時可能存不了 Secure cookie | 未驗證 |
+| 項目                                                                                                                      | 檢查方式                                                                                                                                                                        | 結果   |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| 登出後舊 cookie 與既有 WebSocket 失效                                                                                     | `H src/test/rest.test.ts -t "forged or logged-out"`；`H src/test/ws.test.ts`                                                                                                    | 通過   |
+| 改密碼後其他裝置登出                                                                                                      | `H src/test/rest.test.ts -t "logs out other devices"`                                                                                                                           | 通過   |
+| 管理員重設別人的密碼：對方全部登出（含 WebSocket）、記 audit 不含密碼；成員不能重設任何人；自己的密碼不能用這條繞過舊密碼 | `H src/test/account.test.ts -t "owner resets"`；瀏覽器：`corepack pnpm --filter @agent-board/web exec playwright test -c e2e/account-integration.config.ts -g "管理員從設定頁"` | 通過   |
+| `agent-board-hub reset-password`：不印密碼、撤銷該帳號所有登入、找不到資料庫時不建新檔、打錯子指令不會開出第二個 hub      | `H src/test/account.test.ts -t "reset-password command"`；打包後經安裝捷徑：`corepack pnpm smoke:release`                                                                       | 通過   |
+| 資料庫只存 token 雜湊                                                                                                     | `H src/test/rest.test.ts -t "never returns or stores"`（密碼）；`auth.ts` 的 `sha256`（token，讀程式確認）                                                                      | 通過   |
+| 經 `tailscale serve` 實際走 https 的 Secure cookie                                                                        | 要真的代理環境。重現：設 `publicOrigin` 為 `https://<機器>.ts.net`，用瀏覽器登入看 cookie。另外 Safari 用 `http://127.0.0.1` 登入時可能存不了 Secure cookie                     | 未驗證 |
 
 ## XSS
 

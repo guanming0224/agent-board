@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { chooseLocale } from '../flows/locale';
 import { MaskChip } from '../security';
 import { useLocale, useT, type Locale } from '../shared/i18n';
 import { useBoard } from '../shared/store';
@@ -61,8 +62,8 @@ function UsageSummaryText() {
 
 export function AppHeader({ tab }: { tab: TabName }) {
   const t = useT();
-  const { sessions, approvals, machines } = useBoard();
-  const { locale, setLocale } = useLocale();
+  const { sessions, approvals, machines, backend } = useBoard();
+  const { locale } = useLocale();
   const focusSession = useViewsUi((s) => s.focusSession);
   const [announce, setAnnounce] = useState('');
   useUsagePolling();
@@ -147,7 +148,9 @@ export function AppHeader({ tab }: { tab: TabName }) {
             <button
               key={l.value}
               aria-pressed={locale === l.value}
-              onClick={() => setLocale(l.value)}
+              // 畫面立刻換，同時存到帳號（下次登入、別的裝置也是這個語言）。
+              // 存失敗只影響下次登入，頁首沒有放訊息的地方，所以不打擾。
+              onClick={() => void chooseLocale(backend, l.value).catch(() => undefined)}
             >
               {l.label}
             </button>

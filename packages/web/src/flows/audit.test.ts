@@ -2,26 +2,15 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { AuditEntry } from '@agent-board/protocol';
 import {
   AUDIT_ACTIONS,
   EMPTY_AUDIT_FORM,
   exportFileName,
-  filterByUser,
   localInputToIso,
   rangeReversed,
   SYSTEM_USER,
   toAuditQuery,
 } from './audit';
-
-const entry = (id: string, userId: string | null): AuditEntry => ({
-  id,
-  userId,
-  sessionId: null,
-  action: 'auth.login',
-  detail: '',
-  at: '2026-11-03T00:00:00.000Z',
-});
 
 describe('localInputToIso', () => {
   it('依瀏覽器時區轉成 ISO；結束時間含那一整分鐘', () => {
@@ -49,7 +38,7 @@ describe('toAuditQuery', () => {
     expect(toAuditQuery(EMPTY_AUDIT_FORM, 100)).toEqual({ limit: 100 });
   });
 
-  it('使用者不送給 hub（hub 不支援），時間格式不對就不帶', () => {
+  it('使用者交給 hub 篩，時間格式不對就不帶', () => {
     const query = toAuditQuery(
       {
         action: 'terminal.input',
@@ -64,7 +53,16 @@ describe('toAuditQuery', () => {
       limit: 200,
       action: 'terminal.input',
       sessionId: 's1',
+      userId: 'u1',
       from: new Date('2026-11-03T10:00').toISOString(),
+    });
+  });
+
+  it('「系統」用 hub 認得的值', () => {
+    expect(SYSTEM_USER).toBe('system');
+    expect(toAuditQuery({ ...EMPTY_AUDIT_FORM, userId: SYSTEM_USER }, 100)).toEqual({
+      limit: 100,
+      userId: 'system',
     });
   });
 });
@@ -75,15 +73,6 @@ describe('rangeReversed', () => {
     expect(rangeReversed(form)).toBe(true);
     expect(rangeReversed({ ...form, to: '2026-11-03T10:05' })).toBe(false);
     expect(rangeReversed({ ...form, to: '' })).toBe(false);
-  });
-});
-
-describe('filterByUser', () => {
-  const entries = [entry('a', 'u1'), entry('b', null), entry('c', 'u2')];
-  it('全部、系統（沒有使用者）、指定使用者', () => {
-    expect(filterByUser(entries, '').map((e) => e.id)).toEqual(['a', 'b', 'c']);
-    expect(filterByUser(entries, SYSTEM_USER).map((e) => e.id)).toEqual(['b']);
-    expect(filterByUser(entries, 'u2').map((e) => e.id)).toEqual(['c']);
   });
 });
 
