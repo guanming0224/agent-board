@@ -25,7 +25,7 @@ import {
 } from '../views';
 import { CommandInput } from './CommandInput';
 import { DoneHint } from './DoneHint';
-import { CardHead, cardClass, NO_INPUT } from './SessionNode';
+import { CardHead, cardClass, NO_INPUT, useSizeNote } from './SessionNode';
 import { teamForHandoff } from './teams';
 import { sessionFromHash, terminalHash } from './terminalRoute';
 import './canvas.css';
@@ -210,6 +210,7 @@ function Expanded({ session }: { session: Session }) {
   const mask = useMaskText();
   const backend = useBoard((s) => s.backend);
   const canType = !NO_INPUT.includes(session.status);
+  const size = useSizeNote();
   return (
     <article className={cardClass('xpand-card', session)} data-testid={`full-${session.id}`}>
       <header>
@@ -231,6 +232,7 @@ function Expanded({ session }: { session: Session }) {
               sessionId={session.id}
               stream={backend.terminal}
               autoFocus
+              onSizeOwnerChange={size.onSizeOwnerChange}
             />
           )}
         </div>
@@ -239,6 +241,7 @@ function Expanded({ session }: { session: Session }) {
           <HandoffBox session={session} />
         </aside>
       </div>
+      {size.note}
       {canType && <CommandInput session={session} />}
     </article>
   );

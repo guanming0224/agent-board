@@ -237,6 +237,55 @@ test('縮放切換兩種卡片，外框不跳動；點兩下也會切換', async
   await expect(page.locator('[data-mode="terminal"]')).toHaveCount(0);
 });
 
+/** 用「從全尺寸頁回來」的路徑把畫布放在指定倍率：畫布重新掛載時直接套用，不經過按鈕的級距。 */
+async function openCanvasAt(page: Page, zoom: number) {
+  await openCanvas(page);
+  await page.evaluate(
+    async ({ url, z }) => {
+      const { useViewsUi } = await import(/* @vite-ignore */ url);
+      useViewsUi.getState().setCanvasReturn({ x: 40, y: 40, zoom: z });
+      location.hash = '#/queue';
+    },
+    { url: '/src/views/uiStore.ts', z: zoom },
+  );
+  await expect(page.locator('.canvas')).toHaveCount(0);
+  await page.evaluate(() => (location.hash = '#/canvas'));
+  await expect(page.getByTestId('zoom-level')).toHaveText(`${Math.round(zoom * 100)}%`);
+}
+
+for (const zoom of [0.5, 0.7, 0.85]) {
+  test(`畫布 ${zoom * 100}%：摘要條的字接近規格大小，外框照樣填滿`, async ({ page }, info) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvasAt(page, zoom);
+    const auth = card(page, 's-auth');
+    await expect(auth).toHaveAttribute('data-mode', 'summary');
+    const measured = await auth.evaluate((frame) => {
+      const strip = frame.querySelector<HTMLElement>('.strip')!;
+      const tail = frame.querySelector<HTMLElement>('.tail')!;
+      const box = strip.getBoundingClientRect();
+      const frameBox = frame.getBoundingClientRect();
+      // 螢幕上的倍率 = 畫布縮放 × 摘要條自己的 scale
+      const screenScale = box.width / strip.offsetWidth;
+      return {
+        tailPx: parseFloat(getComputedStyle(tail).fontSize) * screenScale,
+        widthGap: Math.abs(box.width - frameBox.width),
+        heightGap: Math.abs(box.height - frameBox.height),
+      };
+    });
+    // 規格是等寬 12px（STYLE.md §5）。修正前 70% 是 17.9px、85% 是 21.7px。
+    expect(measured.tailPx).toBeGreaterThanOrEqual(11);
+    expect(measured.tailPx).toBeLessThanOrEqual(14);
+    expect(measured.widthGap).toBeLessThan(1);
+    expect(measured.heightGap).toBeLessThan(1);
+    await expect(auth.locator('.tail')).toContainText('Do you want to proceed?');
+    await info.attach(`summary-${zoom * 100}`, {
+      body: await auth.screenshot(),
+      contentType: 'image/png',
+    });
+    await shot(page, `summary-zoom-${zoom * 100}`);
+  });
+}
+
 test('下一個等我的：順序正確、框出、N 連按循環', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openCanvas(page);
@@ -262,7 +311,7 @@ test('下一個等我的：順序正確、框出、N 連按循環', async ({ pag
   await expect(card(page, 's-ml')).toBeInViewport({ ratio: 0.9 });
 
   // 在輸入框打字時 N 不能被搶走
-  const input = card(page, 's-auth').getByRole('textbox');
+  const input = card(page, 's-tests').getByRole('textbox');
   await input.focus();
   await page.keyboard.type('nnn');
   await expect(input).toHaveValue('nnn');
@@ -293,6 +342,15 @@ test('送指令：呼叫 sendPrompt、清空輸入、狀態跟著變', async ({ 
      window.__sent = [];
      b.sendPrompt = (id, text) => { window.__sent.push([id, text]); orig(id, text); };`,
   );
+  // 等你允許的卡不能送（下一個測試），所以先讓它停在等你回覆。
+  await patchStore(
+    page,
+    `const s = useBoard.getState();
+     useBoard.setState({
+       sessions: s.sessions.map((x) => (x.id === 's-auth' ? { ...x, status: 'waiting_input' } : x)),
+       approvals: s.approvals.filter((a) => a.sessionId !== 's-auth'),
+     });`,
+  );
   const input = card(page, 's-auth').getByRole('textbox');
 
   await input.fill('   ');
@@ -307,7 +365,65 @@ test('送指令：呼叫 sendPrompt、清空輸入、狀態跟著變', async ({ 
   await expect(input).toHaveValue('');
   await expect(card(page, 's-auth').getByRole('status')).toHaveText('已送出');
   await expect(card(page, 's-auth').locator('.lamp')).toHaveText('●工作中');
-  await expect(page.getByTestId('waiting-count')).toHaveText('2');
+});
+
+test('原生對話框在等決定時，摘要卡輸入框不送字，改指向核准按鈕', async ({ page }) => {
+  await openCanvas(page);
+  await patchStore(
+    page,
+    `const b = useBoard.getState().backend;
+     window.__sent = [];
+     b.sendPrompt = (id, text) => { window.__sent.push([id, text]); };`,
+  );
+  const sent = () => page.evaluate(() => (window as never as { __sent: unknown[] }).__sent);
+
+  // 等你允許：輸入框停用，說明要按「檢視並決定」或放大進終端機；按鈕就在旁邊
+  const auth = card(page, 's-auth');
+  const input = auth.getByRole('textbox');
+  await expect(input).toBeDisabled();
+  await expect(input).toHaveAttribute('placeholder', '先處理上方的決定');
+  await expect(auth.locator('.cmd-hint')).toContainText('這裡打的字會被當成選項');
+  await expect(auth.locator('.cmd-hint')).toContainText('檢視並決定');
+  await expect(auth.getByRole('button', { name: '檢視並決定' })).toBeVisible();
+  await input.click({ force: true });
+  await page.keyboard.type('1');
+  await page.keyboard.press('Enter');
+  expect(await sent()).toEqual([]);
+  await shot(page, 'blocked-input');
+
+  // 審計畫：指向「審核計畫」
+  const etl = card(page, 's-etl');
+  await expect(etl.getByRole('textbox')).toBeDisabled();
+  await expect(etl.locator('.cmd-hint')).toContainText('審核計畫');
+
+  // 提問也是 waiting_permission，指向作答
+  await patchStore(
+    page,
+    `const s = useBoard.getState();
+     useBoard.setState({ approvals: s.approvals.map((a) => (a.sessionId === 's-auth' ? { ...a, kind: 'question' } : a)) });`,
+  );
+  await expect(auth.locator('.cmd-hint')).toContainText('回答提問');
+
+  // 打到一半對話框才跳出來：字留著，不送；處理完再送
+  await patchStore(
+    page,
+    `const s = useBoard.getState();
+     useBoard.setState({
+       sessions: s.sessions.map((x) => (x.id === 's-auth' ? { ...x, status: 'waiting_input' } : x)),
+       approvals: s.approvals.filter((a) => a.sessionId !== 's-auth'),
+     });`,
+  );
+  await expect(input).toBeEnabled();
+  await expect(auth.locator('.cmd-hint')).toHaveCount(0);
+  await input.fill('1');
+  await patchStore(
+    page,
+    `const s = useBoard.getState();
+     useBoard.setState({ sessions: s.sessions.map((x) => (x.id === 's-auth' ? { ...x, status: 'waiting_permission' } : x)) });`,
+  );
+  await expect(input).toBeDisabled();
+  await expect(input).toHaveValue('1');
+  expect(await sent()).toEqual([]);
 });
 
 test('團隊框隨成員移動；交接線可拖曳建立、可刪除', async ({ page }) => {
@@ -539,12 +655,12 @@ test.describe('四種狀態', () => {
     await patchStore(page, `useBoard.setState({ connected: false });`);
     await expect(page.locator('[data-state="stale"]')).toContainText('連不到 hub');
     await expect(page.locator('.board')).toHaveCSS('opacity', '0.55');
-    await expect(card(page, 's-auth').getByRole('textbox')).toBeDisabled();
+    await expect(card(page, 's-tests').getByRole('textbox')).toBeDisabled();
     await expect(card(page, 's-auth').locator('.tail')).toContainText('Do you want to proceed?');
     await shot(page, 'stale');
 
     await patchStore(page, `useBoard.setState({ connected: true });`);
     await expect(page.locator('[data-state="stale"]')).toHaveCount(0);
-    await expect(card(page, 's-auth').getByRole('textbox')).toBeEnabled();
+    await expect(card(page, 's-tests').getByRole('textbox')).toBeEnabled();
   });
 });

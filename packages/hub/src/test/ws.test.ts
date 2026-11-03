@@ -508,6 +508,130 @@ describe('terminal relay', () => {
     expect(daemon.of('terminal.subscribe')).toHaveLength(0);
   });
 
+  it('only the size owner resizes the PTY; claims move ownership; it passes on when the owner leaves', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    const a = await hub.client(cookie);
+    const b = await hub.client(cookie);
+    const id = session.id;
+    const snapshot = (seq: number, cols: number, rows: number) =>
+      daemon.send({ type: 'terminal.snapshot', sessionId: id, seq, cols, rows, data: '' });
+    const resize = (c: typeof a, cols: number, rows: number, claim?: boolean) =>
+      c.send({ type: 'terminal.resize', sessionId: id, cols, rows, ...(claim ? { claim } : {}) });
+
+    // 第一個人：快照後收到「還沒人擁有」，送出的 resize 讓它成為擁有者。
+    a.send({ type: 'terminal.subscribe', sessionId: id });
+    await daemon.next('terminal.subscribe');
+    snapshot(0, 120, 32);
+    await a.next('terminal.snapshot');
+    expect(await a.next('terminal.size')).toMatchObject({ cols: 120, rows: 32, owner: 'none' });
+    resize(a, 200, 50);
+    expect(await daemon.next('terminal.resize')).toEqual({
+      type: 'terminal.resize',
+      sessionId: id,
+      cols: 200,
+      rows: 50,
+    });
+    expect(await a.next('terminal.size')).toMatchObject({ cols: 200, rows: 50, owner: 'you' });
+
+    // 第二個人：快照之後知道尺寸屬於別人；它的 resize 不會送到 PTY，只會收到目前尺寸。
+    b.send({ type: 'terminal.subscribe', sessionId: id });
+    await daemon.next('terminal.subscribe');
+    snapshot(0, 200, 50);
+    await b.next('terminal.snapshot');
+    expect(await b.next('terminal.size')).toMatchObject({ cols: 200, rows: 50, owner: 'other' });
+    resize(b, 90, 30);
+    expect(await b.next('terminal.size')).toMatchObject({ cols: 200, rows: 50, owner: 'other' });
+    expect(daemon.of('terminal.resize')).toHaveLength(0);
+
+    // 第二個人在終端機打字或點擊：claim 搶下擁有權，兩邊都被告知。
+    resize(b, 90, 30, true);
+    expect(await daemon.next('terminal.resize')).toMatchObject({ cols: 90, rows: 30 });
+    expect(await b.next('terminal.size')).toMatchObject({ cols: 90, rows: 30, owner: 'you' });
+    expect(await a.next('terminal.size')).toMatchObject({ cols: 90, rows: 30, owner: 'other' });
+    resize(a, 210, 60);
+    expect(await a.next('terminal.size')).toMatchObject({ cols: 90, owner: 'other' });
+    expect(daemon.of('terminal.resize')).toHaveLength(0);
+
+    // 擁有者離開：交給剩下的人，它接著送自己的尺寸。
+    b.send({ type: 'terminal.unsubscribe', sessionId: id });
+    expect(await a.next('terminal.size')).toMatchObject({ cols: 90, rows: 30, owner: 'you' });
+    resize(a, 200, 50);
+    expect(await daemon.next('terminal.resize')).toMatchObject({ cols: 200, rows: 50 });
+    expect(b.of('terminal.size')).toHaveLength(0);
+
+    // 最後一個人離開，狀態清掉；之後第一個人重新開始。
+    a.send({ type: 'terminal.unsubscribe', sessionId: id });
+    await daemon.next('terminal.unsubscribe');
+    b.send({ type: 'terminal.subscribe', sessionId: id });
+    await daemon.next('terminal.subscribe');
+    snapshot(0, 120, 32);
+    expect(await b.next('terminal.size')).toMatchObject({ cols: 120, rows: 32, owner: 'none' });
+  });
+
+  it('when the size owner disconnects, the most recently active viewer takes over', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    const [a, b, c] = [
+      await hub.client(cookie),
+      await hub.client(cookie),
+      await hub.client(cookie),
+    ];
+    const id = session.id;
+    for (const viewer of [a, b, c]) {
+      viewer.send({ type: 'terminal.subscribe', sessionId: id });
+      await daemon.next('terminal.subscribe');
+      daemon.send({
+        type: 'terminal.snapshot',
+        sessionId: id,
+        seq: 0,
+        cols: 80,
+        rows: 24,
+        data: '',
+      });
+      await viewer.next('terminal.snapshot');
+    }
+    a.send({ type: 'terminal.resize', sessionId: id, cols: 100, rows: 30 });
+    await daemon.next('terminal.resize');
+    // b 比 c 早訂閱，但後來點過自己的終端機，比 c 新。
+    b.send({ type: 'terminal.resize', sessionId: id, cols: 101, rows: 31, claim: true });
+    await daemon.next('terminal.resize');
+    a.send({ type: 'terminal.resize', sessionId: id, cols: 100, rows: 30, claim: true });
+    await daemon.next('terminal.resize');
+    b.clear();
+    c.clear();
+
+    a.ws.terminate();
+    expect(await b.next('terminal.size')).toMatchObject({ owner: 'you' });
+    expect(await c.next('terminal.size')).toMatchObject({ owner: 'other' });
+  });
+
+  it('a resize without subscribing still works while nobody owns the size', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    const viewer = await hub.client(cookie);
+    const script = await hub.client(cookie);
+    script.send({ type: 'terminal.resize', sessionId: session.id, cols: 70, rows: 20 });
+    expect(await daemon.next('terminal.resize')).toMatchObject({ cols: 70, rows: 20 });
+
+    viewer.send({ type: 'terminal.subscribe', sessionId: session.id });
+    await daemon.next('terminal.subscribe');
+    daemon.send({
+      type: 'terminal.snapshot',
+      sessionId: session.id,
+      seq: 0,
+      cols: 70,
+      rows: 20,
+      data: '',
+    });
+    await viewer.next('terminal.snapshot');
+    viewer.send({ type: 'terminal.resize', sessionId: session.id, cols: 90, rows: 30 });
+    await daemon.next('terminal.resize');
+    script.send({ type: 'terminal.resize', sessionId: session.id, cols: 70, rows: 20 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(daemon.of('terminal.resize')).toHaveLength(0);
+  });
+
   it('a daemon cannot write into a session on another machine', async () => {
     hub = await startHub();
     const { cookie, daemon, session } = await startedSession();

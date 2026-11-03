@@ -16,16 +16,27 @@ export function TerminalView({
   visible = true,
   autoFocus = false,
   className,
+  onSizeOwnerChange,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<TerminalController | null>(null);
+  // callback 換了不重建終端機，用 ref 拿最新的。
+  const onSizeOwnerRef = useRef(onSizeOwnerChange);
+  onSizeOwnerRef.current = onSizeOwnerChange;
 
   useEffect(() => {
-    const controller = new TerminalController(containerRef.current!, sessionId, stream, visible);
+    const controller = new TerminalController(
+      containerRef.current!,
+      sessionId,
+      stream,
+      visible,
+      (owner) => onSizeOwnerRef.current?.(owner),
+    );
     controllerRef.current = controller;
     return () => {
       controllerRef.current = null;
       controller.dispose();
+      onSizeOwnerRef.current?.(null);
     };
     // visible 只取建立當下的值，之後的變化由下面的 effect 處理，不重建終端機。
   }, [sessionId, stream]);

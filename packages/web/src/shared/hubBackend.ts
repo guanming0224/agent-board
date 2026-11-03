@@ -189,6 +189,7 @@ class HubConnection implements TerminalStream {
         return;
       case 'terminal.snapshot':
       case 'terminal.output':
+      case 'terminal.size':
         this.terminalListeners.get(message.sessionId)?.forEach((l) => l(message));
         return;
       case 'resources':

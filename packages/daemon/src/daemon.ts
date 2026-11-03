@@ -71,6 +71,7 @@ export interface DaemonDeps {
   capabilities?: MachineCapabilities;
   runtimeThrottleMs?: number;
   terminateGraceMs?: number;
+  idleResizeMs?: number;
   heartbeatMs?: number;
   approvalWaitMs?: number;
   authRetryMs?: number;
@@ -517,6 +518,7 @@ export class Daemon {
       createStatusTracker: this.deps.createStatusTracker,
       runtimeThrottleMs: this.deps.runtimeThrottleMs,
       terminateGraceMs: this.deps.terminateGraceMs,
+      idleResizeMs: this.deps.idleResizeMs,
       onRuntime: (session) => {
         if (session.endedAt !== null) this.recordEnded(session);
         else this.send({ type: 'session.runtime', session });

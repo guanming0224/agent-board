@@ -418,6 +418,34 @@ describe('終端機串流', () => {
     await h.waitForOutput('s1', 'SIZE 500x200');
   });
 
+  it('沒人看之後回到預設尺寸；有人在寬限內回來就不動', async () => {
+    await h.cleanup();
+    h = new Harness();
+    await h.hub.start();
+    mkdirSync(h.workDir, { recursive: true });
+    await h.startDaemon({ idleResizeMs: 150 });
+    await h.createAndSubscribe('s1');
+    h.hub.send({ type: 'terminal.resize', sessionId: 's1', cols: 300, rows: 90 });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 退訂後在寬限內重新訂閱：尺寸不變
+    h.hub.send({ type: 'terminal.unsubscribe', sessionId: 's1' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 's1' });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    input('s1', 'size');
+    await h.waitForOutput('s1', 'SIZE 300x90');
+
+    // 真的沒人看：時間到回到 120x32
+    h.hub.send({ type: 'terminal.unsubscribe', sessionId: 's1' });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 's1' });
+    const snap = await h.hub.waitFor('terminal.snapshot', () => true, { includePast: false });
+    expect([snap.cols, snap.rows]).toEqual([120, 32]);
+    input('s1', 'size');
+    await h.waitForOutput('s1', 'SIZE 120x32');
+  });
+
   it('signal：escape、ctrl_c 送控制字元', async () => {
     await h.createAndSubscribe('s1');
     h.hub.send({ type: 'terminal.signal', sessionId: 's1', signal: 'escape' });
