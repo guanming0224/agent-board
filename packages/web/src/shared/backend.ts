@@ -2,6 +2,7 @@
 import type {
   Approval,
   ApprovalDecision,
+  AuditEntry,
   HandoffRule,
   Layout,
   Machine,
@@ -16,6 +17,7 @@ import type {
   Team,
   TeamMember,
   Template,
+  UsageSummary,
   User,
 } from '@agent-board/protocol';
 import type { TerminalStream } from './terminal-contract';
@@ -27,6 +29,16 @@ export interface BoardSnapshot {
 }
 
 export type BoardListener = (snapshot: BoardSnapshot) => void;
+
+/** GET /api/audit 的篩選；hub 只支援這幾個欄位，沒有依使用者查詢。時間是 ISO 字串。 */
+export interface AuditFilter {
+  sessionId?: string;
+  action?: string;
+  from?: string;
+  to?: string;
+  /** 1–1000，hub 預設 100。 */
+  limit?: number;
+}
 
 export interface BoardBackend {
   readonly terminal: TerminalStream;
@@ -42,6 +54,12 @@ export interface BoardBackend {
   setup(input: { name: string; password: string; locale: User['locale'] }): Promise<User>;
   login(input: { name: string; password: string }): Promise<User>;
   logout(): Promise<void>;
+  /** 只能改自己的密碼，要附目前的密碼；hub 不讓管理員改別人的密碼。 */
+  changePassword(input: {
+    userId: string;
+    currentPassword: string;
+    password: string;
+  }): Promise<void>;
 
   createSession(input: SessionSpec & { machineId: string }): Promise<Session>;
   updateSession(
@@ -61,12 +79,18 @@ export interface BoardBackend {
   ): Promise<{ path: string; entries: { name: string; isDir: boolean; isGitRepo: boolean }[] }>;
   createPairingCode(): Promise<{ code: string; expiresAt: string; installCommand: string }>;
   removeMachine(id: string): Promise<void>;
+  /** daemon 讀本機對話紀錄算出的 token 用量（不是官方額度）；還沒回報過是 null。 */
+  machineUsage(machineId: string): Promise<UsageSummary | null>;
 
   getLayouts(workspace: string): Promise<Layout[]>;
   saveLayouts(layouts: Layout[]): Promise<void>;
   getNotes(workspace: string): Promise<Note[]>;
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
+  /** 操作紀錄（只有 owner）。由新到舊。 */
+  listAudit(filter: AuditFilter): Promise<AuditEntry[]>;
+  /** CSV 檔（含 BOM）。hub 的匯出不吃篩選，一律是全部紀錄。 */
+  exportAudit(): Promise<Blob>;
 
   /** 這台裝置的 Web Push 訂閱（flows/push.ts）。 */
   pushVapidKey(): Promise<string>;

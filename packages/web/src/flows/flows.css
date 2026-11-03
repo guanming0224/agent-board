@@ -880,6 +880,66 @@
   font-weight: 600;
 }
 
+/* 改密碼 */
+.flows .password-form {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.flows .password-form .hint {
+  margin: 0;
+}
+
+/* 操作紀錄：設定頁底下滿寬 */
+.flows .form-card.audit {
+  margin-top: 16px;
+}
+
+.flows .audit-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 12px;
+  margin: 12px 0 8px;
+}
+
+.flows .audit-filters > div {
+  min-width: 0;
+}
+
+.flows .audit-filters label {
+  margin-bottom: 4px;
+}
+
+.flows .audit-list {
+  margin-top: 8px;
+}
+
+.flows .audit-row .rig-name code {
+  font: 12px var(--font-mono);
+}
+
+.flows .audit-detail {
+  display: block;
+  margin-top: 4px;
+  color: var(--fg-muted);
+  font: 12.5px/1.45 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* 一筆指令最長 16 KB，不讓單筆撐滿整頁 */
+  max-height: 9em;
+  overflow-y: auto;
+}
+
+.flows .audit-export {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.flows .audit-export .acts {
+  margin-top: 0;
+}
+
 /* 首次引導 */
 .flows .stepper {
   display: flex;

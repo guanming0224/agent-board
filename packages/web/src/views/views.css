@@ -297,6 +297,37 @@ kbd {
   margin: 6px 0 0;
 }
 
+/* 側欄用量：只有數字，沒有上限所以不畫條、不上色 */
+.usage-row {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.usage-row:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+.usage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.usage-head b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.usage-row.off .usage-head {
+  color: var(--muted);
+}
+.usage-row .hint {
+  margin-top: 2px;
+}
+.hint-inline {
+  color: var(--muted);
+}
+
 /* 航班條與待處理共用 */
 .head {
   display: flex;

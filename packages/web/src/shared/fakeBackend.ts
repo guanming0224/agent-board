@@ -2,6 +2,7 @@
 import { DEFAULT_DANGER_RULES, DEFAULT_STUCK_MINUTES } from '@agent-board/protocol';
 import type {
   Approval,
+  AuditEntry,
   HandoffRule,
   Layout,
   Machine,
@@ -13,6 +14,7 @@ import type {
   Team,
   TeamMember,
   Template,
+  UsageSummary,
   User,
 } from '@agent-board/protocol';
 import type { BoardBackend, BoardListener, BoardSnapshot } from './backend';
@@ -191,6 +193,60 @@ export class FakeTerminalStream implements TerminalStream {
 
 const demoUser: User = { id: 'u-demo', name: 'demo', role: 'owner', locale: 'zh-TW' };
 
+/** demo 模式的目前密碼，改密碼流程要能走完也要能失敗。 */
+export const DEMO_PASSWORD = 'demo-password';
+
+const DAY_MS = 24 * 60 * 60_000;
+
+/** demo-laptop 沒有回報過，畫面要能顯示「還沒回報」。 */
+function demoUsage(machineId: string): UsageSummary | null {
+  const scale = { 'm-studio': 1, 'm-gpu': 0.4 }[machineId];
+  if (scale === undefined) return null;
+  const to = Date.now() - 6 * 60_000;
+  return {
+    machineId,
+    from: new Date(to - 30 * DAY_MS).toISOString(),
+    to: new Date(to).toISOString(),
+    inputTokens: Math.round(184_000 * scale),
+    outputTokens: Math.round(1_020_000 * scale),
+    cacheReadTokens: Math.round(48_500_000 * scale),
+    cacheCreationTokens: Math.round(3_100_000 * scale),
+  };
+}
+
+function demoAudit(): AuditEntry[] {
+  const entry = (
+    minutes: number,
+    action: string,
+    detail: string,
+    sessionId: string | null = null,
+    userId: string | null = demoUser.id,
+  ): AuditEntry => ({
+    id: crypto.randomUUID(),
+    userId,
+    sessionId,
+    action,
+    detail,
+    at: minutesAgo(minutes),
+  });
+  return [
+    entry(2, 'terminal.input', 'npm test -- auth', 's-auth'),
+    entry(
+      4,
+      'approval.decide',
+      '{"approvalId":"a-0","behavior":"allow","remember":false}',
+      's-tests',
+    ),
+    entry(9, 'approval.resolved', '{"approvalId":"a-9","by":"terminal"}', 's-etl', null),
+    entry(30, 'session.create', '{"name":"Write tests","permissionMode":"acceptEdits"}', 's-tests'),
+    entry(55, 'settings.update', 'dangerRules'),
+    entry(61, 'auth.login', demoUser.name),
+    entry(62, 'auth.login_failed', demoUser.name, null, null),
+  ];
+}
+
+const csvCell = (value: string | null) => `"${(value ?? '').replaceAll('"', '""')}"`;
+
 const defaultSettings: Settings = {
   listenAddress: '127.0.0.1',
   publicOrigin: null,
@@ -288,6 +344,8 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   let settings = defaultSettings;
   let layouts: Layout[] = [];
   const templates: Template[] = [];
+  const audit = demoAudit();
+  let password = DEMO_PASSWORD;
   const publish = () => listeners.forEach((l) => l({ ...state }));
   const find = (id: string) => {
     const s = state.sessions.find((x) => x.id === id);
@@ -332,6 +390,16 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     setup: async () => demoUser,
     login: async () => demoUser,
     logout: async () => {},
+    async changePassword({ currentPassword, password: next }) {
+      // 和 hub 一樣的錯誤形狀（status、code），畫面才能分辨。
+      if (currentPassword !== password) {
+        throw Object.assign(new Error('Current password is incorrect'), {
+          status: 403,
+          code: 'invalid_current_password',
+        });
+      }
+      password = next;
+    },
     async createSession(input) {
       const created = session({
         id: crypto.randomUUID(),
@@ -414,6 +482,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       state.machines = state.machines.filter((m) => m.id !== id);
       publish();
     },
+    machineUsage: async (machineId) => demoUsage(machineId),
     getLayouts: async () => layouts,
     async saveLayouts(next) {
       layouts = next;
@@ -430,6 +499,23 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     },
     async pushUnsubscribe(endpoint) {
       pushEndpoints.delete(endpoint);
+    },
+    async listAudit(filter) {
+      // 和 hub 的 store.listAudit 相同：完全相符、時間含兩端、由新到舊。
+      return audit
+        .filter((e) => !filter.sessionId || e.sessionId === filter.sessionId)
+        .filter((e) => !filter.action || e.action === filter.action)
+        .filter((e) => !filter.from || e.at >= filter.from)
+        .filter((e) => !filter.to || e.at <= filter.to)
+        .sort((a, b) => b.at.localeCompare(a.at))
+        .slice(0, filter.limit ?? 100);
+    },
+    async exportAudit() {
+      const header = 'id,at,user_id,session_id,action,detail';
+      const rows = [...audit]
+        .sort((a, b) => a.at.localeCompare(b.at))
+        .map((e) => [e.id, e.at, e.userId, e.sessionId, e.action, e.detail].map(csvCell).join(','));
+      return new Blob([`\uFEFF${[header, ...rows].join('\r\n')}\r\n`], { type: 'text/csv' });
     },
 
     listTeams: async () => teams.map((x) => ({ ...x })),
