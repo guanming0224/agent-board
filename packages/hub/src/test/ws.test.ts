@@ -979,7 +979,12 @@ describe('reconciliation', () => {
   it('done set by the user is not overwritten by the daemon', async () => {
     hub = await startHub();
     const { cookie, daemon, token, session } = await startedSession();
-    daemon.send({ type: 'session.runtime', session: runtime(session.id, { status: 'running' }) });
+    // 同一段工作的回報，statusSince 不變（daemon 只在狀態真的改變時更新它）。
+    const statusSince = new Date().toISOString();
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(session.id, { status: 'running', statusSince }),
+    });
     await until(() => hub.running.store.getSession(session.id)?.status === 'running', 'running');
     const marked = await hub.api('PATCH', `/api/sessions/${session.id}`, {
       cookie,
@@ -989,7 +994,7 @@ describe('reconciliation', () => {
 
     daemon.send({
       type: 'session.runtime',
-      session: runtime(session.id, { status: 'running', lastLines: ['new line'] }),
+      session: runtime(session.id, { status: 'running', statusSince, lastLines: ['new line'] }),
     });
     await until(
       () => hub.running.store.getSession(session.id)?.lastLines[0] === 'new line',

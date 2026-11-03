@@ -22,3 +22,4 @@ vapid*.json
 # 每台機器自己的部署設定（launchd plist、serve 對應、實際網址）
 deploy/local/
 __pycache__/
+.claude/worktrees/

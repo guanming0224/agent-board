@@ -225,6 +225,23 @@ describe('on_done', () => {
     expect(auditDetail('terminal.input')!.session_id).toBe(t.b);
   });
 
+  it('marked done stays done while idle, and clears once the same process starts working again', async () => {
+    const t = await board();
+    await setStatus(t.daemon, t.a, 'waiting_input');
+    await markDone(t, t.a);
+    await until(() => sessionStatus(t.a) === 'done', 'marked done');
+
+    // 同一個閒置狀態再回報一次（例如重連），不能把完成洗掉。
+    t.daemon.send({ type: 'session.runtime', session: runtime(t.a, { status: 'waiting_input' }) });
+    await pause();
+    expect(sessionStatus(t.a)).toBe('done');
+
+    // 送了 /clear 又下指令：daemon 回報新的 running。
+    const later = new Date(Date.now() + 1000).toISOString();
+    await setStatus(t.daemon, t.a, 'running', { statusSince: later });
+    expect(sessionStatus(t.a)).toBe('running');
+  });
+
   it('fires on PTY exit 0, once, even if already marked done', async () => {
     const t = await board();
     await addRule(t, t.a, t.b);

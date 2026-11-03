@@ -877,8 +877,15 @@ export class Hub {
     const wasOffline = prev.status === 'offline';
     const preOffline = wasOffline ? this.store.preOfflineStatus(runtime.id) : null;
     const exitedCleanly = runtime.status === 'done' && runtime.endedAt !== null;
+    // 使用者標記完成後又在同一個行程裡開始工作（例如送了 /clear 再下指令），就不算完成了。
+    const resumedAfterDone =
+      prev.status === 'done' &&
+      runtime.endedAt === null &&
+      runtime.status === 'running' &&
+      runtime.statusSince > prev.statusSince;
     const keepStatus =
-      prev.status === 'done' || (HUB_ONLY_STATUSES.includes(runtime.status) && !exitedCleanly);
+      (prev.status === 'done' && !resumedAfterDone) ||
+      (HUB_ONLY_STATUSES.includes(runtime.status) && !exitedCleanly);
     const next: Session = {
       ...prev,
       cwd: runtime.cwd,
