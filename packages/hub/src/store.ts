@@ -28,7 +28,7 @@ const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   publicOrigin: null,
   stuckMinutes: DEFAULT_STUCK_MINUTES,
   dangerRules: [...DEFAULT_DANGER_RULES],
-  quotaGuards: { denyReadPaths: [], maxConcurrentSessions: null },
+  quotaGuards: { denyReadPaths: [], maxConcurrentSessions: null, queueWhenRateLimited: true },
   notifications: { enabled: true, quietHours: null },
 });
 
@@ -67,6 +67,9 @@ interface SessionRow {
   last_output_at: string | null;
   status_since: string;
   context_tokens: number | null;
+  context_window: number | null;
+  repo_root: string | null;
+  repo_common_dir: string | null;
   created_at: string;
   ended_at: string | null;
   archived: number;
@@ -138,6 +141,9 @@ const toSession = (r: SessionRow): Session => ({
   lastOutputAt: r.last_output_at,
   statusSince: r.status_since,
   contextTokens: r.context_tokens,
+  contextWindow: r.context_window,
+  repoRoot: r.repo_root,
+  repoCommonDir: r.repo_common_dir,
   createdAt: r.created_at,
   endedAt: r.ended_at,
   archived: r.archived === 1,
@@ -377,11 +383,11 @@ export class Store {
         `INSERT INTO sessions (id, machine_id, project_id, name, cwd, branch, worktree_path,
            permission_mode, model, account_profile, status, status_detail, claude_session_id,
            last_lines, last_output_at, status_since, context_tokens, created_at, ended_at, archived,
-           pending_spec)
+           pending_spec, context_window, repo_root, repo_common_dir)
          VALUES (@id, @machineId, @projectId, @name, @cwd, @branch, @worktreePath,
            @permissionMode, @model, @accountProfile, @status, @statusDetail, @claudeSessionId,
            @lastLines, @lastOutputAt, @statusSince, @contextTokens, @createdAt, @endedAt, @archived,
-           @pendingSpec)`,
+           @pendingSpec, @contextWindow, @repoRoot, @repoCommonDir)`,
       )
       .run({
         ...session,
@@ -398,7 +404,8 @@ export class Store {
            worktree_path = @worktreePath, status = @status, status_detail = @statusDetail,
            claude_session_id = @claudeSessionId, last_lines = @lastLines,
            last_output_at = @lastOutputAt, status_since = @statusSince,
-           context_tokens = @contextTokens, ended_at = @endedAt, archived = @archived
+           context_tokens = @contextTokens, ended_at = @endedAt, archived = @archived,
+           context_window = @contextWindow, repo_root = @repoRoot, repo_common_dir = @repoCommonDir
          WHERE id = @id`,
       )
       .run({
@@ -417,6 +424,9 @@ export class Store {
         contextTokens: session.contextTokens,
         endedAt: session.endedAt,
         archived: session.archived ? 1 : 0,
+        contextWindow: session.contextWindow,
+        repoRoot: session.repoRoot,
+        repoCommonDir: session.repoCommonDir,
       });
   }
 

@@ -568,7 +568,11 @@ describe('CRUD', () => {
       permissionMode: 'plan',
       model: null,
       firstPrompt: null,
-      quotaGuards: { denyReadPaths: ['**/.env'], maxConcurrentSessions: 2 },
+      quotaGuards: {
+        denyReadPaths: ['**/.env'],
+        maxConcurrentSessions: 2,
+        queueWhenRateLimited: false,
+      },
     };
     const template = await hub.api('POST', '/api/templates', {
       cookie,

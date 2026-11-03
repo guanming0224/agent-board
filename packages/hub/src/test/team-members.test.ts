@@ -103,6 +103,22 @@ describe('PUT team member: own worktree required', () => {
     expect(await memberIds(c)).toHaveLength(5);
   });
 
+  it('uses the repo root the daemon reports: sibling subfolders of one repo clash, linked worktrees do not', async () => {
+    const c = await setup();
+    const repo = { repoRoot: '/r', repoCommonDir: '/r/.git' };
+    const a = await session(c, { cwd: '/r/a' }, { cwd: '/r/a', ...repo });
+    await join(c, a);
+    const b = await session(c, { cwd: '/r/b' }, { cwd: '/r/b', ...repo });
+    expect((await join(c, b)).status).toBe(409);
+    // 同 repo 的 linked worktree，即使放在主 repo 資料夾裡面，也是另一份檔案。
+    const inner = await session(
+      c,
+      { cwd: '/r/.wt/x' },
+      { cwd: '/r/.wt/x', worktreePath: '/r/.wt/x', repoRoot: '/r/.wt/x', repoCommonDir: '/r/.git' },
+    );
+    expect((await join(c, inner)).status).toBe(200);
+  });
+
   it('refuses two sessions sharing one worktree', async () => {
     const c = await setup();
     const first = await session(c, {}, { worktreePath: '/wt/a' });

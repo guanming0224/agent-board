@@ -43,6 +43,9 @@ export const runtime = (id: string, over: Partial<SessionRuntime> = {}): Session
   lastOutputAt: null,
   statusSince: new Date().toISOString(),
   contextTokens: null,
+  contextWindow: null,
+  repoRoot: null,
+  repoCommonDir: null,
   endedAt: null,
   ...over,
 });

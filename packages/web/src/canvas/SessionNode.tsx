@@ -259,7 +259,9 @@ export function SessionNode({
         >
           <CardHead session={session} />
           <pre className="tail">{mask(session.lastLines.join('\n'))}</pre>
-          {session.status !== 'offline' && <ContextUsage tokens={session.contextTokens} />}
+          {session.status !== 'offline' && (
+            <ContextUsage tokens={session.contextTokens} window={session.contextWindow} />
+          )}
           <DoneHint session={session} />
           <Actions
             session={session}

@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -200,6 +200,22 @@ test('開 session：真的跑起來、hook 接上、狀態變成等你回覆', a
   expect(Object.keys(settings.hooks)).toContain('PermissionRequest');
   await expect(page.getByText('integration').first()).toBeVisible();
   expect(await readScreen(page, session.id)).toContain('READY');
+});
+
+test('daemon 回報 repo 根目錄；新 session 選同 repo 的子資料夾時預設打開 worktree', async ({
+  page,
+}) => {
+  const root = realpathSync(repo);
+  await expect
+    .poll(async () => (await getSession(page.request, session.id)).repoRoot, { timeout: 10_000 })
+    .toBe(root);
+  expect((await getSession(page.request, session.id)).repoCommonDir).toBe(join(root, '.git'));
+
+  mkdirSync(join(repo, 'pkg', 'web'), { recursive: true });
+  await page.goto('/#/new');
+  await page.getByLabel('工作目錄').fill(join(repo, 'pkg', 'web'));
+  await expect(page.getByLabel('使用 worktree')).toBeChecked();
+  await expect(page.getByTestId('worktree-hint')).toContainText('integration');
 });
 
 test('權限請求：網頁看到、按允許，決定真的回到 claude', async ({ page }) => {

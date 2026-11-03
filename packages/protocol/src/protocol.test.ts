@@ -6,7 +6,10 @@ import {
   DaemonToHub,
   HookPayload,
   needsAttention,
+  QuotaGuards,
   routes,
+  sameWorkingTree,
+  SessionRuntime,
   SessionStatus,
 } from './index';
 
@@ -96,5 +99,75 @@ describe('rest routes', () => {
     expect(open).toEqual(
       ['/api/auth/login', '/api/auth/setup', '/api/auth/status', '/api/machines/pair'].sort(),
     );
+  });
+});
+
+describe('quota guards (§8-5)', () => {
+  it('queues on a rate-limited account by default, including settings saved before the option', () => {
+    expect(
+      QuotaGuards.parse({ denyReadPaths: [], maxConcurrentSessions: null }).queueWhenRateLimited,
+    ).toBe(true);
+    expect(
+      QuotaGuards.parse({
+        denyReadPaths: [],
+        maxConcurrentSessions: 1,
+        queueWhenRateLimited: false,
+      }).queueWhenRateLimited,
+    ).toBe(false);
+  });
+});
+
+describe('fields added for older daemons', () => {
+  it('fills repo, context window and repo identity with null when a daemon does not send them', () => {
+    const listed = DaemonToHub.parse({
+      type: 'fs.listResult',
+      requestId: 'r',
+      path: '/x',
+      entries: [],
+      error: null,
+    });
+    expect(listed).toMatchObject({ repo: null });
+    const runtime = SessionRuntime.parse({
+      id: 's',
+      cwd: '/x',
+      branch: null,
+      worktreePath: null,
+      status: 'running',
+      statusDetail: null,
+      claudeSessionId: null,
+      lastLines: [],
+      lastOutputAt: null,
+      statusSince: '2026-11-03T00:00:00Z',
+      contextTokens: null,
+      endedAt: null,
+    });
+    expect(runtime).toMatchObject({ contextWindow: null, repoRoot: null, repoCommonDir: null });
+  });
+});
+
+describe('sameWorkingTree', () => {
+  const at = (dir: string, repoRoot: string | null = null) => ({ dir, repoRoot });
+
+  it('two subfolders of one repo share a working tree once the root is known', () => {
+    expect(sameWorkingTree(at('/r/a', '/r'), at('/r/b', '/r'))).toBe(true);
+    // 根目錄還不知道：只能比資料夾，不相干的子資料夾判斷不出來。
+    expect(sameWorkingTree(at('/r/a'), at('/r/b'))).toBe(false);
+  });
+
+  it('uses the known root against an unknown side', () => {
+    expect(sameWorkingTree(at('/r/a', '/r'), at('/r/b'))).toBe(true);
+    expect(sameWorkingTree(at('/other'), at('/r/a', '/r'))).toBe(false);
+  });
+
+  it('a linked worktree of the same repo is a different working tree, even nested inside it', () => {
+    expect(sameWorkingTree(at('/r', '/r'), at('/r/.wt/x/sub', '/r/.wt/x'))).toBe(false);
+    expect(sameWorkingTree(at('/wt/a', '/wt/a'), at('/wt/a/src', '/wt/a'))).toBe(true);
+  });
+
+  it('falls back to same or nested folders, ignoring trailing slashes and Windows separators', () => {
+    expect(sameWorkingTree(at('/r/'), at('/r/packages/web'))).toBe(true);
+    expect(sameWorkingTree(at('C:\\r'), at('C:\\r\\sub'))).toBe(true);
+    expect(sameWorkingTree(at('/r'), at('/rx'))).toBe(false);
+    expect(sameWorkingTree(at(''), at('/r'))).toBe(false);
   });
 });

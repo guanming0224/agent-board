@@ -32,6 +32,7 @@ import {
   currentBranch,
   findLinkedWorktree,
   removeWorktree,
+  repoInfo,
   type WorktreeInfo,
 } from './worktree';
 
@@ -511,6 +512,8 @@ export class Daemon {
       cwd: entry.cwd,
       branch: entry.branch,
       worktreePath: entry.worktreePath,
+      repo: await repoInfo(entry.cwd),
+      model: spec.model,
       claudeSessionId: entry.claudeSessionId,
       pendingFirstPrompt: entry.pendingFirstPrompt,
       stuckMinutes: this.stuckMinutes,

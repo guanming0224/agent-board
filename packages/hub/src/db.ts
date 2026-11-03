@@ -153,6 +153,11 @@ const migrations: string[] = [
     value TEXT NOT NULL
   );
   `,
+  /* 2：context 上限與 repo 身分，由 daemon 回報（§8-5 排隊、同 repo 建議 worktree 用）。 */ `
+  ALTER TABLE sessions ADD COLUMN context_window INTEGER;
+  ALTER TABLE sessions ADD COLUMN repo_root TEXT;
+  ALTER TABLE sessions ADD COLUMN repo_common_dir TEXT;
+  `,
 ];
 
 export function migrate(db: Db): void {

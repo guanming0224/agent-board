@@ -1,6 +1,7 @@
 // Agent A 與 Agent B 的介面（CONTRACTS.md §5.1）。A 呼叫，B 實作。
 import type { HookEventName, HookPayload, SessionStatus } from '@agent-board/protocol';
 
+/** `from` 等於 `to` 時只是補 detail（例如限流的重置時間），`at` 沿用進入該狀態的時間。 */
 export interface StatusChange {
   from: SessionStatus;
   to: SessionStatus;

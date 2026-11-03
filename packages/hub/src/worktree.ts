@@ -1,8 +1,12 @@
 // 同一團隊改同一 repo 要各自 worktree（DISPATCH §6）。前端 team/worktree.ts 有同樣的判斷；這裡才是防線。
-import type { Session, SessionSpec } from '@agent-board/protocol';
+import { sameWorkingTree, type Session, type SessionSpec } from '@agent-board/protocol';
 import type { Store } from './store';
 
-const normalize = (path: string) => path.replaceAll('\\', '/').replace(/\/+$/, '');
+/** 有 worktree 就看 worktree，那才是它實際改檔案的地方。 */
+const place = (session: Session) => ({
+  dir: session.worktreePath ?? session.cwd,
+  repoRoot: session.repoRoot,
+});
 
 const isLive = (session: Session) => session.endedAt === null && session.status !== 'done';
 
@@ -15,8 +19,8 @@ function willHaveOwnWorktree(store: Store, id: string): boolean {
 }
 
 /**
- * 回傳和候選者在同一台機器、資料夾相同或互相包含的現有成員。repo 根目錄只有 daemon 知道，
- * 所以同 repo 的兩個不相干子資料夾這裡判斷不出來。
+ * 回傳和候選者在同一台機器、同一個 working tree 的現有成員。daemon 回報了 repo 根目錄就比根目錄
+ * （同 repo 的不同子資料夾也算衝突），還不知道時退回比較資料夾是否相同或互相包含。
  */
 export function worktreeConflicts(
   store: Store,
@@ -26,15 +30,11 @@ export function worktreeConflicts(
   const candidate = store.getSession(candidateId);
   if (!candidate || !isLive(candidate)) return [];
   if (!candidate.worktreePath && willHaveOwnWorktree(store, candidate.id)) return [];
-  const dir = normalize(candidate.worktreePath ?? candidate.cwd);
   return memberIds.flatMap((id) => {
     const member = store.getSession(id);
     if (!member || id === candidateId || member.machineId !== candidate.machineId) return [];
     if (!isLive(member)) return [];
     if (!member.worktreePath && willHaveOwnWorktree(store, id)) return [];
-    const other = normalize(member.worktreePath ?? member.cwd);
-    return other === dir || other.startsWith(`${dir}/`) || dir.startsWith(`${other}/`)
-      ? [member]
-      : [];
+    return sameWorkingTree(place(candidate), place(member)) ? [member] : [];
   });
 }

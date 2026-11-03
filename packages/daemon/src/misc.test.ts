@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -18,7 +19,7 @@ import { buildClaudeArgs, screenFingerprint, withoutPromptBox } from './session'
 import { SessionStore, type PersistedSession } from './store';
 import { makeTempDir, waitUntil } from './test-support/harness';
 import { summarizeUsage } from './usage';
-import { createWorktree, currentBranch, makeSlug, removeWorktree } from './worktree';
+import { createWorktree, currentBranch, makeSlug, removeWorktree, repoInfo } from './worktree';
 import type { DaemonToHub } from '@agent-board/protocol';
 
 const temps: string[] = [];
@@ -177,6 +178,9 @@ describe('SessionStore', () => {
       lastOutputAt: null,
       statusSince: new Date().toISOString(),
       contextTokens: null,
+      contextWindow: null,
+      repoRoot: null,
+      repoCommonDir: null,
       endedAt: new Date().toISOString(),
     };
     const store = new SessionStore(dir);
@@ -277,6 +281,21 @@ describe('worktree', () => {
     await expect(createWorktree(dir, 'x', 'y')).rejects.toThrow();
     expect(await currentBranch(dir)).toBeNull();
   });
+
+  it('repoInfo：子資料夾回 repo 根目錄；linked worktree 有自己的根目錄、共用 commonDir；非 repo 回 null', async () => {
+    const repo = makeRepo();
+    const real = realpathSync(repo);
+    const main = await repoInfo(join(repo, 'sub'));
+    expect(main).toEqual({ root: real, commonDir: join(real, '.git') });
+
+    const linked = await createWorktree(repo, 'wt', 'sess3');
+    const other = await repoInfo(join(linked.worktreePath, 'sub'));
+    expect(other?.root).toBe(realpathSync(linked.worktreePath));
+    expect(other?.commonDir).toBe(main?.commonDir);
+
+    expect(await repoInfo(temp())).toBeNull();
+    expect(await repoInfo(join(temp(), 'missing'))).toBeNull();
+  });
 });
 
 describe('fs.list', () => {
@@ -292,6 +311,7 @@ describe('fs.list', () => {
       type: 'fs.listResult',
       requestId: 'r1',
       path: dir,
+      repo: null,
       error: null,
     });
     expect(result.entries).toEqual([
@@ -301,6 +321,16 @@ describe('fs.list', () => {
       { name: 'a-file.txt', isDir: false, isGitRepo: false },
       { name: 'broken', isDir: false, isGitRepo: false },
     ]);
+  });
+
+  it('列的是 repo 裡的子資料夾：帶上 repo 根目錄（新 session 判斷同 repo 用）', async () => {
+    const repo = temp();
+    mkdirSync(join(repo, 'a', 'deep'), { recursive: true });
+    execFileSync('git', ['-C', repo, 'init', '-b', 'main'], { stdio: 'ignore' });
+    const result = await listDirectory('r2', join(repo, 'a'));
+    const real = realpathSync(repo);
+    expect(result.repo).toEqual({ root: real, commonDir: join(real, '.git') });
+    expect(result.entries.map((e) => e.name)).toEqual(['deep']);
   });
 
   it('不存在的路徑回 error，不丟例外', async () => {

@@ -74,3 +74,12 @@ export const formatTokens = (n: number, locale: string) =>
 
 export const formatTokensFull = (n: number, locale: string) =>
   new Intl.NumberFormat(locale).format(n);
+
+/**
+ * context 佔上限的百分比。上限由 daemon 依模型推得（docs/claude-code-notes.md「Context 上限」），
+ * 不知道上限時回 null：現在多數模型是 1M，拿 200k 硬算會把 30% 顯示成 150%。
+ */
+export function contextPercent(tokens: number | null, window: number | null): number | null {
+  if (tokens === null || window === null || window <= 0) return null;
+  return Math.round((tokens / window) * 100);
+}

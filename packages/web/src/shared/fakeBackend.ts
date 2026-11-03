@@ -54,6 +54,9 @@ const session = (
   lastOutputAt: minutesAgo(0),
   statusSince: minutesAgo(1),
   contextTokens: 40_000,
+  contextWindow: 200_000,
+  repoRoot: null,
+  repoCommonDir: null,
   createdAt: minutesAgo(90),
   endedAt: null,
   archived: false,
@@ -252,7 +255,11 @@ const defaultSettings: Settings = {
   publicOrigin: null,
   stuckMinutes: DEFAULT_STUCK_MINUTES,
   dangerRules: DEFAULT_DANGER_RULES,
-  quotaGuards: { denyReadPaths: ['data/', '*.parquet'], maxConcurrentSessions: null },
+  quotaGuards: {
+    denyReadPaths: ['data/', '*.parquet'],
+    maxConcurrentSessions: null,
+    queueWhenRateLimited: true,
+  },
   notifications: { enabled: true, quietHours: null },
 };
 

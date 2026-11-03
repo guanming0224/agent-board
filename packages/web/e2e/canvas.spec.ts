@@ -269,6 +269,38 @@ test('下一個等我的：順序正確、框出、N 連按循環', async ({ pag
   expect(await spot()).toBe('card-s-ml');
 });
 
+test('context 百分比用 daemon 回報的模型上限；不知道上限時只寫 token 數', async ({ page }) => {
+  await openCanvas(page);
+  const ctx = card(page, 's-auth').getByTestId('context-usage');
+  await expect(ctx).toContainText('20%');
+  await expect(ctx).toHaveAttribute('title', /20萬/);
+  await patchStore(
+    page,
+    `const s = useBoard.getState();
+     useBoard.setState({ sessions: s.sessions.map((x) => x.id === 's-auth' ? { ...x, contextTokens: 300000, contextWindow: 1000000 } : x) });`,
+  );
+  // 1M 上限：300k 是 30%，不是用 200k 硬算的 150%。
+  await expect(ctx).toContainText('30%');
+  await patchStore(
+    page,
+    `const s = useBoard.getState();
+     useBoard.setState({ sessions: s.sessions.map((x) => x.id === 's-auth' ? { ...x, contextWindow: null } : x) });`,
+  );
+  await expect(ctx).not.toContainText('%');
+  await expect(ctx).toContainText('30萬');
+  await expect(ctx).toHaveAttribute('title', /還不知道/);
+});
+
+test('因帳號限流排隊的卡片寫明在等額度', async ({ page }) => {
+  await openCanvas(page);
+  await patchStore(
+    page,
+    `const s = useBoard.getState();
+     useBoard.setState({ sessions: s.sessions.map((x) => x.id === 's-auth' ? { ...x, status: 'queued', statusDetail: 'queue:rate_limited' } : x), approvals: [] });`,
+  );
+  await expect(card(page, 's-auth').locator('.age')).toContainText('等帳號額度恢復');
+});
+
 test('沒有等你的：主角換成文字，按鈕停用', async ({ page }) => {
   await openCanvas(page);
   await patchStore(

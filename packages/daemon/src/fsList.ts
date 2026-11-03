@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { DaemonToHub } from '@agent-board/protocol';
 import { errorMessage } from './log';
+import { repoInfo } from './worktree';
 
 const MAX_ENTRIES = 5_000;
 
@@ -26,7 +27,7 @@ async function exists(path: string): Promise<boolean> {
 
 export async function listDirectory(requestId: string, rawPath: string): Promise<ListResult> {
   const path = expandPath(rawPath);
-  const base = { type: 'fs.listResult', requestId, path } as const;
+  const base = { type: 'fs.listResult', requestId, path, repo: null } as const;
   try {
     const dirents = await readdir(path, { withFileTypes: true });
     const entries = await Promise.all(
@@ -48,7 +49,8 @@ export async function listDirectory(requestId: string, rawPath: string): Promise
       }),
     );
     entries.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
-    return { ...base, entries, error: null };
+    // 新 session 用它判斷「同一個 repo」（CONTRACTS §6.3）。
+    return { ...base, entries, repo: await repoInfo(path), error: null };
   } catch (error) {
     return { ...base, entries: [], error: errorMessage(error) };
   }

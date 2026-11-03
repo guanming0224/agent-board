@@ -26,7 +26,7 @@ import {
   User,
   UserRole,
 } from './models';
-import { DirEntry, SessionSpec } from './ws';
+import { DirEntry, RepoInfo, SessionSpec } from './ws';
 
 export type Auth = 'public' | 'user' | 'owner';
 
@@ -141,7 +141,11 @@ export const routes = {
     path: '/api/machines/:id/fs',
     auth: 'user',
     query: z.object({ path: z.string() }),
-    response: z.object({ path: z.string(), entries: z.array(DirEntry) }),
+    response: z.object({
+      path: z.string(),
+      entries: z.array(DirEntry),
+      repo: RepoInfo.nullable().default(null),
+    }),
   }),
   machineUsage: route({
     method: 'GET',

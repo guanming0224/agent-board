@@ -115,6 +115,29 @@
 - `SessionStart` 在 `startup` 時沒有 `context_tokens`，所以 context 用量一開始是 null。
 - 這台機器上 `.claude/settings.local.json` 沒有顯示在 `git status`（原因未查，可能是全域 gitignore）。
 
+## Context 上限（查證 2026-11-03，claude 2.1.317）
+
+**Claude Code 唯一直接給上限的地方是 statusLine 的輸入**：`context_window.context_window_size`（官方 `statusline` 文件：「200000 by default, or 1000000 for models with extended context」），同一份輸入還有 `rate_limits.five_hour/seven_day.resets_at`。**本專案不用**：statusLine 只能有一個，寫進 `settings.local.json` 會蓋掉使用者自己的狀態列，而且設了 statusLine 後 TUI 會收起 `esc to interrupt` 等提示（官方文件明寫）。hook 都不帶上限；`SessionStart` 有 `model`（可能省略），`PreModelSwitch`／`PostModelSwitch`（v2.1.251+，本專案沒裝）有 `to_model`。
+
+所以 daemon 從模型 id 推（`packages/daemon/src/contextWindow.ts`）：
+
+1. 模型 id 以 `[1m]` 結尾 → 1M（claude 內部也是 `/\[1m\]/i` 判斷）。來源依序：`SessionStart.model`、指定的 `--model`。
+2. 否則查表（`SessionStart.model` → 對話紀錄最後一則回覆的 `message.model` → 指定的 `--model`）。表取自 2.1.317 執行檔內建模型目錄的 `context.window`，只列下面這些；**別名（`opus`、`sonnet`）與不在表上的模型一律 null，前端只顯示 token 數，不畫百分比**。
+3. 用量已超過 200k → 至少 1M。
+
+| 模型                                                                                                                                  | 不加 `[1m]` 的上限 |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| claude-3-5-haiku、claude-3-5-sonnet、claude-3-7-sonnet、claude-haiku-4-5、claude-sonnet-4-0／4-5／4-6、claude-opus-4-0／4-1／4-5／4-6 | 200k               |
+| claude-opus-4-7／4-8／5／5-5、claude-sonnet-5／5-5、claude-haiku-5-5、claude-fable-5／5-1、claude-mythos-5／5-1                       | 1M（native）       |
+
+用量（`contextTokens`）：`SessionStart` 只在 resume 時給 `context_tokens`；daemon 另在 `Stop`、`StopFailure` 讀 `transcript_path` 結尾 256 KB，取最後一則主線、非 `<synthetic>` 的助理回覆，`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`（和 statusLine 的 `total_input_tokens` 算法相同）。
+
+**未驗證**：`SessionStart.model` 在使用者選了 `[1m]` 時是否真的帶 `[1m]`；`CLAUDE_CODE_DISABLE_1M_CONTEXT` 會讓實際上限變 200k，daemon 不知道；`/model` 中途換模型要等下一個 `Stop` 才會從對話紀錄更新（換到同 id 的 `[1m]` 版本認不出來）；第三方供應商的 id 只認得含 `claude-<family>-<版本>` 的寫法。
+
+## 限流訊息的重置時間（查證 2026-11-03，claude 2.1.317）
+
+畫面訊息由 `$R(resetsAt, true)` 產生，固定帶時區：24 小時內 `resets 3pm (Asia/Taipei)`、`resets 3:30pm (…)`；更久 `resets Nov 5, 3pm (…)`；跨年加年份。`StopFailure.error_details` 只有像 `429 Too Many Requests` 的字，沒有時間。hub 的解析在 `packages/hub/src/rateLimitReset.ts`。**未驗證：真實限流時的輸出**（沒有真的撞過上限）；`quota_auto_resume_*` 通知的 payload 也沒查。
+
 ## 未驗證（Phase 2 要測）
 
 - [ ] `PermissionRequest` hook 卡住等待時，終端機的原生權限對話框會不會顯示、使用者直接在終端機回答時 hook 會怎樣。**這決定「網頁核准」和「畫面與 CLI 一致」能否並存**；若衝突，退路是只用 `Notification` 偵測，核准時對 PTY 送按鍵。
