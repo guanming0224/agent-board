@@ -18,22 +18,17 @@ import {
 import { createRequire } from 'node:module';
 import { dirname, join, relative } from 'node:path';
 import { build } from 'esbuild';
+import {
+  bundleOptions,
+  collectShipped,
+  lockfilePackages,
+  missingNotices,
+  RUNTIME_DEPS,
+} from './release-shipped.mjs';
 
 const root = join(import.meta.dirname, '..');
 const outDir = join(root, 'release');
 const stage = join(outDir, 'agent-board');
-
-// 原生模組不能打包。兩個 xterm 套件是 session.ts 用 createRequire 在執行期載入的，esbuild 看不到。
-const RUNTIME_DEPS = {
-  daemon: ['node-pty', '@xterm/headless', '@xterm/addon-serialize'],
-  hub: ['better-sqlite3', 'argon2'],
-};
-
-// ESM 輸出裡的 CJS 依賴會 require node 內建模組，需要一個真的 require。
-const ESM_BANNER = [
-  "import { createRequire as __abCreateRequire } from 'node:module';",
-  'const require = __abCreateRequire(import.meta.url);',
-].join('\n');
 
 const installedVersion = (pkg, dep) => {
   const require = createRequire(join(root, 'packages', pkg, 'package.json'));
@@ -52,45 +47,13 @@ const installedVersion = (pkg, dep) => {
   }
 };
 
-async function bundleServices() {
-  const common = {
-    bundle: true,
-    platform: 'node',
-    target: 'node22.18',
-    format: 'esm',
-    legalComments: 'none',
-    banner: { js: ESM_BANNER },
-    logLevel: 'warning',
-  };
-  await build({
-    ...common,
-    entryPoints: [join(root, 'packages/hub/src/main.ts')],
-    outfile: join(stage, 'hub/dist/main.mjs'),
-    external: RUNTIME_DEPS.hub,
-  });
-  await build({
-    ...common,
-    entryPoints: [join(root, 'packages/daemon/src/index.ts')],
-    outfile: join(stage, 'daemon/dist/index.mjs'),
-    external: RUNTIME_DEPS.daemon,
-  });
-}
-
-/** hook 跑在每次工具呼叫的路徑上：CJS、不帶 banner、只有 node 內建模組。 */
-async function bundleHook() {
-  const binDir = join(stage, 'daemon/node_modules/.bin');
-  const hook = join(binDir, 'agent-board-hook');
-  await build({
-    bundle: true,
-    platform: 'node',
-    target: 'node22.18',
-    format: 'cjs',
-    legalComments: 'none',
-    minify: true,
-    logLevel: 'warning',
-    entryPoints: [join(root, 'packages/hook/src/cli.ts')],
-    outfile: hook,
-  });
+/** 打包 hub、daemon、hook；回傳 metafile，檢查 notices 時要知道打包進去哪些套件。 */
+async function bundleAll() {
+  const metafiles = {};
+  for (const [name, options] of Object.entries(bundleOptions(root, stage))) {
+    metafiles[name] = (await build({ ...options, metafile: true })).metafile;
+  }
+  const hook = bundleOptions(root, stage).hook.outfile;
   chmodSync(hook, 0o755);
   // Windows 上 Claude Code 可能用 cmd 或 Git Bash 跑 hook，兩個都要找得到。
   writeFileSync(`${hook}.cmd`, '@node "%~dp0agent-board-hook" %*\r\n');
@@ -98,7 +61,24 @@ async function bundleHook() {
   for (const banned of ['zod', 'require("@agent-board']) {
     if (code.includes(banned)) throw new Error(`hook 打包結果不該含有 ${banned}`);
   }
-  return statSync(hook).size;
+  return { metafiles, hookBytes: statSync(hook).size };
+}
+
+/** 實際散布的第三方套件（打包進去的、npm ci 會裝的）都要在 THIRD_PARTY_NOTICES.md 裡。 */
+async function checkNotices(metafiles) {
+  const { found, unknownWebSources } = await collectShipped(root, metafiles);
+  const shipped = [...found.values(), ...lockfilePackages(join(stage, 'package-lock.json'))];
+  const problems = missingNotices(
+    readFileSync(join(stage, 'THIRD_PARTY_NOTICES.md'), 'utf8'),
+    shipped,
+  );
+  for (const source of unknownWebSources) problems.push(`網頁打包裡有不明來源：${source}`);
+  if (problems.length) {
+    throw new Error(
+      `THIRD_PARTY_NOTICES.md 不完整，先跑 corepack pnpm notices：\n  ${problems.join('\n  ')}`,
+    );
+  }
+  return found.size;
 }
 
 function buildWeb() {
@@ -184,11 +164,12 @@ function packTarball() {
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 buildWeb();
-await bundleServices();
-const hookBytes = await bundleHook();
+const { metafiles, hookBytes } = await bundleAll();
 copyInstallFiles();
 writeManifest();
+const noticed = await checkNotices(metafiles);
 writeBuildId();
 const { tarball, bytes } = packTarball();
 console.log(`hook ${hookBytes} bytes`);
+console.log(`THIRD_PARTY_NOTICES.md 涵蓋 ${noticed} 個散布的套件`);
 console.log(`${relative(root, tarball)} ${(bytes / 1024 / 1024).toFixed(1)} MB`);
