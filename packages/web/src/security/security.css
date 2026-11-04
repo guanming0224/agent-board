@@ -4,7 +4,9 @@
   font-weight: 600;
   white-space: nowrap;
 }
-.mask-chip.on {
+/* 要蓋過 tokens.css 的 button:hover，滑鼠停在晶片上時也看得出開著。 */
+.mask-chip.on,
+.mask-chip.on:hover:not(:disabled) {
   background: var(--fg);
   color: var(--bg);
   border-color: var(--fg);

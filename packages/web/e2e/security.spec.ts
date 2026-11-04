@@ -100,10 +100,14 @@ test.describe('遮蔽模式：畫面', () => {
     await expect(tail).not.toContainText(BODY);
     await expect(tail).toContainText('plain line');
 
-    // 晶片要明顯：反白，和關著時底色不同。
-    const on = await chip.evaluate((el) => getComputedStyle(el).backgroundColor);
+    // 晶片要明顯：反白，和關著時底色不同。按鈕底色有 0.15s 過渡，等它停下來再量。
+    const settledBg = async () => {
+      await page.waitForTimeout(300);
+      return chip.evaluate((el) => getComputedStyle(el).backgroundColor);
+    };
+    const on = await settledBg();
     await chip.click();
-    const off = await chip.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const off = await settledBg();
     expect(on).not.toBe(off);
     await chip.click();
 

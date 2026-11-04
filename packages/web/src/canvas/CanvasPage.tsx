@@ -22,6 +22,7 @@ import type { Layout, Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { STATUS_VISUAL } from '../shared/status';
 import { useBoard } from '../shared/store';
+import { QuickCreate } from '../flows';
 import { CostChip } from '../team/common';
 import { refreshTeams, useTeams, useTeamSync } from '../team/store';
 import {
@@ -36,6 +37,8 @@ import {
 import { HandoffEdge } from './HandoffEdge';
 import { motion } from './motion';
 import {
+  CARD_H,
+  CARD_W,
   fitCardZoom,
   loadLayouts,
   reconcileRects,
@@ -55,6 +58,21 @@ const edgeTypes = { handoff: HandoffEdge };
 /** 「全部顯示」不跨過 xterm 門檻，總覽一定是摘要條。 */
 const FIT_OPTIONS = { padding: 0.06, maxZoom: TERMINAL_ZOOM - 0.05, minZoom: 0.05 };
 const SAVE_DEBOUNCE_MS = 400;
+/** 快速建立小卡的寬度（flows.css .quick-create）＋邊距，用來把小卡留在畫面裡。 */
+const QUICK_W = 392;
+const QUICK_MIN_ROOM = 240;
+
+/** 雙擊到這些東西上不算「空白處」。 */
+const NOT_BLANK =
+  '.react-flow__node, .react-flow__edge, .react-flow__panel, .react-flow__minimap, .react-flow__controls, .quick-create';
+
+interface QuickSpot {
+  /** 小卡在畫布容器裡的位置（px）。 */
+  left: number;
+  top: number;
+  /** 新卡片左上角在畫布座標的位置。 */
+  at: { x: number; y: number };
+}
 
 const toNode = (id: string, rect: Rect): SessionNodeType => ({
   id,
@@ -139,18 +157,8 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
   );
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
-
-  const sessionKey = sessions.map((s) => s.id).join('|');
-  useEffect(() => {
-    setCards((prev) => {
-      const current = new Map(prev.map((n) => [n.id, rectOf(n)]));
-      const kept = new Map(prev.map((n) => [n.id, n]));
-      return [...reconcileRects(sessions, current, layouts)].map(
-        ([id, r]) => kept.get(id) ?? toNode(id, r),
-      );
-    });
-    // sessions 只有 id 集合變動才需要重排。
-  }, [sessionKey, layouts]);
+  /** 從畫布雙擊建立的 session：等它出現在清單裡就放到雙擊的位置。 */
+  const placeAt = useRef(new Map<string, Rect>());
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushSave = useCallback(() => {
@@ -166,6 +174,33 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
     );
   }, [backend]);
 
+  const scheduleSave = useCallback(() => {
+    if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
+  }, [flushSave]);
+
+  const sessionKey = sessions.map((s) => s.id).join('|');
+  useEffect(() => {
+    // 先取出來：updater 會晚一點才執行，那時 placeAt 已經清掉了。
+    const placed = new Map<string, Rect>();
+    for (const s of sessions) {
+      const rect = placeAt.current.get(s.id);
+      if (rect) placed.set(s.id, rect);
+    }
+    for (const id of placed.keys()) placeAt.current.delete(id);
+    setCards((prev) => {
+      const current = new Map(prev.map((n) => [n.id, rectOf(n)]));
+      for (const [id, rect] of placed) current.set(id, rect);
+      const kept = new Map(prev.map((n) => [n.id, n]));
+      return [...reconcileRects(sessions, current, layouts)].map(([id, r]) => {
+        const node = kept.get(id);
+        return placed.has(id) || !node ? toNode(id, r) : node;
+      });
+    });
+    if (placed.size > 0) scheduleSave();
+    // sessions 只有 id 集合變動才需要重排。
+  }, [sessionKey, layouts]);
+
   useEffect(
     () => () => {
       if (saveTimer.current === null) return;
@@ -178,12 +213,70 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
       setCards((prev) => applyNodeChanges(changes, prev as Node[]) as SessionNodeType[]);
-      if (changes.some((c) => c.type === 'position' && !c.dragging)) {
-        if (saveTimer.current !== null) clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
-      }
+      if (changes.some((c) => c.type === 'position' && !c.dragging)) scheduleSave();
     },
-    [flushSave],
+    [scheduleSave],
+  );
+
+  // ── 快速建立：雙擊空白處，或頁首／空畫布的「新增 session」（畫面中央） ──
+  const [quick, setQuick] = useState<QuickSpot | null>(null);
+  const openQuickAt = useCallback(
+    (clientX: number, clientY: number) => {
+      const box = host.current?.getBoundingClientRect();
+      if (!box) return;
+      const x = clientX - box.left;
+      const y = clientY - box.top;
+      setQuick({
+        left: Math.max(12, Math.min(x, box.width - QUICK_W)),
+        top: Math.max(12, Math.min(y, box.height - QUICK_MIN_ROOM)),
+        at: flow.screenToFlowPosition({ x: clientX, y: clientY }),
+      });
+    },
+    [flow],
+  );
+  const openQuickCentered = useCallback(() => {
+    const box = host.current?.getBoundingClientRect();
+    if (!box) return;
+    const center = flow.screenToFlowPosition({
+      x: box.left + box.width / 2,
+      y: box.top + box.height / 2,
+    });
+    setQuick({
+      left: Math.max(12, (box.width - QUICK_W) / 2),
+      top: Math.max(12, box.height / 2 - QUICK_MIN_ROOM),
+      // 卡片中心放在畫面中央。
+      at: { x: center.x - CARD_W / 2, y: center.y - CARD_H / 2 },
+    });
+  }, [flow]);
+  useEffect(() => {
+    useViewsUi.getState().setOpenQuickCreate(openQuickCentered);
+    return () => useViewsUi.getState().setOpenQuickCreate(null);
+  }, [openQuickCentered]);
+  const closeQuick = useCallback(() => setQuick(null), []);
+  const onQuickCreated = useCallback(
+    (session: Session) => {
+      if (!quick) return;
+      const rect = { ...quick.at, w: CARD_W, h: CARD_H };
+      setQuick(null);
+      // 還沒出現在清單裡：等 sessions 更新時由上面的 effect 放到這裡。
+      placeAt.current.set(session.id, rect);
+      // 廣播可能比回應先到，卡片已經（或即將）排進空位：用 updater 才看得到排隊中的更新，搬到雙擊的位置。
+      setCards((prev) => {
+        if (!prev.some((n) => n.id === session.id)) return prev;
+        placeAt.current.delete(session.id);
+        return prev.map((n) => (n.id === session.id ? toNode(session.id, rect) : n));
+      });
+      scheduleSave();
+    },
+    [quick, scheduleSave],
+  );
+  const onDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      const target = e.target as Element;
+      if (!target.closest('.react-flow__pane') || target.closest(NOT_BLANK)) return;
+      openQuickAt(e.clientX, e.clientY);
+    },
+    [openQuickAt],
   );
 
   const rects = useMemo(() => new Map(cards.map((n) => [n.id, rectOf(n)])), [cards]);
@@ -319,7 +412,11 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         isValidConnection={(c) => c.source !== c.target}
-        onPaneClick={clearFocus}
+        onPaneClick={() => {
+          clearFocus();
+          setQuick(null);
+        }}
+        onDoubleClick={onDoubleClick}
         defaultViewport={returnViewport ?? undefined}
         colorMode="dark"
         minZoom={0.05}
@@ -367,6 +464,18 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
             </div>
           </Panel>
         )}
+        {sessions.length === 0 && !quick && (
+          <Panel position="top-center" className="canvas-empty">
+            <EmptyState
+              text={t('canvas.empty')}
+              action={
+                <button className="primary" onClick={openQuickCentered}>
+                  {t('views.newSession')}
+                </button>
+              }
+            />
+          </Panel>
+        )}
         {saveError && (
           <Panel position="top-center" className="save-error">
             <div className="alert" role="alert">
@@ -376,6 +485,14 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
           </Panel>
         )}
       </ReactFlow>
+      {quick && (
+        <QuickCreate
+          left={quick.left}
+          top={quick.top}
+          onCreated={onQuickCreated}
+          onClose={closeQuick}
+        />
+      )}
     </div>
   );
 }
@@ -422,17 +539,6 @@ export function CanvasPage() {
     );
   } else if (board.status === 'loading' || layouts.status === 'loading') {
     body = <LoadingState />;
-  } else if (sessions.length === 0) {
-    body = (
-      <EmptyState
-        text={t('canvas.empty')}
-        action={
-          <button className="primary" onClick={() => (location.hash = '#/new')}>
-            {t('views.newSession')}
-          </button>
-        }
-      />
-    );
   } else {
     body = (
       <ReactFlowProvider>

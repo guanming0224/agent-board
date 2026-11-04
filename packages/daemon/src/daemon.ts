@@ -18,7 +18,7 @@ import {
 import pkg from '../package.json' with { type: 'json' };
 import { ApprovalManager } from './approvals';
 import type { DaemonConfig } from './config';
-import { listDirectory } from './fsList';
+import { listDirectory, makeDirectory } from './fsList';
 import { HookServer, type HookOutput } from './hookServer';
 import { HubClient } from './hubClient';
 import { errorMessage, log } from './log';
@@ -351,6 +351,11 @@ export class Daemon {
         return;
       case 'fs.list':
         void listDirectory(message.requestId, message.path).then((result) => this.send(result));
+        return;
+      case 'fs.mkdir':
+        void makeDirectory(message.requestId, message.parent, message.name).then((result) =>
+          this.send(result),
+        );
         return;
       default:
         message satisfies never;

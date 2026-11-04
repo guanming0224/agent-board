@@ -26,7 +26,7 @@ import {
   User,
   UserRole,
 } from './models';
-import { DirEntry, RepoInfo, SessionSpec } from './ws';
+import { DirEntry, FolderName, RepoInfo, SessionSpec } from './ws';
 
 export type Auth = 'public' | 'user' | 'owner';
 
@@ -167,6 +167,18 @@ export const routes = {
     path: '/api/machines/:id/fs',
     auth: 'user',
     query: z.object({ path: z.string() }),
+    response: z.object({
+      path: z.string(),
+      entries: z.array(DirEntry),
+      repo: RepoInfo.nullable().default(null),
+    }),
+  }),
+  /** 在遠端機器建一層新資料夾（新 session 選路徑用），回傳新資料夾的列表。 */
+  machineMkdir: route({
+    method: 'POST',
+    path: '/api/machines/:id/fs',
+    auth: 'user',
+    body: z.object({ parent: z.string().min(1), name: FolderName }),
     response: z.object({
       path: z.string(),
       entries: z.array(DirEntry),

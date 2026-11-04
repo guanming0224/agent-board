@@ -642,10 +642,16 @@ test.describe('四種狀態', () => {
   test('空的：畫布與待處理都寫下一步', async ({ page }) => {
     await openCanvas(page);
     await patchStore(page, `useBoard.setState({ sessions: [], approvals: [] });`);
+    await expect(page.locator('[data-state="empty"]')).toContainText('在畫布空白處雙擊');
     await expect(page.locator('[data-state="empty"]')).toContainText('按「新增 session」開始');
     await shot(page, 'empty');
+    // 空畫布的按鈕直接在畫布上打開快速建立，不換頁。
     await page.locator('[data-state="empty"]').getByRole('button').click();
-    await expect(page).toHaveURL(/#\/new/);
+    await expect(page.getByTestId('quick-create')).toBeVisible();
+    await expect(page).toHaveURL(/#\/canvas/);
+    await expect(page.locator('[data-state="empty"]')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('quick-create')).toHaveCount(0);
 
     await page.evaluate(() => (location.hash = '#/queue'));
     await expect(page.locator('[data-state="empty"]')).toContainText('沒有等你的');
@@ -694,5 +700,134 @@ test.describe('四種狀態', () => {
     await patchStore(page, `useBoard.setState({ connected: true });`);
     await expect(page.locator('[data-state="stale"]')).toHaveCount(0);
     await expect(card(page, 's-tests').getByRole('textbox')).toBeEnabled();
+  });
+});
+
+test.describe('在畫布上直接新增', () => {
+  /** 縮小後畫布左緣一定是空白處。 */
+  async function blankSpot(page: Page) {
+    for (let i = 0; i < 3; i += 1) await page.getByRole('button', { name: '縮小' }).click();
+    const box = await page.locator('.react-flow__pane').boundingBox();
+    if (!box) throw new Error('no pane');
+    return { x: box.x + 40, y: box.y + box.height / 2 };
+  }
+
+  test('雙擊空白處：建新資料夾、新專案，卡片出現在雙擊的位置', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    const spot = await blankSpot(page);
+    const before = await page.locator('.react-flow__node').count();
+
+    await page.mouse.dblclick(spot.x, spot.y);
+    const quick = page.getByTestId('quick-create');
+    await expect(quick).toBeVisible();
+    const qbox = await quick.boundingBox();
+    expect(Math.abs((qbox?.x ?? 0) - spot.x)).toBeLessThan(4);
+    // 預設權限模式看得見。
+    await expect(quick.locator('.quick-head .chip')).toHaveText('default');
+
+    // 沒填就建：說缺什麼。
+    await quick.getByRole('button', { name: '建立 session' }).click();
+    await expect(quick).toContainText('要填名稱');
+
+    // 瀏覽 → 新資料夾 → 自動選用，名稱跟著資料夾。
+    await quick.getByRole('button', { name: '瀏覽' }).click();
+    await quick.getByTestId('new-folder').click();
+    await quick.getByRole('textbox', { name: '新資料夾名稱' }).fill('ledger');
+    await quick.getByRole('button', { name: '建立並選用' }).click();
+    await expect(quick.locator('#qc-cwd')).toHaveValue(/\/ledger$/);
+    await expect(quick.locator('#qc-name')).toHaveValue('ledger');
+    await expect(quick.getByTestId('folder-browser')).toHaveCount(0);
+
+    // 同名資料夾：白話說明，不覆蓋。
+    await quick.getByRole('button', { name: '瀏覽' }).click();
+    await quick.getByTestId('new-folder').click();
+    await quick.getByRole('textbox', { name: '新資料夾名稱' }).fill('notes');
+    await quick.getByRole('button', { name: '建立並選用' }).click();
+    await expect(quick).toContainText('這裡已經有同名的資料夾');
+    await quick.getByRole('button', { name: '關閉' }).first().click();
+
+    // 專案：在選單裡直接新增。
+    await quick.locator('#qc-project').selectOption({ label: '＋ 新增專案…' });
+    await quick.getByRole('textbox', { name: '專案名稱' }).fill('記帳');
+    await quick.getByRole('button', { name: '建立專案' }).click();
+    await expect(quick.locator('#qc-project option:checked')).toHaveText('記帳');
+
+    await quick.locator('#qc-first').fill('建立專案骨架');
+    await quick.getByRole('button', { name: '建立 session' }).click();
+    await expect(quick).toHaveCount(0);
+
+    await expect(page.locator('.react-flow__node')).toHaveCount(before + 1);
+    const created = page.locator('.react-flow__node', { hasText: 'ledger' });
+    await expect(created).toBeVisible();
+    await expect(created.locator('.callsign')).toContainText('/ 記帳');
+    const nbox = await created.boundingBox();
+    expect(Math.abs((nbox?.x ?? 0) - spot.x)).toBeLessThan(4);
+    expect(Math.abs((nbox?.y ?? 0) - spot.y)).toBeLessThan(4);
+  });
+
+  test('hub 先回應、廣播晚到：卡片仍放在雙擊的位置', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    // 模擬真 hub：回應先到，session.created 的廣播 300ms 後才到。
+    await patchStore(
+      page,
+      `const b = useBoard.getState().backend;
+       const orig = b.createSession.bind(b);
+       b.createSession = async (input) => {
+         const before = useBoard.getState().sessions;
+         const created = await orig(input);
+         const after = useBoard.getState().sessions;
+         useBoard.setState({ sessions: before });
+         setTimeout(() => useBoard.setState({ sessions: after }), 300);
+         return created;
+       };`,
+    );
+    const spot = await blankSpot(page);
+    await page.mouse.dblclick(spot.x, spot.y);
+    const quick = page.getByTestId('quick-create');
+    await quick.locator('#qc-name').fill('late');
+    await quick.locator('#qc-cwd').fill('/tmp/late');
+    await quick.getByRole('button', { name: '建立 session' }).click();
+    await expect(quick).toHaveCount(0);
+    const created = page.locator('.react-flow__node', { hasText: 'late' });
+    await expect(created).toBeVisible();
+    const nbox = await created.boundingBox();
+    expect(Math.abs((nbox?.x ?? 0) - spot.x)).toBeLessThan(4);
+    expect(Math.abs((nbox?.y ?? 0) - spot.y)).toBeLessThan(4);
+  });
+
+  test('雙擊卡片不會開快速建立；點空白或 Esc 關掉；頁首按鈕在畫布上原地打開', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await card(page, 's-auth').locator('.callsign').dblclick();
+    await expect(page.getByTestId('quick-create')).toHaveCount(0);
+
+    const spot = await blankSpot(page);
+    await page.mouse.dblclick(spot.x, spot.y);
+    await expect(page.getByTestId('quick-create')).toBeVisible();
+    await page.mouse.click(spot.x, spot.y - 150);
+    await expect(page.getByTestId('quick-create')).toHaveCount(0);
+
+    await page.getByRole('banner').getByRole('button', { name: '新增 session' }).click();
+    await expect(page.getByTestId('quick-create')).toBeVisible();
+    await expect(page).toHaveURL(/#\/canvas/);
+    await page.getByTestId('quick-create').getByRole('link', { name: '完整表單' }).click();
+    await expect(page).toHaveURL(/#\/new/);
+    // 離開畫布後頁首按鈕回到完整表單。
+    await page.evaluate(() => (location.hash = '#/queue'));
+    await page.getByRole('banner').getByRole('button', { name: '新增 session' }).click();
+    await expect(page).toHaveURL(/#\/new/);
+  });
+
+  test('手機寬度：小卡固定在下方、不超出畫面', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#/canvas');
+    await expect(card(page, 's-auth')).toBeVisible();
+    await page.getByRole('banner').getByRole('button', { name: '新增 session' }).click();
+    const box = await page.getByTestId('quick-create').boundingBox();
+    expect(box?.x).toBeGreaterThanOrEqual(0);
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(844);
   });
 });

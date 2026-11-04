@@ -305,6 +305,9 @@ export function createHubBackend() {
     listTemplates: () => call('templatesList'),
     saveTemplate: (input) => call('templatesCreate', { body: input }),
     browseDirectory: (id, path) => call('machineBrowse', { params: { id }, query: { path } }),
+    makeDirectory: (id, parent, name) =>
+      call('machineMkdir', { params: { id }, body: { parent, name } }),
+    createProject: (input) => call('projectsCreate', { body: input }),
     createPairingCode: () => call('pairingCreate'),
     async removeMachine(id) {
       await call('machinesDelete', { params: { id } });

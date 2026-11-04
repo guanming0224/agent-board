@@ -156,7 +156,16 @@ export function AppHeader({ tab }: { tab: TabName }) {
             </button>
           ))}
         </div>
-        <button onClick={() => (location.hash = '#/new')}>{t('views.newSession')}</button>
+        <button
+          onClick={() => {
+            // 在畫布上就原地打開快速建立，其他頁面去完整表單。
+            const open = useViewsUi.getState().openQuickCreate;
+            if (open) open();
+            else location.hash = '#/new';
+          }}
+        >
+          {t('views.newSession')}
+        </button>
       </div>
       <nav className="tabs" aria-label={t('views.tab.nav')}>
         {TABS.map((item) =>

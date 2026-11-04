@@ -1,7 +1,7 @@
 // 新增 session：左邊表單，右邊即時預覽實際執行的指令與額度警告（DISPATCH §5.3-2）。
 import { useCallback, useEffect, useState } from 'react';
-import { PermissionMode, sameWorkingTree } from '@agent-board/protocol';
-import type { Machine, RepoInfo, Session, Settings } from '@agent-board/protocol';
+import { PermissionMode } from '@agent-board/protocol';
+import type { Machine, Session, Settings } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { commandPreview } from './commandPreview';
@@ -19,9 +19,18 @@ import {
   type Note,
   type T,
 } from './common';
-
-const TASK_TYPES = ['general', 'gpu', 'heavy'] as const;
-type TaskType = (typeof TASK_TYPES)[number];
+import {
+  Field,
+  FolderBrowser,
+  folderName,
+  isActive,
+  ProjectSelect,
+  suggestMachine,
+  TASK_TYPES,
+  useWorktreeAdvice,
+  WorktreeHints,
+  type TaskType,
+} from './sessionForm';
 
 const LONG_CONTEXT_TOKENS = 100_000;
 const NO_GUARDS: Settings['quotaGuards'] = {
@@ -29,28 +38,7 @@ const NO_GUARDS: Settings['quotaGuards'] = {
   maxConcurrentSessions: null,
   queueWhenRateLimited: true,
 };
-/** 打字時不要每個字都去問 daemon。 */
-const REPO_LOOKUP_DELAY_MS = 400;
 const MODEL_ALIASES = ['sonnet', 'opus', 'haiku'];
-
-const isActive = (s: Session) => !s.archived && s.status !== 'done';
-
-function suggestMachine(
-  machines: readonly Machine[],
-  sessions: readonly Session[],
-  task: TaskType,
-): Machine | null {
-  const online = machines.filter((m) => m.online);
-  const load = (m: Machine) => sessions.filter((s) => s.machineId === m.id && isActive(s)).length;
-  const fewestSessions = (list: Machine[]) =>
-    [...list].sort((a, b) => load(a) - load(b))[0] ?? null;
-  if (task === 'gpu') return fewestSessions(online.filter((m) => m.capabilities.hasGpu));
-  if (task === 'heavy') {
-    const size = (m: Machine) => m.capabilities.cpuCores * m.capabilities.memoryBytes;
-    return [...online].sort((a, b) => size(b) - size(a) || load(a) - load(b))[0] ?? null;
-  }
-  return fewestSessions(online);
-}
 
 function suggestionReason(t: T, machine: Machine, task: TaskType): string {
   const { gpuName, cpuCores, memoryBytes } = machine.capabilities;
@@ -62,145 +50,6 @@ function suggestionReason(t: T, machine: Machine, task: TaskType): string {
     });
   }
   return t('flows.new.reason.general');
-}
-
-const trimSlash = (path: string) => path.replace(/[\\/]+$/, '');
-
-/** 同一個資料夾，或一個在另一個裡面。 */
-function samePlace(a: string, b: string): boolean {
-  const x = trimSlash(a);
-  const y = trimSlash(b);
-  if (!x || !y) return false;
-  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
-}
-
-/** session 實際改檔案的地方：有自己的 worktree 就是那裡。 */
-const workDir = (s: Session) => s.worktreePath ?? s.cwd;
-
-/**
- * 選定資料夾所在的 repo（daemon 跑 `git rev-parse`，借用資料夾瀏覽的回應）。
- * undefined：還沒問到；null：不是 git、問不到或機器離線，退回只比資料夾。
- */
-function useRepoOf(machine: Machine | undefined, path: string): RepoInfo | null | undefined {
-  const { backend } = useBoard();
-  const [found, setFound] = useState<{ key: string; repo: RepoInfo | null } | null>(null);
-  const machineId = machine?.online ? machine.id : '';
-  const key = machineId && path ? `${machineId}\n${path}` : '';
-  useEffect(() => {
-    if (!key) return;
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      backend.browseDirectory(machineId, path).then(
-        (listing) => !cancelled && setFound({ key, repo: listing.repo ?? null }),
-        () => !cancelled && setFound({ key, repo: null }),
-      );
-    }, REPO_LOOKUP_DELAY_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [backend, key, machineId, path]);
-  if (!key) return null;
-  return found?.key === key ? found.repo : undefined;
-}
-
-function FolderBrowser({
-  machine,
-  start,
-  onPick,
-  onClose,
-}: {
-  machine: Machine;
-  start: string;
-  onPick: (path: string) => void;
-  onClose: () => void;
-}) {
-  const t = useT();
-  const { backend } = useBoard();
-  const [path, setPath] = useState(start || '~');
-  const sep = machine.os === 'win32' ? '\\' : '/';
-  const listing = useLoad(
-    useCallback(() => backend.browseDirectory(machine.id, path), [backend, machine.id, path]),
-  );
-  const shown = listing.data?.path ?? path;
-  const up = () => {
-    const cut = trimSlash(shown).lastIndexOf(sep);
-    setPath(cut > 0 ? shown.slice(0, cut) : sep);
-  };
-  const folders = listing.data?.entries.filter((e) => e.isDir) ?? [];
-  return (
-    <div className="browser" data-testid="folder-browser">
-      <div className="browser-head">
-        <span className="callsign">
-          {machine.name}:{shown}
-        </span>
-      </div>
-      {listing.error ? (
-        <ErrorBox
-          what={t('flows.new.browseError', { path, error: listing.error })}
-          how={t('flows.new.browseHow')}
-          onRetry={listing.reload}
-        />
-      ) : listing.loading ? (
-        <Loading />
-      ) : folders.length === 0 ? (
-        <p className="hint">{t('flows.new.browseEmpty')}</p>
-      ) : (
-        <ul className="browser-list">
-          {folders.map((entry) => (
-            <li key={entry.name}>
-              <button
-                type="button"
-                onClick={() => setPath(`${trimSlash(shown)}${sep}${entry.name}`)}
-              >
-                {entry.name}
-              </button>
-              {entry.isGitRepo && <span className="chip">git</span>}
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="acts">
-        <button type="button" onClick={up}>
-          {t('flows.new.browseUp')}
-        </button>
-        <button
-          type="button"
-          className="primary"
-          disabled={!listing.data}
-          onClick={() => onPick(shown)}
-        >
-          {t('flows.new.browsePick')}
-        </button>
-        <button type="button" onClick={onClose}>
-          {t('flows.new.browseClose')}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function Field({
-  label,
-  htmlFor,
-  error,
-  hint,
-  children,
-}: {
-  label: string;
-  htmlFor?: string;
-  error?: string | null;
-  hint?: string | null;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="field">
-      <label htmlFor={htmlFor}>{label}</label>
-      {children}
-      {hint && <p className="hint">{hint}</p>}
-      {error && <p className="field-error">{error}</p>}
-    </div>
-  );
 }
 
 interface Warning {
@@ -296,19 +145,9 @@ export function NewSessionPage() {
   const suggestion = suggestMachine(machines, sessions, taskType);
   const machineId = chosenMachine ?? suggestion?.id ?? '';
   const machine = machines.find((m) => m.id === machineId);
-  const cwdRepo = useRepoOf(machine, cwd.trim());
-  const here = { dir: cwd.trim(), repoRoot: cwdRepo?.root ?? null };
-  const sameMachine = sessions.filter((s) => s.machineId === machineId && isActive(s));
   // 同一個 working tree 才會互相改到檔案：同 repo 的不同子資料夾也算（daemon 回報的根目錄）。
-  const related = sameMachine.filter((s) =>
-    sameWorkingTree({ dir: workDir(s), repoRoot: s.repoRoot }, here),
-  );
-  const relatedByRepo = related.some((s) => !samePlace(workDir(s), cwd));
-  // 同 repo 但各自在 linked worktree 的，不會衝突，只告知。
-  const siblings = cwdRepo
-    ? sameMachine.filter((s) => s.repoCommonDir === cwdRepo.commonDir && !related.includes(s))
-    : [];
-  const useWorktree = worktreeChoice ?? related.length > 0;
+  const advice = useWorktreeAdvice(machine, cwd);
+  const useWorktree = worktreeChoice ?? advice.related.length > 0;
   const resumable = sessions.filter((s) => s.claudeSessionId);
   const resumed = sessions.find((s) => s.claudeSessionId === resume.trim());
   const accounts = [
@@ -507,18 +346,12 @@ export function NewSessionPage() {
             htmlFor="ns-project"
             hint={projects.data?.length === 0 ? t('flows.new.projectEmpty') : null}
           >
-            <select
+            <ProjectSelect
               id="ns-project"
+              projects={projects}
               value={projectId}
-              onChange={(e) => setProjectId(e.target.value)}
-            >
-              <option value="">{t('flows.new.projectNone')}</option>
-              {projects.data?.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+              onChange={setProjectId}
+            />
           </Field>
 
           <fieldset className="field">
@@ -597,6 +430,7 @@ export function NewSessionPage() {
                 onPick={(path) => {
                   setCwd(path);
                   setBrowsing(false);
+                  if (!name.trim()) setName(folderName(path));
                 }}
                 onClose={() => setBrowsing(false)}
               />
@@ -612,22 +446,7 @@ export function NewSessionPage() {
               />
               {t('flows.new.worktree')}
             </label>
-            {related.length > 0 && (
-              <p className="hint you" data-testid="worktree-hint">
-                {t(relatedByRepo ? 'flows.new.worktreeRepoHint' : 'flows.new.worktreeHint', {
-                  n: related.length,
-                  names: related.map((s) => s.name).join('、'),
-                })}
-              </p>
-            )}
-            {siblings.length > 0 && (
-              <p className="hint" data-testid="worktree-siblings">
-                {t('flows.new.worktreeSiblings', {
-                  n: siblings.length,
-                  names: siblings.map((s) => s.name).join('、'),
-                })}
-              </p>
-            )}
+            <WorktreeHints {...advice} />
           </div>
 
           <fieldset className={`field modes${bypass ? ' modes-bypass' : ''}`}>

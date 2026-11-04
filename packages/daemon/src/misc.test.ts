@@ -6,6 +6,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -13,7 +14,7 @@ import {
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig, normalizeHubUrl } from './config';
-import { listDirectory } from './fsList';
+import { listDirectory, makeDirectory } from './fsList';
 import { parseNvidiaSmi, ResourceMonitor } from './resources';
 import { buildClaudeArgs, screenFingerprint, withoutPromptBox } from './session';
 import { SessionStore, type PersistedSession } from './store';
@@ -355,6 +356,40 @@ describe('fs.list', () => {
     const file = await listDirectory('r5', join(dir, 'secret.txt'));
     expect(file.entries).toEqual([]);
     expect(JSON.stringify(file)).not.toContain('CONTENT_MARKER');
+  });
+});
+
+describe('fs.mkdir', () => {
+  it('建一層新資料夾並回它的列表；已存在就回錯誤、不覆蓋', async () => {
+    const dir = temp();
+    const made = await makeDirectory('m1', dir, '記帳 App');
+    expect(made).toMatchObject({
+      type: 'fs.listResult',
+      requestId: 'm1',
+      path: join(dir, '記帳 App'),
+      entries: [],
+      error: null,
+    });
+    expect(statSync(join(dir, '記帳 App')).isDirectory()).toBe(true);
+
+    writeFileSync(join(dir, '記帳 App', 'keep.txt'), 'x');
+    const again = await makeDirectory('m2', dir, '記帳 App');
+    expect(again.error).toContain('EEXIST');
+    expect(readFileSync(join(dir, '記帳 App', 'keep.txt'), 'utf8')).toBe('x');
+  });
+
+  it('parent 不存在不會一路建上去；名稱跑出 parent 一律拒絕', async () => {
+    const dir = temp();
+    const missing = await makeDirectory('m3', join(dir, 'nope'), 'a');
+    expect(missing.error).toContain('ENOENT');
+    expect(existsSync(join(dir, 'nope'))).toBe(false);
+
+    for (const name of ['..', '.', '../escape', 'a/b']) {
+      const bad = await makeDirectory('m4', join(dir, 'p'), name);
+      expect(bad.error, name).toBeTruthy();
+    }
+    expect(existsSync(join(dir, 'escape'))).toBe(false);
+    expect(existsSync(join(dir, 'p'))).toBe(false);
   });
 });
 
