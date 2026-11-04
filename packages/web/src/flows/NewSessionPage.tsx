@@ -28,6 +28,7 @@ import {
   suggestMachine,
   TASK_TYPES,
   useWorktreeAdvice,
+  worktreeOn,
   WorktreeHints,
   type TaskType,
 } from './sessionForm';
@@ -147,7 +148,7 @@ export function NewSessionPage() {
   const machine = machines.find((m) => m.id === machineId);
   // 同一個 working tree 才會互相改到檔案：同 repo 的不同子資料夾也算（daemon 回報的根目錄）。
   const advice = useWorktreeAdvice(machine, cwd);
-  const useWorktree = worktreeChoice ?? advice.related.length > 0;
+  const useWorktree = worktreeOn(advice, worktreeChoice);
   const resumable = sessions.filter((s) => s.claudeSessionId);
   const resumed = sessions.find((s) => s.claudeSessionId === resume.trim());
   const accounts = [
@@ -442,6 +443,7 @@ export function NewSessionPage() {
               <input
                 type="checkbox"
                 checked={useWorktree}
+                disabled={advice.notGit}
                 onChange={(e) => setWorktreeChoice(e.target.checked)}
               />
               {t('flows.new.worktree')}

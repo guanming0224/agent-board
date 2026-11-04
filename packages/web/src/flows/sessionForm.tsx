@@ -59,11 +59,13 @@ const workDir = (s: Session) => s.worktreePath ?? s.cwd;
 
 /**
  * 選定資料夾所在的 repo（daemon 跑 `git rev-parse`，借用資料夾瀏覽的回應）。
- * undefined：還沒問到；null：不是 git、問不到或機器離線，退回只比資料夾。
+ * null：daemon 確認不是 git；undefined：還沒問到、問不到或機器離線。兩者都退回只比資料夾。
  */
 function useRepoOf(machine: Machine | undefined, path: string): RepoInfo | null | undefined {
   const { backend } = useBoard();
-  const [found, setFound] = useState<{ key: string; repo: RepoInfo | null } | null>(null);
+  const [found, setFound] = useState<{ key: string; repo: RepoInfo | null | undefined } | null>(
+    null,
+  );
   const machineId = machine?.online ? machine.id : '';
   const key = machineId && path ? `${machineId}\n${path}` : '';
   useEffect(() => {
@@ -71,8 +73,8 @@ function useRepoOf(machine: Machine | undefined, path: string): RepoInfo | null 
     let cancelled = false;
     const timer = setTimeout(() => {
       backend.browseDirectory(machineId, path).then(
-        (listing) => !cancelled && setFound({ key, repo: listing.repo ?? null }),
-        () => !cancelled && setFound({ key, repo: null }),
+        (listing) => !cancelled && setFound({ key, repo: listing.repo }),
+        () => !cancelled && setFound({ key, repo: undefined }),
       );
     }, REPO_LOOKUP_DELAY_MS);
     return () => {
@@ -80,13 +82,14 @@ function useRepoOf(machine: Machine | undefined, path: string): RepoInfo | null 
       clearTimeout(timer);
     };
   }, [backend, key, machineId, path]);
-  if (!key) return null;
+  if (!key) return undefined;
   return found?.key === key ? found.repo : undefined;
 }
 
 /**
  * 同一個 working tree 已有哪些 session（會互相改到檔案，預設開 worktree），
  * 以及同 repo 但各自在 linked worktree 的（不會衝突，只告知）。
+ * 不是 git 的資料夾開不了 worktree（daemon 跑 `git worktree add` 會失敗），就不預設也不給勾。
  */
 export function useWorktreeAdvice(machine: Machine | undefined, cwd: string) {
   const { sessions } = useBoard();
@@ -101,15 +104,32 @@ export function useWorktreeAdvice(machine: Machine | undefined, cwd: string) {
   const siblings = cwdRepo
     ? sameMachine.filter((s) => s.repoCommonDir === cwdRepo.commonDir && !related.includes(s))
     : [];
-  return { related, relatedByRepo, siblings };
+  return { related, relatedByRepo, siblings, notGit: cwdRepo === null };
 }
+
+/** 勾選框的實際值：使用者選過就照選的，否則同 working tree 有人就打開；不是 git 一律關。 */
+export const worktreeOn = (advice: ReturnType<typeof useWorktreeAdvice>, choice: boolean | null) =>
+  !advice.notGit && (choice ?? advice.related.length > 0);
 
 export function WorktreeHints({
   related,
   relatedByRepo,
   siblings,
+  notGit,
 }: ReturnType<typeof useWorktreeAdvice>) {
   const t = useT();
+  if (notGit) {
+    return (
+      <p className={related.length > 0 ? 'hint you' : 'hint'} data-testid="worktree-not-git">
+        {related.length > 0
+          ? t('flows.new.worktreeNotGitShared', {
+              n: related.length,
+              names: related.map((s) => s.name).join('、'),
+            })
+          : t('flows.new.worktreeNotGit')}
+      </p>
+    );
+  }
   return (
     <>
       {related.length > 0 && (

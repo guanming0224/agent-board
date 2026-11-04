@@ -122,6 +122,9 @@ export const zhTW: Record<string, string> = {
     '同一個 repo 已有 {n} 個 session 在改檔案（{names}），已預設打開 worktree，避免互相改到檔案。',
   'flows.new.worktreeSiblings':
     '同一個 repo 另有 {n} 個 session 在各自的 worktree（{names}），不會改到同一份檔案。',
+  'flows.new.worktreeNotGit': '這個資料夾不是 git repo，不能用 worktree。',
+  'flows.new.worktreeNotGitShared':
+    '這個資料夾已有 {n} 個 session（{names}），但它不是 git repo，不能用 worktree，兩邊會改到同一份檔案。要同時改請換資料夾，或先在這裡 git init。',
   'flows.new.mode': '權限模式',
   'flows.new.model': '模型',
   'flows.new.modelHint': '留空用預設；可填別名或完整名稱。',
@@ -565,6 +568,9 @@ export const en: Record<string, string> = {
     'This repo already has {n} session(s) editing it ({names}), so worktree is on by default to keep them from editing the same files.',
   'flows.new.worktreeSiblings':
     '{n} other session(s) work in their own worktree of this repo ({names}); they will not edit the same files.',
+  'flows.new.worktreeNotGit': 'This folder is not a git repo, so a worktree is not available.',
+  'flows.new.worktreeNotGitShared':
+    'This folder already has {n} session(s) ({names}), but it is not a git repo, so a worktree is not available and they will edit the same files. To work in parallel, pick another folder or run git init here first.',
   'flows.new.mode': 'Permission mode',
   'flows.new.model': 'Model',
   'flows.new.modelHint': 'Leave empty for the default. An alias or full name both work.',

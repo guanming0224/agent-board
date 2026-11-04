@@ -1097,6 +1097,25 @@ test.describe('新增 session', () => {
     await expect(page.getByTestId('worktree-siblings')).toHaveCount(0);
   });
 
+  test('不是 git 的資料夾：同資料夾有人也不預設 worktree，勾選框停用並說明', async ({ page }) => {
+    await open(page, 'new', {
+      machines: [rigA],
+      sessions: [session({ id: 's1', name: '筆記', machineId: 'm-a', cwd: '/plain' })],
+      approvals: [],
+      // daemon 確認不是 git 時 repo 回 null。
+      patch: `backend.browseDirectory = async (_m, path) => ({ path, entries: [], repo: null });`,
+    });
+    const toggle = page.getByLabel('使用 worktree');
+    await page.getByLabel('工作目錄').fill('/plain');
+    await expect(page.getByTestId('worktree-not-git')).toContainText(
+      '已有 1 個 session（筆記），但它不是 git repo',
+    );
+    await expect(toggle).not.toBeChecked();
+    await expect(toggle).toBeDisabled();
+    await expect(page.getByTestId('worktree-hint')).toHaveCount(0);
+    await expect(preview(page)).not.toContainText('git worktree');
+  });
+
   test('同帳號限流且設定會排隊：預覽說明會排隊；別台機器不算同帳號', async ({ page }) => {
     await open(page, 'new', {
       machines: [rigA, rigGpu],

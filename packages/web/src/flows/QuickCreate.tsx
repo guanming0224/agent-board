@@ -13,6 +13,7 @@ import {
   ProjectSelect,
   suggestMachine,
   useWorktreeAdvice,
+  worktreeOn,
   WorktreeHints,
 } from './sessionForm';
 
@@ -49,7 +50,7 @@ export function QuickCreate({
   const machineId = chosenMachine ?? suggestion?.id ?? '';
   const machine = machines.find((m) => m.id === machineId);
   const advice = useWorktreeAdvice(machine, cwd);
-  const useWorktree = worktreeChoice ?? advice.related.length > 0;
+  const useWorktree = worktreeOn(advice, worktreeChoice);
   const online = machines.filter((m) => m.online);
 
   useEffect(() => setBrowsing(false), [machineId]);
@@ -238,6 +239,7 @@ export function QuickCreate({
                   <input
                     type="checkbox"
                     checked={useWorktree}
+                    disabled={advice.notGit}
                     onChange={(e) => setWorktreeChoice(e.target.checked)}
                   />
                   {t('flows.new.worktree')}
