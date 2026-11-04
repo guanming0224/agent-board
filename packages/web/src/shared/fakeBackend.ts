@@ -10,6 +10,7 @@ import type {
   HandoffRule,
   Layout,
   Machine,
+  Project,
   ResourceSample,
   Session,
   SessionEvent,
@@ -292,6 +293,9 @@ const DEMO_VAPID_PUBLIC_KEY =
 export function createFakeBackend(): BoardBackend & FakeBackendControls {
   const state = demoSnapshot();
   const pushEndpoints = new Set<string>();
+  const projects: Project[] = [];
+  /** 假的「建資料夾」：parent → 建過的名稱。 */
+  const madeDirs = new Map<string, string[]>();
   const teams: Team[] = [
     {
       id: 'team-demo-auth',
@@ -485,7 +489,12 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       find(approval.sessionId).status = 'running';
       publish();
     },
-    listProjects: async () => [],
+    listProjects: async () => [...projects],
+    async createProject(input) {
+      const project = { ...input, id: crypto.randomUUID() };
+      projects.push(project);
+      return project;
+    },
     listTemplates: async () => templates,
     async saveTemplate(input) {
       const t = { ...input, id: crypto.randomUUID() };
@@ -497,8 +506,17 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       entries: [
         { name: 'project', isDir: true, isGitRepo: true },
         { name: 'notes', isDir: true, isGitRepo: false },
+        ...(madeDirs.get(path) ?? []).map((name) => ({ name, isDir: true, isGitRepo: false })),
       ],
     }),
+    async makeDirectory(_machineId, parent, name) {
+      const list = madeDirs.get(parent) ?? [];
+      if (list.includes(name) || ['project', 'notes'].includes(name)) {
+        throw new Error(`EEXIST: file already exists, mkdir '${parent}/${name}'`);
+      }
+      madeDirs.set(parent, [...list, name]);
+      return { path: `${parent.replace(/\/+$/, '')}/${name}`, entries: [] };
+    },
     createPairingCode: async () => ({
       code: 'DEMO-0000',
       expiresAt: new Date(Date.now() + 600_000).toISOString(),

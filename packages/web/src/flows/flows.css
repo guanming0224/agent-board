@@ -984,3 +984,71 @@
     font-size: 16px;
   }
 }
+
+/* 畫布上的快速建立：雙擊空白處跳出（canvas/CanvasPage.tsx 決定位置） */
+.quick-create-host {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.flows .quick-create {
+  position: absolute;
+  width: min(380px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  pointer-events: auto;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+}
+
+.flows .quick-create .quick-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 28px;
+}
+
+.flows .quick-create h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.flows .quick-create .quick-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.flows .quick-create .acts {
+  align-items: center;
+  margin-top: 14px;
+}
+
+.flows .quick-create .quick-more {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-2);
+}
+
+.flows .new-folder,
+.flows .new-project {
+  margin-top: 8px;
+}
+
+@media (max-width: 640px) {
+  /* 手機：固定在下方，不跟著點的位置 */
+  .flows .quick-create {
+    left: 12px !important;
+    right: 12px;
+    top: auto !important;
+    bottom: 12px;
+    width: auto;
+    max-height: 75%;
+  }
+}

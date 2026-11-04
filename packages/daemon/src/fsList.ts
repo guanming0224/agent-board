@@ -1,7 +1,7 @@
 // 遠端資料夾瀏覽（新 session 選路徑用）。
-import { readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import type { DaemonToHub } from '@agent-board/protocol';
 import { errorMessage } from './log';
 import { repoInfo } from './worktree';
@@ -54,4 +54,41 @@ export async function listDirectory(requestId: string, rawPath: string): Promise
   } catch (error) {
     return { ...base, entries: [], error: errorMessage(error) };
   }
+}
+
+/**
+ * 在 parent 底下建一層新資料夾，成功就回新資料夾的列表。
+ * parent 要已經存在（不遞迴），名稱已存在就回錯誤，不覆蓋、不沿用。
+ */
+export async function makeDirectory(
+  requestId: string,
+  rawParent: string,
+  name: string,
+): Promise<ListResult> {
+  const parent = expandPath(rawParent);
+  const target = join(parent, name);
+  // 協定已擋掉分隔字元與 . ..；這裡再確認不會跑出 parent。
+  if (resolve(parent, name) !== target || basename(target) !== name) {
+    return {
+      type: 'fs.listResult',
+      requestId,
+      path: parent,
+      repo: null,
+      entries: [],
+      error: 'invalid folder name',
+    };
+  }
+  try {
+    await mkdir(target, { mode: 0o755 });
+  } catch (error) {
+    return {
+      type: 'fs.listResult',
+      requestId,
+      path: target,
+      repo: null,
+      entries: [],
+      error: errorMessage(error),
+    };
+  }
+  return listDirectory(requestId, target);
 }

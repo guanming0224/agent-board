@@ -38,6 +38,7 @@ export const AUDIT_ACTIONS = [
   'machine.pair',
   'machine.pair_failed',
   'machine.delete',
+  'fs.mkdir',
   'settings.update',
   'audit.export',
   'audit.retention',

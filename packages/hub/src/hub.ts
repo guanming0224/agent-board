@@ -1159,6 +1159,30 @@ export class Hub {
   }
 
   browse(machineId: string, path: string): Promise<BrowseResult> {
+    return this.askFs(machineId, (requestId) => ({ type: 'fs.list', requestId, path }));
+  }
+
+  /** 在 parent 底下建一層資料夾；回傳新資料夾的列表。不覆蓋已存在的。 */
+  async mkdir(
+    userId: string,
+    machineId: string,
+    parent: string,
+    name: string,
+  ): Promise<BrowseResult> {
+    const result = await this.askFs(machineId, (requestId) => ({
+      type: 'fs.mkdir',
+      requestId,
+      parent,
+      name,
+    }));
+    this.audit(userId, null, 'fs.mkdir', JSON.stringify({ machineId, path: result.path }));
+    return result;
+  }
+
+  private askFs(
+    machineId: string,
+    message: (requestId: string) => Extract<HubToDaemon, { type: 'fs.list' | 'fs.mkdir' }>,
+  ): Promise<BrowseResult> {
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     const conn = this.daemonFor(machineId);
     if (!conn) throw conflict('machine_offline', 'Machine is offline');
@@ -1170,7 +1194,7 @@ export class Hub {
       }, this.timing.browseTimeoutMs);
       timer.unref();
       this.pendingBrowses.set(requestId, { machineId, timer, resolve, reject });
-      this.send(conn.ws, { type: 'fs.list', requestId, path });
+      this.send(conn.ws, message(requestId));
     });
   }
 

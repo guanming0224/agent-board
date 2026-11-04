@@ -57,6 +57,14 @@ export const SessionSpec = z.object({
 });
 export type SessionSpec = z.infer<typeof SessionSpec>;
 
+/** 新資料夾名稱：一層、不能是 . 或 ..、不含路徑分隔字元與 NUL。 */
+export const FolderName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .refine((v) => v !== '.' && v !== '..' && !/[\\/\0]/.test(v), { message: 'invalid_folder_name' });
+
 export const DirEntry = z.object({ name: z.string(), isDir: z.boolean(), isGitRepo: z.boolean() });
 
 /**
@@ -149,6 +157,8 @@ export const HubToDaemon = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('resources.watch'), watching: z.boolean() }),
   z.object({ type: z.literal('fs.list'), requestId: Id, path: z.string() }),
+  /** 在 parent 底下建一層新資料夾（parent 要已存在、不覆蓋），成功後回 fs.listResult（path 是新資料夾）。 */
+  z.object({ type: z.literal('fs.mkdir'), requestId: Id, parent: z.string(), name: FolderName }),
 ]);
 export type HubToDaemon = z.infer<typeof HubToDaemon>;
 

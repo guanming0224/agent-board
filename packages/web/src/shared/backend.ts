@@ -89,6 +89,13 @@ export interface BoardBackend {
     /** 列出的資料夾所在的 repo；新 session 用來判斷同 repo。舊版 daemon 沒有。 */
     repo?: RepoInfo | null;
   }>;
+  /** 在 parent 底下建一層新資料夾，回傳新資料夾的列表（格式同 browseDirectory）。已存在就失敗。 */
+  makeDirectory(
+    machineId: string,
+    parent: string,
+    name: string,
+  ): ReturnType<BoardBackend['browseDirectory']>;
+  createProject(input: Omit<Project, 'id'>): Promise<Project>;
   createPairingCode(): Promise<{ code: string; expiresAt: string; installCommand: string }>;
   removeMachine(id: string): Promise<void>;
   /** daemon 讀本機對話紀錄算出的 token 用量（不是官方額度）；還沒回報過是 null。 */

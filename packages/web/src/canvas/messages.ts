@@ -2,7 +2,7 @@ import { registerMessages } from '../shared/i18n';
 
 registerMessages('zh-TW', {
   'canvas.aria': '畫布',
-  'canvas.empty': '還沒有 session。按「新增 session」開始。',
+  'canvas.empty': '還沒有 session。在畫布空白處雙擊，或按「新增 session」開始。',
   'canvas.error.layout': '讀不到畫布版面：{detail}。確認 hub 有在跑，再按「再試一次」。',
   'canvas.saveFailed': '版面沒存到：{detail}。下次移動卡片會再存一次。',
   'canvas.cmd.placeholder': '送指令給這個 session',
@@ -71,7 +71,8 @@ registerMessages('zh-TW', {
 
 registerMessages('en', {
   'canvas.aria': 'Canvas',
-  'canvas.empty': 'No sessions yet. Press "New session" to start.',
+  'canvas.empty':
+    'No sessions yet. Double-click anywhere on the canvas, or press "New session" to start.',
   'canvas.error.layout':
     'Could not read the canvas layout: {detail}. Check that the hub is running, then press Try again.',
   'canvas.saveFailed':

@@ -315,6 +315,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       return { machineId, token };
     },
     machineBrowse: (ctx) => hub.browse(param(ctx), ctx.query.path),
+    machineMkdir: (ctx) => hub.mkdir(ctx.user.id, param(ctx), ctx.body.parent, ctx.body.name),
     machineUsage: (ctx) => {
       const id = param(ctx);
       if (!store.getMachine(id)) throw notFound('Machine');

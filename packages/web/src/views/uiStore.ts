@@ -19,6 +19,9 @@ interface ViewsUi {
   /** 打開全尺寸終端機前的畫布鏡頭；回畫布時還原到同一個地方。 */
   canvasReturn: { x: number; y: number; zoom: number } | null;
   setCanvasReturn: (viewport: { x: number; y: number; zoom: number } | null) => void;
+  /** 畫布開著時，由畫布登記「在畫面中央打開快速建立」；頁首的「新增 session」優先用它。 */
+  openQuickCreate: (() => void) | null;
+  setOpenQuickCreate: (open: (() => void) | null) => void;
 }
 
 const NARROW = '(max-width: 860px)';
@@ -45,4 +48,6 @@ export const useViewsUi = create<ViewsUi>((set, get) => ({
     })),
   canvasReturn: null,
   setCanvasReturn: (canvasReturn) => set({ canvasReturn }),
+  openQuickCreate: null,
+  setOpenQuickCreate: (openQuickCreate) => set({ openQuickCreate }),
 }));

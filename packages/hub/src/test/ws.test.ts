@@ -1913,6 +1913,62 @@ describe('directory browsing', () => {
     expect((await hub.api('GET', '/api/machines/nope/fs?path=/x', { cookie })).status).toBe(404);
   });
 
+  it('creates a folder through the daemon, returns its listing, and audits it', async () => {
+    hub = await startHub();
+    const cookie = await hub.setupOwner();
+    const { daemon, machineId } = await hub.onlineDaemon(cookie);
+    const pending = hub.api('POST', `/api/machines/${machineId}/fs`, {
+      cookie,
+      body: { parent: '~/Desktop', name: ' 記帳 App ' },
+    });
+    const req = await daemon.next('fs.mkdir');
+    // 名稱前後空白先修掉。
+    expect(req).toMatchObject({ parent: '~/Desktop', name: '記帳 App' });
+    daemon.send({
+      type: 'fs.listResult',
+      requestId: req.requestId,
+      path: '/Users/x/Desktop/記帳 App',
+      entries: [],
+      error: null,
+    });
+    expect((await pending).body).toEqual({
+      path: '/Users/x/Desktop/記帳 App',
+      entries: [],
+      repo: null,
+    });
+    const row = auditRows().find((r) => r.action === 'fs.mkdir');
+    expect(JSON.parse(String(row?.detail))).toEqual({
+      machineId,
+      path: '/Users/x/Desktop/記帳 App',
+    });
+  });
+
+  it('rejects folder names that would leave the parent, and reports daemon errors', async () => {
+    hub = await startHub();
+    const cookie = await hub.setupOwner();
+    const { daemon, machineId } = await hub.onlineDaemon(cookie);
+    const url = `/api/machines/${machineId}/fs`;
+    for (const name of ['', '.', '..', 'a/b', 'a\\b', '../x', 'a\0b']) {
+      const res = await hub.api('POST', url, { cookie, body: { parent: '/tmp', name } });
+      expect(res.status, name).toBe(400);
+    }
+    expect(daemon.of('fs.mkdir')).toHaveLength(0);
+
+    const failing = hub.api('POST', url, { cookie, body: { parent: '/tmp', name: 'dup' } });
+    const req = await daemon.next('fs.mkdir');
+    daemon.send({
+      type: 'fs.listResult',
+      requestId: req.requestId,
+      path: '/tmp/dup',
+      entries: [],
+      error: 'EEXIST: file already exists',
+    });
+    expect(await failing).toMatchObject({ status: 400, body: { code: 'fs_error' } });
+    expect(auditRows().some((r) => r.action === 'fs.mkdir')).toBe(false);
+    // 沒登入不能建。
+    expect((await hub.api('POST', url, { body: { parent: '/tmp', name: 'x' } })).status).toBe(401);
+  });
+
   it('ignores a browse result from another machine', async () => {
     hub = await startHub({ timing: { browseTimeoutMs: 80 } });
     const cookie = await hub.setupOwner();
