@@ -10,7 +10,7 @@ import { useMaskText } from '../security';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { useHandoffActivity } from './handoffActivity';
-import { firstLine, type HandoffActivity } from './handoffActivityState';
+import { describeTalk, type HandoffActivity } from './handoffActivityState';
 
 export type HandoffEdgeType = Edge<
   {
@@ -36,30 +36,26 @@ function useTalkLine(activity: HandoffActivity | undefined): string | null {
   const t = useT();
   const locale = useLocale((s) => s.locale);
   const mask = useMaskText();
-  const fromName = useBoard((s) => s.sessions.find((x) => x.id === activity?.from)?.name);
-  const toName = useBoard((s) => s.sessions.find((x) => x.id === activity?.to)?.name);
+  // 沒有交接紀錄時不掃 session 清單（每條線都會跑這個 selector）。
+  const fromName = useBoard((s) =>
+    activity ? s.sessions.find((x) => x.id === activity.from)?.name : undefined,
+  );
+  const toName = useBoard((s) =>
+    activity ? s.sessions.find((x) => x.id === activity.to)?.name : undefined,
+  );
   if (!activity) return null;
-  let text: string;
-  if (activity.kind === 'fired') {
-    text = firstLine(activity.summary) ?? t('canvas.talk.noSummary');
-  } else {
-    const key = `canvas.talk.${activity.kind}.${activity.reason ?? ''}`;
-    const reason = t(key);
-    // 沒翻譯的新原因：照 hub 給的代碼顯示，不吞掉。
-    text = reason === key ? (activity.reason ?? activity.kind) : reason;
-  }
   return t('canvas.talk.line', {
     from: fromName ?? t('canvas.talk.gone'),
     to: toName ?? t('canvas.talk.gone'),
-    // 摘要來自 agent 的回覆，可能含金鑰。
-    text: mask(text),
+    // 摘要來自 agent 的回覆，可能含金鑰：describeTalk 先遮蔽再截斷。
+    text: describeTalk(activity, t, mask),
     time: clock(activity.receivedAt, locale),
   });
 }
 
 /**
  * 線是流程，不是狀態：平常不上色（STYLE.md §5）。
- * 交接的那幾秒例外：成功是 agent 藍、沿著線往目標流；擋下或取消閃琥珀（要你看一下）。動畫全在 CSS。
+ * 交接的那幾秒例外：排入或送達是 agent 藍、沿著線往目標流（送達時目標卡亮一圈）；擋下或取消閃琥珀（要你看一下）。動畫全在 CSS。
  */
 export function HandoffEdge(props: EdgeProps<HandoffEdgeType>) {
   const t = useT();
@@ -89,7 +85,11 @@ export function HandoffEdge(props: EdgeProps<HandoffEdgeType>) {
           <path
             key={activity.seq}
             d={path}
-            className={activity.kind === 'fired' ? 'edge-talk-flow' : 'edge-talk-flash'}
+            className={
+              activity.kind === 'fired' || activity.kind === 'delivered'
+                ? 'edge-talk-flow'
+                : 'edge-talk-flash'
+            }
             data-testid={`handoff-anim-${activity.from}-${activity.to}`}
           />
         )}
@@ -127,7 +127,12 @@ export function HandoffEdge(props: EdgeProps<HandoffEdgeType>) {
             </span>
           )}
           {showTip && (
-            <span role="tooltip" id={tipId} className="edge-tip" data-testid="handoff-tip">
+            <span
+              role="tooltip"
+              id={tipId}
+              className="edge-tip"
+              data-testid={`handoff-tip-${props.source}-${props.target}`}
+            >
               {line}
             </span>
           )}

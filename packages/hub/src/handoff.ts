@@ -72,6 +72,8 @@ export type HandoffBlockReason = 'loop' | 'rate_limit' | 'target_ended';
 interface Pending {
   rule: HandoffRule;
   message: string;
+  /** 一句摘要（message 裡的那句），送達事件帶著，畫布顯示用。 */
+  summary: string;
   /** 這則交接一路經過的 session；目標之後再往外交接時用來判斷迴圈。 */
   chain: string[];
 }
@@ -213,7 +215,7 @@ export class HandoffEngine {
     const { store, audit, addEvent } = this.deps;
     const targetId = rule.action.toSessionId;
     const target = store.getSession(targetId);
-    const summary = {
+    const detail = {
       ruleId: rule.id,
       teamId: rule.teamId,
       trigger: rule.trigger,
@@ -222,19 +224,19 @@ export class HandoffEngine {
     };
     const blocked = this.blockReason(rule, target, chain);
     if (blocked) {
-      audit(source.id, 'handoff.blocked', JSON.stringify({ ...summary, reason: blocked }));
-      addEvent(source.id, 'handoff.blocked', { ...summary, summary: summaryText, reason: blocked });
+      audit(source.id, 'handoff.blocked', JSON.stringify({ ...detail, reason: blocked }));
+      addEvent(source.id, 'handoff.blocked', { ...detail, summary: summaryText, reason: blocked });
       return;
     }
-    audit(source.id, 'handoff.fired', JSON.stringify({ ...summary, message }));
+    audit(source.id, 'handoff.fired', JSON.stringify({ ...detail, message }));
     // 這筆事件是「改過的檔案」的分界。時間要接在 daemon 事件之後：各台機器的時鐘不一定和 hub 相同。
     addEvent(
       source.id,
       'handoff.fired',
-      { ...summary, summary: summaryText },
+      { ...detail, summary: summaryText },
       boundaryAt ?? undefined,
     );
-    this.pending.set(rule.id, { rule, message, chain });
+    this.pending.set(rule.id, { rule, message, summary: summaryText, chain });
     this.deliverNext(targetId);
   }
 
@@ -324,7 +326,12 @@ export class HandoffEngine {
   private pressEnter(targetId: string, pending: Pending): void {
     const { store, audit, addEvent, isReachable, sendInput } = this.deps;
     const { rule, message, chain } = pending;
-    const detail = { ruleId: rule.id, fromSessionId: rule.fromSessionId, toSessionId: targetId };
+    const detail = {
+      ruleId: rule.id,
+      fromSessionId: rule.fromSessionId,
+      toSessionId: targetId,
+      summary: pending.summary,
+    };
     const current = store.getSession(targetId);
     if (current?.status !== 'waiting_input' || !isReachable(targetId)) {
       this.awaitingAck.delete(targetId);

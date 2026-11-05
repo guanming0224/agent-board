@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionEvent } from '@agent-board/protocol';
+import { maskSecrets } from '../security/mask';
+import { translate } from '../shared/i18n';
 import {
   ACTIVE_MS,
   advance,
+  describeTalk,
   firstLine,
   isReceiving,
   nextChangeAt,
@@ -12,6 +15,7 @@ import {
   RECENT_MS,
   type ActivityMap,
 } from './handoffActivityState';
+import './messages';
 
 const event = (type: string, payload: Record<string, unknown>, sessionId = 'a'): SessionEvent => ({
   id: crypto.randomUUID(),
@@ -27,18 +31,23 @@ const fired = (from = 'a', to = 'b', summary = 'Fixed the redirect.') =>
     { fromSessionId: from, toSessionId: to, trigger: 'on_done', summary },
     from,
   );
+const delivered = (from = 'a', to = 'b', summary = 'Fixed the redirect.') =>
+  event('handoff.delivered', { fromSessionId: from, toSessionId: to, summary }, to);
+const blocked = (reason = 'loop', from = 'a', to = 'b') =>
+  event('handoff.blocked', { fromSessionId: from, toSessionId: to, reason }, from);
 
 const empty: ActivityMap = new Map();
+const t = (key: string, vars?: Record<string, string | number>) => translate('zh-TW', key, vars);
+const plain = (text: string) => text;
 
 describe('交接事件 → 動畫狀態', () => {
-  it('只認 handoff.fired／blocked／dropped，其他事件原樣回傳', () => {
+  it('只認 handoff.fired／delivered／blocked／dropped，其他事件原樣回傳', () => {
     expect(parseHandoffEvent(event('status', { from: 'running', to: 'done' }))).toBeNull();
-    expect(parseHandoffEvent(event('handoff.delivered', { toSessionId: 'b' }))).toBeNull();
     const map = recordHandoff(empty, event('hook', { event: 'Stop' }), 0);
     expect(map).toBe(empty);
   });
 
-  it('成功的交接：key 和畫布線的 id 相同，帶摘要、沒有原因', () => {
+  it('排入：key 和畫布線的 id 相同，帶摘要、沒有原因', () => {
     expect(parseHandoffEvent(fired())).toEqual({
       key: 'a->b',
       from: 'a',
@@ -49,16 +58,32 @@ describe('交接事件 → 動畫狀態', () => {
     });
   });
 
-  it('擋下與取消帶原因；舊版 hub 沒有摘要也可以', () => {
-    const blocked = parseHandoffEvent(
-      event('handoff.blocked', { fromSessionId: 'b', toSessionId: 'a', reason: 'loop' }, 'b'),
-    );
-    expect(blocked).toMatchObject({ key: 'b->a', kind: 'blocked', reason: 'loop', summary: null });
-    const dropped = parseHandoffEvent(
-      event('handoff.dropped', { toSessionId: 'b', reason: 'rule_disabled' }),
-    );
-    // 沒有 fromSessionId 時用事件所屬的 session（hub 把交接事件記在來源）。
-    expect(dropped).toMatchObject({ key: 'a->b', kind: 'dropped', reason: 'rule_disabled' });
+  it('送達記在目標上：來源從 payload 讀，目標一定是事件所屬的 session', () => {
+    expect(parseHandoffEvent(delivered())).toMatchObject({ key: 'a->b', kind: 'delivered' });
+    // payload 說送給 c，事件卻記在 b：不採用。
+    expect(
+      parseHandoffEvent(event('handoff.delivered', { fromSessionId: 'a', toSessionId: 'c' }, 'b')),
+    ).toBeNull();
+    expect(parseHandoffEvent(event('handoff.delivered', { toSessionId: 'b' }, 'b'))).toBeNull();
+  });
+
+  it('來源一定是事件所屬的 session；payload 的 fromSessionId 不一致就不採用', () => {
+    expect(
+      parseHandoffEvent(event('handoff.fired', { fromSessionId: 'x', toSessionId: 'b' }, 'a')),
+    ).toBeNull();
+    // 沒寫 fromSessionId：用事件所屬的 session。
+    expect(
+      parseHandoffEvent(event('handoff.dropped', { toSessionId: 'b', reason: 'rule_disabled' })),
+    ).toMatchObject({ key: 'a->b', kind: 'dropped', reason: 'rule_disabled' });
+  });
+
+  it('擋下帶原因；舊版 hub 沒有摘要也可以', () => {
+    expect(parseHandoffEvent(blocked('loop', 'b', 'a'))).toMatchObject({
+      key: 'b->a',
+      kind: 'blocked',
+      reason: 'loop',
+      summary: null,
+    });
   });
 
   it('缺目標或自己交給自己不算', () => {
@@ -83,45 +108,87 @@ describe('交接事件 → 動畫狀態', () => {
     expect(advance(recent, 1000 + RECENT_MS).size).toBe(0);
   });
 
-  it('同一條線再觸發：重新播放、seq 加一；最新的結果蓋掉舊的', () => {
+  it('上一波播完後再來：新的一波，seq 加一、次數重算', () => {
     let map = recordHandoff(empty, fired(), 0);
     map = advance(map, ACTIVE_MS.fired + 10);
-    map = recordHandoff(
-      map,
-      event('handoff.blocked', { fromSessionId: 'a', toSessionId: 'b', reason: 'rate_limit' }),
-      ACTIVE_MS.fired + 10,
-    );
-    expect(map.get('a->b')).toMatchObject({ kind: 'blocked', phase: 'active', seq: 2 });
+    map = recordHandoff(map, blocked('rate_limit'), ACTIVE_MS.fired + 10);
+    expect(map.get('a->b')).toMatchObject({
+      kind: 'blocked',
+      phase: 'active',
+      seq: 2,
+      counts: { fired: 0, delivered: 0, blocked: 1 },
+    });
+  });
+
+  it('排入 → 送達：同一波升級，不重播流動，目標卡才亮', () => {
+    let map = recordHandoff(empty, fired(), 0);
+    expect(isReceiving(map, 'b')).toBe(false);
+    map = recordHandoff(map, delivered(), 200);
+    expect(map.get('a->b')).toMatchObject({
+      kind: 'delivered',
+      seq: 1,
+      receivedAt: 200,
+      counts: { fired: 1, delivered: 1, blocked: 0 },
+    });
+    expect(isReceiving(map, 'b')).toBe(true);
+    expect(isReceiving(map, 'a')).toBe(false);
+    expect(isReceiving(advance(map, 200 + ACTIVE_MS.delivered), 'b')).toBe(false);
+    // 一則排入＋送達算一則，不加次數說明。
+    expect(describeTalk(map.get('a->b')!, t, plain)).toBe('Fixed the redirect.');
+  });
+
+  it('同一對 session 好幾條規則：動畫期間後到的擋下不蓋掉送出，記次數', () => {
+    let map = recordHandoff(empty, fired(), 0);
+    map = recordHandoff(map, delivered(), 100);
+    map = recordHandoff(map, blocked('rate_limit'), 200);
+    const activity = map.get('a->b')!;
+    expect(activity).toMatchObject({
+      kind: 'delivered',
+      summary: 'Fixed the redirect.',
+      counts: { fired: 1, delivered: 1, blocked: 1 },
+    });
+    expect(describeTalk(activity, t, plain)).toBe('Fixed the redirect.（1 則送出、1 則擋下）');
+  });
+
+  it('先擋下、後送出：升級成送出並重播', () => {
+    let map = recordHandoff(empty, blocked(), 0);
+    map = recordHandoff(map, fired(), 100);
+    expect(map.get('a->b')).toMatchObject({ kind: 'fired', seq: 2 });
+  });
+
+  it('擋下的不會讓目標卡亮', () => {
+    expect(isReceiving(recordHandoff(empty, blocked(), 0), 'b')).toBe(false);
   });
 
   it('nextChangeAt 只給下一個換階段的時間（store 只排一個計時器）', () => {
     expect(nextChangeAt(empty)).toBeNull();
     let map = recordHandoff(empty, fired(), 0);
-    map = recordHandoff(
-      map,
-      event('handoff.blocked', { fromSessionId: 'c', toSessionId: 'd', reason: 'loop' }, 'c'),
-      100,
-    );
+    map = recordHandoff(map, blocked('loop', 'c', 'd'), 100);
     expect(nextChangeAt(map)).toBe(100 + ACTIVE_MS.blocked);
     expect(nextChangeAt(advance(map, ACTIVE_MS.fired + 1))).toBe(RECENT_MS);
-  });
-
-  it('收到交接的光圈：只有正在播放的成功交接，而且只在目標', () => {
-    const map = recordHandoff(empty, fired('a', 'b'), 0);
-    expect(isReceiving(map, 'b')).toBe(true);
-    expect(isReceiving(map, 'a')).toBe(false);
-    expect(isReceiving(advance(map, ACTIVE_MS.fired), 'b')).toBe(false);
-    const blocked = recordHandoff(
-      empty,
-      event('handoff.blocked', { fromSessionId: 'a', toSessionId: 'b', reason: 'loop' }),
-      0,
-    );
-    expect(isReceiving(blocked, 'b')).toBe(false);
   });
 
   it('摘要只取第一行、太長截斷', () => {
     expect(firstLine(null)).toBeNull();
     expect(firstLine('\n  first line \nsecond')).toBe('first line');
     expect(firstLine('x'.repeat(10), 4)).toBe('xxxx…');
+  });
+
+  it('說明框：先遮蔽再截斷，金鑰跨過 120 字的切點也不會露出一半', () => {
+    const secret = 'sk-ant-demo0123456789abcdefXYZ';
+    const summary = `${'x'.repeat(110)} ${secret} rest`;
+    // 反過來做（先截斷）會留下認不出來的半截金鑰：確認這個測試真的測到邊界。
+    expect(maskSecrets(firstLine(summary)!)).toContain('sk-ant');
+    const activity = recordHandoff(empty, fired('a', 'b', summary), 0).get('a->b')!;
+    const text = describeTalk(activity, t, maskSecrets);
+    expect(text).not.toContain('sk-ant');
+    expect(text.endsWith('…')).toBe(true);
+  });
+
+  it('說明框：擋下寫原因，沒翻譯的原因照代碼顯示', () => {
+    const loop = recordHandoff(empty, blocked('loop'), 0).get('a->b')!;
+    expect(describeTalk(loop, t, plain)).toBe('擋下：會形成迴圈');
+    const odd = recordHandoff(empty, blocked('new_reason'), 0).get('a->b')!;
+    expect(describeTalk(odd, t, plain)).toBe('new_reason');
   });
 });

@@ -1087,7 +1087,7 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
   const anim = (page: Page, from: string, to: string) =>
     page.getByTestId(`handoff-anim-${from}-${to}`);
 
-  test('成功交接：線往目標流、目標卡有光圈，播完留「已交接」與說明', async ({ page }) => {
+  test('送達：線往目標流、目標卡有光圈，播完留「已送達」與說明', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     // 遮蔽模式開著：摘要裡的金鑰不能出現在說明裡。
     await page.addInitScript(() => localStorage.setItem('agent-board.mask-mode', '1'));
@@ -1097,8 +1097,8 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
     await emit(page, 's-auth', 's-tests', { summary: `Fixed the redirect.\nexport KEY=${SECRET}` });
     await expect(anim(page, 's-auth', 's-tests')).toHaveClass('edge-talk-flow');
     await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-phase', 'active');
-    await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-talk', 'fired');
-    await expect(label(page, 's-auth', 's-tests')).toContainText(/已交接 \d\d:\d\d/);
+    await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-talk', 'delivered');
+    await expect(label(page, 's-auth', 's-tests')).toContainText(/已送達 \d\d:\d\d/);
     await expect(card(page, 's-tests')).toHaveAttribute('data-handoff', 'in');
     await expect(card(page, 's-auth')).not.toHaveAttribute('data-handoff');
     // 流動：虛線位移有動畫。
@@ -1111,7 +1111,7 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
     await shot(page, 'handoff-talk-active');
 
     await label(page, 's-auth', 's-tests').hover();
-    const tip = page.getByTestId('handoff-tip');
+    const tip = page.getByTestId('handoff-tip-s-auth-s-tests');
     await expect(tip).toHaveText(/^Fix login → Write tests：Fixed the redirect\. · \d\d:\d\d$/);
 
     // 幾秒後動畫結束，線維持「剛說過話」，說明照樣看得到。
@@ -1130,6 +1130,28 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
     await expect(tip).not.toContainText(SECRET);
   });
 
+  test('只排入（目標還在忙）：線在流，但目標卡不亮，標籤寫「已排入」', async ({ page }) => {
+    await openCanvas(page);
+    await emit(page, 's-auth', 's-tests', { queuedOnly: true });
+    await expect(anim(page, 's-auth', 's-tests')).toHaveClass('edge-talk-flow');
+    await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-talk', 'fired');
+    await expect(label(page, 's-auth', 's-tests')).toContainText(/已排入 \d\d:\d\d/);
+    await expect(card(page, 's-tests')).not.toHaveAttribute('data-handoff');
+  });
+
+  test('同一對 session 好幾條規則：後到的擋下不蓋掉送出，說明寫次數', async ({ page }) => {
+    await openCanvas(page);
+    await emit(page, 's-auth', 's-tests');
+    await emit(page, 's-auth', 's-tests', { reason: 'rate_limit' });
+    await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-talk', 'delivered');
+    await expect(anim(page, 's-auth', 's-tests')).toHaveClass('edge-talk-flow');
+    await expect(card(page, 's-tests')).toHaveAttribute('data-handoff', 'in');
+    await label(page, 's-auth', 's-tests').hover();
+    await expect(page.getByTestId('handoff-tip-s-auth-s-tests')).toContainText(
+      '（1 則送出、1 則擋下）',
+    );
+  });
+
   test('擋下：閃一下不流動，說明寫原因，目標卡沒有光圈', async ({ page }) => {
     await openCanvas(page);
     await emit(page, 's-auth', 's-tests', { reason: 'loop' });
@@ -1138,14 +1160,14 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
     await expect(label(page, 's-auth', 's-tests')).toContainText(/擋下 \d\d:\d\d/);
     await expect(card(page, 's-tests')).not.toHaveAttribute('data-handoff');
     await label(page, 's-auth', 's-tests').hover();
-    await expect(page.getByTestId('handoff-tip')).toContainText(
+    await expect(page.getByTestId('handoff-tip-s-auth-s-tests')).toContainText(
       'Fix login → Write tests：擋下：會形成迴圈',
     );
     await expect(anim(page, 's-auth', 's-tests')).toHaveCount(0, { timeout: 5000 });
 
     await emit(page, 's-auth', 's-tests', { reason: 'rule_disabled' });
     await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-talk', 'dropped');
-    await expect(page.getByTestId('handoff-tip')).toContainText('取消：規則已關閉');
+    await expect(page.getByTestId('handoff-tip-s-auth-s-tests')).toContainText('取消：規則已關閉');
   });
 
   test('沒有規則線的兩張卡：交接當下暫時畫一條，播完收掉', async ({ page }) => {
@@ -1175,11 +1197,12 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
       'none',
     );
     await expect(card(page, 's-tests')).toHaveAttribute('data-handoff', 'in');
-    await expect(label(page, 's-auth', 's-tests')).toContainText(/已交接 \d\d:\d\d/);
+    await expect(label(page, 's-auth', 's-tests')).toContainText(/已送達 \d\d:\d\d/);
     await shot(page, 'handoff-talk-reduced');
 
-    await emit(page, 's-auth', 's-tests', { reason: 'rate_limit' });
-    const flash = anim(page, 's-auth', 's-tests');
+    // 另一對（沒有規則線，暫時畫一條）：同一對的送出還在播，擋下不會蓋掉它。
+    await emit(page, 's-tests', 's-auth', { reason: 'rate_limit' });
+    const flash = anim(page, 's-tests', 's-auth');
     await expect(flash).toHaveClass('edge-talk-flash');
     expect(
       await flash.evaluate((el) => {
