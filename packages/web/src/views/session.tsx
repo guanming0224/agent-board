@@ -49,6 +49,17 @@ export function ModeChip({ mode }: { mode: PermissionMode }) {
   );
 }
 
+/** 唯讀 session（建立時拿掉改檔工具）。只擋 Edit、Write 等工具，Bash 仍寫得了檔案，title 說清楚。 */
+export function ReadOnlyChip({ session }: { session: { readOnly: boolean } }) {
+  const t = useT();
+  if (!session.readOnly) return null;
+  return (
+    <span className="chip read-only" title={t('views.readOnly.title')}>
+      {t('views.readOnly')}
+    </span>
+  );
+}
+
 export function Meter({ percent, label }: { percent: number; label: string }) {
   const tone = percent >= 85 ? ' f' : percent >= 60 ? ' w' : '';
   return (

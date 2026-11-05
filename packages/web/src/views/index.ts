@@ -12,6 +12,7 @@ export {
   Lamp,
   Meter,
   ModeChip,
+  ReadOnlyChip,
   useClock,
   useNow,
 } from './session';

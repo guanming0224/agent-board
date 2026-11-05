@@ -1,7 +1,13 @@
 // REST 路由：依 protocol 的 routes 表註冊與驗證。Handlers 的型別要求每條路由都有實作。
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { routes, type RouteName, type Routes, type User } from '@agent-board/protocol';
+import {
+  isReadOnlyMember,
+  routes,
+  type RouteName,
+  type Routes,
+  type User,
+} from '@agent-board/protocol';
 import { z } from 'zod';
 import {
   hashPassword,
@@ -421,10 +427,17 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
         sessionId: param(ctx, 'sessionId'),
         role: ctx.body.role,
       };
-      if (!store.getSession(member.sessionId)) throw notFound('Session');
+      const session = store.getSession(member.sessionId);
+      if (!session) throw notFound('Session');
       const others = store.listTeamMembers(member.teamId);
-      // 已經是成員只是改角色：不重新判斷，否則改不了角色也解不開衝突（CONTRACTS「團隊事件」已知限制）。
-      if (!others.some((m) => m.sessionId === member.sessionId)) {
+      const existing = others.find((m) => m.sessionId === member.sessionId);
+      // 新成員一律檢查。已經是成員只是改角色：從只讀變成會改檔案才檢查；其他改法都放行，
+      // 否則改不了角色也解不開衝突（例如改成審查）。
+      const becomesWriter =
+        existing !== undefined &&
+        isReadOnlyMember(existing.role, session) &&
+        !isReadOnlyMember(member.role, session);
+      if (existing === undefined || becomesWriter) {
         const clashes = worktreeConflicts(store, member, others);
         if (clashes.length > 0) {
           throw conflict(

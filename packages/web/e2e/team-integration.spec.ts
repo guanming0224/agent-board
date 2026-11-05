@@ -430,14 +430,26 @@ test('建立團隊時一起開 LD + BD + RV：真的建出 session、BD 有自�
   const [ld, bd, rv] = await Promise.all(
     ['trio-LD', 'trio-BD1', 'trio-RV'].map((n) => getSession(page.request, named(n).id)),
   );
-  expect(ld!).toMatchObject({ worktreePath: null, permissionMode: 'default' });
+  expect(ld!).toMatchObject({ worktreePath: null, permissionMode: 'default', readOnly: false });
   expect(bd!.worktreePath).not.toBeNull();
   expect(bd!.worktreePath).toContain('.agent-board-wt');
   expect(bd!.permissionMode).toBe('acceptEdits');
-  expect(rv!).toMatchObject({ worktreePath: null, permissionMode: 'plan' });
+  expect(bd!.readOnly).toBe(false);
+  expect(rv!).toMatchObject({ worktreePath: null, permissionMode: 'plan', readOnly: true });
+  await expect(page.getByTestId(`member-${rv!.id}`).locator('.chip.read-only')).toHaveText('唯讀');
+
+  // RV 改成 worker 就會改檔案：hub 重新檢查同資料夾並拒絕，畫面說明，角色不變。
+  await page.getByLabel('trio-RV 的角色').selectOption('worker');
+  await expect(page.getByTestId('worktree-conflict')).toContainText('角色維持不變');
+  await expect(page.getByLabel('trio-RV 的角色')).toHaveValue('reviewer');
+  const stillReviewer = (await (await page.request.get(`/api/teams/${trioId}/members`)).json()) as {
+    sessionId: string;
+    role: string;
+  }[];
+  expect(stillReviewer.find((m) => m.sessionId === rv!.id)?.role).toBe('reviewer');
   expect(rv!.cwd).toBe(ld!.cwd);
 
-  // hub 的規則：RV（plan）可以和 LD 共用資料夾，但同資料夾再加一個會改檔案的就擋。
+  // hub 的規則：RV（唯讀 session）可以和 LD 共用資料夾；不是唯讀的審查（就算角色是 reviewer）照樣擋。
   const extra = await createSession(page, 'trio-extra', false);
   const refused = await page.request.put(`/api/teams/${trioId}/members/${extra.id}`, {
     data: { role: 'reviewer' },

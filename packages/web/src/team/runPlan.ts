@@ -2,7 +2,7 @@
 // worktree、hooks、額度排隊都照常）。部分失敗時保留已建立的，不刪任何東西。
 import type { Team } from '@agent-board/protocol';
 import type { BoardBackend } from '../shared/backend';
-import { rowUsesWorktree, type PlanRow } from './teamPlan';
+import { isReadOnlyRole, rowUsesWorktree, type PlanRow } from './teamPlan';
 
 export type RowStep =
   | { step: 'waiting' }
@@ -45,6 +45,7 @@ export async function runPlan(
         accountProfile: null,
         resumeClaudeSessionId: null,
         firstPrompt: null,
+        readOnly: isReadOnlyRole(row.role),
       });
       sessionId = created.id;
     } catch (error) {

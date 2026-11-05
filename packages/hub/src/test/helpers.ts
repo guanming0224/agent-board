@@ -28,6 +28,7 @@ export const spec = (over: Partial<SessionSpec> = {}): SessionSpec => ({
   accountProfile: null,
   resumeClaudeSessionId: null,
   firstPrompt: null,
+  readOnly: false,
   ...over,
 });
 

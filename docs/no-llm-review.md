@@ -33,8 +33,8 @@ corepack pnpm check:no-llm    # scripts/check-no-llm.mjs
    `systeminformation`、`XMLHttpRequest/sendBeacon/EventSource`、非相對路徑的動態 `import(`、
    `.pty.write(`、`type: 'terminal.input',`、`.sendPrompt(`），和腳本裡的 `CALL_SITES` 清單比對。
    多出沒審查過的位置就失敗。
-3. daemon 給 `claude` 的參數只能是 `--resume`、`--session-id`、`--permission-mode`、`--model`、
-   `--name`（以及探測版本用的 `--version`），daemon 原始碼不得出現 `-p`／`--print`（非互動模式會直接
+3. daemon 給 `claude` 的參數只能是 `--resume`、`--session-id`、`--permission-mode`、
+   `--disallowedTools`、`--model`、`--name`（以及探測版本用的 `--version`），daemon 原始碼不得出現 `-p`／`--print`（非互動模式會直接
    耗用模型）。
 
 另外 `eslint.config.js:17-18` 用 `no-restricted-imports` 擋 `@anthropic-ai/*` 與 `openai`，
@@ -103,7 +103,8 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
 - 執行檔：`AGENT_BOARD_CLAUDE_BIN`，預設 `claude`（`packages/daemon/src/config.ts:59`），開之前
   在 PATH 找到實際檔案（`packages/daemon/src/daemon.ts:94`）。
 - 參數：`buildClaudeArgs`（`packages/daemon/src/session.ts:48-62`）只會產生
-  `--resume <id>` 或 `--session-id <uuid>`、`--permission-mode <mode>`、可選的 `--model <name>`、
+  `--resume <id>` 或 `--session-id <uuid>`、`--permission-mode <mode>`、唯讀 session 才有的
+  `--disallowedTools Edit Write MultiEdit NotebookEdit`（只減少能用的工具）、可選的 `--model <name>`、
   `--name <name>`。沒有 `-p`／`--print`，所以永遠是互動模式，等使用者輸入。
   `packages/daemon/src/misc.test.ts:127` 有測試。
 - 環境：繼承 daemon 的環境，拿掉 Claude Code session 標記與機器 token（`daemon.ts:47-58`、

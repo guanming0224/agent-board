@@ -1,6 +1,6 @@
 // 新建團隊：名稱、顏色、目標，選一個成員組合就一起開各角色的 session（GM 2026-11-06）。
 // 「只建團隊」保留原本的行為。機器、資料夾、專案的選法和 worktree 判斷沿用 flows/sessionForm。
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PermissionMode, TeamRole } from '@agent-board/protocol';
 import { useProjects } from '../flows/common';
 import { isSessionDeleting } from '../shared/backend';
@@ -24,13 +24,13 @@ import {
   presetRows,
   renameRows,
   ROLE_ABBR,
+  isReadOnlyRole,
   rowUsesWorktree,
   validatePlan,
   type PlanRow,
   type PresetId,
   type Role,
 } from './teamPlan';
-import { isReadOnlyMember } from './worktree';
 
 type T = ReturnType<typeof useT>;
 
@@ -72,6 +72,17 @@ export function NewTeamForm() {
   const [steps, setSteps] = useState<Record<string, RowStep>>({});
   const [created, setCreated] = useState<{ teamId: string; failed: number } | null>(null);
   const { busy, message, run } = useAction();
+  /** 連按兩下也只送一次（busy 要等下一次 render 才生效）。 */
+  const submitting = useRef(false);
+  /** 使用者中途離開這頁：進度照跑，但不再把他拉回工作台。 */
+  const mounted = useRef(true);
+  useEffect(() => {
+    // StrictMode 會掛載、卸載再掛載一次，所以掛載時要設回 true。
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const suggestion = suggestMachine(machines, sessions, 'general');
   const machineId = chosenMachine ?? suggestion?.id ?? '';
@@ -109,7 +120,8 @@ export function NewTeamForm() {
 
   const create = () => {
     setTried(true);
-    if (formError) return;
+    if (formError || submitting.current || created) return;
+    submitting.current = true;
     void run(async () => {
       setSteps(Object.fromEntries(rows.map((r) => [r.key, { step: 'waiting' } as RowStep])));
       // 只有建立團隊本身會丟出來（那時什麼都還沒建），清掉進度讓使用者直接再按一次。
@@ -126,21 +138,22 @@ export function NewTeamForm() {
         (key, step) => setSteps((all) => ({ ...all, [key]: step })),
       ).catch((e: unknown) => {
         setSteps({});
+        submitting.current = false;
         throw e;
       });
-      await refreshTeams(backend);
-      if (result.failed === 0) {
-        location.hash = `#/team/${encodeURIComponent(result.team.id)}`;
-        return;
-      }
+      // 團隊已經建好：先鎖住表單，之後重新讀取失敗也不能再按一次（會多建一組）。
       setCreated({ teamId: result.team.id, failed: result.failed });
+      await refreshTeams(backend).catch(() => {});
+      if (result.failed === 0 && mounted.current) {
+        location.hash = `#/team/${encodeURIComponent(result.team.id)}`;
+      }
     });
   };
 
   const where = (row: PlanRow) =>
     rowUsesWorktree(row, gitOk)
       ? t('team.new.where.worktree')
-      : isReadOnlyMember(row.role, { permissionMode: row.mode })
+      : isReadOnlyRole(row.role)
         ? t('team.new.where.shared')
         : t('team.new.where.main');
 
@@ -249,6 +262,11 @@ export function NewTeamForm() {
               ) : (
                 <p className="sub">{t('team.new.folderHint')}</p>
               )}
+              {rows.some((r) => isReadOnlyRole(r.role)) && (
+                <p className="sub" data-testid="read-only-hint">
+                  {t('team.new.readOnlyHint')}
+                </p>
+              )}
             </div>
 
             <ol className="plan-rows">
@@ -333,6 +351,12 @@ export function NewTeamForm() {
                 <div>{t('flows.new.bypassWarn')}</div>
               </div>
             )}
+            {rows.some((r) => r.mode === 'dontAsk') && (
+              <div className="alert you-alert" role="alert" data-testid="dontask-alert">
+                <span aria-hidden="true">◆</span>
+                <div>{t('team.new.dontAskWarn')}</div>
+              </div>
+            )}
           </>
         )}
       </fieldset>
@@ -361,7 +385,7 @@ export function NewTeamForm() {
         )}
         <ActionMessage message={message} />
       </div>
-      {created && (
+      {created && created.failed > 0 && (
         <div className="alert you-alert" role="alert" data-testid="new-team-partial">
           <span aria-hidden="true">◆</span>
           <div>{t('team.new.partial', { failed: created.failed })}</div>

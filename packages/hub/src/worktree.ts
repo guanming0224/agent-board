@@ -1,6 +1,7 @@
 // 同一團隊改同一 repo 要各自 worktree（DISPATCH §6）。前端 team/worktree.ts 有同樣的判斷；這裡才是防線。
-// 只讀成員例外（GM 2026-11-06）：兩個成員都會改檔案才算衝突。
+// 只讀成員例外（GM 2026-11-06）：兩個成員都會改檔案才算衝突（isReadOnlyMember，protocol/repo.ts）。
 import {
+  isReadOnlyMember,
   sameWorkingTree,
   type Session,
   type SessionSpec,
@@ -17,13 +18,6 @@ const place = (session: Session) => ({
 });
 
 const isLive = (session: Session) => session.endedAt === null && session.status !== 'done';
-
-/**
- * 只讀成員：角色是研究或審查，而且 session 在 plan 模式。兩個條件都要成立；
- * 角色是審查但不在 plan 模式，仍算會改檔案的成員。
- */
-export const isReadOnlyMember = (role: Role, session: Pick<Session, 'permissionMode'>) =>
-  (role === 'researcher' || role === 'reviewer') && session.permissionMode === 'plan';
 
 /** 還沒開好的 session，worktreePath 要等 daemon 回報；要不要建 worktree 記在 pending_spec。 */
 function willHaveOwnWorktree(store: Store, id: string): boolean {

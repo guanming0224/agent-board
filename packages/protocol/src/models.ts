@@ -117,6 +117,8 @@ export const Session = z.object({
   archived: z.boolean(),
   /** 封存的時間；沒封存是 null。舊資料（schema 3 之前封存的）也是 null。 */
   archivedAt: IsoTime.nullable().default(null),
+  /** 建立時指定的唯讀（`SessionSpec.readOnly`）：改檔工具被拿掉。Bash 仍可寫檔。 */
+  readOnly: z.boolean().default(false),
 });
 export type Session = z.infer<typeof Session>;
 

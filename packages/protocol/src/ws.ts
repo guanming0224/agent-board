@@ -63,6 +63,11 @@ export const SessionSpec = z.object({
   accountProfile: AbsolutePath.nullable(),
   resumeClaudeSessionId: ClaudeSessionId.nullable(),
   firstPrompt: z.string().nullable(),
+  /**
+   * 唯讀：daemon 用 `--disallowedTools` 拿掉改檔工具（`READ_ONLY_DISALLOWED_TOOLS`）。
+   * 只擋這些工具，透過 Bash 仍然寫得了檔案。建立後不能改，接續與 daemon 重啟照舊套用。
+   */
+  readOnly: z.boolean().default(false),
 });
 export type SessionSpec = z.infer<typeof SessionSpec>;
 

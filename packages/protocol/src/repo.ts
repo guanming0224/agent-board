@@ -24,3 +24,18 @@ export function sameWorkingTree(a: WorkPlace, b: WorkPlace): boolean {
   if (a.repoRoot && b.repoRoot) return normalize(a.repoRoot) === normalize(b.repoRoot);
   return nested(normalize(a.repoRoot ?? dirA), normalize(b.repoRoot ?? dirB));
 }
+
+/** 唯讀 session 拿掉的改檔工具（daemon 帶 `--disallowedTools`）。和 `file.changed` 偵測的是同一組。 */
+export const READ_ONLY_DISALLOWED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as const;
+
+/** 團隊裡可以和別人共用資料夾的角色（GM 2026-11-06）。 */
+export const READ_ONLY_ROLES = ['researcher', 'reviewer'] as const;
+
+/**
+ * 只讀成員：角色是研究或審查，**而且** session 建立時就是唯讀（`readOnly`）。
+ * 不看權限模式：plan 模式會被 ExitPlanMode 或 Shift+Tab 切掉，hub 不會知道。
+ * hub（團隊成員檢查）與前端共用：兩個成員都不是只讀成員，才算會互相改到檔案。
+ */
+export function isReadOnlyMember(role: string, session: { readOnly: boolean }): boolean {
+  return (READ_ONLY_ROLES as readonly string[]).includes(role) && session.readOnly;
+}

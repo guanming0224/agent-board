@@ -36,7 +36,12 @@ const input = (sessionId: string, text: string) =>
 
 const persisted = () =>
   JSON.parse(readFileSync(join(h.dataDir, 'sessions.json'), 'utf8')) as {
-    sessions: { sessionId: string; claudeSessionId: string; pendingFirstPrompt: string | null }[];
+    sessions: {
+      sessionId: string;
+      claudeSessionId: string;
+      pendingFirstPrompt: string | null;
+      spec: { readOnly: boolean };
+    }[];
   };
 
 const persistedEnded = () =>
@@ -759,6 +764,33 @@ describe('daemon 重啟', () => {
     await h.hub.waitFor('terminal.snapshot', () => true, { includePast: false });
     input('s1', 'after-restart');
     await h.waitForOutput('s1', 'INPUT:after-restart');
+  });
+
+  it('唯讀 session：拿掉改檔工具；記在清單裡，重啟接回時照樣帶', async () => {
+    await h.createAndSubscribe('ro', { readOnly: true, permissionMode: 'plan', name: 'rv' });
+    const tools = ['--disallowedTools', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+    const claudeId = h.runs()[0]?.argv[1] as string;
+    expect(h.runs()[0]?.argv.slice(2)).toEqual([
+      '--permission-mode',
+      'plan',
+      ...tools,
+      '--name',
+      'rv',
+    ]);
+    expect(persisted().sessions[0]?.spec.readOnly).toBe(true);
+
+    writeTranscript(claudeId);
+    await h.restartDaemon();
+    await waitUntil(() => h.runs().length === 2, '第二次啟動');
+    expect(h.runs()[1]?.argv).toEqual([
+      '--resume',
+      claudeId,
+      '--permission-mode',
+      'plan',
+      ...tools,
+      '--name',
+      'rv',
+    ]);
   });
 
   it('/clear 換了 claude session id 之後，重啟用新的 id', async () => {

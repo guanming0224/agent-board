@@ -56,6 +56,8 @@ registerMessages('zh-TW', {
   'views.hands.heavy': '粗線 全部自己來',
   'views.hands.bypass': '紅粗線 略過權限',
   'views.mode.bypass': '略過權限',
+  'views.readOnly': '唯讀',
+  'views.readOnly.title': '拿掉了改檔工具（Edit、Write 等）。Bash 仍然寫得了檔案。',
   'views.ctx.window': '這個模型的 context 上限是 {window} tokens',
   'views.ctx.unknownWindow': '還不知道這個模型的 context 上限，先只顯示 token 數',
   'views.age.waiting': '等了 {span}',
@@ -140,6 +142,9 @@ registerMessages('en', {
   'views.hands.heavy': 'Heavy: does everything on its own',
   'views.hands.bypass': 'Heavy red: Bypass permissions',
   'views.mode.bypass': 'Bypass permissions',
+  'views.readOnly': 'Read-only',
+  'views.readOnly.title':
+    'File-edit tools (Edit, Write, …) are removed. Bash can still write files.',
   'views.ctx.window': 'This model has a {window}-token context window',
   'views.ctx.unknownWindow':
     'Context window for this model is not known yet, so only the token count is shown',

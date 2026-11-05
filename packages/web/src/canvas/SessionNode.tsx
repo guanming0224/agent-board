@@ -23,6 +23,7 @@ import {
   handsClass,
   Lamp,
   ModeChip,
+  ReadOnlyChip,
   useViewsUi,
 } from '../views';
 import { CardMenu, MenuButton, RenameInput } from './CardMenu';
@@ -139,6 +140,7 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
       <div className="sign">
         <Callsign session={session} />
         <ModeChip mode={session.permissionMode} />
+        <ReadOnlyChip session={session} />
       </div>
     </>
   );

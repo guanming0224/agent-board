@@ -5,14 +5,15 @@
 
 ## CLI 旗標
 
-| 旗標                        | 用途        | 備註                                                                                                                                                                                                                                                                                  |
-| --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--permission-mode <mode>`  | 權限模式    | 文件：`default`、`acceptEdits`、`plan`、`auto`、`dontAsk`、`bypassPermissions`；`manual` 是 `default` 的別名（v2.1.200+）。`--help` 列的是 `manual` 而不是 `default`，所以一律傳 `manual`。**不可以不帶旗標**：實測（2.1.316）不帶時 claude 用使用者設定的預設模式，這台機器會進 auto |
-| `--model <model>`           | 模型        | 別名或完整名稱                                                                                                                                                                                                                                                                        |
-| `--session-id <uuid>`       | 指定對話 ID | 必須是合法 UUID。daemon 用它預先決定 `claudeSessionId`，不用等 hook 回報                                                                                                                                                                                                              |
-| `-r, --resume [id\|name]`   | 接續對話    | daemon 重啟與「接續舊對話」用                                                                                                                                                                                                                                                         |
-| `-n, --name <name>`         | 顯示名稱    | 顯示在 prompt、`/resume`、終端機標題                                                                                                                                                                                                                                                  |
-| `--settings <file-or-json>` | 額外設定    | 本專案依 DISPATCH §5.1 改寫 `settings.local.json`，不用這個                                                                                                                                                                                                                           |
+| 旗標                           | 用途        | 備註                                                                                                                                                                                                                                                                                  |
+| ------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--permission-mode <mode>`     | 權限模式    | 文件：`default`、`acceptEdits`、`plan`、`auto`、`dontAsk`、`bypassPermissions`；`manual` 是 `default` 的別名（v2.1.200+）。`--help` 列的是 `manual` 而不是 `default`，所以一律傳 `manual`。**不可以不帶旗標**：實測（2.1.316）不帶時 claude 用使用者設定的預設模式，這台機器會進 auto |
+| `--model <model>`              | 模型        | 別名或完整名稱                                                                                                                                                                                                                                                                        |
+| `--session-id <uuid>`          | 指定對話 ID | 必須是合法 UUID。daemon 用它預先決定 `claudeSessionId`，不用等 hook 回報                                                                                                                                                                                                              |
+| `-r, --resume [id\|name]`      | 接續對話    | daemon 重啟與「接續舊對話」用                                                                                                                                                                                                                                                         |
+| `-n, --name <name>`            | 顯示名稱    | 顯示在 prompt、`/resume`、終端機標題                                                                                                                                                                                                                                                  |
+| `--disallowedTools <tools...>` | 拿掉工具    | 唯讀 session（`SessionSpec.readOnly`）帶 `Edit Write MultiEdit NotebookEdit`。2.1.318 的 `--help` 有列 `--disallowedTools, --disallowed-tools <tools...>`（Lead 查證）。可變長度參數：daemon 一個工具一個 argv，後面一定接 `--name`，不會吞到別的參數。只擋這些工具，Bash 仍可寫檔    |
+| `--settings <file-or-json>`    | 額外設定    | 本專案依 DISPATCH §5.1 改寫 `settings.local.json`，不用這個                                                                                                                                                                                                                           |
 
 環境變數 `CLAUDE_CONFIG_DIR`（預設 `~/.claude`）：設定、對話紀錄、外掛都在此路徑下，官方說明可用來並存多帳號。**只能從環境變數或使用者設定指定**，專案與 local 設定檔裡的會被忽略，所以 daemon 要在開 PTY 時放進 env。憑證儲存位置見官方 authentication 文件（未驗證 macOS Keychain 下是否真能分帳號）。
 
@@ -142,6 +143,7 @@
 
 - [ ] `PermissionRequest` hook 卡住等待時，終端機的原生權限對話框會不會顯示、使用者直接在終端機回答時 hook 會怎樣。**這決定「網頁核准」和「畫面與 CLI 一致」能否並存**；若衝突，退路是只用 `Notification` 偵測，核准時對 PTY 送按鍵。
 - [ ] `CLAUDE_CONFIG_DIR` 在 macOS 是否真能隔離帳號。
+- [ ] 真 claude 帶 `--disallowedTools Edit Write MultiEdit NotebookEdit` 時這些工具確實不能用（目前只驗證 argv，沒跑真 claude）；與 `--resume` 一起帶時也一樣。
 
 ## 2026-11-03 真 `claude`（2.1.317）補驗
 

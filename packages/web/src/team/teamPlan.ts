@@ -1,6 +1,6 @@
 // 建立團隊時一起開各角色的 session（GM 2026-11-06）。這裡只放純函式：預設組合、命名、權限、檢查。
 import type { PermissionMode, TeamMember } from '@agent-board/protocol';
-import { isReadOnlyMember } from './worktree';
+import { READ_ONLY_ROLES } from '@agent-board/protocol';
 
 export type Role = TeamMember['role'];
 
@@ -97,9 +97,12 @@ export function changeRole(rows: readonly PlanRow[], key: string, role: Role, te
 export const rowUsesWorktree = (row: Pick<PlanRow, 'role'>, gitOk: boolean) =>
   row.role === 'worker' && gitOk;
 
+/** 研究、審查一律開成唯讀 session（daemon 拿掉改檔工具），才能和隊長共用主資料夾。 */
+export const isReadOnlyRole = (role: Role) => (READ_ONLY_ROLES as readonly Role[]).includes(role);
+
 /** 會改檔案、而且留在主資料夾的列（沒有自己的 worktree）。 */
 export const sharesMainAsWriter = (row: PlanRow, gitOk: boolean) =>
-  !rowUsesWorktree(row, gitOk) && !isReadOnlyMember(row.role, { permissionMode: row.mode });
+  !rowUsesWorktree(row, gitOk) && !isReadOnlyRole(row.role);
 
 export type PlanError = 'leadCount' | 'emptyName' | 'duplicateName' | 'sharedWriters' | null;
 

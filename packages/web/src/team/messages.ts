@@ -29,7 +29,7 @@ registerMessages('zh-TW', {
   'team.new.presetHint.standard': 'LD + 2 BD + 1 RV',
   'team.new.presetHint.explore': 'LD + 1 RS + 1 BD',
   'team.new.folderHint':
-    'LD 在這個資料夾工作；每個 BD 各開一個 worktree；RS、RV 只讀（plan），共用這個資料夾。',
+    'LD 在這個資料夾工作；每個 BD 各開一個 worktree；RS、RV 開成唯讀，共用這個資料夾。',
   'team.new.notGit':
     '這個資料夾不是 git repo，BD 開不了 worktree，會和 LD 共用資料夾。同一個資料夾只能有一位會改檔案的成員。',
   'team.new.row': '第 {n} 位',
@@ -40,7 +40,7 @@ registerMessages('zh-TW', {
   'team.new.addRow': '＋ 加一位',
   'team.new.where.main': '主資料夾',
   'team.new.where.worktree': '自己的 worktree',
-  'team.new.where.shared': '共用主資料夾（只讀）',
+  'team.new.where.shared': '共用主資料夾（唯讀）',
   'team.new.err.leadCount': '要剛好一位隊長（LD）。',
   'team.new.err.emptyName': '每位都要有 session 名稱。',
   'team.new.err.duplicateName': 'session 名稱不能重複。',
@@ -50,7 +50,10 @@ registerMessages('zh-TW', {
   'team.new.step.session': '建立 session…',
   'team.new.step.member': '加入團隊…',
   'team.new.step.done': '✓ 已加入',
-  'team.new.step.sessionFailed': '✕ session 沒建立：{detail}',
+  'team.new.step.sessionFailed': '✕ session 沒建立：{detail}。請到畫布確認有沒有多出 session。',
+  'team.new.dontAskWarn':
+    'dontAsk 只跑事先允許的動作，其他一律自動拒絕、不會問你。成員可能做不完，確定再用。',
+  'team.new.readOnlyHint': 'RS、RV 開成唯讀：拿掉改檔工具（Edit、Write 等）。Bash 仍然寫得了檔案。',
   'team.new.step.memberFailed': '✕ session 已建立，但沒加入團隊：{detail}。可以在工作台再加一次。',
   'team.new.partial': '團隊已建立，{failed} 位沒完成（見上面）。已建立的都保留，沒有刪除任何東西。',
   'team.new.open': '打開團隊',
@@ -80,8 +83,10 @@ registerMessages('zh-TW', {
   'team.members.conflictHub':
     '「{name}」和成員在同一個資料夾，hub 拒絕加入（{detail}）。開一個打開 worktree 的新 session，再把它加入。',
   'team.members.openNew': '新增 session',
+  'team.members.roleConflict':
+    '「{name}」改成這個角色就會改檔案，但和別的成員在同一個資料夾，hub 拒絕（{detail}）。角色維持不變；要改檔案請開一個打開 worktree 的新 session。',
   'team.members.clash':
-    '和 {others} 都會在 {dir} 改檔案，可能互相蓋掉。研究／審查請切回 plan 模式，或改開 worktree。',
+    '和 {others} 都會在 {dir} 改檔案，可能互相蓋掉。把其中一位移出團隊，改開一個打開 worktree 的新 session。',
   'team.role.lead': '隊長',
   'team.role.worker': '成員',
   'team.role.researcher': '研究',
@@ -194,7 +199,7 @@ registerMessages('en', {
   'team.new.presetHint.standard': 'LD + 2 BD + 1 RV',
   'team.new.presetHint.explore': 'LD + 1 RS + 1 BD',
   'team.new.folderHint':
-    'LD works in this folder; each BD gets its own worktree; RS and RV are read-only (plan) and share this folder.',
+    'LD works in this folder; each BD gets its own worktree; RS and RV start read-only and share this folder.',
   'team.new.notGit':
     'This folder is not a git repo, so BDs cannot get a worktree and will share the folder with LD. Only one member that edits files can use a folder.',
   'team.new.row': 'Member {n}',
@@ -215,7 +220,12 @@ registerMessages('en', {
   'team.new.step.session': 'Creating session…',
   'team.new.step.member': 'Adding to team…',
   'team.new.step.done': '✓ Added',
-  'team.new.step.sessionFailed': '✕ Session not created: {detail}',
+  'team.new.step.sessionFailed':
+    '✕ Session not created: {detail}. Check the canvas for an extra session.',
+  'team.new.dontAskWarn':
+    'dontAsk only runs pre-approved actions and silently denies the rest. The member may not finish; use it only if you mean to.',
+  'team.new.readOnlyHint':
+    'RS and RV start read-only: the file-edit tools (Edit, Write, …) are removed. Bash can still write files.',
   'team.new.step.memberFailed':
     '✕ Session created but not added to the team: {detail}. You can add it again in the workbench.',
   'team.new.partial':
@@ -248,8 +258,10 @@ registerMessages('en', {
   'team.members.conflictHub':
     'The hub refused to add "{name}" because it shares a folder with a member ({detail}). Start a new session with worktree on, then add that one.',
   'team.members.openNew': 'New session',
+  'team.members.roleConflict':
+    'With this role "{name}" would edit files, but it shares a folder with another member, so the hub refused ({detail}). The role was not changed; to edit files, start a new session with worktree on.',
   'team.members.clash':
-    'Both this and {others} edit files in {dir} and may overwrite each other. Switch the researcher/reviewer back to plan mode, or use a worktree.',
+    'Both this and {others} edit files in {dir} and may overwrite each other. Remove one of them and start a new session with worktree on.',
   'team.role.lead': 'Lead',
   'team.role.worker': 'Worker',
   'team.role.researcher': 'Researcher',

@@ -843,6 +843,7 @@ export class Hub {
       endedAt: null,
       archived: false,
       archivedAt: null,
+      readOnly: spec.readOnly,
     };
     const blocked = this.queueReason(session);
     if (blocked !== undefined) {
@@ -862,6 +863,7 @@ export class Hub {
           permissionMode: spec.permissionMode,
           model: spec.model,
           useWorktree: spec.useWorktree,
+          readOnly: spec.readOnly,
         }),
       );
       // firstPrompt 也是送入終端機的輸入。
@@ -1053,6 +1055,8 @@ export class Hub {
       accountProfile,
       resumeClaudeSessionId: claudeSessionId,
       firstPrompt: null,
+      // 唯讀是建立時決定的，接續時照舊（daemon 才會再帶 --disallowedTools）。
+      readOnly: session.readOnly,
     };
     this.audit(user.id, id, 'session.resume', '');
     this.store.setPendingSpec(id, spec);

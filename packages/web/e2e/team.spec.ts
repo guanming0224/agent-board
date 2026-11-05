@@ -168,6 +168,7 @@ async function sessionsNamed(page: Page, prefix: string) {
               cwd: string;
               worktreePath: string | null;
               permissionMode: string;
+              readOnly: boolean;
             }[];
           };
         };
@@ -196,7 +197,8 @@ test('建立團隊時一起開各角色的 session：標準組合 LD + 2 BD + RV
   await expect(page.getByLabel('第 2 位的權限模式')).toHaveValue('acceptEdits');
   await expect(page.getByLabel('第 4 位的權限模式')).toHaveValue('plan');
   await expect(rows.nth(1)).toContainText('自己的 worktree');
-  await expect(rows.nth(3)).toContainText('共用主資料夾（只讀）');
+  await expect(rows.nth(3)).toContainText('共用主資料夾（唯讀）');
+  await expect(page.getByTestId('read-only-hint')).toContainText('Bash 仍然寫得了檔案');
 
   // 改團隊名稱：沒改過的名稱跟著換，自己改過的不動。
   await page.getByLabel('第 2 位的 session 名稱').fill('builder-a');
@@ -239,7 +241,27 @@ test('建立團隊時一起開各角色的 session：標準組合 LD + 2 BD + RV
   expect(by('builder-a').worktreePath).toContain('.agent-board-wt/builder-a');
   expect(by('builder-a').permissionMode).toBe('acceptEdits');
   expect(by('Move-BD2').worktreePath).toContain('.agent-board-wt/Move-BD2');
-  expect(by('Move-RV')).toMatchObject({ worktreePath: null, permissionMode: 'plan' });
+  expect(by('Move-RV')).toMatchObject({
+    worktreePath: null,
+    permissionMode: 'plan',
+    readOnly: true,
+  });
+  expect(created.filter((s) => s.readOnly).map((s) => s.name)).toEqual(['Move-RV']);
+
+  // 唯讀晶片：工作台成員列與畫布卡片
+  await expect(
+    page.getByTestId(`member-${by('Move-RV').id}`).locator('.chip.read-only'),
+  ).toHaveText('唯讀');
+  await expect(
+    page.getByTestId(`member-${by('Move-LD').id}`).locator('.chip.read-only'),
+  ).toHaveCount(0);
+  await page.goto('/#/canvas');
+  await expect(page.getByTestId(`card-${by('Move-RV').id}`).locator('.chip.read-only')).toHaveText(
+    '唯讀',
+  );
+  await expect(page.getByTestId(`card-${by('Move-LD').id}`).locator('.chip.read-only')).toHaveCount(
+    0,
+  );
 });
 
 test('只建團隊不用選資料夾；組合要剛好一位隊長、名稱不重複、主資料夾只能一位會改檔案', async ({
@@ -259,15 +281,20 @@ test('只建團隊不用選資料夾；組合要剛好一位隊長、名稱不�
   await expect(page.getByTestId('new-team-error')).toHaveText('session 名稱不能重複。');
   await page.getByLabel('第 2 位的 session 名稱').fill('Check-x');
 
-  // 加一位審查但改成 default：會改檔案，和 LD 擠在主資料夾。
+  // 加一位審查：預設 plan；改成 default 仍是唯讀 session（唯讀靠拿掉改檔工具，不靠 plan）。
   await page.getByRole('button', { name: '＋ 加一位' }).click();
   await page.getByLabel('第 3 位的角色').selectOption('reviewer');
   await expect(page.getByLabel('第 3 位的權限模式')).toHaveValue('plan');
   await page.getByLabel('第 3 位的權限模式').selectOption('default');
-  await expect(page.locator('.plan-row').nth(2)).toContainText('主資料夾');
-  await page.getByRole('button', { name: '建立團隊和 3 個 session' }).click();
-  await expect(page.getByTestId('new-team-error')).toContainText('只能有一位會改檔案');
+  await expect(page.locator('.plan-row').nth(2)).toContainText('共用主資料夾（唯讀）');
+  // dontAsk、bypassPermissions 都要提醒。
+  await page.getByLabel('第 3 位的權限模式').selectOption('dontAsk');
+  await expect(page.getByTestId('dontask-alert')).toContainText('自動拒絕');
+  await page.getByLabel('第 3 位的權限模式').selectOption('bypassPermissions');
+  await expect(page.getByTestId('bypass-alert')).toBeVisible();
+  await expect(page.getByTestId('dontask-alert')).toHaveCount(0);
   await page.getByRole('button', { name: '移除第 3 位' }).click();
+  await expect(page.getByTestId('bypass-alert')).toHaveCount(0);
 
   // 沒有建出任何東西
   await expect(page.locator('.team-row')).toHaveCount(1);
@@ -354,27 +381,45 @@ test('部分失敗：已建立的保留，列出哪一位在哪一步失敗與�
   await expect(page.getByLabel('Part-RV 的角色')).toHaveCount(0);
 });
 
-test('審查成員被切出 plan 模式又和會改檔案的共用資料夾：成員列提醒', async ({ page }) => {
+test('唯讀成員改成會改檔案的角色被 hub 擋下：說明原因，角色不變', async ({ page }) => {
   await startTeam(page, 'Watch', '標準');
   await page.getByLabel('工作目錄').fill('/home/demo/project');
   await page.getByRole('button', { name: '建立團隊和 4 個 session' }).click();
   await expect(page.getByRole('heading', { name: 'Watch' })).toBeVisible();
-  const made = await sessionsNamed(page, 'Watch-');
-  const id = (n: string) => made.find((s) => s.name === n)!.id;
-  for (const s of made) await setStatus(page, s.id, 'waiting_input');
-  await expect(page.getByTestId(`member-${id('Watch-RV')}`)).toBeVisible();
-  await expect(page.locator('.member-clash')).toHaveCount(0);
+  await fake(
+    page,
+    `const put = backend.putTeamMember;
+     backend.putTeamMember = async (teamId, sessionId, role) => {
+       if (role === 'worker') {
+         throw Object.assign(new Error('Same folder as Watch-LD.'), { code: 'worktree_required' });
+       }
+       return put(teamId, sessionId, role);
+     };`,
+  );
+  const role = page.getByLabel('Watch-RV 的角色');
+  await role.selectOption('worker');
+  const alert = page.getByTestId('worktree-conflict');
+  await expect(alert).toContainText('Watch-RV');
+  await expect(alert).toContainText('Same folder as Watch-LD.');
+  await expect(alert).toContainText('角色維持不變');
+  await expect(role).toHaveValue('reviewer');
+  // 改成另一個唯讀角色照樣可以。
+  await role.selectOption('researcher');
+  await expect(alert).toHaveCount(0);
+  await expect(role).toHaveValue('researcher');
+});
 
-  await fake(page, `backend.setSessionMode(${JSON.stringify(id('Watch-RV'))}, 'acceptEdits')`);
-  const clash = page.getByTestId(`member-clash-${id('Watch-RV')}`);
-  await expect(clash).toContainText('Watch-LD');
-  await expect(clash).toContainText('/home/demo/project');
-  await expect(page.getByTestId(`member-clash-${id('Watch-LD')}`)).toContainText('Watch-RV');
-  // BD 有自己的 worktree，不提醒。
-  await expect(page.getByTestId(`member-clash-${id('Watch-BD1')}`)).toHaveCount(0);
-
-  await fake(page, `backend.setSessionMode(${JSON.stringify(id('Watch-RV'))}, 'plan')`);
-  await expect(page.locator('.member-clash')).toHaveCount(0);
+test('連按兩下建立只建一次', async ({ page }) => {
+  await startTeam(page, 'Twice', '小隊');
+  await page.getByLabel('工作目錄').fill('/home/demo/project');
+  await page.getByRole('button', { name: '建立團隊和 2 個 session' }).dblclick();
+  await expect(page.getByRole('heading', { name: 'Twice' })).toBeVisible();
+  await page.goto('/#/team');
+  await expect(page.locator('.team-row', { hasText: 'Twice' })).toHaveCount(1);
+  expect((await sessionsNamed(page, 'Twice-')).map((s) => s.name).sort()).toEqual([
+    'Twice-BD1',
+    'Twice-LD',
+  ]);
 });
 
 test('團隊顏色有 8 種，每個色塊都有名稱；工作台可以換色', async ({ page }) => {

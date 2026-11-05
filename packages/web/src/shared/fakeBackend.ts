@@ -69,6 +69,7 @@ const session = (
   endedAt: null,
   archived: false,
   archivedAt: null,
+  readOnly: false,
   ...over,
 });
 
@@ -377,8 +378,6 @@ export interface FakeBackendControls {
   demoReply: string | null;
   /** 模擬 daemon 回報的狀態變化。 */
   setSessionStatus(id: string, status: Session['status']): void;
-  /** 模擬使用者在終端機裡切換權限模式（daemon 回報新的 permissionMode）。 */
-  setSessionMode(id: string, mode: Session['permissionMode']): void;
   addSessionEvent(sessionId: string, type: string, payload: Record<string, unknown>): void;
 }
 
@@ -602,6 +601,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         cwd: input.cwd,
         worktreePath: input.useWorktree ? `/home/demo/.agent-board-wt/${slug}` : null,
         branch: input.useWorktree ? `ab/${slug}` : 'main',
+        readOnly: input.readOnly,
         permissionMode: input.permissionMode,
         model: input.model,
         projectId: input.projectId,
@@ -769,10 +769,6 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     demoReply: DEMO_DECOMPOSE_REPLY as string | null,
     setSessionStatus(id, status) {
       find(id).status = status;
-      publish();
-    },
-    setSessionMode(id, mode) {
-      find(id).permissionMode = mode;
       publish();
     },
     addSessionEvent: addEvent,

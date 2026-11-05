@@ -167,6 +167,7 @@ export class Harness {
       accountProfile: null,
       resumeClaudeSessionId: null,
       firstPrompt: null,
+      readOnly: false,
       ...overrides,
     };
   }

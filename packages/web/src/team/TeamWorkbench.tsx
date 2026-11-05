@@ -4,7 +4,7 @@ import { TeamRole } from '@agent-board/protocol';
 import type { Session, Task, Team, TeamMember } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { Callsign, errorText, handsClass, Lamp, ModeChip } from '../views';
+import { Callsign, errorText, handsClass, Lamp, ModeChip, ReadOnlyChip } from '../views';
 import {
   ActionMessage,
   ColorPicker,
@@ -121,7 +121,16 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
 
   const changeRole = (id: string, next: Role) =>
     run(async () => {
-      await backend.putTeamMember(team.id, id, next);
+      setConflict(null);
+      try {
+        await backend.putTeamMember(team.id, id, next);
+      } catch (e) {
+        // 唯讀成員改成會改檔案的角色：hub 會重新檢查同資料夾（CONTRACTS「團隊事件」）。
+        if ((e as { code?: string }).code !== 'worktree_required') throw e;
+        const name = members.find((s) => s.id === id)?.name ?? id;
+        setConflict(t('team.members.roleConflict', { name, detail: errorText(e) }));
+        return;
+      }
       await refreshTeams(backend);
     });
 
@@ -166,6 +175,7 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
                 <div className="sign">
                   <Callsign session={s} />
                   <ModeChip mode={s.permissionMode} />
+                  <ReadOnlyChip session={s} />
                 </div>
                 {clashes.length > 0 && (
                   <p className="member-clash" role="note" data-testid={`member-clash-${s.id}`}>

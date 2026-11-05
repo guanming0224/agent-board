@@ -79,13 +79,14 @@ describe('validatePlan', () => {
     expect(validatePlan([rows[0]!, { ...rows[1]!, name: 'A-LD' }], true)).toBe('duplicateName');
   });
 
-  it('主資料夾只能有一位會改檔案的：審查不在 plan、或不是 git 時的 BD', () => {
+  it('主資料夾只能有一位會改檔案的：不是 git 時的 BD；RS／RV 不論權限模式都是唯讀', () => {
     const rows = presetRows('standard', 'A');
     expect(validatePlan(rows, true)).toBeNull();
-    const looseReviewer = rows.map((r) =>
+    // 唯讀靠 session 的 readOnly（拿掉改檔工具），不靠 plan：審查改成 default 仍是唯讀。
+    const defaultReviewer = rows.map((r) =>
       r.role === 'reviewer' ? { ...r, mode: 'default' as const } : r,
     );
-    expect(validatePlan(looseReviewer, true)).toBe('sharedWriters');
+    expect(validatePlan(defaultReviewer, true)).toBeNull();
     // 不是 git：BD 開不了 worktree，會和 LD 共用資料夾。
     expect(validatePlan(rows, false)).toBe('sharedWriters');
     // 不是 git 也可以：只有 LD 會改檔案，其他人只讀。
@@ -166,6 +167,12 @@ describe('runPlan', () => {
       true,
       true,
       false,
+    ]);
+    expect(specs.map((s) => (s as { readOnly: boolean }).readOnly)).toEqual([
+      false,
+      false,
+      false,
+      true,
     ]);
     expect(specs.map((s) => (s as { permissionMode: string }).permissionMode)).toEqual([
       'default',

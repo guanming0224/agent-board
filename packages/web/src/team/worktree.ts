@@ -1,16 +1,14 @@
 // 同一團隊改同一 repo 要各自 worktree（DISPATCH §6）。真正的防線在 hub（hub/src/worktree.ts），
 // 這裡先判斷是為了少打一次 API，並能直接列出是跟誰衝突。
-// 只讀成員例外（GM 2026-11-06）：兩個成員都會改檔案才算衝突，規則和 hub 相同。
-import { sameWorkingTree, type Session, type TeamMember } from '@agent-board/protocol';
+// 只讀成員例外（GM 2026-11-06）：兩個成員都會改檔案才算衝突，規則和 hub 相同（protocol 的 isReadOnlyMember）。
+import {
+  isReadOnlyMember,
+  sameWorkingTree,
+  type Session,
+  type TeamMember,
+} from '@agent-board/protocol';
 
 type Role = TeamMember['role'];
-
-/**
- * 只讀成員：角色是研究或審查，而且 session 在 plan 模式。兩個條件都要成立；
- * 角色是審查但不在 plan 模式，仍算會改檔案的成員。
- */
-export const isReadOnlyMember = (role: Role, session: Pick<Session, 'permissionMode'>) =>
-  (role === 'researcher' || role === 'reviewer') && session.permissionMode === 'plan';
 
 /** 有 worktree 就看 worktree，那才是它實際改檔案的地方。 */
 const place = (session: Session) => ({
@@ -47,8 +45,8 @@ export function worktreeConflicts(
 }
 
 /**
- * 已經在團隊裡、但現在和別的成員衝突的（例如研究／審查之後被切出 plan 模式，或角色被改成會改檔案的）。
- * 加入時 hub 檢查過，之後沒有人重新檢查，所以只在成員列上提醒。
+ * 已經在團隊裡、但現在和別的成員衝突的。hub 在加入時、以及只讀成員改成會改檔案的角色時都會檢查，
+ * 正常不會出現；檢查上線前就存在的舊資料，或還沒開好時判斷不到的（例如 worktree 沒建成），在成員列上提醒。
  */
 export function memberClashes(
   member: Session,

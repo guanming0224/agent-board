@@ -692,6 +692,7 @@ export class Daemon {
         permissionMode: spec.permissionMode,
         model: spec.model,
         name: spec.name,
+        readOnly: spec.readOnly,
       }),
       env: this.sessionEnv(sessionId, spec),
       cwd: entry.cwd,
