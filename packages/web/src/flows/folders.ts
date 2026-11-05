@@ -88,3 +88,24 @@ export function saveLastFolder(machineId: string, path: string): void {
     // 私密瀏覽等情況存不了，下次從家目錄開始就好。
   }
 }
+
+const START_KEY = 'agent-board.folder-browser.start.';
+
+/** 使用者自訂的起始資料夾（這個瀏覽器、這台機器）。沒設定就從桌面開始。 */
+export function readStartFolder(machineId: string): string | null {
+  try {
+    return localStorage.getItem(START_KEY + machineId);
+  } catch {
+    return null;
+  }
+}
+
+/** null＝改回預設（桌面）。 */
+export function saveStartFolder(machineId: string, path: string | null): void {
+  try {
+    if (path === null) localStorage.removeItem(START_KEY + machineId);
+    else localStorage.setItem(START_KEY + machineId, path);
+  } catch {
+    // 私密瀏覽等情況存不了，就只在這次開啟期間有效。
+  }
+}

@@ -12,8 +12,10 @@ import {
   childPath,
   parentPath,
   readLastFolder,
+  readStartFolder,
   recentFolders,
   saveLastFolder,
+  saveStartFolder,
 } from './folders';
 
 export const TASK_TYPES = ['general', 'gpu', 'heavy'] as const;
@@ -305,11 +307,16 @@ export function FolderBrowser({
   const t = useT();
   const { backend, sessions } = useBoard();
   const sep = machine.os === 'win32' ? '\\' : '/';
+  const desktop = `~${sep}Desktop`;
+  const [customStart, setCustomStart] = useState(() => readStartFolder(machine.id));
   const [initial] = useState(() => {
     const field = start.trim();
     if (field) return { path: parentPath(field, sep) ?? field, selected: field };
-    return { path: readLastFolder(machine.id) ?? '~', selected: null };
+    // 沒填工作目錄：從使用者設的起始位置開始，沒設就從桌面（GM 2026-11-06）。
+    return { path: customStart ?? desktop, selected: null };
   });
+  /** 上次瀏覽到的位置，改成捷徑按鈕（不再當起始位置）。 */
+  const [last] = useState(() => readLastFolder(machine.id));
   const [path, setPath] = useState(initial.path);
   const [selected, setSelected] = useState<string | null>(initial.selected);
   const [filter, setFilter] = useState('');
@@ -340,6 +347,11 @@ export function FolderBrowser({
       },
       (e: unknown) => {
         if (!live) return;
+        // 預設的桌面不存在（例如 Linux 沒有 ~/Desktop）：改從家目錄開始，不顯示錯誤。
+        if (path === initial.path && path === desktop && customStart === null) {
+          setPath('~');
+          return;
+        }
         setResult({ for: path, error: errorText(e) });
         selectWhenLoaded.current = null;
       },
@@ -347,7 +359,7 @@ export function FolderBrowser({
     return () => {
       live = false;
     };
-  }, [backend, machine.id, path, round, select]);
+  }, [backend, machine.id, path, round, select, initial.path, desktop, customStart]);
 
   const current = result?.for === path ? result : null;
   const listing = current?.data ?? null;
@@ -372,7 +384,6 @@ export function FolderBrowser({
     .filter((e) => !needle || e.name.toLowerCase().includes(needle));
   const recent = recentFolders(sessions, machine.id);
   const home = '~';
-  const desktop = `~${sep}Desktop`;
 
   const picks = () => [...(list.current?.querySelectorAll<HTMLButtonElement>('.pick') ?? [])];
   const onRowKey = (e: React.KeyboardEvent<HTMLButtonElement>, full: string) => {
@@ -433,6 +444,11 @@ export function FolderBrowser({
         <button type="button" onClick={() => jump(desktop)}>
           {t('flows.new.browseDesktop')}
         </button>
+        {last && trimSlash(last) !== trimSlash(customStart ?? '') && (
+          <button type="button" className="mono" title={last} onClick={() => jump(last)}>
+            {t('flows.new.browseLast', { name: folderName(last) || last })}
+          </button>
+        )}
       </div>
 
       <nav className="crumbs" aria-label={t('flows.new.browseWhere', { machine: machine.name })}>
@@ -531,6 +547,33 @@ export function FolderBrowser({
       <p className="hint browser-selected" data-testid="browser-selected">
         {t('flows.new.browseSelected')}{' '}
         <span className="mono">{selected ?? t('flows.new.browseNone')}</span>
+      </p>
+
+      <p className="hint browser-start" data-testid="browser-start">
+        {t('flows.new.browseStart')}{' '}
+        <span className="mono">{customStart ?? t('flows.new.browseStartDefault')}</span>{' '}
+        {listing && trimSlash(listing.path) !== trimSlash(customStart ?? '') && (
+          <button
+            type="button"
+            onClick={() => {
+              saveStartFolder(machine.id, listing.path);
+              setCustomStart(listing.path);
+            }}
+          >
+            {t('flows.new.browseSetStart')}
+          </button>
+        )}{' '}
+        {customStart !== null && (
+          <button
+            type="button"
+            onClick={() => {
+              saveStartFolder(machine.id, null);
+              setCustomStart(null);
+            }}
+          >
+            {t('flows.new.browseResetStart')}
+          </button>
+        )}
       </p>
 
       {listing && <NewFolder machine={machine} parent={shown} onMade={onPick} />}
