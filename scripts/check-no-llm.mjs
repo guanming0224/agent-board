@@ -91,6 +91,8 @@ const CALL_SITES = new Set([
   'scripts/installer.mjs child-process',
   'scripts/installer.mjs fetch',
   'scripts/installer.mjs node-network',
+  // 在 Agent Board session 裡執行時，用 node spawn 把 install.sh 自己移到背景（2026-11-06 Lead 審查）
+  'scripts/install.sh child-process',
 ]);
 
 /** daemon 開 claude 時可以帶的參數（全部是互動模式）。 */
