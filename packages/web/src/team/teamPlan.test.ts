@@ -11,7 +11,10 @@ import {
   renameRows,
   ROLE_DEFAULT_MODE,
   rowUsesWorktree,
+  changeKind,
+  phaseRows,
   validatePlan,
+  type ExistingTeam,
   type PlanRow,
 } from './teamPlan';
 
@@ -133,8 +136,13 @@ describe('runPlan', () => {
         if (failSession.includes(spec.name)) throw new Error('machine_offline');
         return { id: `id-${spec.name}` } as Session;
       },
-      putTeamMember: async (teamId: string, sessionId: string, role: TeamMember['role']) => {
-        calls.push(`member:${sessionId}:${role}`);
+      putTeamMember: async (
+        teamId: string,
+        sessionId: string,
+        role: TeamMember['role'],
+        kind?: string,
+      ) => {
+        calls.push(`member:${sessionId}:${role}${kind ? `:${kind}` : ''}`);
         if (failMember.includes(sessionId)) throw new Error('worktree_required');
         return { teamId, sessionId, role };
       },
@@ -158,7 +166,9 @@ describe('runPlan', () => {
     const rows = presetRows('standard', 'A');
     const steps: [string, RowStep['step']][] = [];
     const result = await runPlan(backend, input(rows), (k, s) => steps.push([k, s.step]));
-    expect(result).toEqual({ team, failed: 0 });
+    expect(result.team).toEqual(team);
+    expect(result.failed).toBe(0);
+    expect([...result.sessionIds.values()]).toEqual(['id-A-LD', 'id-A-BD1', 'id-A-BD2', 'id-A-RV']);
     expect(calls).toEqual([
       'team',
       'session:A-LD',
@@ -220,3 +230,125 @@ describe('runPlan', () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe('學術研究團隊（依階段組隊）', () => {
+  it('四個階段的組合、命名（EX 一律編號、WR 單獨不編號）與角色', () => {
+    const topic = phaseRows('topic', '論文');
+    expect(names(topic)).toEqual(['論文-LD', '論文-LR1', '論文-LR2']);
+    expect(roles(topic)).toEqual(['lead', 'researcher', 'researcher']);
+    expect(names(phaseRows('experiment', '論文'))).toEqual([
+      '論文-LD',
+      '論文-EX1',
+      '論文-EX2',
+      '論文-RV',
+    ]);
+    const writing = phaseRows('writing', '論文');
+    expect(names(writing)).toEqual(['論文-LD', '論文-WR', '論文-RV', '論文-EX1']);
+    expect(writing.map((r) => r.kind)).toEqual(['ld', 'wr', 'rv', 'ex']);
+    // 實驗、寫作都是 worker（開 worktree、acceptEdits），審稿是唯讀的 reviewer。
+    expect(roles(writing)).toEqual(['lead', 'worker', 'reviewer', 'worker']);
+    expect(writing.map((r) => r.mode)).toEqual(['default', 'acceptEdits', 'plan', 'acceptEdits']);
+    expect(names(phaseRows('revision', '論文'))).toEqual([
+      '論文-LD',
+      '論文-EX1',
+      '論文-WR',
+      '論文-RV',
+    ]);
+  });
+
+  it('研究列換分工：EX 改成 WR 還是 worker，名稱跟著換', () => {
+    const rows = phaseRows('experiment', 'P');
+    const next = changeKind(rows, rows[2]!.key, 'wr', 'P');
+    expect(names(next)).toEqual(['P-LD', 'P-EX1', 'P-WR', 'P-RV']);
+    expect(next[2]).toMatchObject({ kind: 'wr', role: 'worker', mode: 'acceptEdits' });
+  });
+
+  it('寫作階段在 git 資料夾通過檢查；不是 git 時 WR、EX 和 LD 擠在主資料夾', () => {
+    expect(validatePlan(phaseRows('writing', 'P'), true)).toBeNull();
+    expect(validatePlan(phaseRows('writing', 'P'), false)).toBe('sharedWriters');
+    expect(validatePlan(phaseRows('topic', 'P'), false)).toBeNull();
+  });
+});
+
+describe('補成員（現有團隊）', () => {
+  const existing = (over: Partial<ExistingTeam> = {}): ExistingTeam => ({
+    members: 2,
+    leads: 1,
+    mainWriters: 1,
+    names: new Set(['A-LD', 'A-BD1']),
+    ...over,
+  });
+
+  it('名稱接著現有的編號，不撞名', () => {
+    expect(defaultNames('A', ['worker'], new Set(['A-BD1']))).toEqual(['A-BD2']);
+    expect(defaultNames('A', ['worker', 'worker'], new Set(['A-BD1', 'A-BD3']))).toEqual([
+      'A-BD2',
+      'A-BD4',
+    ]);
+    expect(defaultNames('A', ['reviewer'], new Set(['A-RV']))).toEqual(['A-RV2']);
+    expect(defaultNames('A', ['reviewer'], new Set(['A-RV1']))).toEqual(['A-RV']);
+  });
+
+  it('團隊已有隊長：組合裡的隊長拿掉', () => {
+    const rows = presetRows('standard', 'A', { taken: new Set(['A-LD', 'A-BD1']), hasLead: true });
+    expect(names(rows)).toEqual(['A-BD2', 'A-BD3', 'A-RV']);
+    expect(names(phaseRows('writing', 'A', { hasLead: true }))).toEqual(['A-WR', 'A-RV', 'A-EX1']);
+  });
+
+  it('檢查連同現有成員：隊長最多一位、名稱不撞、主資料夾寫入者一起算', () => {
+    const taken = new Set(['A-LD', 'A-BD1']);
+    const rows = presetRows('standard', 'A', { taken, hasLead: true });
+    expect(validatePlan(rows, true, existing())).toBeNull();
+    // 再加一位隊長：現有的隊長也算。
+    const withLead = presetRows('standard', 'A', { taken });
+    expect(validatePlan(withLead, true, existing())).toBe('leadCount');
+    // 使用者把名稱改成現有 session 的名稱。
+    const clash = rows.map((r, i) => (i === 0 ? { ...r, name: 'A-BD1', nameEdited: true } : r));
+    expect(validatePlan(clash, true, existing())).toBe('duplicateName');
+    // 不是 git：新的 BD 留在主資料夾，和現有的隊長（寫入者）衝突。
+    expect(validatePlan(rows, false, existing())).toBe('sharedWriters');
+    // 現有成員本來就沒有隊長：補成員不強迫加隊長。
+    expect(validatePlan(rows, true, existing({ leads: 0, mainWriters: 0 }))).toBeNull();
+    // 團隊還沒有成員：和新團隊一樣要剛好一位隊長。
+    expect(validatePlan(rows, true, existing({ members: 0, leads: 0, mainWriters: 0 }))).toBe(
+      'leadCount',
+    );
+  });
+
+  it('runPlan 用現有團隊：不建立團隊，研究分工一起存', async () => {
+    const calls: string[] = [];
+    const backend = {
+      createTeam: async () => {
+        calls.push('team');
+        return team0;
+      },
+      createSession: async (spec: { name: string }) => ({ id: `id-${spec.name}` }) as Session,
+      putTeamMember: async (_t: string, sessionId: string, role: string, kind?: string) => {
+        calls.push(`member:${sessionId}:${role}:${kind ?? '-'}`);
+        return {};
+      },
+    } as unknown as BoardBackend;
+    const team0: Team = { ...baseTeam, phase: 'writing' };
+    const rows = phaseRows('writing', 'A', { hasLead: true });
+    const result = await runPlan(
+      backend,
+      { team: { existing: team0 }, machineId: 'm', cwd: '/r', projectId: null, gitOk: true, rows },
+      () => {},
+    );
+    expect(result.team).toBe(team0);
+    expect(calls).toEqual([
+      'member:id-A-WR:worker:wr',
+      'member:id-A-RV:reviewer:rv',
+      'member:id-A-EX1:worker:ex',
+    ]);
+  });
+});
+
+const baseTeam: Team = {
+  id: 't0',
+  name: 'A',
+  goal: '',
+  doneCriteria: '',
+  color: 'teal',
+  contextMd: '',
+};

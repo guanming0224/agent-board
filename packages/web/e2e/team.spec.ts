@@ -778,6 +778,182 @@ test('全隊停止第一次按完離開就解除，不會誤觸', async ({ page 
   await expect(page.getByTestId('member-s-tests').locator('.lamp')).toContainText('工作中');
 });
 
+test('雙向（來回）規則：一次建 A→B、B→A，各自的觸發條件，共用輪數上限', async ({ page }) => {
+  await openWorkbench(page);
+  const box = page.getByTestId('new-rule');
+  await box.getByRole('button', { name: '雙向（來回）' }).click();
+  await box.getByLabel('A', { exact: true }).selectOption({ label: 'Write tests' });
+  await box.getByLabel('B', { exact: true }).selectOption({ label: 'Fix login' });
+  await box.getByLabel('A → B 觸發條件').selectOption('on_file');
+  await box.getByLabel('A → B 檔案樣式').fill('results/**');
+  // B → A 預設是回覆含標記，標記預設 [需要實驗]。
+  await expect(box.getByLabel('B → A 觸發條件')).toHaveValue('on_marker');
+  await expect(box.getByLabel('B → A 標記')).toHaveValue('[需要實驗]');
+  await expect(box.getByLabel('來回上限')).toHaveValue('3');
+
+  // 標記不能空白。
+  await box.getByLabel('B → A 標記').fill(' ');
+  await box.getByRole('button', { name: '新增雙向規則' }).click();
+  await expect(box.getByTestId('new-rule-msg')).toContainText('要填標記');
+  await box.getByLabel('B → A 標記').fill('[需要實驗]');
+  await box.getByLabel('來回上限').selectOption('2');
+  await box.getByRole('button', { name: '新增雙向規則' }).click();
+  await expect(box.getByTestId('new-rule-msg')).toContainText('已新增兩條規則（最多 2 輪）');
+
+  const forward = page.locator('.rule', { hasText: 'Write tests → Fix login' });
+  const back = page.locator('.rule', { hasText: 'Fix login → Write tests' }).filter({
+    hasText: '雙向',
+  });
+  await expect(forward.locator('.rule-rounds')).toHaveText('雙向・最多 2 輪');
+  await expect(forward.getByLabel('檔案樣式')).toHaveValue('results/**');
+  await expect(forward.getByRole('button', { name: /自動交接/ })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+  await expect(back.locator('.rule-rounds')).toHaveText('雙向・最多 2 輪');
+  await expect(back.getByLabel('觸發條件')).toHaveValue('on_marker');
+  await expect(back.getByLabel('標記')).toHaveValue('[需要實驗]');
+  await expect(back).toContainText('最後一則回覆含有標記字串');
+  await shot(page, 'team-two-way-rules');
+
+  // 規則列可以改回單向。
+  await forward.getByLabel('來回上限').selectOption('');
+  await expect(forward.locator('.rule-rounds')).toHaveCount(0);
+});
+
+test('到輪數上限擋下的交接要看得到', async ({ page }) => {
+  await openWorkbench(page);
+  await fake(
+    page,
+    `backend.addSessionEvent('s-tests', 'handoff.blocked', { fromSessionId: 's-tests', toSessionId: 's-auth', reason: 'round_limit', round: 4, maxRounds: 3 });`,
+  );
+  await page.goto('/#/canvas');
+  await page.goto('/#/team/team-demo-auth');
+  const log = page.getByTestId('handoff-activity');
+  await expect(log).toContainText('停下：已來回 3 輪');
+  await expect(log).toContainText('第 3/3 輪');
+});
+
+test('學術研究團隊：依階段組隊、實驗 ⇄ 寫作雙向交接、TEAM.md 範本，之後可換階段', async ({
+  page,
+}) => {
+  await page.goto('/#/team');
+  await page.getByLabel('團隊名稱').fill('論文');
+  await page
+    .getByRole('group', { name: '團隊類型' })
+    .getByRole('button', { name: '學術研究' })
+    .click();
+  const phases = page.getByRole('group', { name: '研究階段' });
+  await expect(phases.getByRole('button', { name: '選題' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(page.getByLabel('第 2 位的 session 名稱')).toHaveValue('論文-LR1');
+  await expect(page.getByTestId('research-pair')).toHaveCount(0);
+
+  await phases.getByRole('button', { name: '寫作' }).click();
+  await expect(page.getByTestId('preset-hint')).toContainText('開始寫論文');
+  const names = await page
+    .locator('.plan-row input[aria-label$="session 名稱"]')
+    .evaluateAll((inputs) => inputs.map((i) => (i as HTMLInputElement).value));
+  expect(names).toEqual(['論文-LD', '論文-WR', '論文-RV', '論文-EX1']);
+  await expect(page.getByLabel('第 2 位的角色')).toHaveValue('wr');
+  await expect(page.locator('.plan-row').nth(1)).toContainText('自己的 worktree');
+  await expect(page.locator('.plan-row').nth(2)).toContainText('共用主資料夾（唯讀）');
+  const pair = page.getByTestId('research-pair');
+  await expect(pair.getByRole('checkbox')).toBeChecked();
+  await expect(pair.getByLabel('來回上限')).toHaveValue('3');
+  await expect(page.getByTestId('research-context-hint')).toContainText('不會自動送給任何 session');
+
+  await page.getByLabel('工作目錄').fill('/home/demo/paper');
+  await shot(page, 'team-new-research');
+  await page.getByRole('button', { name: '建立團隊和 4 個 session' }).click();
+
+  await expect(page.getByRole('heading', { name: '論文' })).toBeVisible();
+  await expect(page.getByTestId('team-phase')).toHaveText('寫作');
+  await expect(page.locator('.member', { hasText: '論文-WR' })).toContainText('寫作（WR）');
+  await expect(page.locator('.member', { hasText: '論文-EX1' })).toContainText('實驗（EX）');
+  const exToWr = page.locator('.rule', { hasText: '論文-EX1 → 論文-WR' });
+  await expect(exToWr.getByLabel('檔案樣式')).toHaveValue('results/**');
+  await expect(exToWr.locator('.rule-rounds')).toHaveText('雙向・最多 3 輪');
+  const wrToEx = page.locator('.rule', { hasText: '論文-WR → 論文-EX1' });
+  await expect(wrToEx.getByLabel('標記')).toHaveValue('[需要實驗]');
+  await expect(wrToEx.getByRole('button', { name: /自動交接/ })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+  await expect(page.getByRole('textbox', { name: 'TEAM.md' })).toHaveValue(
+    /論文數字只能引用 results\/ 裡的檔案/,
+  );
+
+  // 換到實驗：寫作用不到（可封存），要補一位 EX（接著編號）。
+  const panel = page.getByTestId('phase-panel');
+  await panel.getByRole('button', { name: '換到「實驗」' }).click();
+  const diff = page.getByTestId('phase-diff');
+  await expect(diff.locator('.phase-extra')).toContainText('論文-WR');
+  await expect(diff.getByTestId('add-members').getByLabel('第 1 位的 session 名稱')).toHaveValue(
+    '論文-EX2',
+  );
+  await expect(diff.getByTestId('add-members').getByLabel('第 1 位的角色')).toHaveValue('ex');
+  await shot(page, 'team-phase-change');
+  await diff.getByRole('button', { name: '開 1 個 session 並加入' }).click();
+  await expect(diff.getByTestId('add-members-msg')).toContainText('已加入 1 位');
+  await expect(page.locator('.member', { hasText: '論文-EX2' })).toBeVisible();
+
+  const archive = diff.locator('.phase-extra li', { hasText: '論文-WR' }).getByRole('button');
+  await archive.click();
+  await expect(archive).toHaveText('再按一次封存 論文-WR');
+  await archive.click();
+  await expect(diff.getByTestId('phase-extra-none')).toBeVisible();
+  await diff.getByRole('button', { name: '切換到「實驗」' }).click();
+  await expect(page.getByTestId('team-phase')).toHaveText('實驗');
+  await expect(page.getByTestId('phase-msg')).toContainText('已切換到「實驗」');
+  // 交接規則都還在（指向已封存的寫作，封存時已暫停）。
+  await expect(page.locator('.rules .rule')).toHaveCount(2);
+});
+
+test('補成員：只建團隊之後一次補齊；再補時不重複隊長、名稱接著編號', async ({ page }) => {
+  await page.goto('/#/team');
+  await page.getByLabel('團隊名稱').fill('空隊');
+  await page.getByRole('button', { name: '建立團隊' }).click();
+  await expect(page.getByRole('heading', { name: '空隊' })).toBeVisible();
+
+  await page.getByTestId('add-members-toggle').click();
+  const add = page.getByTestId('add-members');
+  // 沒有成員：要自己選資料夾。
+  await expect(add.getByLabel('工作目錄')).toBeVisible();
+  await add.getByRole('button', { name: '標準' }).click();
+  await expect(add.getByLabel('第 1 位的 session 名稱')).toHaveValue('空隊-LD');
+  await add.getByRole('button', { name: '開 4 個 session 並加入' }).click();
+  await expect(add.getByTestId('add-members-error')).toContainText('工作目錄');
+  await add.getByLabel('工作目錄').fill('/home/demo/project');
+  await add.getByRole('button', { name: '開 4 個 session 並加入' }).click();
+  await expect(add.getByTestId('add-members-msg')).toContainText('已加入 4 位');
+  await expect(add.getByTestId('plan-step-1')).toContainText('已加入');
+  for (const name of ['空隊-LD', '空隊-BD1', '空隊-BD2', '空隊-RV']) {
+    await expect(page.locator('.member', { hasText: name })).toBeVisible();
+  }
+  await expect(page.getByLabel('空隊-LD 的角色')).toHaveValue('lead');
+
+  // 再補一批：沿用隊長的位置，隊長拿掉，名稱接著編號。
+  await add.getByRole('button', { name: '再補一批' }).click();
+  await expect(add.getByTestId('plan-place-fixed')).toContainText('/home/demo/project');
+  await add.getByRole('button', { name: '標準' }).click();
+  await expect(add).toContainText('團隊已經有隊長');
+  const names = await add
+    .locator('.plan-row input[aria-label$="session 名稱"]')
+    .evaluateAll((inputs) => inputs.map((i) => (i as HTMLInputElement).value));
+  expect(names).toEqual(['空隊-BD3', '空隊-BD4', '空隊-RV2']);
+  // 手動加一位隊長：連同現有的隊長一起算。
+  await add.getByLabel('第 1 位的角色').selectOption('lead');
+  await add.getByRole('button', { name: '開 3 個 session 並加入' }).click();
+  await expect(add.getByTestId('add-members-error')).toContainText('剛好一位隊長');
+  await add.getByLabel('第 1 位的角色').selectOption('worker');
+  await add.getByRole('button', { name: '開 3 個 session 並加入' }).click();
+  await expect(add.getByTestId('add-members-msg')).toContainText('已加入 3 位');
+  await expect(page.locator('.member', { hasText: '空隊-RV2' })).toBeVisible();
+});
+
 test('沒有綠色，英文版面不撐爆', async ({ page }) => {
   await openWorkbench(page);
   const greens = await page.evaluate(() => {

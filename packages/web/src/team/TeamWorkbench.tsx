@@ -1,4 +1,4 @@
-// 團隊工作台：目標、成員、任務板、TEAM.md、交接規則、全隊暫停／停止。
+// 團隊工作台：目標、成員、補成員、研究階段、任務板、TEAM.md、交接規則、全隊暫停／停止。
 import { useCallback, useEffect, useState } from 'react';
 import { TeamRole } from '@agent-board/protocol';
 import type { Session, Task, Team, TeamMember } from '@agent-board/protocol';
@@ -13,7 +13,11 @@ import {
   useAction,
   useDraft,
 } from './common';
+import { AddMembers } from './AddMembers';
 import { HandoffPanel } from './HandoffPanel';
+import { PhasePanel } from './PhasePanel';
+import { kindLabel } from './PlanEditor';
+import { memberKind } from './research';
 import { refreshTeams, teamColorVar, useTeams } from './store';
 import { TaskBoard } from './TaskBoard';
 import { ROLE_ABBR } from './teamPlan';
@@ -83,8 +87,8 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
   const { busy, message, run, setMessage } = useAction();
   const [conflict, setConflict] = useState<string | null>(null);
 
-  const roleOf = (id: string) =>
-    roles.find((m) => m.teamId === team.id && m.sessionId === id)?.role ?? 'worker';
+  const recordOf = (id: string) => roles.find((m) => m.teamId === team.id && m.sessionId === id);
+  const roleOf = (id: string) => recordOf(id)?.role ?? 'worker';
   const candidates = sessions.filter(
     (s) => !s.archived && isLive(s) && !members.some((m) => m.id === s.id),
   );
@@ -176,6 +180,11 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
                   <Callsign session={s} />
                   <ModeChip mode={s.permissionMode} />
                   <ReadOnlyChip session={s} />
+                  {team.phase && (
+                    <span className="chip" data-testid={`member-kind-${s.id}`}>
+                      {kindLabel(t, memberKind(recordOf(s.id) ?? { role: 'worker' }))}
+                    </span>
+                  )}
                 </div>
                 {clashes.length > 0 && (
                   <p className="member-clash" role="note" data-testid={`member-clash-${s.id}`}>
@@ -366,10 +375,15 @@ export function TeamWorkbench({ team }: { team: Team }) {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const { message, run } = useAction();
+  const [adding, setAdding] = useState(false);
 
-  const members = roles
+  const records = roles
     .filter((m) => m.teamId === team.id)
-    .flatMap((m) => sessions.find((s) => s.id === m.sessionId) ?? []);
+    .flatMap((member) => {
+      const session = sessions.find((s) => s.id === member.sessionId);
+      return session ? [{ member, session }] : [];
+    });
+  const members = records.map((r) => r.session);
 
   const reloadTasks = useCallback(async () => {
     setTasks(await backend.listTasks(team.id));
@@ -417,6 +431,25 @@ export function TeamWorkbench({ team }: { team: Team }) {
         <GoalPanel team={team} />
         <MembersPanel team={team} members={members} />
       </div>
+      <div className="row add-members-toggle">
+        <button
+          aria-expanded={adding}
+          data-testid="add-members-toggle"
+          onClick={() => setAdding((open) => !open)}
+        >
+          {t('team.add.open')}
+        </button>
+        <span className="sub">{t('team.add.hint')}</span>
+      </div>
+      {adding && (
+        <AddMembers
+          team={team}
+          members={records}
+          title={t('team.add.title')}
+          onClose={() => setAdding(false)}
+        />
+      )}
+      {team.phase && <PhasePanel team={{ ...team, phase: team.phase }} members={records} />}
       {loadError && (
         <div className="alert" role="alert">
           <span aria-hidden="true">✕</span>
