@@ -2,7 +2,8 @@
 import { useState } from 'react';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { errorText, Msg, useCurrentUser, type Note, type T } from './common';
+import { errorText, Msg, type Note, type T } from './common';
+import { useSettingsUser } from './settingsParts';
 
 /** 和新增使用者、首次引導一樣（protocol 的 Password）。 */
 const MIN_PASSWORD = 8;
@@ -28,7 +29,7 @@ function failureText(t: T, e: unknown): string {
 export function PasswordSection() {
   const t = useT();
   const { backend } = useBoard();
-  const me = useCurrentUser();
+  const me = useSettingsUser();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');

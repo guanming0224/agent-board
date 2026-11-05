@@ -187,6 +187,7 @@ export const zhTW: Record<string, string> = {
   'flows.new.warn.noSettings': '讀不到省額度設定，這裡無法判斷併發上限與禁讀路徑。',
 
   'flows.settings.title': '設定',
+  'flows.new.noMachinesMember': '請管理員到設定配對一台機器。',
   'flows.settings.nav': '設定分類',
   'flows.settings.cat.account': '我的帳號',
   'flows.settings.cat.notify': '通知',
@@ -796,6 +797,7 @@ export const en: Record<string, string> = {
     "Can't load quota settings, so the session limit and blocked paths can't be checked here.",
 
   'flows.settings.title': 'Settings',
+  'flows.new.noMachinesMember': 'Ask an owner to pair a machine in Settings.',
   'flows.settings.nav': 'Settings sections',
   'flows.settings.cat.account': 'My account',
   'flows.settings.cat.notify': 'Notifications',

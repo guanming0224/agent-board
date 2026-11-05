@@ -5,6 +5,7 @@ import { useBoard } from '../shared/store';
 import { ErrorBox, errorText, Loading, Msg, Page, useLoad, type Note } from './common';
 import { LanguagePicker } from './LanguagePicker';
 import { PairingPanel } from './PairingPanel';
+import { PairMachineNext } from './settingsParts';
 
 const MIN_PASSWORD = 8;
 
@@ -159,9 +160,7 @@ function FirstSession() {
         <>
           <p className="sub">{t('flows.onboard.noMachineYet')}</p>
           <p>
-            <a className="button" href="#/settings/machines">
-              {t('flows.onboard.toSettings')}
-            </a>
+            <PairMachineNext className="button" label={t('flows.onboard.toSettings')} />
           </p>
         </>
       )}

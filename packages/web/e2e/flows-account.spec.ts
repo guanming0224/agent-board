@@ -399,12 +399,12 @@ test.describe('管理員重設別人的密碼', () => {
       `${users}
        backend.currentUser = async () => ({ id: 'u-pat', name: 'pat', role: 'member', locale: 'zh-TW' });`,
     );
-    // 成員看不到「機器與使用者」整個分類（hub 也只讓 owner 讀使用者清單）。
-    await expect(page.getByRole('link', { name: '我的帳號' })).toHaveAttribute(
+    // 成員只看得到唯讀的機器清單；使用者區整個不出現（hub 也只讓 owner 讀使用者清單）。
+    await expect(page.getByRole('link', { name: '機器與使用者' })).toHaveAttribute(
       'aria-current',
       'page',
     );
-    await expect(page.getByRole('link', { name: '機器與使用者' })).toHaveCount(0);
+    await expect(page.locator('#s-machines')).toBeVisible();
     await expect(page.locator('#s-users')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '重設密碼' })).toHaveCount(0);
   });

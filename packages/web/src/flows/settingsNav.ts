@@ -13,8 +13,11 @@ export type Category = (typeof CATEGORIES)[number];
 
 export const DEFAULT_CATEGORY: Category = 'account';
 
-/** 整個分類只有 owner 用得到（hub 的 settings、users、machines 管理都只准 owner）。 */
-export const OWNER_ONLY: ReadonlySet<Category> = new Set(['notify', 'security', 'machines']);
+/**
+ * 整個分類只有 owner 用得到（hub 的 settings 只准 owner）。
+ * 「機器與使用者」成員也看得到：機器清單是 user 權限，只是唯讀；使用者區只有 owner。
+ */
+export const OWNER_ONLY: ReadonlySet<Category> = new Set(['notify', 'security']);
 
 /**
  * 每個區塊（id="s-<id>"）在哪個分類。舊連結 #/settings/<區塊 id> 也能落到對的分類與位置。
@@ -62,16 +65,41 @@ export interface SettingsTarget {
 export function parseSettingsHash(hash: string): SettingsTarget {
   const [route, part = ''] = hash.replace(/^#\/?/, '').split('/');
   if (route !== 'settings' || !part) return { category: DEFAULT_CATEGORY, section: null };
-  const name = decodeURIComponent(part);
+  let name: string;
+  try {
+    name = decodeURIComponent(part);
+  } catch {
+    // 壞掉的百分比編碼（例如 %E0）：當成不認得，不讓整頁掛掉。
+    return { category: DEFAULT_CATEGORY, section: null };
+  }
   if (isCategory(name)) return { category: name, section: null };
-  const category = SECTION_CATEGORY[name];
+  // 只認自己的 key，不讓 toString、__proto__ 這類原型上的名字混進來。
+  const category = Object.hasOwn(SECTION_CATEGORY, name) ? SECTION_CATEGORY[name] : undefined;
   return category ? { category, section: name } : { category: DEFAULT_CATEGORY, section: null };
 }
 
 export const settingsHash = (target: Category | string) => `#/settings/${target}`;
 
-/** 這個人看得到的分類。還不知道身分（載入中、讀不到）時全部顯示，交給 hub 擋。 */
-export function visibleCategories(role: 'owner' | 'member' | null | undefined): Category[] {
-  if (role !== 'member') return [...CATEGORIES];
-  return CATEGORIES.filter((c) => !OWNER_ONLY.has(c));
+/**
+ * 目前登入的人能用到多少：loading 還不知道（只畫大家都能用的）；
+ * unknown 是讀不到身分，照舊全部顯示、交給 hub 擋。
+ */
+export type SettingsAccess = 'loading' | 'owner' | 'member' | 'unknown';
+
+export function settingsAccess(me: {
+  data: { role: 'owner' | 'member' } | null;
+  loading: boolean;
+  error: string | null;
+}): SettingsAccess {
+  if (me.data) return me.data.role;
+  if (me.loading && !me.error) return 'loading';
+  return 'unknown';
+}
+
+/** 看得到 owner 專屬的分類與區塊嗎。 */
+export const ownerContent = (access: SettingsAccess) => access === 'owner' || access === 'unknown';
+
+/** 這個人看得到的分類。 */
+export function visibleCategories(access: SettingsAccess): Category[] {
+  return ownerContent(access) ? [...CATEGORIES] : CATEGORIES.filter((c) => !OWNER_ONLY.has(c));
 }

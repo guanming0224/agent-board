@@ -3,16 +3,16 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { ErrorBox, errorText, Loading, Msg, useCurrentUser, type Note } from './common';
+import { ErrorBox, errorText, Loading, Msg, type Note } from './common';
 import { chooseLocale, savedLocaleChoice, type LocaleChoice } from './locale';
 import { currentSubscription, disablePush, enablePush, pushSupport, readPushEnv } from './push';
-import { Section } from './settingsParts';
+import { Section, useSettingsUser } from './settingsParts';
 
 /** 目前登入的是誰＋登出。原本放在「使用者」區；成員也要用得到，所以搬到我的帳號。 */
 export function SignedInSection() {
   const t = useT();
   const { backend } = useBoard();
-  const me = useCurrentUser();
+  const me = useSettingsUser();
   const [note, setNote] = useState<Note | null>(null);
   const logout = async () => {
     try {

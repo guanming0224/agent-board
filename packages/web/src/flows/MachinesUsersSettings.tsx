@@ -1,23 +1,15 @@
-// 設定「機器與使用者」：配對、移除機器；新增、移除使用者，幫別人重設密碼。整個分類只有 owner 看得到。
+// 設定「機器與使用者」：配對、移除機器；新增、移除使用者，幫別人重設密碼。
+// 成員只看得到機器清單（hub 的 machinesList 是 user 權限），配對、移除與使用者區只有 owner。
 import { useCallback, useState } from 'react';
 import type { Machine, User } from '@agent-board/protocol';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import {
-  Empty,
-  ErrorBox,
-  errorText,
-  Msg,
-  useCurrentUser,
-  useLoad,
-  useTwoStep,
-  type Note,
-} from './common';
+import { Empty, ErrorBox, errorText, Msg, useLoad, useTwoStep, type Note } from './common';
 import { PairingPanel } from './PairingPanel';
 import { ResetPassword } from './ResetPassword';
-import { Section, type AdminBackend } from './settingsParts';
+import { Section, useSettingsUser, type AdminBackend } from './settingsParts';
 
-function MachineRow({ machine }: { machine: Machine }) {
+function MachineRow({ machine, canManage }: { machine: Machine; canManage: boolean }) {
   const t = useT();
   const locale = useLocale((s) => s.locale);
   const { backend, sessions, connected } = useBoard();
@@ -55,37 +47,43 @@ function MachineRow({ machine }: { machine: Machine }) {
           })}
         </div>
       )}
-      <div className="acts">
-        <button type="button" className="danger" disabled={!connected} onClick={remove}>
-          {twoStep.armed ? t('flows.machine.removeAgain') : t('flows.machine.remove')}
-        </button>
-        {twoStep.armed ? (
-          <span className="msg" role="status">
-            {t('flows.machine.removeHint', { n: active })}
-          </span>
-        ) : (
-          <Msg note={note} />
-        )}
-      </div>
+      {canManage && (
+        <div className="acts">
+          <button type="button" className="danger" disabled={!connected} onClick={remove}>
+            {twoStep.armed ? t('flows.machine.removeAgain') : t('flows.machine.remove')}
+          </button>
+          {twoStep.armed ? (
+            <span className="msg" role="status">
+              {t('flows.machine.removeHint', { n: active })}
+            </span>
+          ) : (
+            <Msg note={note} />
+          )}
+        </div>
+      )}
     </li>
   );
 }
 
-export function MachinesSection() {
+/** canManage：目前登入的是 owner，才有配對與移除（hub 只准 owner）。 */
+export function MachinesSection({ canManage }: { canManage: boolean }) {
   const t = useT();
   const { machines } = useBoard();
   return (
     <Section id="machines" title={t('flows.settings.machines')}>
       {machines.length === 0 ? (
-        <Empty title={t('flows.machine.none')} next={t('flows.machine.noneNext')} />
+        <Empty
+          title={t('flows.machine.none')}
+          next={canManage ? t('flows.machine.noneNext') : t('flows.new.noMachinesMember')}
+        />
       ) : (
         <ul className="rows">
           {machines.map((machine) => (
-            <MachineRow key={machine.id} machine={machine} />
+            <MachineRow key={machine.id} machine={machine} canManage={canManage} />
           ))}
         </ul>
       )}
-      <PairingPanel />
+      {canManage && <PairingPanel />}
     </Section>
   );
 }
@@ -197,7 +195,7 @@ export function UsersSection() {
   const t = useT();
   const { backend } = useBoard();
   const admin = backend as AdminBackend;
-  const me = useCurrentUser();
+  const me = useSettingsUser();
   const users = useLoad(
     useCallback(async () => (admin.listUsers ? admin.listUsers() : null), [admin]),
   );

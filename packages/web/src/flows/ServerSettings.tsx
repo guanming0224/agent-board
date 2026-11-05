@@ -126,6 +126,8 @@ export function useServerSettings(loaded: Settings | null): ServerSettingsForm |
       const next = await backend.updateSettings(changes as Partial<Settings>);
       setSaved(next);
       setDraft(next);
+      // 框裡的字跟著 hub 存下的值（例如去空白、空行），還沒按「新增規則」的那條留著。
+      setTexts((prev) => ({ ...textsOf(next), newRule: prev.newRule }));
       setNote({ text: t('flows.settings.saved') });
     } catch (e) {
       setNote({ text: t('flows.settings.saveFailed', { error: errorText(e) }), tone: 'err' });

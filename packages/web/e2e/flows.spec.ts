@@ -1535,7 +1535,7 @@ test.describe('設定', () => {
 
     await open(page, 'settings/notify', {
       patch: `let n = 0; const ok = backend.getSettings;
-        backend.getSettings = async () => { if (n++ < 2) throw new Error('403'); return ok(); };`,
+        backend.getSettings = async () => { if (n++ < 1) throw new Error('403'); return ok(); };`,
     });
     const box = page.locator('.settings-panel [data-state=error]');
     await expect(box).toContainText('讀不到設定：403');
@@ -1668,18 +1668,39 @@ test.describe('設定', () => {
   });
 
   test('成員：看不到只有管理員能用的分類與區塊，網址硬給也回到我的帳號', async ({ page }) => {
+    const settingsCalls: string[] = [];
+    page.on('console', (m) => {
+      if (m.text() === 'getSettings') settingsCalls.push(m.text());
+    });
     await open(page, 'settings/security', {
+      machines: [rigA, rigOff],
       patch: `backend.currentUser = async () =>
-        ({ id: 'u-m', name: 'pat', role: 'member', locale: 'zh-TW' });`,
+        ({ id: 'u-m', name: 'pat', role: 'member', locale: 'zh-TW' });
+        const get = backend.getSettings;
+        backend.getSettings = async () => { console.log('getSettings'); return get(); };`,
     });
     const nav = page.getByRole('navigation', { name: '設定分類' });
-    await expect(nav.getByRole('link')).toHaveText(['我的帳號', 'Session 與額度', '資料與紀錄']);
+    await expect(nav.getByRole('link')).toHaveText([
+      '我的帳號',
+      'Session 與額度',
+      '機器與使用者',
+      '資料與紀錄',
+    ]);
     await expect(nav.getByRole('link', { name: '我的帳號' })).toHaveAttribute(
       'aria-current',
       'page',
     );
     await expect(page.locator('#s-security')).toHaveCount(0);
-    await expect(page.locator('#s-machines')).toHaveCount(0);
+    // 成員不讀 hub 設定（只會拿到 403），也不會看到讀不到的錯誤框。
+    await expect(page.locator('[data-state=error]')).toHaveCount(0);
+    expect(settingsCalls).toEqual([]);
+
+    // 機器清單唯讀：看得到上線狀態，沒有配對、移除，也沒有使用者區。
+    await nav.getByRole('link', { name: '機器與使用者' }).click();
+    await expect(page.getByTestId('machine-m-a')).toContainText('rig-a');
+    await expect(page.getByTestId('machine-m-off')).toContainText('最後讀到');
+    await expect(page.locator('#s-machines').getByRole('button')).toHaveCount(0);
+    await expect(page.locator('#s-users')).toHaveCount(0);
     await nav.getByRole('link', { name: 'Session 與額度' }).click();
     await expect(page.locator('#s-templates')).toBeVisible();
     await expect(page.locator('#s-quota')).toHaveCount(0);
@@ -1689,6 +1710,78 @@ test.describe('設定', () => {
     await expect(page.locator('#s-archived')).toBeVisible();
     await expect(page.locator('#s-audit')).toHaveCount(0);
   });
+
+  test('成員還沒有機器：請管理員配對，不連到用不了的頁面', async ({ page }) => {
+    const member = `backend.currentUser = async () =>
+      ({ id: 'u-m', name: 'pat', role: 'member', locale: 'zh-TW' });`;
+    await open(page, 'new', { machines: [], sessions: [], approvals: [], patch: member });
+    const empty = page.locator('[data-state=empty]');
+    await expect(empty).toContainText('請管理員到設定配對一台機器。');
+    await expect(empty.getByRole('link')).toHaveCount(0);
+  });
+
+  test('網址編碼壞掉不讓整頁掛掉，回到我的帳號', async ({ page }) => {
+    await open(page, 'settings/%E0');
+    await expect(
+      page.getByRole('navigation', { name: '設定分類' }).getByRole('link', { name: '我的帳號' }),
+    ).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('#s-language')).toBeVisible();
+  });
+
+  test('上一頁／下一頁在分類之間切換', async ({ page }) => {
+    await open(page, 'settings');
+    const nav = page.getByRole('navigation', { name: '設定分類' });
+    const current = (name: string) =>
+      expect(nav.getByRole('link', { name })).toHaveAttribute('aria-current', 'page');
+    await current('我的帳號');
+    await nav.getByRole('link', { name: '安全' }).click();
+    await current('安全');
+    await page.getByLabel('監聽位址').fill('10.1.2.3');
+    await nav.getByRole('link', { name: /^資料與紀錄/ }).click();
+    await current('資料與紀錄');
+    await page.goBack();
+    await current('安全');
+    // 草稿還在
+    await expect(page.getByLabel('監聽位址')).toHaveValue('10.1.2.3');
+    await expect(page.locator('#s-archived')).toBeHidden();
+    await page.goBack();
+    await current('我的帳號');
+    await expect(page.locator('#s-language')).toBeVisible();
+    await page.goForward();
+    await current('安全');
+    await page.goForward();
+    await current('資料與紀錄');
+    await expect(page.locator('#s-archived')).toBeVisible();
+  });
+
+  test('存檔後輸入框換成 hub 存下的值', async ({ page }) => {
+    await open(page, 'settings/sessions');
+    const deny = page.getByLabel('禁止讀取的路徑');
+    await deny.fill('a/\n\n   b/  \n');
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    await expect(deny).toHaveValue('a/\nb/');
+  });
+
+  for (const section of ['audit', 'stuck', 'archived']) {
+    test(`矮視窗深連結 #/settings/${section}：等區塊出現、版面穩定後才捲到`, async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 400 });
+      await open(page, `settings/${section}`, {
+        // 讓上方內容和目標晚一點才出現，模擬慢的 hub。
+        patch: `const slow = (name) => { const f = backend[name];
+          backend[name] = async (...a) => { await new Promise((r) => setTimeout(r, 250)); return f(...a); }; };
+          slow('listArchivedSessions'); slow('getSettings'); slow('listTemplates'); slow('listAudit');`,
+      });
+      const target = page.locator(`#s-${section}`);
+      await expect(target).toBeVisible();
+      await expect(target).toBeInViewport();
+      await page.waitForTimeout(1200);
+      const top = await target.evaluate((el) => el.getBoundingClientRect().top);
+      expect(top).toBeGreaterThanOrEqual(0);
+      await expect(target).toBeInViewport();
+      if (section !== 'archived') expect(await page.evaluate(() => scrollY)).toBeGreaterThan(0);
+    });
+  }
 
   for (const width of [320, 375]) {
     test(`${width}px：分類變成上方分頁，全部看得到，不出現整頁水平捲軸`, async ({ page }) => {
