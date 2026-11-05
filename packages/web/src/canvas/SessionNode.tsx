@@ -29,6 +29,8 @@ import {
 import { CardMenu, MenuButton, RenameInput } from './CardMenu';
 import { CommandInput } from './CommandInput';
 import { DoneHint } from './DoneHint';
+import { useHandoffActivity } from './handoffActivity';
+import { isReceiving } from './handoffActivityState';
 import { fitCardZoom, STRIP_W } from './layout';
 import { motion } from './motion';
 import { terminalHash } from './terminalRoute';
@@ -196,6 +198,8 @@ export function SessionNode({
   const expanded = useViewsUi((s) => s.expandedIds.includes(data.sessionId));
   const toggleExpanded = useViewsUi((s) => s.toggleExpanded);
   const focused = useViewsUi((s) => s.focusId === data.sessionId);
+  // 剛收到交接：外框一圈淡藍光，看得出是誰收到（動畫在 canvas.css）。
+  const receiving = useHandoffActivity((s) => isReceiving(s.activities, data.sessionId));
   const flow = useReactFlow();
   const store = useStoreApi();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -233,6 +237,7 @@ export function SessionNode({
       style={{ width: w, height: h }}
       data-testid={`card-${session.id}`}
       data-mode={isTerminal ? 'terminal' : 'summary'}
+      data-handoff={receiving ? 'in' : undefined}
     >
       <Handle
         type="target"

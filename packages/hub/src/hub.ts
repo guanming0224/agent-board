@@ -381,6 +381,8 @@ export class Hub {
         return;
       }
       case 'session.event':
+        // handoff.* 只能由 hub 自己寫（交接引擎讀它當分界，畫布拿它畫動畫），daemon 送來的不收。
+        if (msg.event.type.startsWith('handoff.')) return;
         if (this.ownsSession(conn, msg.event.sessionId) && this.store.insertEvent(msg.event)) {
           this.broadcast({ type: 'session.event', event: msg.event });
           this.guarded('handoff', () => this.handoff.onEvent(msg.event));

@@ -41,7 +41,8 @@ import {
   requestArchive,
   useArchiveUi,
 } from './archive';
-import { HandoffEdge } from './HandoffEdge';
+import { HandoffEdge, type HandoffEdgeType } from './HandoffEdge';
+import { useHandoffActivity, useHandoffEvents } from './handoffActivity';
 import { motion } from './motion';
 import {
   CARD_H,
@@ -154,6 +155,14 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
   const backend = useBoard((s) => s.backend);
   const rules = useTeams((s) => s.rules);
   const handoffs = useMemo(() => groupHandoffs(rules), [rules]);
+  useHandoffEvents(backend);
+  // 正在播放的交接（from->to）。字串比較：只有這個集合變了才重算線。
+  const activeTalks = useHandoffActivity((s) =>
+    [...s.activities.values()]
+      .filter((a) => a.phase === 'active')
+      .map((a) => a.key)
+      .join('|'),
+  );
   const teamLoadError = useTeams((s) => s.detail);
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const clearFocus = useViewsUi((s) => s.clearFocus);
@@ -313,24 +322,44 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
 
   const liveIds = useMemo(() => new Set(cards.map((n) => n.id)), [cards]);
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
-  const edges = useMemo<Edge[]>(
-    () =>
-      handoffs
-        .filter((h) => liveIds.has(h.source) && liveIds.has(h.target))
-        .map((h) => ({
-          id: h.id,
-          type: 'handoff',
-          source: h.source,
-          target: h.target,
-          selected: selectedEdges.has(h.id),
-          data: {
-            labelKeys: h.triggers.map((trigger) => `canvas.handoff.${trigger}`),
-            enabled: h.enabled,
+  const edges = useMemo<Edge[]>(() => {
+    const drawn: HandoffEdgeType[] = handoffs
+      .filter((h) => liveIds.has(h.source) && liveIds.has(h.target))
+      .map((h) => ({
+        id: h.id,
+        type: 'handoff',
+        source: h.source,
+        target: h.target,
+        selected: selectedEdges.has(h.id),
+        data: {
+          labelKeys: h.triggers.map((trigger) => `canvas.handoff.${trigger}`),
+          enabled: h.enabled,
+        },
+        markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--muted)' },
+      }));
+    // 兩張卡之間沒有畫出的規則線（例如規則已刪），交接當下仍暫時畫一條，播完就收掉。
+    const drawnIds = new Set(drawn.map((e) => e.id));
+    const temporary: HandoffEdgeType[] = (activeTalks ? activeTalks.split('|') : [])
+      .filter((key) => !drawnIds.has(key))
+      .flatMap((key) => {
+        const activity = useHandoffActivity.getState().activities.get(key);
+        if (!activity || !liveIds.has(activity.from) || !liveIds.has(activity.to)) return [];
+        return [
+          {
+            id: `talk:${key}`,
+            type: 'handoff' as const,
+            source: activity.from,
+            target: activity.to,
+            selectable: false,
+            deletable: false,
+            focusable: false,
+            data: { labelKeys: [], enabled: true, temporary: true, activityKey: key },
+            markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--muted)' },
           },
-          markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--muted)' },
-        })),
-    [handoffs, liveIds, selectedEdges],
-  );
+        ];
+      });
+    return [...drawn, ...temporary];
+  }, [handoffs, liveIds, selectedEdges, activeTalks]);
 
   const changeHandoffs = useCallback(
     (change: () => Promise<unknown>) => {

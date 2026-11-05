@@ -72,6 +72,8 @@ export type HandoffBlockReason = 'loop' | 'rate_limit' | 'target_ended';
 interface Pending {
   rule: HandoffRule;
   message: string;
+  /** 一句摘要（message 裡的那句），送達事件帶著，畫布顯示用。 */
+  summary: string;
   /** 這則交接一路經過的 session；目標之後再往外交接時用來判斷迴圈。 */
   chain: string[];
 }
@@ -196,7 +198,9 @@ export class HandoffEngine {
     );
     const message = handoffMessage({ summary, files, branch: source.branch });
     const chain = [...(this.chains.get(source.id) ?? []), source.id];
-    for (const rule of matched) this.fireRule(rule, source, message, chain, lastDaemonAt);
+    for (const rule of matched) {
+      this.fireRule(rule, source, message, chain, lastDaemonAt, summary);
+    }
   }
 
   private fireRule(
@@ -205,11 +209,13 @@ export class HandoffEngine {
     message: string,
     chain: string[],
     boundaryAt: string | null,
+    /** 一句摘要（和送出的內容相同），只放進事件，畫布的交接動畫用來顯示。 */
+    summaryText: string,
   ): void {
     const { store, audit, addEvent } = this.deps;
     const targetId = rule.action.toSessionId;
     const target = store.getSession(targetId);
-    const summary = {
+    const detail = {
       ruleId: rule.id,
       teamId: rule.teamId,
       trigger: rule.trigger,
@@ -218,14 +224,19 @@ export class HandoffEngine {
     };
     const blocked = this.blockReason(rule, target, chain);
     if (blocked) {
-      audit(source.id, 'handoff.blocked', JSON.stringify({ ...summary, reason: blocked }));
-      addEvent(source.id, 'handoff.blocked', { ...summary, reason: blocked });
+      audit(source.id, 'handoff.blocked', JSON.stringify({ ...detail, reason: blocked }));
+      addEvent(source.id, 'handoff.blocked', { ...detail, summary: summaryText, reason: blocked });
       return;
     }
-    audit(source.id, 'handoff.fired', JSON.stringify({ ...summary, message }));
+    audit(source.id, 'handoff.fired', JSON.stringify({ ...detail, message }));
     // 這筆事件是「改過的檔案」的分界。時間要接在 daemon 事件之後：各台機器的時鐘不一定和 hub 相同。
-    addEvent(source.id, 'handoff.fired', summary, boundaryAt ?? undefined);
-    this.pending.set(rule.id, { rule, message, chain });
+    addEvent(
+      source.id,
+      'handoff.fired',
+      { ...detail, summary: summaryText },
+      boundaryAt ?? undefined,
+    );
+    this.pending.set(rule.id, { rule, message, summary: summaryText, chain });
     this.deliverNext(targetId);
   }
 
@@ -247,11 +258,7 @@ export class HandoffEngine {
     for (const [ruleId, pending] of this.pending) {
       if (pending.rule.action.toSessionId !== targetId) continue;
       this.pending.delete(ruleId);
-      this.deps.audit(
-        pending.rule.fromSessionId,
-        'handoff.dropped',
-        JSON.stringify({ ruleId, toSessionId: targetId, reason: 'target_ended' }),
-      );
+      this.dropped(pending, 'target_ended');
     }
   }
 
@@ -292,19 +299,39 @@ export class HandoffEngine {
       this.pending.delete(ruleId);
       const rule = this.deps.store.getRule(ruleId);
       if (rule?.enabled && rule.action.toSessionId === targetId) return pending;
-      this.deps.audit(
-        pending.rule.fromSessionId,
-        'handoff.dropped',
-        JSON.stringify({ ruleId, toSessionId: targetId, reason: 'rule_disabled' }),
-      );
+      this.dropped(pending, 'rule_disabled');
     }
     return null;
+  }
+
+  /** 排隊中的交接不送了：audit 照舊，另外寫事件讓畫布看得到（來源已刪除就只留 audit）。 */
+  private dropped(pending: Pending, reason: 'target_ended' | 'rule_disabled'): void {
+    const { store, audit, addEvent } = this.deps;
+    const { rule } = pending;
+    const toSessionId = rule.action.toSessionId;
+    audit(
+      rule.fromSessionId,
+      'handoff.dropped',
+      JSON.stringify({ ruleId: rule.id, toSessionId, reason }),
+    );
+    if (!store.getSession(rule.fromSessionId)) return;
+    addEvent(rule.fromSessionId, 'handoff.dropped', {
+      ruleId: rule.id,
+      fromSessionId: rule.fromSessionId,
+      toSessionId,
+      reason,
+    });
   }
 
   private pressEnter(targetId: string, pending: Pending): void {
     const { store, audit, addEvent, isReachable, sendInput } = this.deps;
     const { rule, message, chain } = pending;
-    const detail = { ruleId: rule.id, fromSessionId: rule.fromSessionId, toSessionId: targetId };
+    const detail = {
+      ruleId: rule.id,
+      fromSessionId: rule.fromSessionId,
+      toSessionId: targetId,
+      summary: pending.summary,
+    };
     const current = store.getSession(targetId);
     if (current?.status !== 'waiting_input' || !isReachable(targetId)) {
       this.awaitingAck.delete(targetId);
