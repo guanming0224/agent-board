@@ -27,6 +27,9 @@ hub 在記憶體留每個 session 最後 2 KB 輸出（不落地），只用來�
 - daemon 在 `PostToolUse` 且工具為 Write、Edit、MultiEdit、NotebookEdit 時送 `session.event`，type `file.changed`，payload 只有 `{ path }`。透過 shell 改的檔案偵測不到。
 - 交接規則：`on_done` 是使用者標記完成或 PTY exit 0；`on_fail` 只算 `error`；`on_file` 在回合結束時判斷。只有目標是 `waiting_input` 才送，否則排隊。
 - 同機器、同一個 working tree 且沒有各自 worktree 的成員，`teamMembersPut` 回 409 `worktree_required`。判斷用 `sameWorkingTree`（`packages/protocol/src/repo.ts`）：daemon 回報了 `repoRoot` 就比根目錄（同 repo 的不同子資料夾也算），還不知道時退回比資料夾是否相同或巢狀。同 repo 的 linked worktree 根目錄不同，不算。
+- **只讀成員例外**（GM 2026-11-06）：兩個成員**都會改檔案**才算衝突。只讀 = 團隊角色是 `researcher` 或 `reviewer`，**而且** session 的 `permissionMode` 是 `plan`；兩個條件缺一就算會改檔案（例如 `reviewer` + `default`、`worker` + `plan`）。hub `hub/src/worktree.ts` 與 web `web/src/team/worktree.ts` 同一套規則（`isReadOnlyMember`）。
+- **已知限制**：只在**加入**時檢查。已經是成員的改角色（`teamMembersPut` 對既有成員）不重新檢查；之後把只讀成員切出 plan 模式也沒有人重新檢查。工作台只在前端提醒：成員列上，目前規則下和別的成員衝突的（例如研究／審查不在 plan 又和會改檔案的成員共用資料夾），兩邊都顯示提醒文字（`memberClashes`）。
+- **建立團隊時一起開 session**（`web/src/team/NewTeamForm.tsx`）：預設組合「只建團隊」（原本的行為）、小隊 LD+1 BD、標準 LD+2 BD+1 RV、探索 LD+1 RS+1 BD；每列可改角色、名稱（預設 `<團隊名>-LD`、`-BD1`…）、權限模式。預設權限：lead `default`、worker `acceptEdits`、researcher／reviewer `plan`（不預設 `bypassPermissions`、`dontAsk`）。資料夾：LD 用主資料夾、每個 BD 各開 worktree（daemon 確認不是 git 時不開）、RS／RV 共用主資料夾。送出前檢查：剛好一位 LD、名稱不空不重複、主資料夾裡最多一位會改檔案的。順序：`teamsCreate` → 每列 `sessionsCreate`（同畫布與 `#/new` 的路，worktree、hooks、額度排隊照常）→ `teamMembersPut`。團隊本身建不起來就停；某列失敗就記下是哪一步、原因，繼續下一列，**不刪任何已建立的東西**，全部成功才自動進工作台。
 
 ### Lead 對 DISPATCH 的增補（已回報 GM）
 

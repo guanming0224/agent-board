@@ -423,17 +423,13 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       };
       if (!store.getSession(member.sessionId)) throw notFound('Session');
       const others = store.listTeamMembers(member.teamId);
-      // 已經是成員只是改角色：不重新判斷，否則改不了角色也解不開衝突。
+      // 已經是成員只是改角色：不重新判斷，否則改不了角色也解不開衝突（CONTRACTS「團隊事件」已知限制）。
       if (!others.some((m) => m.sessionId === member.sessionId)) {
-        const clashes = worktreeConflicts(
-          store,
-          member.sessionId,
-          others.map((m) => m.sessionId),
-        );
+        const clashes = worktreeConflicts(store, member, others);
         if (clashes.length > 0) {
           throw conflict(
             'worktree_required',
-            `Same folder as ${clashes.map((s) => s.name).join(', ')}. Each team member needs its own worktree.`,
+            `Same folder as ${clashes.map((s) => s.name).join(', ')}. Members that edit files each need their own worktree.`,
           );
         }
       }

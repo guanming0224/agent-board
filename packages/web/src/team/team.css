@@ -1,9 +1,14 @@
-/* 團隊工作台（STYLE.md §3、§4）。團隊色不是狀態色，只用在識別色塊。 */
+/* 團隊工作台（STYLE.md §3、§4）。團隊色不是狀態色，只用在識別色塊。
+   選色與色盲 ΔE 實測見 STYLE.md §4；新增顏色要重跑，不要只憑眼睛。 */
 :root {
   --team-teal: #3cc4b0;
   --team-lime: #a8c957;
   --team-indigo: #8b93f5;
   --team-apricot: #e8a87c;
+  --team-ice: #75e5f0;
+  --team-sand: #f4ec9a;
+  --team-plum: #a8578f;
+  --team-violet: #7d5fc7;
 }
 
 .chip.cost {
@@ -20,6 +25,28 @@
   background: var(--team);
 }
 
+.color-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.team-page button.color-pick {
+  width: 36px;
+  min-width: 36px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+}
+.color-pick .swatch {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border-radius: 5px;
+}
+.team-page button.color-pick[aria-pressed='true'] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 .team-page h1 {
   margin: 0;
   font-size: 20px;
@@ -124,15 +151,92 @@
   gap: 14px;
 }
 .new-team {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.new-team fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.new-team-basics {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   align-items: end;
-  margin-top: 12px;
 }
-.new-team label {
+.new-team-basics label {
   flex: 1 1 220px;
   margin: 0;
+}
+.new-team .seg {
+  margin-bottom: 4px;
+}
+.new-team-place {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.new-team-place > label,
+.new-team-place > .new-team-project {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.new-team-project {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+.new-team-project > label {
+  margin: 0;
+}
+.new-team .input-line {
+  display: flex;
+  gap: 8px;
+}
+.new-team .input-line input {
+  flex: 1 1 auto;
+}
+.new-team-folder .browser {
+  margin-bottom: 10px;
+}
+.plan-rows {
+  list-style: none;
+  margin: 10px 0 8px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.plan-row {
+  display: grid;
+  /* 每列欄寬一致：說明欄固定寬，不跟著文字長短縮放。 */
+  grid-template-columns: minmax(120px, 160px) minmax(120px, 1fr) minmax(110px, 140px) 11em 36px;
+  gap: 6px 8px;
+  align-items: center;
+}
+.plan-row .where {
+  font-size: 12px;
+}
+.plan-row .step {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.plan-row .step.err {
+  color: var(--fault);
+}
+.member-clash {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--you);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .plan-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
 }
 .team-row {
   display: grid;

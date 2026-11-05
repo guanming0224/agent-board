@@ -1,4 +1,5 @@
 // 加入團隊成員時的 worktree 檢查：hub 是防線，繞過前端也要擋。
+import type { PermissionMode } from '@agent-board/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
 
@@ -35,13 +36,25 @@ const statusOf = (id: string) =>
 /** 建立並等 daemon 收到；`started` 帶入回報的欄位，不帶就停在 starting。 */
 async function session(
   c: Ctx,
-  over: { cwd?: string; useWorktree?: boolean; machineId?: string; daemon?: Peer } = {},
+  over: {
+    cwd?: string;
+    useWorktree?: boolean;
+    machineId?: string;
+    daemon?: Peer;
+    permissionMode?: PermissionMode;
+  } = {},
   started?: object,
 ) {
-  const { cwd = '/r', useWorktree = false, machineId = c.machineId, daemon = c.daemon } = over;
+  const {
+    cwd = '/r',
+    useWorktree = false,
+    machineId = c.machineId,
+    daemon = c.daemon,
+    permissionMode = 'default',
+  } = over;
   const res = await hub.api('POST', '/api/sessions', {
     cookie: c.cookie,
-    body: { ...spec({ cwd, useWorktree }), machineId },
+    body: { ...spec({ cwd, useWorktree, permissionMode }), machineId },
   });
   const create = await daemon.next('session.create');
   const id = res.body.id as string;
@@ -163,6 +176,55 @@ describe('PUT team member: own worktree required', () => {
       .prepare('INSERT INTO team_members (team_id, session_id, role) VALUES (?, ?, ?)')
       .run(c.teamId, second, 'worker');
     expect((await join(c, second, 'reviewer')).status).toBe(200);
+  });
+
+  it('lets read-only members (researcher/reviewer in plan mode) share the folder with a writer', async () => {
+    const c = await setup();
+    const lead = await session(c, {}, {});
+    expect((await join(c, lead, 'lead')).status).toBe(200);
+    const reviewer = await session(c, { permissionMode: 'plan' }, {});
+    expect((await join(c, reviewer, 'reviewer')).status).toBe(200);
+    // 還沒開好的也一樣（permissionMode 建立時就知道）。
+    const researcher = await session(c, { permissionMode: 'plan' });
+    expect((await join(c, researcher, 'researcher')).status).toBe(200);
+    expect((await memberIds(c)).sort()).toEqual([lead, reviewer, researcher].sort());
+  });
+
+  it('needs both the read-only role and plan mode', async () => {
+    const c = await setup();
+    const lead = await session(c, {}, {});
+    await join(c, lead, 'lead');
+    const looseReviewer = await session(c, { permissionMode: 'default' }, {});
+    expect((await join(c, looseReviewer, 'reviewer')).status).toBe(409);
+    const planWorker = await session(c, { permissionMode: 'plan' }, {});
+    expect((await join(c, planWorker, 'worker')).status).toBe(409);
+    const planLead = await session(c, { permissionMode: 'plan' }, {});
+    expect((await join(c, planLead, 'lead')).status).toBe(409);
+  });
+
+  it('a read-only member already in the folder does not block a writer; two read-only do not clash', async () => {
+    const c = await setup();
+    const reviewer = await session(c, { permissionMode: 'plan' }, {});
+    await join(c, reviewer, 'reviewer');
+    const researcher = await session(c, { permissionMode: 'plan' }, {});
+    expect((await join(c, researcher, 'researcher')).status).toBe(200);
+    const writer = await session(c, {}, {});
+    expect((await join(c, writer, 'worker')).status).toBe(200);
+    // 第二個會改檔案的照樣擋：只讀成員不會讓規則失效。
+    const second = await session(c, {}, {});
+    const refused = await join(c, second, 'worker');
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe('worktree_required');
+  });
+
+  it('a researcher whose session left plan mode counts as a writer for new members', async () => {
+    const c = await setup();
+    const researcher = await session(c, { permissionMode: 'plan' }, {});
+    await join(c, researcher, 'researcher');
+    hub.running.db
+      .prepare('UPDATE sessions SET permission_mode = ? WHERE id = ?')
+      .run('acceptEdits', researcher);
+    expect((await join(c, await session(c, {}, {}), 'worker')).status).toBe(409);
   });
 
   it('answers 404 for an unknown session or team', async () => {

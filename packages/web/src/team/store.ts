@@ -75,10 +75,4 @@ export function useTeamSync(): { retry: () => void } {
   };
 }
 
-/** 使用者選的團隊框色（STYLE.md §4），不是狀態色。存的是名稱，不把任意字串放進 CSS。 */
-export const TEAM_COLORS = ['teal', 'lime', 'indigo', 'apricot'] as const;
-
-export function teamColorVar(color: string): string {
-  const known = TEAM_COLORS.find((c) => c === color) ?? 'teal';
-  return `var(--team-${known})`;
-}
+export { TEAM_COLORS, teamColorVar } from './colors';
