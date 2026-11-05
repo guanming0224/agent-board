@@ -19,6 +19,16 @@ const STATUS_TEXT = {
   },
 };
 
+/** 狀態以外的原因（hub push.ts 的 AttentionReason）。{n} 是輪數上限。 */
+const REASON_TEXT = {
+  'zh-TW': {
+    handoff_round_limit: '雙向交接已來回 {n} 輪，自動交接停下，等你決定',
+  },
+  en: {
+    handoff_round_limit: 'Two-way handoff reached {n} rounds and stopped. Waiting for you.',
+  },
+};
+
 const FALLBACK = {
   'zh-TW': { title: 'Agent Board', body: '有 session 在等你' },
   en: { title: 'Agent Board', body: 'A session is waiting on you' },
@@ -35,7 +45,10 @@ const inboxUrl = (sessionId) =>
     self.location.origin,
   ).href;
 
-/** hub 的 attentionPayload：{ sessionId, name, status, at }。只有名稱與狀態，沒有終端機內容。 */
+/**
+ * hub 的 attentionPayload：{ sessionId, name, status, at }，有時多帶 { reason, maxRounds }。
+ * 只有名稱、狀態與原因代碼，沒有終端機內容。
+ */
 function readPayload(event) {
   if (!event.data) return null;
   try {
@@ -58,7 +71,12 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('push', (event) => {
   const lang = locale();
   const data = readPayload(event);
-  const status = data && STATUS_TEXT[lang][data.status];
+  const reasonTemplate =
+    data && typeof data.reason === 'string' ? REASON_TEXT[lang][data.reason] : undefined;
+  const reason =
+    reasonTemplate &&
+    reasonTemplate.replace('{n}', String(Number.isInteger(data.maxRounds) ? data.maxRounds : '?'));
+  const status = reason || (data && STATUS_TEXT[lang][data.status]);
   const title =
     data && typeof data.name === 'string' && data.name ? data.name : FALLBACK[lang].title;
   const sessionId = data && typeof data.sessionId === 'string' ? data.sessionId : null;
@@ -66,7 +84,8 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body: status || FALLBACK[lang].body,
-      tag: sessionId ? `session-${sessionId}` : 'agent-board',
+      // 輪數上限另外一則：不能被同一個 session 接著來的「等你回覆」蓋掉。
+      tag: sessionId ? `${reason ? 'handoff' : 'session'}-${sessionId}` : 'agent-board',
       renotify: true,
       icon: '/icon-192.png',
       badge: '/icon-192.png',

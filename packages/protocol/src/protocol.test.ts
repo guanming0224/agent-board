@@ -4,6 +4,10 @@ import {
   ATTENTION_STATUSES,
   ClientToHub,
   DaemonToHub,
+  HandoffRule,
+  handoffRuleProblem,
+  Team,
+  TeamMember,
   HookPayload,
   HubToClient,
   needsAttention,
@@ -225,5 +229,65 @@ describe('sameWorkingTree', () => {
     expect(sameWorkingTree(at('C:\\r'), at('C:\\r\\sub'))).toBe(true);
     expect(sameWorkingTree(at('/r'), at('/rx'))).toBe(false);
     expect(sameWorkingTree(at(''), at('/r'))).toBe(false);
+  });
+});
+
+describe('two-way handoff and research teams (2026-11-06)', () => {
+  const rule = (action: object, trigger = 'on_done') => ({
+    id: 'r',
+    teamId: 't',
+    fromSessionId: 'a',
+    trigger,
+    action: { toSessionId: 'b', ...action },
+    enabled: true,
+  });
+
+  it('old rules without maxRounds or marker still parse unchanged', () => {
+    expect(HandoffRule.parse(rule({ filePattern: '*.ts' }, 'on_file')).action).toEqual({
+      toSessionId: 'b',
+      filePattern: '*.ts',
+    });
+  });
+
+  it('maxRounds is an integer 1–10; marker is 1–40 non-blank characters', () => {
+    expect(HandoffRule.safeParse(rule({ maxRounds: 1 })).success).toBe(true);
+    expect(HandoffRule.safeParse(rule({ maxRounds: 10 })).success).toBe(true);
+    for (const bad of [0, 11, 2.5, '3']) {
+      expect(HandoffRule.safeParse(rule({ maxRounds: bad })).success).toBe(false);
+    }
+    expect(HandoffRule.safeParse(rule({ marker: '[需要實驗]' }, 'on_marker')).success).toBe(true);
+    expect(HandoffRule.safeParse(rule({ marker: '字'.repeat(40) }, 'on_marker')).success).toBe(
+      true,
+    );
+    expect(HandoffRule.safeParse(rule({ marker: '字'.repeat(41) }, 'on_marker')).success).toBe(
+      false,
+    );
+    expect(HandoffRule.safeParse(rule({ marker: '  ' }, 'on_marker')).success).toBe(false);
+  });
+
+  it('on_marker needs a marker', () => {
+    expect(handoffRuleProblem({ trigger: 'on_marker', action: { toSessionId: 'b' } })).toBe(
+      'marker_required',
+    );
+    expect(
+      handoffRuleProblem({ trigger: 'on_marker', action: { toSessionId: 'b', marker: 'x' } }),
+    ).toBeNull();
+    expect(handoffRuleProblem({ trigger: 'on_done', action: { toSessionId: 'b' } })).toBeNull();
+  });
+
+  it('team phase and member kind are optional (old data has neither)', () => {
+    const team = { id: 't', name: 'T', goal: '', doneCriteria: '', color: 'teal', contextMd: '' };
+    expect(Team.parse(team)).toEqual(team);
+    expect(Team.parse({ ...team, phase: 'revision' }).phase).toBe('revision');
+    expect(Team.safeParse({ ...team, phase: 'other' }).success).toBe(false);
+    expect(TeamMember.parse({ teamId: 't', sessionId: 's', role: 'worker' })).not.toHaveProperty(
+      'kind',
+    );
+    expect(TeamMember.parse({ teamId: 't', sessionId: 's', role: 'worker', kind: 'ex' }).kind).toBe(
+      'ex',
+    );
+    const body = routes.teamsUpdate.body!;
+    // PATCH 沒帶 phase 不能變成清掉（沒有 default）。
+    expect(body.parse({ goal: 'g' })).toEqual({ goal: 'g' });
   });
 });

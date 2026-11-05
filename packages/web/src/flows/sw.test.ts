@@ -98,6 +98,26 @@ describe('sw.js push', () => {
     expect(en.shown[0]!.options.body).toBe('Stuck');
   });
 
+  it('says why when a two-way handoff hit its round limit, in its own notification', async () => {
+    const zh = loadWorker('zh-TW');
+    const payload = {
+      sessionId: 's1',
+      name: '論文-WR',
+      status: 'running',
+      reason: 'handoff_round_limit',
+      maxRounds: 3,
+    };
+    await zh.dispatch('push', pushEvent(payload));
+    expect(zh.shown[0]!.options).toMatchObject({
+      body: '雙向交接已來回 3 輪，自動交接停下，等你決定',
+      tag: 'handoff-s1',
+    });
+    const en = loadWorker('en');
+    await en.dispatch('push', pushEvent({ ...payload, reason: 'something_new' }));
+    // 認不得的原因照狀態顯示。
+    expect(en.shown[0]!.options).toMatchObject({ body: 'A session is waiting on you' });
+  });
+
   it('still notifies when the payload is missing or malformed', async () => {
     const worker = loadWorker('en');
     await worker.dispatch('push', pushEvent(undefined));

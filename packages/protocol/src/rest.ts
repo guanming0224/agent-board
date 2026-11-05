@@ -23,6 +23,7 @@ import {
   Team,
   TeamMember,
   TeamRole,
+  ResearchKind,
   Template,
   TemplateConfig,
   TranscriptPage,
@@ -393,7 +394,8 @@ export const routes = {
     method: 'PUT',
     path: '/api/teams/:id/members/:sessionId',
     auth: 'user',
-    body: z.object({ role: TeamRole }),
+    /** kind 沒帶時保留原本的（只改角色）；研究團隊快速建立時帶。 */
+    body: z.object({ role: TeamRole, kind: ResearchKind.optional() }),
     response: TeamMember,
   }),
   teamMembersDelete: route({

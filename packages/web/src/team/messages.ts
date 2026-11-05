@@ -170,6 +170,30 @@ registerMessages('zh-TW', {
   'team.activity.blocked.rate_limit': '擋下：這條規則 10 分鐘內觸發太多次。',
   'team.activity.blocked.target_ended': '擋下：目標 session 已結束。',
   'team.activity.blocked.target_busy': '沒送出：目標剛好不再等輸入，文字留在它的輸入列。',
+  'team.rules.markerLimit':
+    '來源 session 回合結束時，最後一則回覆含有標記字串就觸發（純文字比對，大小寫、全半形都要一樣）。不用改檔案。',
+  'team.rules.marker': '標記',
+  'team.rules.markerIs': '標記：{marker}',
+  'team.rules.rounds': '來回上限',
+  'team.rules.roundsNone': '單向（不來回）',
+  'team.rules.roundsN': '最多 {n} 輪',
+  'team.rules.roundsChip': '雙向・最多 {n} 輪',
+  'team.rules.roundsNote':
+    '可以交接回剛交接過來的 session，最多 {n} 輪；到上限就停下並通知你。你在任一邊親自下指令，就重新算輪數。',
+  'team.rules.err.marker_required': '「回覆含標記時交接」要填標記，例如 [需要實驗]。',
+  'team.rules.direction': '方向',
+  'team.rules.direction.one': '單向',
+  'team.rules.direction.two': '雙向（來回）',
+  'team.rules.sideA': 'A',
+  'team.rules.sideB': 'B',
+  'team.rules.aToB': 'A → B',
+  'team.rules.bToA': 'B → A',
+  'team.rules.twoWayHint': '一次建兩條規則，共用輪數上限。建好先關著，要用再按開。',
+  'team.rules.addTwoWay': '新增雙向規則',
+  'team.rules.addedTwoWay': '已新增兩條規則（最多 {n} 輪），先關著。',
+  'team.rules.partial': '建好 {created} 條，{routes} 沒建立：{detail}。已建的保留。',
+  'team.activity.blocked.round_limit':
+    '停下：已來回 {max} 輪。看過結果後在任一邊親自下指令，就重新開始算輪數。',
 });
 
 registerMessages('en', {
@@ -352,4 +376,31 @@ registerMessages('en', {
   'team.activity.blocked.target_ended': 'blocked: the target session has ended.',
   'team.activity.blocked.target_busy':
     'not sent: the target stopped waiting for input; the text is still in its input line.',
+  'team.rules.markerLimit':
+    'Fires at the end of a source turn when its last reply contains the marker (plain text match; characters must be identical). No file edit needed.',
+  'team.rules.marker': 'Marker',
+  'team.rules.markerIs': 'Marker: {marker}',
+  'team.rules.rounds': 'Round limit',
+  'team.rules.roundsNone': 'One way (no back and forth)',
+  'team.rules.roundsN': 'Up to {n} round(s)',
+  'team.rules.roundsChip': 'Two-way · up to {n} round(s)',
+  'team.rules.roundsNote':
+    'May hand back to the session that just handed over, up to {n} round(s); then it stops and notifies you. Typing in either session yourself starts the count again.',
+  'team.rules.err.marker_required':
+    '"Hand off when the reply has the marker" needs a marker, e.g. [需要實驗].',
+  'team.rules.direction': 'Direction',
+  'team.rules.direction.one': 'One way',
+  'team.rules.direction.two': 'Two-way (back and forth)',
+  'team.rules.sideA': 'A',
+  'team.rules.sideB': 'B',
+  'team.rules.aToB': 'A → B',
+  'team.rules.bToA': 'B → A',
+  'team.rules.twoWayHint':
+    'Creates two rules that share the round limit. They start off; turn them on when you want them.',
+  'team.rules.addTwoWay': 'Add two-way rules',
+  'team.rules.addedTwoWay': 'Added two rules (up to {n} rounds), both off for now.',
+  'team.rules.partial':
+    'Created {created} rule(s); {routes} was not created: {detail}. The created ones were kept.',
+  'team.activity.blocked.round_limit':
+    'stopped: {max} rounds back and forth. After checking the results, type in either session yourself to start counting again.',
 });

@@ -3,10 +3,11 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { routes, type RouteName } from '@agent-board/protocol';
+import { HandoffRule, routes, type RouteName } from '@agent-board/protocol';
 import { assertBindableHost, loadEnvConfig, UnsafeBindError } from '../config';
 import { openDatabase, SCHEMA_VERSION } from '../db';
 import { createHub } from '../server';
+import { Store } from '../store';
 import { capabilities, FAST_PASSWORD, PASSWORD, spec, startHub, type TestHub } from './helpers';
 
 let hub: TestHub;
@@ -458,6 +459,8 @@ describe('database', () => {
     // 退回 v2 的樣子：沒有 archived_at。
     first.exec('ALTER TABLE sessions DROP COLUMN archived_at');
     first.exec('ALTER TABLE sessions DROP COLUMN read_only');
+    first.exec('ALTER TABLE teams DROP COLUMN phase');
+    first.exec('ALTER TABLE team_members DROP COLUMN kind');
     first.pragma('user_version = 2');
     first.close();
     const db = openDatabase(path);
@@ -473,16 +476,55 @@ describe('database', () => {
     const path = join(hub.dir, 'v3.db');
     const first = openDatabase(path);
     first.exec('ALTER TABLE sessions DROP COLUMN read_only');
+    first.exec('ALTER TABLE teams DROP COLUMN phase');
+    first.exec('ALTER TABLE team_members DROP COLUMN kind');
     first.pragma('user_version = 3');
     first.close();
     const db = openDatabase(path);
-    expect(SCHEMA_VERSION).toBe(4);
-    expect(db.pragma('user_version', { simple: true })).toBe(4);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     const columns = db.prepare('PRAGMA table_info(sessions)').all() as {
       name: string;
       dflt_value: string | null;
     }[];
     expect(columns.find((c) => c.name === 'read_only')?.dflt_value).toBe('0');
+    db.close();
+  });
+
+  it('v5 adds teams.phase and team_members.kind; old teams, members and rules still load', async () => {
+    hub = await startHub();
+    const path = join(hub.dir, 'v4.db');
+    const first = openDatabase(path);
+    first.exec('ALTER TABLE teams DROP COLUMN phase');
+    first.exec('ALTER TABLE team_members DROP COLUMN kind');
+    first.pragma('user_version = 4');
+    // v4 時代的資料：團隊、成員、action 沒有 maxRounds／marker 的交接規則。
+    first.exec(`
+      INSERT INTO machines (id, name, os, token_hash, capabilities) VALUES ('m', 'm', 'darwin', 'h', '{}');
+      INSERT INTO sessions (id, machine_id, name, cwd, permission_mode, status, status_since, created_at)
+        VALUES ('s1', 'm', 'a', '/r', 'default', 'done', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+               ('s2', 'm', 'b', '/r', 'default', 'done', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO teams (id, name, goal, done_criteria, color, context_md) VALUES ('t', 'T', '', '', 'teal', '');
+      INSERT INTO team_members (team_id, session_id, role) VALUES ('t', 's1', 'worker');
+      INSERT INTO handoff_rules (id, team_id, from_session_id, "trigger", action, enabled)
+        VALUES ('r', 't', 's1', 'on_file', '{"toSessionId":"s2","filePattern":"*.ts"}', 1);
+    `);
+    first.close();
+    const db = openDatabase(path);
+    expect(SCHEMA_VERSION).toBe(5);
+    expect(db.pragma('user_version', { simple: true })).toBe(5);
+    const store = new Store(db, '127.0.0.1');
+    expect(store.getTeam('t')).toEqual({
+      id: 't',
+      name: 'T',
+      goal: '',
+      doneCriteria: '',
+      color: 'teal',
+      contextMd: '',
+    });
+    expect(store.listTeamMembers('t')).toEqual([{ teamId: 't', sessionId: 's1', role: 'worker' }]);
+    const rule = store.getRule('r')!;
+    expect(HandoffRule.parse(rule)).toEqual(rule);
+    expect(rule.action).toEqual({ toSessionId: 's2', filePattern: '*.ts' });
     db.close();
   });
 

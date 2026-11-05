@@ -164,6 +164,14 @@ const migrations: string[] = [
   /* 4：唯讀 session（建立時決定，daemon 拿掉改檔工具；團隊的只讀成員靠它）。舊資料都不是唯讀。 */ `
   ALTER TABLE sessions ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0;
   `,
+  /*
+   * 5：學術研究團隊（GM 2026-11-06）。teams.phase 是目前階段（null＝程式開發團隊），
+   * team_members.kind 分開同是 worker 的實驗與寫作。舊資料都是 null。
+   * 交接規則的 maxRounds、marker 放在既有的 action JSON 裡，不用改結構。
+   */ `
+  ALTER TABLE teams ADD COLUMN phase TEXT;
+  ALTER TABLE team_members ADD COLUMN kind TEXT;
+  `,
 ];
 
 export function migrate(db: Db): void {

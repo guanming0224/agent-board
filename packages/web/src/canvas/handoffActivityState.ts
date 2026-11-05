@@ -28,6 +28,9 @@ export interface HandoffActivity {
   reason: string | null;
   /** 一句摘要（hub 送進目標終端機的那句）；舊版 hub 沒有。 */
   summary: string | null;
+  /** 雙向交接（規則有 maxRounds）的第幾輪與上限；單向規則與舊版 hub 是 null。 */
+  round: number | null;
+  maxRounds: number | null;
   counts: HandoffCounts;
   /** 收到事件的時間（ms）。hub 的事件時間可能接在別台機器的時鐘後面，所以不用它。 */
   receivedAt: number;
@@ -61,7 +64,13 @@ export const activityKey = (from: string, to: string) => `${from}->${to}`;
 const text = (value: unknown): string | null =>
   typeof value === 'string' && value.trim() !== '' ? value : null;
 
-type Parsed = Pick<HandoffActivity, 'key' | 'from' | 'to' | 'kind' | 'reason' | 'summary'>;
+const count = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+
+type Parsed = Pick<
+  HandoffActivity,
+  'key' | 'from' | 'to' | 'kind' | 'reason' | 'summary' | 'round' | 'maxRounds'
+>;
 
 /**
  * 不是交接事件、或來源／目標對不上就是 null。
@@ -94,6 +103,8 @@ export function parseHandoffEvent(
     kind,
     reason: kind === 'blocked' || kind === 'dropped' ? text(event.payload.reason) : null,
     summary: text(event.payload.summary),
+    round: count(event.payload.round),
+    maxRounds: count(event.payload.maxRounds),
   };
 }
 
@@ -193,6 +204,18 @@ export const isReceiving = (map: ActivityMap, sessionId: string): boolean =>
     (a) => a.to === sessionId && a.kind === 'delivered' && a.phase === 'active',
   );
 
+/** 「第 2/3 輪」：只有雙向交接有。擋下的輪數會超過上限，顯示上限就好。 */
+export function roundLabel(
+  activity: Pick<HandoffActivity, 'round' | 'maxRounds' | 'kind'>,
+  t: Translate,
+): string | null {
+  if (activity.round === null || activity.maxRounds === null) return null;
+  return t('canvas.talk.round', {
+    n: Math.min(activity.round, activity.maxRounds),
+    max: activity.maxRounds,
+  });
+}
+
 /** 摘要只顯示第一行，太長截斷。先遮蔽再截斷，金鑰才不會被切在邊界上漏出一半。 */
 export function firstLine(summary: string | null, max = 120): string | null {
   const line = summary
@@ -211,7 +234,8 @@ type Translate = (key: string, vars?: Record<string, string | number>) => string
  * 同一波有好幾則時加上「1 則送出、1 則擋下」。摘要與原因都先過 mask 再截斷。
  */
 export function describeTalk(
-  activity: Pick<HandoffActivity, 'kind' | 'reason' | 'summary' | 'counts'>,
+  activity: Pick<HandoffActivity, 'kind' | 'reason' | 'summary' | 'counts'> &
+    Partial<Pick<HandoffActivity, 'maxRounds'>>,
   t: Translate,
   mask: (text: string) => string,
 ): string {
@@ -222,7 +246,7 @@ export function describeTalk(
       t('canvas.talk.noSummary');
   } else {
     const key = `canvas.talk.${activity.kind}.${activity.reason ?? ''}`;
-    const reason = t(key);
+    const reason = t(key, { max: activity.maxRounds ?? '?' });
     // 沒翻譯的新原因：照 hub 給的代碼顯示，不吞掉。
     text = mask(reason === key ? (activity.reason ?? activity.kind) : reason);
   }

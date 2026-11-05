@@ -63,13 +63,23 @@ export function inQuietHours(quiet: Settings['notifications']['quietHours'], at:
   return start < end ? current >= start && current < end : current >= start || current < end;
 }
 
-/** 推播內容經過第三方推播服務（已加密），只放 session 名稱與狀態，絕不放終端機內容。 */
-export const attentionPayload = (session: Session): string =>
+/** 狀態以外要人決定的事。目前只有雙向交接來回到上限（迴圈停下等使用者）。 */
+export interface AttentionReason {
+  reason: 'handoff_round_limit';
+  maxRounds: number;
+}
+
+/**
+ * 推播內容經過第三方推播服務（已加密），只放 session 名稱與狀態，絕不放終端機內容。
+ * 有 `extra` 時多帶原因代碼與輪數（數字，不是內容）。
+ */
+export const attentionPayload = (session: Session, extra?: AttentionReason): string =>
   JSON.stringify({
     sessionId: session.id,
     name: session.name,
     status: session.status,
     at: session.statusSince,
+    ...extra,
   });
 
 /** 擋掉明顯指向內網的 endpoint：hub 會對這個網址發 POST，不能變成內網探測工具。 */

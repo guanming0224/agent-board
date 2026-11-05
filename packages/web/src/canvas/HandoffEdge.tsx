@@ -10,7 +10,7 @@ import { useMaskText } from '../security';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { useHandoffActivity } from './handoffActivity';
-import { describeTalk, type HandoffActivity } from './handoffActivityState';
+import { describeTalk, roundLabel, type HandoffActivity } from './handoffActivityState';
 
 export type HandoffEdgeType = Edge<
   {
@@ -124,6 +124,23 @@ export function HandoffEdge(props: EdgeProps<HandoffEdgeType>) {
           {activity && (
             <span className="edge-talk-at">
               {t(`canvas.talk.${activity.kind}`, { time: clock(activity.receivedAt, locale) })}
+            </span>
+          )}
+          {activity && roundLabel(activity, t) && (
+            <span
+              className="edge-talk-round"
+              data-testid={`handoff-round-${activity.from}-${activity.to}`}
+            >
+              {roundLabel(activity, t)}
+            </span>
+          )}
+          {activity?.reason === 'round_limit' && (
+            <span
+              className="edge-talk-limit"
+              role="status"
+              data-testid={`handoff-limit-${activity.from}-${activity.to}`}
+            >
+              {t('canvas.talk.limitLabel', { max: activity.maxRounds ?? '?' })}
             </span>
           )}
           {showTip && (

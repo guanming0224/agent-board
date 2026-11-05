@@ -45,10 +45,33 @@ export const PermissionMode = z.enum([
 export type PermissionMode = z.infer<typeof PermissionMode>;
 
 export const UserRole = z.enum(['owner', 'member']);
+/** 雙向交接的來回上限（`HandoffRule.action.maxRounds`）。 */
+export const HANDOFF_MAX_ROUNDS = 10;
+export const HANDOFF_MARKER_MAX_CHARS = 40;
 export const Locale = z.enum(['zh-TW', 'en']);
 export const TeamRole = z.enum(['lead', 'worker', 'researcher', 'reviewer']);
 export const TaskColumn = z.enum(['todo', 'doing', 'review', 'done']);
-export const HandoffTrigger = z.enum(['on_done', 'on_file', 'on_fail']);
+/** on_marker：回合結束時，最後一則回覆含有指定的標記字串（GM 2026-11-06，寫作要求補實驗用）。 */
+export const HandoffTrigger = z.enum(['on_done', 'on_file', 'on_fail', 'on_marker']);
+/**
+ * 學術研究團隊的階段（GM 2026-11-06）。團隊有這個欄位就是研究團隊；程式開發團隊沒有。
+ * 選題 topic、實驗 experiment、寫作 writing、修稿／回覆審稿 revision。
+ */
+export const ResearchPhase = z.enum(['topic', 'experiment', 'writing', 'revision']);
+export type ResearchPhase = z.infer<typeof ResearchPhase>;
+/**
+ * 研究團隊成員的分工，疊在 TeamRole 上：指導 ld＝lead、文獻 lr＝researcher、實驗 ex＝worker、
+ * 寫作 wr＝worker、審稿 rv＝reviewer。實驗與寫作都是 worker，只能靠這個欄位分開（命名、換階段）。
+ */
+export const ResearchKind = z.enum(['ld', 'lr', 'ex', 'wr', 'rv']);
+export type ResearchKind = z.infer<typeof ResearchKind>;
+export const RESEARCH_KIND_ROLE = {
+  ld: 'lead',
+  lr: 'researcher',
+  ex: 'worker',
+  wr: 'worker',
+  rv: 'reviewer',
+} as const satisfies Record<ResearchKind, z.infer<typeof TeamRole>>;
 
 export const User = z.object({
   id: Id,
@@ -242,10 +265,18 @@ export const Team = z.object({
   doneCriteria: z.string(),
   color: z.string(),
   contextMd: z.string(),
+  /** 研究團隊目前的階段；程式開發團隊沒有（舊資料也沒有）。 */
+  phase: ResearchPhase.optional(),
 });
 export type Team = z.infer<typeof Team>;
 
-export const TeamMember = z.object({ teamId: Id, sessionId: Id, role: TeamRole });
+export const TeamMember = z.object({
+  teamId: Id,
+  sessionId: Id,
+  role: TeamRole,
+  /** 研究團隊的分工；沒有就照角色推（worker 當實驗）。和 role 對不上時以 role 為準。 */
+  kind: ResearchKind.optional(),
+});
 export type TeamMember = z.infer<typeof TeamMember>;
 
 export const Task = z.object({
@@ -262,10 +293,32 @@ export const HandoffRule = z.object({
   teamId: Id,
   fromSessionId: Id,
   trigger: HandoffTrigger,
-  action: z.object({ toSessionId: Id, filePattern: z.string().optional() }),
+  action: z.object({
+    toSessionId: Id,
+    filePattern: z.string().optional(),
+    /**
+     * 有設定就允許交接回鏈裡已經出現過的 session（雙向來回）：目標在鏈裡出現的次數 < maxRounds 才送，
+     * 否則擋下（round_limit）並通知使用者。沒設定維持原本的防迴圈（目標在鏈裡就擋）。
+     */
+    maxRounds: z.number().int().min(1).max(HANDOFF_MAX_ROUNDS).optional(),
+    /** on_marker 用：最後一則回覆含有這個字串（純子字串比對）就觸發。 */
+    marker: z
+      .string()
+      .max(HANDOFF_MARKER_MAX_CHARS)
+      .refine((m) => m.trim() !== '', 'marker must not be blank')
+      .optional(),
+  }),
   enabled: z.boolean(),
 });
 export type HandoffRule = z.infer<typeof HandoffRule>;
+
+/** zod 物件本身不檢查欄位之間的關係：建立與修改後 hub 用這個再檢查一次，前端送出前也用。 */
+export function handoffRuleProblem(
+  rule: Pick<HandoffRule, 'trigger' | 'action'>,
+): 'marker_required' | null {
+  if (rule.trigger === 'on_marker' && !rule.action.marker?.trim()) return 'marker_required';
+  return null;
+}
 
 /** §8 省額度預設。 */
 export const QuotaGuards = z.object({

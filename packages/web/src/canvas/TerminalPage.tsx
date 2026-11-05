@@ -159,11 +159,14 @@ function HandoffBox({ session }: { session: Session }) {
           value={trigger}
           onChange={(e) => setTrigger(e.target.value as HandoffRule['trigger'])}
         >
-          {HandoffTrigger.options.map((option) => (
-            <option key={option} value={option}>
-              {t(`canvas.handoff.${option}`)}
-            </option>
-          ))}
+          {/* 回覆含標記要填標記字串，在團隊工作台建立。 */}
+          {HandoffTrigger.options
+            .filter((option) => option !== 'on_marker')
+            .map((option) => (
+              <option key={option} value={option}>
+                {t(`canvas.handoff.${option}`)}
+              </option>
+            ))}
         </select>
         <button disabled={busy || to === ''} onClick={add}>
           {t('canvas.full.handoffAdd')}

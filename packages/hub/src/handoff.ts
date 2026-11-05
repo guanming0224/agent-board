@@ -67,7 +67,30 @@ export function matchesFilePattern(pattern: string | undefined, path: string): b
   return new RegExp(`(?:^|/)${body}$`).test(path);
 }
 
-export type HandoffBlockReason = 'loop' | 'rate_limit' | 'target_ended';
+/** on_marker 比對純子字串（不分詞、不用正規式）：同樣的回覆一定得到同樣的結果。 */
+export function containsMarker(text: unknown, marker: string | undefined): boolean {
+  return typeof text === 'string' && marker !== undefined && marker !== '' && text.includes(marker);
+}
+
+/** on_marker 的摘要從標記開始取：寫作在標記後面寫要補什麼，這句比回覆的第一句有用。 */
+export function markerSummary(text: string, marker: string): string {
+  const at = text.indexOf(marker);
+  return oneSentence(at < 0 ? text : text.slice(at));
+}
+
+/**
+ * 這則交接是第幾輪：目標在鏈裡已經出現的次數 + 1。沒有設定 maxRounds 的規則沒有輪數。
+ * 例：EX→WR 第 1 輪、WR→EX（第二次實驗）第 2 輪、EX→WR 第 2 輪……
+ */
+export function roundOf(rule: HandoffRule, chain: readonly string[]): number | null {
+  if (rule.action.maxRounds === undefined) return null;
+  return chain.filter((id) => id === rule.action.toSessionId).length + 1;
+}
+
+export type HandoffBlockReason = 'loop' | 'round_limit' | 'rate_limit' | 'target_ended';
+
+/** 事件與 audit 帶的輪數：沒有 maxRounds 的規則不帶（和舊版相同）。 */
+type Rounds = { round: number; maxRounds: number } | Record<string, never>;
 
 interface Pending {
   rule: HandoffRule;
@@ -76,6 +99,7 @@ interface Pending {
   summary: string;
   /** 這則交接一路經過的 session；目標之後再往外交接時用來判斷迴圈。 */
   chain: string[];
+  rounds: Rounds;
 }
 
 export interface HandoffDeps {
@@ -87,6 +111,8 @@ export interface HandoffDeps {
   isReachable(sessionId: string): boolean;
   sendInput(sessionId: string, data: string): void;
   guarded(label: string, fn: () => void): void;
+  /** 雙向交接到了輪數上限：走一般的推播通知使用者，迴圈停下等他決定。 */
+  notifyRoundLimit(sessionId: string, maxRounds: number): void;
 }
 
 export class HandoffEngine {
@@ -105,11 +131,16 @@ export class HandoffEngine {
     if (event.type !== 'hook' || event.payload.event !== 'Stop') return;
     const source = this.deps.store.getSession(event.sessionId);
     if (!source) return;
+    // 同一個回合可能同時符合 on_file 與 on_marker：一起判斷，改過的檔案分界只寫一次。
+    const reply = event.payload.last_assistant_message;
     this.fire(
       source,
       (rule, files) =>
-        rule.trigger === 'on_file' &&
-        files.some((file) => matchesFilePattern(rule.action.filePattern, file)),
+        (rule.trigger === 'on_file' &&
+          files.some((file) => matchesFilePattern(rule.action.filePattern, file))) ||
+        (rule.trigger === 'on_marker' && containsMarker(reply, rule.action.marker)),
+      null,
+      typeof reply === 'string' ? reply : null,
     );
   }
 
@@ -187,6 +218,8 @@ export class HandoffEngine {
     source: Session,
     applies: (rule: HandoffRule, files: readonly string[]) => boolean,
     failure: string | null = null,
+    /** 這個回合的最後一則回覆（Stop 事件本身帶的），on_marker 從這裡取摘要。 */
+    turnReply: string | null = null,
   ): void {
     const rules = this.rulesFrom(source.id);
     if (rules.length === 0) return;
@@ -196,10 +229,13 @@ export class HandoffEngine {
     const summary = oneSentence(
       failure === null ? (reply ?? '') : `Failed: ${failure}. ${reply ?? ''}`,
     );
-    const message = handoffMessage({ summary, files, branch: source.branch });
     const chain = [...(this.chains.get(source.id) ?? []), source.id];
     for (const rule of matched) {
-      this.fireRule(rule, source, message, chain, lastDaemonAt, summary);
+      const marker = rule.trigger === 'on_marker' ? rule.action.marker : undefined;
+      const own =
+        marker !== undefined && turnReply !== null ? markerSummary(turnReply, marker) : summary;
+      const message = handoffMessage({ summary: own, files, branch: source.branch });
+      this.fireRule(rule, source, message, chain, lastDaemonAt, own);
     }
   }
 
@@ -215,17 +251,25 @@ export class HandoffEngine {
     const { store, audit, addEvent } = this.deps;
     const targetId = rule.action.toSessionId;
     const target = store.getSession(targetId);
+    const round = roundOf(rule, chain);
+    const { maxRounds } = rule.action;
+    const rounds: Rounds = round === null || maxRounds === undefined ? {} : { round, maxRounds };
     const detail = {
       ruleId: rule.id,
       teamId: rule.teamId,
       trigger: rule.trigger,
       fromSessionId: source.id,
       toSessionId: targetId,
+      ...rounds,
     };
     const blocked = this.blockReason(rule, target, chain);
     if (blocked) {
       audit(source.id, 'handoff.blocked', JSON.stringify({ ...detail, reason: blocked }));
       addEvent(source.id, 'handoff.blocked', { ...detail, summary: summaryText, reason: blocked });
+      // 來回到上限：迴圈停在這裡，使用者在任一邊親自下指令就重新算輪數。
+      if (blocked === 'round_limit' && maxRounds !== undefined) {
+        this.deps.notifyRoundLimit(source.id, maxRounds);
+      }
       return;
     }
     audit(source.id, 'handoff.fired', JSON.stringify({ ...detail, message }));
@@ -236,7 +280,7 @@ export class HandoffEngine {
       { ...detail, summary: summaryText },
       boundaryAt ?? undefined,
     );
-    this.pending.set(rule.id, { rule, message, summary: summaryText, chain });
+    this.pending.set(rule.id, { rule, message, summary: summaryText, chain, rounds });
     this.deliverNext(targetId);
   }
 
@@ -246,7 +290,11 @@ export class HandoffEngine {
     chain: readonly string[],
   ): HandoffBlockReason | null {
     if (!target || isGone(target)) return 'target_ended';
-    if (chain.includes(target.id)) return 'loop';
+    const seen = chain.filter((id) => id === target.id).length;
+    const { maxRounds } = rule.action;
+    // 沒設 maxRounds：和原本一樣，目標在鏈裡就是迴圈。有設：允許來回，到上限才擋。
+    if (maxRounds === undefined && seen > 0) return 'loop';
+    if (maxRounds !== undefined && seen >= maxRounds) return 'round_limit';
     const now = this.deps.now().getTime();
     const recent = (this.fires.get(rule.id) ?? []).filter((at) => now - at < RULE_WINDOW_MS);
     if (recent.length >= RULE_MAX_FIRES) return 'rate_limit';
@@ -331,6 +379,7 @@ export class HandoffEngine {
       fromSessionId: rule.fromSessionId,
       toSessionId: targetId,
       summary: pending.summary,
+      ...pending.rounds,
     };
     const current = store.getSession(targetId);
     if (current?.status !== 'waiting_input' || !isReachable(targetId)) {
