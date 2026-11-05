@@ -9,7 +9,7 @@ import { errorText, Msg, type Note } from './common';
 /** 和新增使用者、改密碼一樣（protocol 的 MIN_PASSWORD_LENGTH）。 */
 const MIN_PASSWORD = 8;
 
-/** hubBackend 有、BoardBackend 介面沒有的選用方法（同 SettingsPage 的 OptionalAdmin）。 */
+/** hubBackend 有、BoardBackend 介面沒有的選用方法（同 settingsParts.tsx 的 OptionalAdmin）。 */
 export interface OptionalReset {
   resetUserPassword?: (id: string, password: string) => Promise<void>;
 }

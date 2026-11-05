@@ -1311,7 +1311,7 @@ test.describe('新增 session', () => {
     await expect(page.locator('[data-state=empty]')).toContainText('還沒有機器');
     await expect(page.locator('[data-state=empty]').getByRole('link')).toHaveAttribute(
       'href',
-      '#/settings',
+      '#/settings/machines',
     );
 
     await open(page, 'new', {
@@ -1332,7 +1332,7 @@ test.describe('設定', () => {
   test.use({ locale: 'zh-TW', viewport: { width: 1280, height: 900 } });
 
   test('監聽位址不可輸入 0.0.0.0／::，也不能存', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/security');
     const input = page.getByLabel('監聽位址');
     await expect(input).toHaveValue('127.0.0.1');
     const save = page.getByRole('button', { name: '儲存設定' });
@@ -1359,7 +1359,7 @@ test.describe('設定', () => {
   });
 
   test('未存檔亮提示，還原或儲存後消失', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/sessions');
     const bar = page.getByTestId('save-bar');
     await expect(bar).toContainText('都已存檔');
     await expect(page.getByRole('button', { name: '儲存設定' })).toBeDisabled();
@@ -1372,6 +1372,7 @@ test.describe('設定', () => {
     await expect(page.getByLabel('同時執行的 session 上限')).toHaveValue('');
 
     await page.getByLabel('同時執行的 session 上限').fill('3');
+    await page.getByRole('link', { name: '通知', exact: true }).click();
     await page.getByLabel('勿擾時段').check();
     await expect(bar).toContainText('2 項未存檔');
     await page.getByLabel('開始').fill('');
@@ -1388,7 +1389,7 @@ test.describe('設定', () => {
   });
 
   test('帳號限流時排隊：預設打開，可以關掉並存檔', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/sessions');
     const toggle = page.getByLabel('帳號額度用完時，新任務先排隊');
     await expect(toggle).toBeChecked();
     await toggle.uncheck();
@@ -1400,7 +1401,7 @@ test.describe('設定', () => {
   });
 
   test('危險指令清單：新增、去重、移除、清空警告', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/security');
     const rules = page.getByTestId('danger-rules');
     await expect(rules.locator('li')).toHaveCount(4);
     const input = page.getByLabel('新增規則，例如 git push --force');
@@ -1426,7 +1427,11 @@ test.describe('設定', () => {
   });
 
   test('機器：配對碼，移除要按兩次', async ({ page }) => {
-    await open(page, 'settings', { machines: [rigA, rigOff], sessions: [], approvals: [] });
+    await open(page, 'settings/machines', {
+      machines: [rigA, rigOff],
+      sessions: [],
+      approvals: [],
+    });
     await page.getByRole('button', { name: '產生配對碼' }).click();
     await expect(page.getByTestId('pair-command')).toHaveText('agent-board-daemon pair DEMO-0000');
     await expect(page.locator('#s-machines')).toContainText('配對碼 DEMO-0000');
@@ -1450,11 +1455,13 @@ test.describe('設定', () => {
 
   test('使用者與範本：後端沒開放時照實說；開放後可用', async ({ page }) => {
     await open(page, 'settings');
-    await expect(page.locator('#s-users')).toContainText('demo');
+    await expect(page.locator('#s-account')).toContainText('demo');
+    await page.getByRole('link', { name: '機器與使用者' }).click();
     await expect(page.getByTestId('users-unavailable')).toBeVisible();
+    await page.getByRole('link', { name: 'Session 與額度' }).click();
     await expect(page.locator('#s-templates [data-state=empty]')).toContainText('還沒有範本');
 
-    await open(page, 'settings', {
+    await open(page, 'settings/users', {
       patch: `const users = [{ id: 'u-demo', name: 'demo', role: 'owner', locale: 'zh-TW' },
                              { id: 'u2', name: 'pat', role: 'member', locale: 'en' }];
         backend.listUsers = async () => users.slice();
@@ -1489,8 +1496,14 @@ test.describe('設定', () => {
     await expect(page.getByRole('heading', { name: '設定', level: 1 })).toBeVisible();
     await page.locator('.segmented label', { hasText: 'English' }).click();
     await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'My account' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await page.getByRole('link', { name: 'Security' }).click();
     await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
+    await page.getByRole('link', { name: 'My account' }).click();
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
     await page.locator('.segmented label', { hasText: 'Follow browser' }).click();
@@ -1499,21 +1512,21 @@ test.describe('設定', () => {
   });
 
   test('載入、錯誤、存檔失敗、資料過期', async ({ page }) => {
-    await open(page, 'settings', {
+    await open(page, 'settings/security', {
       patch: patchBackend('getSettings', `() => new Promise(() => {})`),
     });
-    await expect(page.locator('.settings-col [data-state=loading]').first()).toBeVisible();
+    await expect(page.locator('.settings-panel [data-state=loading]')).toBeVisible();
 
-    await open(page, 'settings', {
+    await open(page, 'settings/notify', {
       patch: `let n = 0; const ok = backend.getSettings;
         backend.getSettings = async () => { if (n++ < 2) throw new Error('403'); return ok(); };`,
     });
-    const box = page.locator('.settings-col [data-state=error]');
+    const box = page.locator('.settings-panel [data-state=error]');
     await expect(box).toContainText('讀不到設定：403');
     await box.getByRole('button', { name: '重試' }).click();
-    await expect(page.getByLabel('監聽位址')).toHaveValue('127.0.0.1');
+    await expect(page.getByLabel('勿擾時段')).not.toBeChecked();
 
-    await open(page, 'settings', {
+    await open(page, 'settings/security', {
       patch: patchBackend('updateSettings', `async () => { throw new Error('boom'); }`),
     });
     await page.getByLabel('監聽位址').fill('10.0.0.1');
@@ -1521,10 +1534,170 @@ test.describe('設定', () => {
     await expect(page.getByTestId('save-bar').locator('.msg.err')).toContainText('存不了：boom');
     await expect(page.getByTestId('save-bar')).toContainText('1 項未存檔');
 
-    await open(page, 'settings', { connected: false });
+    await open(page, 'settings/machines', { connected: false });
     await expect(page.locator('.stale-line')).toBeVisible();
     await expect(page.getByRole('button', { name: '產生配對碼' })).toBeDisabled();
   });
+
+  test('分類：左側選單切換，右邊只顯示選中的分類，鍵盤也能用', async ({ page }) => {
+    await open(page, 'settings');
+    const nav = page.getByRole('navigation', { name: '設定分類' });
+    await expect(nav.getByRole('link')).toHaveText([
+      '我的帳號',
+      '通知',
+      'Session 與額度',
+      '安全',
+      '機器與使用者',
+      '資料與紀錄',
+    ]);
+    const account = nav.getByRole('link', { name: '我的帳號' });
+    await expect(account).toHaveAttribute('aria-current', 'page');
+    for (const id of ['account', 'language', 'password', 'push']) {
+      await expect(page.locator(`#s-${id}`)).toBeVisible();
+    }
+    for (const id of ['machines', 'archived', 'templates']) {
+      await expect(page.locator(`#s-${id}`)).toBeHidden();
+    }
+    // 不在有伺服器設定欄位的分類、也沒有未存的修改時，不放儲存列。
+    await expect(page.getByTestId('save-bar')).toHaveCount(0);
+
+    await nav.getByRole('link', { name: '安全' }).click();
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/settings/security');
+    await expect(nav.getByRole('link', { name: '安全' })).toHaveAttribute('aria-current', 'page');
+    await expect(account).not.toHaveAttribute('aria-current', /.*/);
+    await expect(page.locator('#s-security')).toBeVisible();
+    await expect(page.locator('#s-language')).toBeHidden();
+    await expect(page.getByTestId('save-bar')).toBeVisible();
+
+    // 卡住判定搬到「Session 與額度」，和範本、省額度放在一起。
+    await nav.getByRole('link', { name: 'Session 與額度' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#s-templates')).toBeVisible();
+    await expect(page.locator('#s-quota')).toBeVisible();
+    await expect(page.locator('#s-stuck')).toContainText('幾分鐘沒輸出算卡住');
+    await expect(page.locator('#s-security')).toHaveCount(0);
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Enter');
+    await expect(nav.getByRole('link', { name: '安全' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  test('深連結：網址帶分類或舊的區塊 id，都落到對的分類與位置', async ({ page }) => {
+    const nav = page.getByRole('navigation', { name: '設定分類' });
+    const current = (name: string) =>
+      expect(nav.getByRole('link', { name })).toHaveAttribute('aria-current', 'page');
+    await open(page, 'settings/data');
+    await current('資料與紀錄');
+    await expect(page.locator('#s-archived')).toBeVisible();
+    await expect(page.locator('#s-audit')).toBeVisible();
+
+    await open(page, 'settings/audit');
+    await current('資料與紀錄');
+    await expect(page.locator('#s-audit')).toBeInViewport();
+
+    await open(page, 'settings/push');
+    await current('我的帳號');
+    await expect(page.locator('#s-push')).toBeVisible();
+
+    await open(page, 'settings/stuck');
+    await current('Session 與額度');
+    await expect(page.getByLabel('幾分鐘沒輸出算卡住')).toHaveValue('10');
+
+    await open(page, 'settings/nope');
+    await current('我的帳號');
+
+    // 舊資料頁的「回已封存清單」帶回設定頁的已封存區。
+    await open(page, 'archive/s-old-api');
+    await page.getByRole('link', { name: '← 回已封存清單' }).first().click();
+    await expect(page.locator('#s-archived')).toBeVisible();
+    await current('資料與紀錄');
+  });
+
+  test('未存的修改：切換分類還在，選單標出哪個分類沒存，在別的分類也能存', async ({ page }) => {
+    await open(page, 'settings/security');
+    const nav = page.getByRole('navigation', { name: '設定分類' });
+    const security = nav.getByRole('link', { name: /^安全/ });
+    const sessions = nav.getByRole('link', { name: /^Session 與額度/ });
+    await page.getByLabel('監聽位址').fill('100.64.0.1');
+    await expect(security.locator('.chip.unsaved')).toHaveText('未存檔');
+    await expect(nav.locator('.chip.unsaved')).toHaveCount(1);
+
+    await sessions.click();
+    await page.getByLabel('同時執行的 session 上限').fill('4');
+    await expect(nav.locator('.chip.unsaved')).toHaveCount(2);
+
+    // 到沒有表單的分類：儲存列跟著，草稿不丟。
+    await nav.getByRole('link', { name: '我的帳號' }).click();
+    const bar = page.getByTestId('save-bar');
+    await expect(bar).toContainText('2 項未存檔');
+    await security.click();
+    await expect(page.getByLabel('監聽位址')).toHaveValue('100.64.0.1');
+
+    // 不合法的欄位在別的分類：按儲存先切過去讓人看到標紅。
+    await page.getByLabel('監聽位址').fill('0.0.0.0');
+    await sessions.click();
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/settings/security');
+    await expect(page.getByTestId('listen-error')).toBeVisible();
+    await expect(bar.locator('.msg.err')).toContainText('先修正');
+    expect(await calls(page)).toEqual([]);
+
+    await page.getByLabel('監聽位址').fill('100.64.0.1');
+    await nav.getByRole('link', { name: '我的帳號' }).click();
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(bar.locator('.msg')).toHaveText('已儲存');
+    await expect(nav.locator('.chip.unsaved')).toHaveCount(0);
+    const patch = ((await calls(page))[0] as { patch: Record<string, unknown> }).patch;
+    expect(patch).toMatchObject({ listenAddress: '100.64.0.1' });
+    expect(Object.keys(patch).sort()).toEqual(['listenAddress', 'quotaGuards']);
+  });
+
+  test('成員：看不到只有管理員能用的分類與區塊，網址硬給也回到我的帳號', async ({ page }) => {
+    await open(page, 'settings/security', {
+      patch: `backend.currentUser = async () =>
+        ({ id: 'u-m', name: 'pat', role: 'member', locale: 'zh-TW' });`,
+    });
+    const nav = page.getByRole('navigation', { name: '設定分類' });
+    await expect(nav.getByRole('link')).toHaveText(['我的帳號', 'Session 與額度', '資料與紀錄']);
+    await expect(nav.getByRole('link', { name: '我的帳號' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await expect(page.locator('#s-security')).toHaveCount(0);
+    await expect(page.locator('#s-machines')).toHaveCount(0);
+    await nav.getByRole('link', { name: 'Session 與額度' }).click();
+    await expect(page.locator('#s-templates')).toBeVisible();
+    await expect(page.locator('#s-quota')).toHaveCount(0);
+    await expect(page.locator('#s-stuck')).toHaveCount(0);
+    await expect(page.getByTestId('save-bar')).toHaveCount(0);
+    await nav.getByRole('link', { name: '資料與紀錄' }).click();
+    await expect(page.locator('#s-archived')).toBeVisible();
+    await expect(page.locator('#s-audit')).toHaveCount(0);
+  });
+
+  for (const width of [320, 375]) {
+    test(`${width}px：分類變成上方分頁，全部看得到，不出現整頁水平捲軸`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await open(page, 'settings/security');
+      const nav = page.getByRole('navigation', { name: '設定分類' });
+      const links = nav.getByRole('link');
+      await expect(links).toHaveCount(6);
+      for (const link of await links.all()) {
+        const box = (await link.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(15);
+        expect(box.x + box.width).toBeLessThanOrEqual(width - 15);
+      }
+      const navBox = (await nav.boundingBox())!;
+      const panelBox = (await page.locator('.settings-panel').boundingBox())!;
+      expect(navBox.y + navBox.height).toBeLessThanOrEqual(panelBox.y);
+      expect(panelBox.x).toBeGreaterThanOrEqual(15);
+      await expectNoPageOverflow(page);
+      await page.getByLabel('監聽位址').fill('10.0.0.9');
+      await nav.getByRole('link', { name: /^資料與紀錄/ }).click();
+      await expect(page.locator('#s-archived')).toBeVisible();
+      await expect(nav.getByRole('link', { name: /^安全/ }).locator('.chip.unsaved')).toBeVisible();
+      await expectNoPageOverflow(page);
+    });
+  }
 });
 
 test.describe('首次引導', () => {
@@ -1595,7 +1768,7 @@ test.describe('首次引導', () => {
     await page.getByRole('button', { name: '稍後再加' }).click();
     await expect(page.getByRole('link', { name: '到設定配對機器' })).toHaveAttribute(
       'href',
-      '#/settings',
+      '#/settings/machines',
     );
   });
 
@@ -1671,7 +1844,7 @@ test.describe('登入', () => {
     );
     // 下方說明：請管理員重設，或唯一的管理員在 hub 機器上跑救援指令。
     const forgot = page.getByTestId('login-forgot');
-    await expect(forgot).toContainText('設定 → 使用者');
+    await expect(forgot).toContainText('設定 → 機器與使用者');
     await expect(forgot.locator('code')).toHaveText('agent-board-hub reset-password <帳號>');
     await expect(page.locator('.flows')).not.toContainText('not found');
     await expect(page.getByLabel('帳號')).toHaveValue('pat');
@@ -1886,7 +2059,17 @@ test.describe('語系與版面', () => {
           page,
         }, info) => {
           await page.setViewportSize({ width, height: 800 });
-          const routes = ['review', 'inbox', 'new', 'settings', 'onboarding', 'login'];
+          const routes = [
+            'review',
+            'inbox',
+            'new',
+            'settings',
+            'settings/machines',
+            'settings/security',
+            'settings/data',
+            'onboarding',
+            'login',
+          ];
           for (const route of routes) {
             await open(page, route, {
               ...rich(),
@@ -1905,9 +2088,11 @@ test.describe('語系與版面', () => {
               await page.getByRole('button', { name: /^(瀏覽|Browse)$/ }).click();
               await page.getByTestId('folder-browser').getByRole('button').first().waitFor();
             }
-            if (route === 'settings') {
+            if (route === 'settings/machines') {
               await page.getByRole('button', { name: /產生配對碼|Create pairing code/ }).click();
               await page.getByTestId('pair-command').waitFor();
+            }
+            if (route === 'settings/security') {
               await page.getByLabel(/監聽位址|Listen address/).fill('0.0.0.0');
             }
             await expectNoPageOverflow(page);
@@ -1916,7 +2101,7 @@ test.describe('語系與版面', () => {
             expect(await findGreenOutsideDiff(page)).toEqual([]);
             await page.evaluate(() => scrollTo(0, 0));
             await page.screenshot({
-              path: shot(info, `${route}-${locale}-${width}`),
+              path: shot(info, `${route.replace('/', '-')}-${locale}-${width}`),
               fullPage: true,
             });
           }

@@ -290,7 +290,7 @@ export function NewSessionPage() {
         </header>
         <Empty
           title={t('flows.new.noMachines')}
-          next={<a href="#/settings">{t('flows.new.noMachinesNext')}</a>}
+          next={<a href="#/settings/machines">{t('flows.new.noMachinesNext')}</a>}
         />
       </Page>
     );

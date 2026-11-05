@@ -159,7 +159,7 @@ function FirstSession() {
         <>
           <p className="sub">{t('flows.onboard.noMachineYet')}</p>
           <p>
-            <a className="button" href="#/settings">
+            <a className="button" href="#/settings/machines">
               {t('flows.onboard.toSettings')}
             </a>
           </p>

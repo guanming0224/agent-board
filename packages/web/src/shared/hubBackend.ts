@@ -369,7 +369,7 @@ export function createHubBackend() {
     },
     sessionEvents: (id) => call('sessionEvents', { params: { id } }),
 
-    // 設定頁以選用方式使用（flows/SettingsPage.tsx）
+    // 設定頁以選用方式使用（flows/settingsParts.tsx 的 OptionalAdmin）
     listUsers: () => call('usersList'),
     createUser: (input: RouteBody<'usersCreate'>) => call('usersCreate', { body: input }),
     async deleteUser(id: string) {

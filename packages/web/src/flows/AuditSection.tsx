@@ -27,7 +27,7 @@ import {
   type Note,
 } from './common';
 
-/** 使用者清單是選用的後端方法（見 SettingsPage 的 OptionalAdmin）；沒有時用 id 顯示。 */
+/** 使用者清單是選用的後端方法（見 settingsParts.tsx 的 OptionalAdmin）；沒有時用 id 顯示。 */
 interface OptionalUsers {
   listUsers?: () => Promise<User[]>;
 }

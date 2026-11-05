@@ -88,7 +88,7 @@ const findGreen = (page: Page) =>
 
 test.describe('已封存清單', () => {
   test('新到舊、總計、對話大小（失聯或讀不到寫「—」）、搜尋', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/archived');
     const section = page.locator('#s-archived');
     const rows = section.locator('.archived-row');
     await expect(rows).toHaveCount(4);
@@ -125,7 +125,7 @@ test.describe('已封存清單', () => {
   });
 
   test('還原：從清單移掉、回到畫布', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/archived');
     const api = page.getByTestId('archived-s-old-api');
     await api.getByRole('button', { name: '還原', exact: true }).click();
     await expect(api).toHaveCount(0);
@@ -140,7 +140,7 @@ test.describe('已封存清單', () => {
         if (patch.archived === false) throw Object.assign(new Error('x'), { code: 'session_deleting' });
         return update(id, patch);
       };`;
-    await open(page, 'settings', deleting);
+    await open(page, 'settings/archived', deleting);
     const api = page.getByTestId('archived-s-old-api');
     await api.getByRole('button', { name: '還原', exact: true }).click();
     await expect(api.locator('.msg.err')).toHaveText(
@@ -152,7 +152,7 @@ test.describe('已封存清單', () => {
   });
 
   test('member 看不到刪除（清單與舊資料頁都是）', async ({ page }) => {
-    await open(page, 'settings', MEMBER);
+    await open(page, 'settings/archived', MEMBER);
     const api = page.getByTestId('archived-s-old-api');
     await expect(api.getByRole('button', { name: '還原', exact: true })).toBeVisible();
     await expect(page.locator('#s-archived').getByRole('button', { name: '刪除' })).toHaveCount(0);
@@ -166,7 +166,7 @@ test.describe('已封存清單', () => {
 
 test.describe('刪除確認框', () => {
   test('預設勾選、git 警告、按兩次才刪、顯示每一項結果', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/archived');
     await page.getByTestId('archived-s-old-api').getByRole('button', { name: '刪除' }).click();
     const dialog = page.getByTestId('purge-dialog');
     await expect(dialog.getByRole('heading', { level: 2 })).toHaveText(
@@ -228,7 +228,7 @@ test.describe('刪除確認框', () => {
   });
 
   test('hook 共用：停用並說明；沒有 worktree 就不列', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/archived');
     await page.getByTestId('archived-s-old-shared').getByRole('button', { name: '刪除' }).click();
     const dialog = page.getByTestId('purge-dialog');
     const hooks = dialog.getByRole('checkbox', { name: /hook 設定/ });
@@ -243,7 +243,7 @@ test.describe('刪除確認框', () => {
   });
 
   test('worktree 與對話紀錄被別的 session 共用：停用並寫原因', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/archived');
     await page.getByTestId('archived-s-old-resumed').getByRole('button', { name: '刪除' }).click();
     const dialog = page.getByTestId('purge-dialog');
     const worktree = dialog.getByRole('checkbox', { name: /移除 worktree/ });
@@ -265,7 +265,7 @@ test.describe('刪除確認框', () => {
     ]) {
       await open(
         page,
-        'settings',
+        'settings/archived',
         `backend.deleteSession = async () => { throw Object.assign(new Error('x'), { code: '${code}' }); };`,
       );
       await page.getByTestId('archived-s-old-api').getByRole('button', { name: '刪除' }).click();
@@ -304,7 +304,7 @@ test.describe('刪除確認框', () => {
 
   for (const code of ['daemon_timeout', 'daemon_disconnected', 'daemon_error']) {
     test(`${code}：不說「什麼都還沒刪」，改說可能已刪一部分，並重新檢查`, async ({ page }) => {
-      await open(page, 'settings', countingInspect(code));
+      await open(page, 'settings/archived', countingInspect(code));
       await page.getByTestId('archived-s-old-api').getByRole('button', { name: '刪除' }).click();
       const dialog = page.getByTestId('purge-dialog');
       await expect(dialog.getByTestId('purge-warnings')).toBeVisible();
@@ -321,7 +321,7 @@ test.describe('刪除確認框', () => {
   }
 
   test('共用的 409 之後重新檢查：勾選框停用、說明出現', async ({ page }) => {
-    await open(page, 'settings', countingInspect('worktree_shared'));
+    await open(page, 'settings/archived', countingInspect('worktree_shared'));
     await page.getByTestId('archived-s-old-api').getByRole('button', { name: '刪除' }).click();
     const dialog = page.getByTestId('purge-dialog');
     const worktree = dialog.getByRole('checkbox', { name: /移除 worktree/ });
@@ -339,7 +339,7 @@ test.describe('刪除確認框', () => {
   });
 
   test('機器失聯：清理項全部停用，只刪 hub 紀錄', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/archived');
     await page.getByTestId('archived-s-old-laptop').getByRole('button', { name: '刪除' }).click();
     const dialog = page.getByTestId('purge-dialog');
     await expect(dialog.getByTestId('purge-offline')).toContainText(
@@ -369,7 +369,7 @@ test.describe('刪除確認框', () => {
   test('hub 拒絕時寫原因，什麼都沒刪，可以再按', async ({ page }) => {
     await open(
       page,
-      'settings',
+      'settings/archived',
       `backend.deleteSession = async () => { throw Object.assign(new Error('x'), { code: 'session_active' }); };`,
     );
     await page.getByTestId('archived-s-old-api').getByRole('button', { name: '刪除' }).click();
@@ -537,7 +537,7 @@ test.describe('版面', () => {
   for (const width of [375, 1280]) {
     test(`${width}px：設定頁已封存、舊資料頁、刪除框不超出畫面`, async ({ page }) => {
       await page.setViewportSize({ width, height: 800 });
-      await open(page, 'settings');
+      await open(page, 'settings/archived');
       await expect(page.getByTestId('archived-s-old-api')).toBeVisible();
       await expectNoPageOverflow(page);
       await page.getByTestId('archived-s-old-api').getByRole('button', { name: '刪除' }).click();

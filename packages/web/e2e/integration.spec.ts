@@ -391,7 +391,7 @@ test('封存 → 已封存清單 → 舊資料頁讀對話與搜尋 → 刪除�
   expect(archived.archivedAt).not.toBeNull();
 
   // 設定頁已封存清單：對話大小由 daemon 實際量到
-  await page.goto('/#/settings');
+  await page.goto('/#/settings/archived');
   const row = page.getByTestId(`archived-${session.id}`);
   await expect(row.getByTestId('archived-size')).toHaveText(/^對話 \d+(\.\d+)? (B|KB)$/);
 
@@ -408,7 +408,7 @@ test('封存 → 已封存清單 → 舊資料頁讀對話與搜尋 → 刪除�
   await expect(page.getByTestId('transcript-count')).toHaveText('符合 1 則（共 3 則）');
 
   // 刪除：勾對話紀錄，按兩次
-  await page.goto('/#/settings');
+  await page.goto('/#/settings/archived');
   await page.getByTestId(`archived-${session.id}`).getByRole('button', { name: '刪除' }).click();
   const dialog = page.getByTestId('purge-dialog');
   await dialog.getByRole('checkbox', { name: /刪掉 Claude 對話紀錄/ }).check();
