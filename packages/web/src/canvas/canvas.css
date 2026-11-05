@@ -247,6 +247,137 @@ input.cmd:disabled {
 .edge-off {
   color: var(--faint);
 }
+
+/*
+ * 交接動畫：hub 排入或送出交接時，線上有東西往目標流（agent 藍，球交給下一個 agent），送達時目標卡亮一圈；
+ * 擋下或取消只閃琥珀（要你看一下），不流動。一分鐘內線維持淡淡的顏色、標籤寫時間。
+ * 粗細與虛線長度用 --z 反向換算，任何縮放下螢幕上都一樣。動畫只用 CSS，不每格重繪 React。
+ */
+.canvas .edge-talk-flow,
+.canvas .edge-talk-flash {
+  fill: none;
+  stroke-width: calc(3px / var(--z));
+  stroke-linecap: round;
+  pointer-events: none;
+}
+.canvas .edge-talk-flow {
+  stroke: var(--agent);
+  stroke-dasharray: calc(8px / var(--z)) calc(16px / var(--z));
+  animation:
+    talk-flow 0.9s linear infinite,
+    talk-fade 4s ease-out forwards;
+}
+.canvas .edge-talk-flash {
+  stroke: var(--you);
+  opacity: 0;
+  animation: talk-flash 0.6s ease-in-out 3 forwards;
+}
+@keyframes talk-flow {
+  to {
+    /* 負的位移：虛線沿著路徑往終點（目標）走 */
+    stroke-dashoffset: calc(-24px / var(--z));
+  }
+}
+@keyframes talk-fade {
+  0% {
+    opacity: 0;
+  }
+  8%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes talk-flash {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* 剛說過話：線本身換成淡淡的語意色（仍是虛線），標籤附上時間 */
+.canvas .react-flow__edge-path.edge-handoff.talk-fired:not(.selected),
+.canvas .react-flow__edge-path.edge-handoff.talk-delivered:not(.selected) {
+  stroke: color-mix(in srgb, var(--agent) 60%, var(--muted));
+}
+.canvas .react-flow__edge-path.edge-handoff.talk-blocked:not(.selected),
+.canvas .react-flow__edge-path.edge-handoff.talk-dropped:not(.selected) {
+  stroke: color-mix(in srgb, var(--you) 60%, var(--muted));
+}
+.canvas .react-flow__edge-path.edge-handoff.temporary {
+  stroke-dasharray: 2 4;
+}
+.edge-label[data-phase] {
+  /* 說話中的標籤與說明浮在卡片上面：卡片靠很近時才看得到 */
+  z-index: 5;
+  pointer-events: auto;
+  cursor: default;
+}
+.edge-label:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.edge-talk-at {
+  margin-left: 6px;
+  color: var(--agent);
+}
+.edge-label[data-talk='blocked'] .edge-talk-at,
+.edge-label[data-talk='dropped'] .edge-talk-at {
+  color: var(--you);
+}
+.edge-tip {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+  width: max-content;
+  max-width: 360px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* 收到交接的卡：外框外一圈淡藍光，淡入淡出 */
+.frame[data-handoff='in'] {
+  box-shadow: 0 0 0 calc(4px / var(--z)) color-mix(in srgb, var(--agent) 55%, transparent);
+  animation: talk-ring 4s ease-out forwards;
+}
+@keyframes talk-ring {
+  0% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  15%,
+  75% {
+    box-shadow: 0 0 0 calc(4px / var(--z)) color-mix(in srgb, var(--agent) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 calc(4px / var(--z)) transparent;
+  }
+}
+/* 減少動態：不流動、不閃，直接一條靜態的語意色線＋光圈＋文字 */
+@media (prefers-reduced-motion: reduce) {
+  .canvas .edge-talk-flow,
+  .canvas .edge-talk-flash,
+  .frame[data-handoff='in'] {
+    animation: none;
+  }
+  .canvas .edge-talk-flow {
+    stroke-dasharray: none;
+  }
+  .canvas .edge-talk-flash {
+    opacity: 1;
+  }
+}
 .edge-panel {
   display: flex;
   flex-wrap: wrap;

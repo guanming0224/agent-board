@@ -1,7 +1,15 @@
 // 交接規則：真的 hub、假 daemon。驗送進 PTY 的內容、順序、狀態檢查、防迴圈與 audit。
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { handoffMessage, matchesFilePattern, oneSentence } from '../handoff';
+import type { HandoffRule, Session } from '@agent-board/protocol';
+import {
+  HandoffEngine,
+  handoffMessage,
+  matchesFilePattern,
+  oneSentence,
+  type HandoffDeps,
+} from '../handoff';
+import type { Store } from '../store';
 import {
   hello,
   PASSWORD,
@@ -223,6 +231,15 @@ describe('on_done', () => {
     expect(JSON.parse(fired.detail)).toMatchObject({ toSessionId: t.b, trigger: 'on_done' });
     await until(() => auditActions().includes('terminal.input'), 'input audit');
     expect(auditDetail('terminal.input')!.session_id).toBe(t.b);
+
+    // 畫布的交接動畫從事件讀摘要（一句，和送出的相同），不是完整訊息。
+    const events = await hub.api('GET', `/api/sessions/${t.a}/events`, { cookie: t.cookie });
+    const firedEvent = events.body.find((e: { type: string }) => e.type === 'handoff.fired');
+    expect(firedEvent.payload).toMatchObject({
+      fromSessionId: t.a,
+      toSessionId: t.b,
+      summary: 'Fixed the login redirect and added a regression test.',
+    });
   });
 
   it('marked done stays done while idle, and clears once the same process starts working again', async () => {
@@ -464,6 +481,13 @@ describe('on_done', () => {
     await setStatus(t.daemon, t.b, 'waiting_input');
     await until(() => auditActions().includes('handoff.dropped'), 'dropped');
     expect(inputsTo(t.daemon, t.b)).toEqual([]);
+    const events = await hub.api('GET', `/api/sessions/${t.a}/events`, { cookie: t.cookie });
+    const dropped = events.body.find((e: { type: string }) => e.type === 'handoff.dropped');
+    expect(dropped.payload).toMatchObject({
+      fromSessionId: t.a,
+      toSessionId: t.b,
+      reason: 'rule_disabled',
+    });
   });
 });
 
@@ -723,5 +747,118 @@ describe('on_fail', () => {
     await until(() => sessionStatus(t.a) === 'error', 'reconciled');
     await pause();
     expect(inputsTo(t.daemon, t.b)).toEqual([]);
+  });
+});
+
+describe('handoff events (canvas animation)', () => {
+  it('ignores handoff.* events sent by a daemon: only the hub writes them', async () => {
+    const t = await board();
+    t.daemon.send({
+      type: 'session.event',
+      event: {
+        id: randomUUID(),
+        sessionId: t.a,
+        type: 'handoff.fired',
+        payload: { fromSessionId: t.a, toSessionId: t.b, summary: 'forged' },
+        at: new Date().toISOString(),
+      },
+    });
+    // 之後送一筆正常事件當分界：它進來了，前一筆就確定被丟掉。
+    hookEvent(t.daemon, t.a, { event: 'Notification' });
+    await until(
+      () =>
+        (
+          hub.running.db
+            .prepare("SELECT COUNT(*) AS n FROM session_events WHERE type = 'hook'")
+            .get() as { n: number }
+        ).n > 0,
+      'hook stored',
+    );
+    const events = await hub.api('GET', `/api/sessions/${t.a}/events`, { cookie: t.cookie });
+    expect(events.body.map((e: { type: string }) => e.type)).not.toContain('handoff.fired');
+  });
+
+  it('delivered is written on the target with the summary', async () => {
+    const t = await board();
+    await addRule(t, t.a, t.b);
+    await markDone(t, t.a);
+    await until(() => auditActions().includes('terminal.input'), 'delivered');
+    const events = await hub.api('GET', `/api/sessions/${t.b}/events`, { cookie: t.cookie });
+    const delivered = events.body.find((e: { type: string }) => e.type === 'handoff.delivered');
+    expect(delivered.sessionId).toBe(t.b);
+    expect(delivered.payload).toMatchObject({ fromSessionId: t.a, toSessionId: t.b });
+    expect(typeof delivered.payload.summary).toBe('string');
+  });
+});
+
+describe('dropped handoffs (engine)', () => {
+  const session = (id: string, status: Session['status']): Session =>
+    ({ id, status, endedAt: null, archived: false, branch: null, statusDetail: null }) as Session;
+
+  function engine() {
+    const sessions = new Map<string, Session>([
+      ['a', session('a', 'running')],
+      ['b', session('b', 'running')],
+    ]);
+    const rule: HandoffRule = {
+      id: 'r',
+      teamId: 't',
+      fromSessionId: 'a',
+      trigger: 'on_done',
+      action: { toSessionId: 'b' },
+      enabled: true,
+    };
+    const events: { sessionId: string; type: string; payload: Record<string, unknown> }[] = [];
+    const audits: { sessionId: string; action: string }[] = [];
+    const store = {
+      getSession: (id: string) => sessions.get(id) ?? null,
+      listTeams: () => [{ id: 't' }],
+      listRules: () => [rule],
+      getRule: (id: string) => (id === rule.id ? rule : null),
+      listEvents: () => [],
+    } as unknown as Store;
+    const deps: HandoffDeps = {
+      store,
+      now: () => new Date(),
+      enterDelayMs: 1,
+      audit: (sessionId, action) => audits.push({ sessionId, action }),
+      addEvent: (sessionId, type, payload) => events.push({ sessionId, type, payload }),
+      isReachable: () => true,
+      sendInput: () => {},
+      guarded: (_label, fn) => fn(),
+    };
+    const handoff = new HandoffEngine(deps);
+    // a 完成時 b 還在工作：交接排進佇列。
+    const a = sessions.get('a')!;
+    handoff.onSessionChange(a, { ...a, status: 'done' }, true);
+    expect(events.map((e) => e.type)).toEqual(['handoff.fired']);
+    const change = (id: string, status: Session['status'], over: Partial<Session> = {}) => {
+      const prev = sessions.get(id)!;
+      const next = { ...prev, status, ...over };
+      sessions.set(id, next);
+      handoff.onSessionChange(prev, next, false);
+    };
+    return { sessions, rule, events, audits, change, handoff };
+  }
+
+  it('target ended: writes handoff.dropped (target_ended) on the source', () => {
+    const t = engine();
+    t.change('b', 'done', { endedAt: new Date().toISOString() });
+    expect(t.events.at(-1)).toEqual({
+      sessionId: 'a',
+      type: 'handoff.dropped',
+      payload: { ruleId: 'r', fromSessionId: 'a', toSessionId: 'b', reason: 'target_ended' },
+    });
+    t.handoff.close();
+  });
+
+  it('source deleted: only the audit, no event (the event would break the foreign key)', () => {
+    const t = engine();
+    t.sessions.delete('a');
+    t.rule.enabled = false;
+    t.change('b', 'waiting_input');
+    expect(t.audits.map((a) => a.action)).toContain('handoff.dropped');
+    expect(t.events.map((e) => e.type)).toEqual(['handoff.fired']);
+    t.handoff.close();
   });
 });

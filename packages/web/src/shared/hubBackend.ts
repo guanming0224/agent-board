@@ -3,6 +3,7 @@ import { HubToClient, routes, WS_PATHS } from '@agent-board/protocol';
 import type {
   ClientToHub,
   ResourceSample,
+  SessionEvent,
   RouteBody,
   RouteName,
   RouteQuery,
@@ -88,6 +89,7 @@ class HubConnection implements TerminalStream {
   private boardListeners = new Set<BoardListener>();
   private connectionListeners = new Set<(connected: boolean) => void>();
   private resourceListeners = new Set<(sample: ResourceSample) => void>();
+  private eventListeners = new Set<(event: SessionEvent) => void>();
   private terminalListeners = new Map<string, Set<(m: TerminalServerMessage) => void>>();
 
   start(): void {
@@ -114,6 +116,11 @@ class HubConnection implements TerminalStream {
     this.connectionListeners.add(listener);
     listener(this.ws?.readyState === WebSocket.OPEN);
     return () => this.connectionListeners.delete(listener);
+  }
+
+  watchEvents(listener: (event: SessionEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
   }
 
   watchResources(listener: (sample: ResourceSample) => void): () => void {
@@ -220,6 +227,9 @@ class HubConnection implements TerminalStream {
           ...s,
           approvals: s.approvals.filter((a) => a.id !== message.approvalId),
         }));
+      case 'session.event':
+        this.eventListeners.forEach((l) => l(message.event));
+        return;
       case 'error':
         console.warn(`hub: ${message.code}: ${message.message}`);
         return;
@@ -258,6 +268,7 @@ export function createHubBackend() {
     terminal: hub,
     watchBoard: (listener) => hub.watchBoard(listener),
     watchConnection: (listener) => hub.watchConnection(listener),
+    watchEvents: (listener) => hub.watchEvents(listener),
     watchResources: (listener) => hub.watchResources(listener),
 
     needsSetup: async () => (await call('authStatus')).needsSetup,
