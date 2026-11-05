@@ -25,6 +25,10 @@
 
 機器 token 不會寫進去，只在 `machine.json`。
 
+## 在 Agent Board session 裡更新
+
+安裝程式更新程式時會重啟 daemon，而 Agent Board 開的 session 都跑在 daemon 底下，所以在這種 session 裡直接跑 `install.sh`，安裝程式會和 session 一起被結束，daemon 就起不來。`install.sh` 看到 `AGENT_BOARD_SESSION_ID` 時會自動改在背景執行（新的 process session、沒有終端機），輸出寫到 `~/.agent-board/logs/install-<時間>.log`，最後一行是「安裝結束，結束碼 N」。要強制在前景跑，設 `AGENT_BOARD_INSTALL_DETACHED=1`。Windows 的 `install.ps1` 沒有這個處理。
+
 ## hook 怎麼被找到
 
 daemon 開 session 前會確認找得到 `agent-board-hook`，找不到就拒絕開（否則危險指令檢查會被靜默跳過）。發布檔的 `daemon/dist/index.mjs` 用相對路徑找 `daemon/node_modules/.bin/agent-board-hook`，daemon 再把這個資料夾加進 PTY 的 `PATH`，所以那個資料夾只放 hook，不放別的執行檔。

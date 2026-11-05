@@ -40,6 +40,42 @@ command -v npm >/dev/null 2>&1 || die "$(t "找不到 npm。它通常隨 Node.js
 
 data_root="$HOME/.local/share/agent-board"
 
+# 在 Agent Board 開的 session 裡執行時（例如請畫布上的 Claude 上架），安裝程式重啟 daemon 會把
+# 這個 session 連同安裝程式一起殺掉，daemon 就起不來。這時改成脫離目前 session 在背景跑（新的
+# process session、沒有終端機），輸出寫到紀錄檔。設 AGENT_BOARD_INSTALL_DETACHED=1 可強制在前景跑。
+if [ -n "${AGENT_BOARD_SESSION_ID:-}" ] && [ -z "${AGENT_BOARD_INSTALL_DETACHED:-}" ]; then
+  log_dir="${AGENT_BOARD_DATA_DIR:-$HOME/.agent-board}/logs"
+  mkdir -p "$log_dir" || die "$(t "無法建立紀錄資料夾：$log_dir" "Cannot create the log folder: $log_dir")"
+  log_file="$log_dir/install-$(date +%Y%m%d-%H%M%S).log"
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  AGENT_BOARD_INSTALL_DETACHED=1 node -e "
+    const { spawn } = require('node:child_process');
+    const { openSync } = require('node:fs');
+    const out = openSync(process.argv[1], 'a');
+    const child = spawn('sh', process.argv.slice(2), { detached: true, stdio: ['ignore', out, out] });
+    child.unref();
+    console.log(child.pid);
+  " "$log_file" "$self" "$@" >"$log_dir/.install-pid" ||
+    die "$(t "無法在背景啟動安裝程式。" "Could not start the installer in the background.")"
+  printf '%s\n' "$(t "偵測到在 Agent Board session 裡執行：安裝程式會重啟 daemon，這個 session 可能跟著中斷，所以改在背景執行（PID $(cat "$log_dir/.install-pid")）。" "Running inside an Agent Board session: the installer restarts the daemon, which can end this session, so it now runs in the background (PID $(cat "$log_dir/.install-pid")).")"
+  printf '%s\n' "$(t "進度：tail -f '$log_file'（最後一行是「安裝結束，結束碼 0」就是成功）" "Progress: tail -f '$log_file' (a last line of \"Installer finished, exit code 0\" means success)")"
+  rm -f "$log_dir/.install-pid"
+  exit 0
+fi
+tmp=""
+note_exit=""
+# 背景執行的那一份：結束時在紀錄檔最後寫結果，方便確認。
+[ -n "${AGENT_BOARD_INSTALL_DETACHED:-}" ] && [ -n "${AGENT_BOARD_SESSION_ID:-}" ] && note_exit=1
+on_exit() {
+  code=$?
+  [ -z "$tmp" ] || rm -rf "$tmp"
+  [ -z "$note_exit" ] || printf '\n[%s] %s %s\n' "$(date)" "$(t "安裝結束，結束碼" "Installer finished, exit code")" "$code"
+  exit "$code"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 from=""
 uninstall=""
 for arg in "$@"; do
@@ -52,7 +88,8 @@ if [ -n "$uninstall" ]; then
     shift
     [ "$arg" = "--uninstall" ] || set -- "$@" "$arg"
   done
-  exec node "$data_root/app/scripts/installer.mjs" uninstall "$@"
+  node "$data_root/app/scripts/installer.mjs" uninstall "$@"
+  exit $?
 fi
 
 # 把 --from 從參數裡拿掉，其餘原樣交給 installer.mjs（路徑含空格也不會斷開）。
@@ -74,7 +111,6 @@ done
 [ -z "$take_from" ] || die "$(t "--from 後面要接檔案或資料夾。" "--from needs a file or folder.")"
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-board-install.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT INT TERM
 
 verify_sha256() {
   node -e "
@@ -117,3 +153,4 @@ fi
 [ -f "$source_dir/BUILD_ID" ] || die "$(t "$source_dir 不是 Agent Board 發布檔。" "$source_dir is not an Agent Board release.")"
 
 node "$source_dir/scripts/installer.mjs" install --source "$source_dir" "$@"
+exit $?

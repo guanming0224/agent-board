@@ -19,7 +19,8 @@ MIN_SECRET_LEN = 4          # 太短的值比對會誤擋，不比
 REPEAT_SECONDS = 6 * 3600   # 同一則訊息多久內不重發
 
 PATTERNS = [
-    ('Anthropic API Key', re.compile(r'\bsk-ant-[A-Za-z0-9_-]{20,}')),
+    # sk-ant-demo… 是測試用假資料（遮蔽、舊資料頁的測試），真的金鑰是 sk-ant-api03-、sk-ant-admin01- 這類。
+    ('Anthropic API Key', re.compile(r'\bsk-ant-(?!demo)[A-Za-z0-9_-]{20,}')),
     ('GitHub Token', re.compile(r'\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bgithub_pat_[A-Za-z0-9_]{30,}\b')),
     ('Telegram Bot Token', re.compile(r'\b[0-9]{8,10}:[A-Za-z0-9_-]{30,}\b')),
     ('私鑰區塊', re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----')),

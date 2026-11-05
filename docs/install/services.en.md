@@ -23,6 +23,10 @@ Services don't get your shell's environment. launchd's `PATH` in particular is o
 
 The machine token is never written here. It stays in `machine.json`.
 
+## Updating from inside an Agent Board session
+
+Updating restarts the daemon, and every Agent Board session runs under the daemon, so running `install.sh` directly inside such a session ends the installer along with the session and leaves the daemon stopped. When `install.sh` sees `AGENT_BOARD_SESSION_ID` it reruns itself in the background (new process session, no terminal) and writes its output to `~/.agent-board/logs/install-<time>.log`; the last line is "Installer finished, exit code N". Set `AGENT_BOARD_INSTALL_DETACHED=1` to force a foreground run. `install.ps1` on Windows does not do this.
+
 ## How the hook is found
 
 Before starting a session, the daemon confirms it can find `agent-board-hook`, and refuses to start otherwise, because the dangerous-command check would silently be skipped. In a release, `daemon/dist/index.mjs` finds `daemon/node_modules/.bin/agent-board-hook` by relative path. The daemon then adds that folder to the PTY's `PATH`, so the folder holds only the hook.
