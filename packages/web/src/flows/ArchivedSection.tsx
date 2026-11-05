@@ -13,12 +13,12 @@ import {
   Loading,
   Msg,
   restoreErrorText,
-  useCurrentUser,
   useLoad,
   useProjects,
   type Note,
 } from './common';
 import { PurgeDialog } from './PurgeDialog';
+import { useSettingsUser } from './settingsParts';
 
 /** 一次問幾個 inspect：每個都要 daemon 跑 git，不要一次全丟過去。 */
 const INSPECT_CONCURRENCY = 3;
@@ -151,7 +151,7 @@ function ArchivedRow({
 export function ArchivedSection() {
   const t = useT();
   const { backend, machines } = useBoard();
-  const me = useCurrentUser();
+  const me = useSettingsUser();
   const projects = useProjects();
   const list = useLoad(useCallback(() => backend.listArchivedSessions(), [backend]));
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());

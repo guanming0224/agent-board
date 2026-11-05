@@ -895,17 +895,88 @@
 }
 
 /* 設定 */
-.flows .settings-grid {
+/* 左側分類選單＋右邊只放選中的分類；手機（≤ 640px）選單變成上方分頁 */
+.flows .settings-layout {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 24px;
   align-items: start;
 }
 
-.flows .settings-col {
+.flows .settings-nav {
+  position: sticky;
+  top: calc(var(--app-header-height, 0px) + 16px);
+  min-width: 0;
+}
+
+.flows .settings-nav ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flows .settings-nav a {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 40px;
+  padding: 6px 12px;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.flows .settings-nav a:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.flows .settings-nav a[aria-current='page'] {
+  border-left-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--fg);
+}
+
+.flows .settings-panel {
   display: grid;
   gap: 16px;
   min-width: 0;
+  max-width: 880px;
+}
+
+.flows .settings-panel.wide {
+  max-width: none;
+}
+
+.flows .settings-group {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.flows .settings-group[hidden] {
+  display: none;
+}
+
+.flows .settings-group > .form-card {
+  margin-top: 0;
+  scroll-margin-top: calc(var(--app-header-height, 0px) + 12px);
+}
+
+.flows .rig-row.signed-in {
+  padding: 0;
+  border-top: 0;
+}
+
+/* 區塊在 grid 裡被撐成固定高度，空狀態的 min-height: 100% 會超出外框 */
+.flows .settings-panel .state {
+  min-height: 0;
 }
 
 .flows .section-head {
@@ -986,8 +1057,8 @@
 }
 
 /* 聚焦時別被底部黏住的儲存列蓋住 */
-.flows .settings-col input,
-.flows .settings-col textarea {
+.flows .settings-panel input,
+.flows .settings-panel textarea {
   scroll-margin-bottom: 120px;
 }
 
@@ -1104,8 +1175,7 @@
 }
 
 @media (max-width: 960px) {
-  .flows .new-grid,
-  .flows .settings-grid {
+  .flows .new-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1116,6 +1186,36 @@
 }
 
 @media (max-width: 640px) {
+  /* 設定分類變成上方分頁：換行排開，全部都看得到，不用橫向捲動 */
+  .flows .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .flows .settings-nav {
+    position: static;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .flows .settings-nav ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 2px;
+  }
+
+  .flows .settings-nav a {
+    min-height: 40px;
+    padding: 4px 10px;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+  }
+
+  .flows .settings-nav a[aria-current='page'] {
+    border-bottom-color: var(--accent);
+    background: none;
+  }
+
   /* iOS 在字級小於 16px 的輸入框聚焦時會放大整頁 */
   .flows input:not([type='radio'], [type='checkbox']),
   .flows select,

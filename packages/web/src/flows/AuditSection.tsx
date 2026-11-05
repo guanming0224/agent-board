@@ -16,18 +16,10 @@ import {
   toAuditQuery,
   type AuditForm,
 } from './audit';
-import {
-  Empty,
-  ErrorBox,
-  errorText,
-  Loading,
-  Msg,
-  useCurrentUser,
-  useLoad,
-  type Note,
-} from './common';
+import { Empty, ErrorBox, errorText, Loading, Msg, useLoad, type Note } from './common';
+import { useSettingsUser } from './settingsParts';
 
-/** 使用者清單是選用的後端方法（見 SettingsPage 的 OptionalAdmin）；沒有時用 id 顯示。 */
+/** 使用者清單是選用的後端方法（見 settingsParts.tsx 的 OptionalAdmin）；沒有時用 id 顯示。 */
 interface OptionalUsers {
   listUsers?: () => Promise<User[]>;
 }
@@ -83,7 +75,7 @@ function AuditBody() {
   const t = useT();
   const { backend, sessions, machines } = useBoard();
   const actionLabel = useActionLabel();
-  const me = useCurrentUser();
+  const me = useSettingsUser();
   const [form, setForm] = useState<AuditForm>(EMPTY_AUDIT_FORM);
   const [limit, setLimit] = useState(AUDIT_PAGE);
   const [exporting, setExporting] = useState(false);
@@ -292,7 +284,7 @@ function AuditBody() {
 /** 不是 owner 就整區不出現（hub 會回 403）。 */
 export function AuditSection() {
   const t = useT();
-  const me = useCurrentUser();
+  const me = useSettingsUser();
   if (me.data?.role !== 'owner') return null;
   return (
     <section className="form-card audit" aria-labelledby="audit" id="s-audit">

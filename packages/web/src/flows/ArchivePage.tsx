@@ -370,7 +370,7 @@ export function ArchivePage() {
   };
 
   const back = (
-    <a href="#/settings" className="back-link">
+    <a href="#/settings/archived" className="back-link">
       {t('flows.archive.back')}
     </a>
   );
@@ -400,7 +400,7 @@ export function ArchivePage() {
           restored ? (
             <a href="#/canvas">{t('flows.archive.toCanvas')}</a>
           ) : (
-            <a href="#/settings">{t('flows.archive.back')}</a>
+            <a href="#/settings/archived">{t('flows.archive.back')}</a>
           )
         }
       />

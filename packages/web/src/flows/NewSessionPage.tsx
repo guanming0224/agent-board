@@ -33,6 +33,7 @@ import {
   WorktreeHints,
   type TaskType,
 } from './sessionForm';
+import { PairMachineNext } from './settingsParts';
 
 const LONG_CONTEXT_TOKENS = 100_000;
 const NO_GUARDS: Settings['quotaGuards'] = {
@@ -290,7 +291,7 @@ export function NewSessionPage() {
         </header>
         <Empty
           title={t('flows.new.noMachines')}
-          next={<a href="#/settings">{t('flows.new.noMachinesNext')}</a>}
+          next={<PairMachineNext label={t('flows.new.noMachinesNext')} />}
         />
       </Page>
     );

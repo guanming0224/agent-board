@@ -200,7 +200,7 @@ test('改密碼：目前密碼錯誤不改；改好後其他裝置登出、舊�
 test('操作紀錄：列出、依動作與使用者篩選（hub 篩）、匯出篩選結果與整份 CSV', async ({ page }) => {
   const errors = expectNoErrors(page);
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto('/#/settings');
+  await page.goto('/#/settings/data');
   const box = page.locator('#s-audit');
   const rows = box.getByTestId('audit-row');
   await expect(rows.first()).toBeVisible();
@@ -279,7 +279,7 @@ test('成員看不到操作紀錄、可改自己的密碼；管理員從設定�
   ).toBe(true);
   expect((await memberPage.request.get('/api/audit')).status()).toBe(403);
   await memberPage.goto('/#/settings');
-  await expect(memberPage.locator('#s-users')).toContainText('member');
+  await expect(memberPage.locator('#s-account')).toContainText('member');
   await expect(memberPage.locator('#s-audit')).toHaveCount(0);
 
   const box = memberPage.locator('#s-password');
@@ -301,7 +301,7 @@ test('成員看不到操作紀錄、可改自己的密碼；管理員從設定�
   ).toBe(403);
 
   // 管理員在設定頁幫成員重設：不需要成員的密碼，成員被登出，新密碼可登入。
-  await page.goto('/#/settings');
+  await page.goto('/#/settings/users');
   const row = page.locator('#s-users li.rig-row', { hasText: 'member' });
   await row.getByRole('button', { name: '重設密碼' }).click();
   const form = page.getByTestId(`reset-${member.id}`);

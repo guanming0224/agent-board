@@ -188,7 +188,7 @@ test.describe('操作紀錄', () => {
   test.use({ locale: 'zh-TW' });
 
   test('列出、依動作／使用者／session／時間篩選、清除', async ({ page }) => {
-    await open(page, 'settings');
+    await open(page, 'settings/data');
     const box = page.locator('#s-audit');
     await expect(box.getByRole('heading', { name: '操作紀錄' })).toBeVisible();
     const rows = box.getByTestId('audit-row');
@@ -240,7 +240,7 @@ test.describe('操作紀錄', () => {
   test('匯出 CSV：沒有篩選時下載整份、帶 BOM；有篩選時只匯出符合的', async ({ page }) => {
     await open(
       page,
-      'settings',
+      'settings/data',
       `const exportAudit = backend.exportAudit;
        backend.exportAudit = async (filter) => {
          window.__calls.push({ type: 'export', filter });
@@ -289,7 +289,7 @@ test.describe('操作紀錄', () => {
   test('讀不到時說明怎麼辦；匯出失敗訊息貼著按鈕', async ({ page }) => {
     await open(
       page,
-      'settings',
+      'settings/data',
       `backend.listAudit = async () => { throw new Error('403'); };
        backend.exportAudit = async () => { throw new Error('boom'); };`,
     );
@@ -305,7 +305,7 @@ test.describe('操作紀錄', () => {
       'settings',
       `backend.currentUser = async () => ({ id: 'u-m', name: 'pat', role: 'member', locale: 'zh-TW' });`,
     );
-    await expect(page.locator('#s-users')).toContainText('pat');
+    await expect(page.locator('#s-account')).toContainText('pat');
     await expect(page.locator('#s-password')).toBeVisible();
     await expect(page.locator('#s-audit')).toHaveCount(0);
   });
@@ -314,7 +314,7 @@ test.describe('操作紀錄', () => {
     const secret = 'sk-ant-api03-' + 'A'.repeat(40);
     await open(
       page,
-      'settings',
+      'settings/data',
       `const list = backend.listAudit;
        backend.listAudit = async (f) => [{ id: 'x', userId: null, sessionId: null,
          action: 'terminal.input', detail: 'export KEY=${secret}', at: new Date().toISOString() },
@@ -343,7 +343,7 @@ test.describe('管理員重設別人的密碼', () => {
     page.evaluate(() => (window as unknown as { __resets: unknown[] }).__resets);
 
   test('別人那一列有「重設密碼」，自己沒有；檢查欄位後送出，說明對方會被登出', async ({ page }) => {
-    await open(page, 'settings', users);
+    await open(page, 'settings/machines', users);
     const section = page.locator('#s-users');
     const rows = section.locator('li.rig-row');
     await expect(rows).toHaveCount(2);
@@ -376,7 +376,7 @@ test.describe('管理員重設別人的密碼', () => {
   test('失敗時說原因；取消不送', async ({ page }) => {
     await open(
       page,
-      'settings',
+      'settings/machines',
       `${users}
        backend.resetUserPassword = async () => { throw new Error('403'); };`,
     );
@@ -395,11 +395,17 @@ test.describe('管理員重設別人的密碼', () => {
   test('成員看不到重設按鈕', async ({ page }) => {
     await open(
       page,
-      'settings',
+      'settings/machines',
       `${users}
        backend.currentUser = async () => ({ id: 'u-pat', name: 'pat', role: 'member', locale: 'zh-TW' });`,
     );
-    await expect(page.locator('#s-users li.rig-row')).toHaveCount(2);
+    // 成員只看得到唯讀的機器清單；使用者區整個不出現（hub 也只讓 owner 讀使用者清單）。
+    await expect(page.getByRole('link', { name: '機器與使用者' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await expect(page.locator('#s-machines')).toBeVisible();
+    await expect(page.locator('#s-users')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '重設密碼' })).toHaveCount(0);
   });
 });
