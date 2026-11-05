@@ -764,14 +764,22 @@ describe('daemon 重啟', () => {
   it('/clear 換了 claude session id 之後，重啟用新的 id', async () => {
     await h.createAndSubscribe('s1');
     const client = await HookClient.connect(h.daemons[0]?.hookSocketPath as string);
-    await client.request('s1', 'SessionStart', { session_id: '0a1b2c3d-0000-4000-8000-0000000c1ea7' });
+    await client.request('s1', 'SessionStart', {
+      session_id: '0a1b2c3d-0000-4000-8000-0000000c1ea7',
+    });
     client.close();
-    await waitUntil(() => persisted().sessions[0]?.claudeSessionId === '0a1b2c3d-0000-4000-8000-0000000c1ea7', '清單更新');
+    await waitUntil(
+      () => persisted().sessions[0]?.claudeSessionId === '0a1b2c3d-0000-4000-8000-0000000c1ea7',
+      '清單更新',
+    );
     writeTranscript('0a1b2c3d-0000-4000-8000-0000000c1ea7');
 
     await h.restartDaemon();
     await waitUntil(() => h.runs().length === 2, '第二次啟動');
-    expect(h.runs()[1]?.argv.slice(0, 2)).toEqual(['--resume', '0a1b2c3d-0000-4000-8000-0000000c1ea7']);
+    expect(h.runs()[1]?.argv.slice(0, 2)).toEqual([
+      '--resume',
+      '0a1b2c3d-0000-4000-8000-0000000c1ea7',
+    ]);
   });
 
   it('已結束的 session 不會被接回；cwd 消失的從清單移除，不會擋住其他 session', async () => {
