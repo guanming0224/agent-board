@@ -25,6 +25,8 @@ import {
   useTargetSession,
   type Note,
 } from './common';
+// 直接引用檔案，不經 views/index（views 也引用 flows，避免循環）。
+import { canResume, useResume } from '../views/resume';
 import { PurgeDialog } from './PurgeDialog';
 
 /** 一次讀幾則。hub 上限 500。 */
@@ -344,6 +346,7 @@ export function ArchivePage() {
   const [restored, setRestored] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
+  const resumer = useResume();
   // 從設定頁下方的清單點進來時，換 hash 不會重設捲動位置。
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -414,6 +417,17 @@ export function ArchivePage() {
           <button type="button" disabled={busy || !connected} onClick={() => void restore()}>
             {t('flows.archived.restore')}
           </button>
+          {canResume(session) && (
+            <button
+              type="button"
+              className="primary"
+              title={t('flows.archive.resumeHint')}
+              disabled={busy || resumer.busy || !connected}
+              onClick={() => void resumer.resume(session)}
+            >
+              {resumer.busy ? t('views.resume.busy') : t('flows.archive.resume')}
+            </button>
+          )}
           {me.data?.role === 'owner' && (
             <button
               type="button"
@@ -424,7 +438,7 @@ export function ArchivePage() {
               {t('flows.archived.delete')}
             </button>
           )}
-          <Msg note={note} />
+          <Msg note={resumer.error ? { text: resumer.error, tone: 'err' } : note} />
         </div>
         <div className="archive-grid">
           <section className="form-card" aria-labelledby="archive-info">

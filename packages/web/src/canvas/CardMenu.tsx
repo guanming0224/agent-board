@@ -1,9 +1,9 @@
-// 卡片標題列的「⋯」：重新命名、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
+// 卡片標題列的「⋯」：重新命名、接續（已結束才有）、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { errorText } from '../views';
+import { canResume, errorText, useResume } from '../views';
 import { requestArchive } from './archive';
 
 export function MenuButton({
@@ -42,6 +42,7 @@ export function CardMenu({
 }) {
   const t = useT();
   const box = useRef<HTMLDivElement>(null);
+  const { resume, busy, error } = useResume();
   useEffect(() => {
     box.current?.querySelector('button')?.focus();
     const onKey = (e: KeyboardEvent) => {
@@ -72,6 +73,18 @@ export function CardMenu({
       >
         {t('canvas.menu.rename')}
       </button>
+      {canResume(session) && (
+        <button
+          type="button"
+          role="menuitem"
+          title={t('views.resume.hint')}
+          disabled={busy}
+          // 失敗時選單留著，錯誤訊息才看得到。
+          onClick={() => void resume(session).then((ok) => ok && onClose())}
+        >
+          {busy ? t('views.resume.busy') : t('views.resume')}
+        </button>
+      )}
       <button
         type="button"
         role="menuitem"
@@ -82,6 +95,11 @@ export function CardMenu({
       >
         {t('canvas.menu.archive')}
       </button>
+      {error && (
+        <p className="msg" role="alert">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { errorText } from '../views';
+import { canResume, errorText, useResume } from '../views';
 import {
   clearState,
   hintKey,
@@ -64,6 +64,7 @@ export function DoneHint({ session }: { session: Session }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const shown = showsDoneHint(session) && (!dismissed || sent);
+  const resumer = useResume();
   const waiting = useWaitingBeforeDone(session, shown && session.endedAt === null);
 
   if (!shown) return null;
@@ -103,15 +104,24 @@ export function DoneHint({ session }: { session: Session }) {
           <p>{t('canvas.done.text')}</p>
           <div className="acts">
             {state === 'ready' && <button onClick={sendClear}>{t('canvas.done.clear')}</button>}
+            {state === 'ended' && canResume(session) && (
+              <button
+                title={t('views.resume.hint')}
+                disabled={resumer.busy || !connected}
+                onClick={() => void resumer.resume(session)}
+              >
+                {resumer.busy ? t('views.resume.busy') : t('views.resume')}
+              </button>
+            )}
             <button disabled={busy || !connected} onClick={() => void archive()}>
               {t('canvas.done.archive')}
             </button>
             <button className="link" onClick={() => dismiss(key)}>
               {t('canvas.done.dismiss')}
             </button>
-            {msg && (
+            {(msg || resumer.error) && (
               <span className="msg" role="status">
-                {msg}
+                {resumer.error || msg}
               </span>
             )}
           </div>

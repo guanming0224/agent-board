@@ -90,6 +90,11 @@ export interface BoardBackend {
     patch: { name?: string; archived?: boolean; markDone?: true },
   ): Promise<Session>;
   stopSession(id: string): Promise<Session>;
+  /**
+   * 接續已結束的 session（`claude --resume`）。已封存的會自動還原。
+   * 錯誤碼：session_active、no_claude_session、machine_offline、invalid_account_profile、session_deleting。
+   */
+  resumeSession(id: string): Promise<Session>;
 
   /** 已封存的 session（CONTRACTS §9）。board 快照不含它們，要另外讀。 */
   listArchivedSessions(): Promise<Session[]>;

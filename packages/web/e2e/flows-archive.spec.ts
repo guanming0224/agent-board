@@ -127,7 +127,7 @@ test.describe('已封存清單', () => {
   test('還原：從清單移掉、回到畫布', async ({ page }) => {
     await open(page, 'settings');
     const api = page.getByTestId('archived-s-old-api');
-    await api.getByRole('button', { name: '還原' }).click();
+    await api.getByRole('button', { name: '還原', exact: true }).click();
     await expect(api).toHaveCount(0);
     await expect(page.locator('#s-archived')).toContainText('已還原「Old API refactor」');
     await page.evaluate(() => (location.hash = '#/canvas'));
@@ -142,24 +142,24 @@ test.describe('已封存清單', () => {
       };`;
     await open(page, 'settings', deleting);
     const api = page.getByTestId('archived-s-old-api');
-    await api.getByRole('button', { name: '還原' }).click();
+    await api.getByRole('button', { name: '還原', exact: true }).click();
     await expect(api.locator('.msg.err')).toHaveText(
       '這個 session 正在刪除，不能還原。稍後再試；刪完之後它就不在清單裡了。',
     );
     await open(page, 'archive/s-old-api', deleting);
-    await page.getByRole('button', { name: '還原' }).click();
+    await page.getByRole('button', { name: '還原', exact: true }).click();
     await expect(page.locator('.msg.err')).toContainText('這個 session 正在刪除，不能還原');
   });
 
   test('member 看不到刪除（清單與舊資料頁都是）', async ({ page }) => {
     await open(page, 'settings', MEMBER);
     const api = page.getByTestId('archived-s-old-api');
-    await expect(api.getByRole('button', { name: '還原' })).toBeVisible();
+    await expect(api.getByRole('button', { name: '還原', exact: true })).toBeVisible();
     await expect(page.locator('#s-archived').getByRole('button', { name: '刪除' })).toHaveCount(0);
     await api.getByRole('link', { name: '開啟' }).click();
     await expect(page).toHaveURL(/#\/archive\/s-old-api$/);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Old API refactor');
-    await expect(page.getByRole('button', { name: '還原' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '還原', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '刪除' })).toHaveCount(0);
   });
 });
@@ -491,8 +491,45 @@ test.describe('舊資料頁', () => {
     await expect(page.locator('[data-state=empty]')).toContainText('已刪除');
 
     await open(page, 'archive/s-old-shared');
-    await page.getByRole('button', { name: '還原' }).click();
+    await page.getByRole('button', { name: '還原', exact: true }).click();
     await expect(page.locator('[data-state=empty]')).toContainText('已還原');
+  });
+});
+
+test.describe('接續', () => {
+  test('舊資料頁「還原並接續」：回到畫布、卡片回來而且開始啟動', async ({ page }) => {
+    await open(page, 'archive/s-old-api');
+    const button = page.getByRole('button', { name: '還原並接續' });
+    await expect(button).toHaveAttribute('title', /claude --resume/);
+    await button.click();
+    await expect(page).toHaveURL(/#\/canvas$/);
+    await expect(page.getByTestId('card-s-old-api')).toBeVisible();
+    await expect(page.getByTestId('card-s-old-api').locator('.lamp')).toContainText('啟動中');
+  });
+
+  test('沒有 Claude 對話 id 就不給接續', async ({ page }) => {
+    await open(page, 'archive/s-old-laptop');
+    await expect(page.getByRole('heading', { name: 'Nav spike' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '還原並接續' })).toHaveCount(0);
+  });
+
+  test('hub 拒絕時寫白話原因，留在原頁', async ({ page }) => {
+    for (const [code, text] of [
+      ['machine_offline', 'demo-studio 離線，上線後才能接續。'],
+      ['session_deleting', '這個 session 正在刪除，不能接續。'],
+      ['no_claude_session', '沒有可以接續的 Claude 對話'],
+    ] as const) {
+      await open(
+        page,
+        'archive/s-old-api',
+        `backend.resumeSession = async () => {
+           throw Object.assign(new Error('nope'), { status: 409, code: '${code}' });
+         };`,
+      );
+      await page.getByRole('button', { name: '還原並接續' }).click();
+      await expect(page.locator('.msg.err')).toContainText(text);
+      await expect(page).toHaveURL(/#\/archive\/s-old-api$/);
+    }
   });
 });
 

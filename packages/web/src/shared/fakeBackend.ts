@@ -652,6 +652,24 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       publish();
       return s;
     },
+    async resumeSession(id) {
+      const s = find(id);
+      if (s.endedAt === null) throw apiError(409, 'session_active', 'Session is still active');
+      if (!s.claudeSessionId) {
+        throw apiError(409, 'no_claude_session', 'Session has no Claude conversation to resume');
+      }
+      if (!state.machines.find((m) => m.id === s.machineId)?.online) {
+        throw apiError(409, 'machine_offline', 'Machine is offline');
+      }
+      // 和 hub 一樣：已封存的自動還原，狀態回到啟動中。
+      s.archived = false;
+      s.archivedAt = null;
+      s.endedAt = null;
+      s.status = 'starting';
+      s.statusSince = new Date().toISOString();
+      publish();
+      return { ...s };
+    },
     listArchivedSessions: async () =>
       state.sessions.filter((x) => x.archived).map((x) => ({ ...x })),
     async inspectSession(id) {

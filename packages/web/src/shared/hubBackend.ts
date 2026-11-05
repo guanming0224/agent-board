@@ -284,6 +284,7 @@ export function createHubBackend() {
     createSession: (input) => call('sessionsCreate', { body: input }),
     updateSession: (id, patch) => call('sessionsUpdate', { params: { id }, body: patch }),
     stopSession: (id) => call('sessionsStop', { params: { id } }),
+    resumeSession: (id) => call('sessionsResume', { params: { id } }),
     listArchivedSessions: () => call('sessionsList', { query: { archived: 'true' } }),
     inspectSession: (id) => call('sessionInspect', { params: { id } }),
     sessionTranscript: (id, query) => call('sessionTranscript', { params: { id }, query }),

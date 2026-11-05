@@ -1015,3 +1015,62 @@ test.describe('封存', () => {
     await expect(card(page, 's-ml')).toBeVisible();
   });
 });
+
+test.describe('接續', () => {
+  /** 讓 s-tests 變成「已結束、有對話 id」，並記下 resumeSession 的呼叫。 */
+  async function endTests(page: Page, status: 'done' | 'error') {
+    await patchStore(
+      page,
+      `const b = useBoard.getState().backend;
+       window.__resumed = [];
+       b.resumeSession = async (id) => { window.__resumed.push(id); return useBoard.getState().sessions.find((s) => s.id === id); };
+       useBoard.setState((st) => ({ sessions: st.sessions.map((s) => s.id === 's-tests'
+         ? { ...s, status: '${status}', endedAt: new Date().toISOString() } : s) }));`,
+    );
+  }
+  const resumed = (page: Page) =>
+    page.evaluate(() => (window as unknown as { __resumed: string[] }).__resumed);
+
+  test('已結束的卡片：「⋯」選單有接續；還在跑的沒有', async ({ page }) => {
+    await openCanvas(page);
+    const menu = card(page, 's-auth').getByRole('button', { name: /的更多動作$/ });
+    await menu.click();
+    await expect(card(page, 's-auth').getByRole('menuitem', { name: '接續' })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    await endTests(page, 'error');
+    await card(page, 's-tests')
+      .getByRole('button', { name: /的更多動作$/ })
+      .click();
+    const item = card(page, 's-tests').getByRole('menuitem', { name: '接續' });
+    await expect(item).toHaveAttribute('title', /claude --resume/);
+    await item.click();
+    await expect.poll(() => resumed(page)).toEqual(['s-tests']);
+    await expect(card(page, 's-tests').getByRole('menu')).toHaveCount(0);
+  });
+
+  test('接續失敗時選單留著並寫原因', async ({ page }) => {
+    await openCanvas(page);
+    await endTests(page, 'error');
+    await patchStore(
+      page,
+      `useBoard.getState().backend.resumeSession = async () => {
+         throw Object.assign(new Error('x'), { status: 409, code: 'machine_offline' });
+       };`,
+    );
+    await card(page, 's-tests')
+      .getByRole('button', { name: /的更多動作$/ })
+      .click();
+    await card(page, 's-tests').getByRole('menuitem', { name: '接續' }).click();
+    await expect(card(page, 's-tests').getByRole('menu')).toContainText('離線，上線後才能接續');
+  });
+
+  test('完成提示：已結束的有「接續」', async ({ page }) => {
+    await openCanvas(page);
+    await endTests(page, 'done');
+    const hint = page.getByTestId('done-hint-s-tests');
+    await expect(hint).toContainText('session 已經結束');
+    await hint.getByRole('button', { name: '接續' }).click();
+    await expect.poll(() => resumed(page)).toEqual(['s-tests']);
+  });
+});

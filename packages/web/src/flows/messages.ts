@@ -463,6 +463,9 @@ export const zhTW: Record<string, string> = {
   'flows.archived.restored': '已還原「{name}」，卡片回到畫布了。',
   'flows.archived.restoreFailed': '沒還原：{error}。確認 hub 還在執行後再試一次。',
 
+  'flows.archive.resume': '還原並接續',
+  'flows.archive.resumeHint':
+    '放回畫布，用 claude --resume 接回原本的對話。對話紀錄被刪掉的話會接不起來。',
   'flows.archive.back': '← 回已封存清單',
   'flows.archive.notFound': '找不到這個已封存的 session。它可能已經還原回畫布，或被刪除了。',
   'flows.archive.restoredTitle': '已還原，卡片回到畫布了。',
@@ -1078,6 +1081,9 @@ export const en: Record<string, string> = {
   'flows.archived.restoreFailed':
     'Not restored: {error}. Check that the hub is running, then try again.',
 
+  'flows.archive.resume': 'Restore and resume',
+  'flows.archive.resumeHint':
+    'Puts it back on the canvas and reopens the same conversation with claude --resume. This fails if the transcript was deleted.',
   'flows.archive.back': '← Back to archived sessions',
   'flows.archive.notFound':
     "This archived session wasn't found. It may have been restored to the canvas or deleted.",

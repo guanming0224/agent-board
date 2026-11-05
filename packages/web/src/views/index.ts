@@ -17,4 +17,5 @@ export {
 } from './session';
 export { dangerApproval, nextInQueue, pendingQueue } from './queue';
 export { errorText, useBoardLoad, useProjects, type LoadState } from './useBoardLoad';
+export { canResume, resumeErrorText, useResume } from './resume';
 export { useViewsUi } from './uiStore';
