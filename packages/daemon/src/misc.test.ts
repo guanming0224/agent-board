@@ -158,7 +158,6 @@ describe('buildClaudeArgs', () => {
       '--disallowedTools',
       'Edit',
       'Write',
-      'MultiEdit',
       'NotebookEdit',
       '--name',
       'n',

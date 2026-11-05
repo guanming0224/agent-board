@@ -25,6 +25,7 @@ import {
   renameRows,
   ROLE_ABBR,
   isReadOnlyRole,
+  modesFor,
   rowUsesWorktree,
   validatePlan,
   type PlanRow,
@@ -70,7 +71,11 @@ export function NewTeamForm() {
   const [browsing, setBrowsing] = useState(false);
   const [tried, setTried] = useState(false);
   const [steps, setSteps] = useState<Record<string, RowStep>>({});
-  const [created, setCreated] = useState<{ teamId: string; failed: number } | null>(null);
+  const [created, setCreated] = useState<{
+    teamId: string;
+    failed: number;
+    refreshFailed: boolean;
+  } | null>(null);
   const { busy, message, run } = useAction();
   /** 連按兩下也只送一次（busy 要等下一次 render 才生效）。 */
   const submitting = useRef(false);
@@ -142,9 +147,14 @@ export function NewTeamForm() {
         throw e;
       });
       // 團隊已經建好：先鎖住表單，之後重新讀取失敗也不能再按一次（會多建一組）。
-      setCreated({ teamId: result.team.id, failed: result.failed });
-      await refreshTeams(backend).catch(() => {});
-      if (result.failed === 0 && mounted.current) {
+      setCreated({ teamId: result.team.id, failed: result.failed, refreshFailed: false });
+      // 清單沒讀到就跳過去，工作台會顯示「找不到這個團隊」；改成留在這裡給連結。
+      const refreshed = await refreshTeams(backend).then(
+        () => true,
+        () => false,
+      );
+      if (!refreshed) setCreated((c) => c && { ...c, refreshFailed: true });
+      if (refreshed && result.failed === 0 && mounted.current) {
         location.hash = `#/team/${encodeURIComponent(result.team.id)}`;
       }
     });
@@ -306,7 +316,7 @@ export function NewTeamForm() {
                         updateRow(row.key, { mode: e.target.value as PermissionMode })
                       }
                     >
-                      {PermissionMode.options.map((mode) => (
+                      {modesFor(row.role).map((mode) => (
                         <option key={mode} value={mode}>
                           {mode === 'bypassPermissions' ? t('flows.mode.bypassName') : mode}
                         </option>
@@ -363,13 +373,9 @@ export function NewTeamForm() {
 
       <div className="row">
         {created ? (
-          <button
-            type="button"
-            className="primary"
-            onClick={() => (location.hash = `#/team/${encodeURIComponent(created.teamId)}`)}
-          >
+          <a className="open-team" href={`#/team/${encodeURIComponent(created.teamId)}`}>
             {t('team.new.open')}
-          </button>
+          </a>
         ) : (
           <button
             className="primary"
@@ -385,10 +391,13 @@ export function NewTeamForm() {
         )}
         <ActionMessage message={message} />
       </div>
-      {created && created.failed > 0 && (
+      {created && (created.failed > 0 || created.refreshFailed) && (
         <div className="alert you-alert" role="alert" data-testid="new-team-partial">
           <span aria-hidden="true">◆</span>
-          <div>{t('team.new.partial', { failed: created.failed })}</div>
+          <div>
+            {created.failed > 0 && <p>{t('team.new.partial', { failed: created.failed })}</p>}
+            {created.refreshFailed && <p>{t('team.new.refreshFailed')}</p>}
+          </div>
         </div>
       )}
     </form>

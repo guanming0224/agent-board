@@ -768,7 +768,7 @@ describe('daemon 重啟', () => {
 
   it('唯讀 session：拿掉改檔工具；記在清單裡，重啟接回時照樣帶', async () => {
     await h.createAndSubscribe('ro', { readOnly: true, permissionMode: 'plan', name: 'rv' });
-    const tools = ['--disallowedTools', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+    const tools = ['--disallowedTools', 'Edit', 'Write', 'NotebookEdit'];
     const claudeId = h.runs()[0]?.argv[1] as string;
     expect(h.runs()[0]?.argv.slice(2)).toEqual([
       '--permission-mode',

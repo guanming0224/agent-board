@@ -24,7 +24,12 @@ function willHaveOwnWorktree(store: Store, id: string): boolean {
   const row = store.db.prepare('SELECT pending_spec FROM sessions WHERE id = ?').get(id) as
     { pending_spec: string | null } | undefined;
   if (!row?.pending_spec) return false;
-  return (JSON.parse(row.pending_spec) as SessionSpec).useWorktree;
+  // 壞掉的資料當成不會有自己的 worktree（保守：照樣檢查衝突），不讓加入成員整個 500。
+  try {
+    return (JSON.parse(row.pending_spec) as SessionSpec).useWorktree === true;
+  } catch {
+    return false;
+  }
 }
 
 /**

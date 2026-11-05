@@ -290,6 +290,11 @@ test('只建團隊不用選資料夾；組合要剛好一位隊長、名稱不�
   // dontAsk、bypassPermissions 都要提醒。
   await page.getByLabel('第 3 位的權限模式').selectOption('dontAsk');
   await expect(page.getByTestId('dontask-alert')).toContainText('自動拒絕');
+  // 唯讀的審查不給 bypassPermissions；改成 BD 才有，選了要警告。
+  await expect(
+    page.getByLabel('第 3 位的權限模式').locator('option[value="bypassPermissions"]'),
+  ).toHaveCount(0);
+  await page.getByLabel('第 3 位的角色').selectOption('worker');
   await page.getByLabel('第 3 位的權限模式').selectOption('bypassPermissions');
   await expect(page.getByTestId('bypass-alert')).toBeVisible();
   await expect(page.getByTestId('dontask-alert')).toHaveCount(0);
@@ -374,7 +379,7 @@ test('部分失敗：已建立的保留，列出哪一位在哪一步失敗與�
     'Part-LD',
     'Part-RV',
   ]);
-  await page.getByRole('button', { name: '打開團隊' }).click();
+  await page.getByRole('link', { name: '打開團隊' }).click();
   await expect(page.getByRole('heading', { name: 'Part' })).toBeVisible();
   await expect(page.getByLabel('Part-LD 的角色')).toHaveValue('lead');
   await expect(page.getByLabel('Part-BD2 的角色')).toHaveValue('worker');
@@ -407,6 +412,28 @@ test('唯讀成員改成會改檔案的角色被 hub 擋下：說明原因，角
   await role.selectOption('researcher');
   await expect(alert).toHaveCount(0);
   await expect(role).toHaveValue('researcher');
+});
+
+test('建好後讀不到團隊清單：不跳轉、不能再建一次，給「打開團隊」連結', async ({ page }) => {
+  await startTeam(page, 'Stale', '小隊');
+  await page.getByLabel('工作目錄').fill('/home/demo/project');
+  await fake(
+    page,
+    `const list = backend.listTeams;
+     let fail = false;
+     const create = backend.createTeam;
+     backend.createTeam = async (input) => { const team = await create(input); fail = true; return team; };
+     backend.listTeams = async () => {
+       if (fail) { fail = false; throw new Error('hub went away'); }
+       return list();
+     };`,
+  );
+  await page.getByRole('button', { name: '建立團隊和 2 個 session' }).click();
+  await expect(page.getByTestId('new-team-partial')).toContainText('重新讀取團隊清單失敗');
+  await expect(page).toHaveURL(/#\/team$/);
+  await expect(page.getByRole('button', { name: /建立團隊/ })).toHaveCount(0);
+  await page.getByRole('link', { name: '打開團隊' }).click();
+  await expect(page.getByRole('heading', { name: 'Stale' })).toBeVisible();
 });
 
 test('連按兩下建立只建一次', async ({ page }) => {

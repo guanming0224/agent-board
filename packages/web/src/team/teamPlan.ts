@@ -1,5 +1,5 @@
 // 建立團隊時一起開各角色的 session（GM 2026-11-06）。這裡只放純函式：預設組合、命名、權限、檢查。
-import type { PermissionMode, TeamMember } from '@agent-board/protocol';
+import { PermissionMode, type TeamMember } from '@agent-board/protocol';
 import { READ_ONLY_ROLES } from '@agent-board/protocol';
 
 export type Role = TeamMember['role'];
@@ -83,6 +83,12 @@ export function addRow(rows: readonly PlanRow[], role: Role, teamName: string): 
     [...rows, { key: newKey(), role, nameEdited: false, name: '', mode: ROLE_DEFAULT_MODE[role] }],
     teamName,
   );
+}
+
+/** 每列可選的權限模式：唯讀的 RS／RV 不給 bypassPermissions（dontAsk 可選，但會提醒）。 */
+export function modesFor(role: Role): PermissionMode[] {
+  const all = PermissionMode.options;
+  return isReadOnlyRole(role) ? all.filter((m) => m !== 'bypassPermissions') : [...all];
 }
 
 /** 換角色時權限模式跟著換成新角色的預設。 */

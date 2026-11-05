@@ -102,11 +102,11 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
 
 - 執行檔：`AGENT_BOARD_CLAUDE_BIN`，預設 `claude`（`packages/daemon/src/config.ts:59`），開之前
   在 PATH 找到實際檔案（`packages/daemon/src/daemon.ts:94`）。
-- 參數：`buildClaudeArgs`（`packages/daemon/src/session.ts:48-62`）只會產生
+- 參數：`buildClaudeArgs`（`packages/daemon/src/session.ts:60-77`）只會產生
   `--resume <id>` 或 `--session-id <uuid>`、`--permission-mode <mode>`、唯讀 session 才有的
-  `--disallowedTools Edit Write MultiEdit NotebookEdit`（只減少能用的工具）、可選的 `--model <name>`、
+  `--disallowedTools Edit Write NotebookEdit`（只減少能用的工具）、可選的 `--model <name>`、
   `--name <name>`。沒有 `-p`／`--print`，所以永遠是互動模式，等使用者輸入。
-  `packages/daemon/src/misc.test.ts:127` 有測試。
+  `packages/daemon/src/misc.test.ts:129` 有測試。
 - 環境：繼承 daemon 的環境，拿掉 Claude Code session 標記與機器 token（`daemon.ts:47-58`、
   `:570-576`），加上 hook 的 socket 路徑與 session id、`TERM`、可選的 `CLAUDE_CONFIG_DIR`
   （`daemon.ts:578-591`）。**不設定** `ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL` 等，所以模型

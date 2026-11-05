@@ -57,6 +57,8 @@ registerMessages('zh-TW', {
   'team.new.step.memberFailed': '✕ session 已建立，但沒加入團隊：{detail}。可以在工作台再加一次。',
   'team.new.partial': '團隊已建立，{failed} 位沒完成（見上面）。已建立的都保留，沒有刪除任何東西。',
   'team.new.open': '打開團隊',
+  'team.new.refreshFailed':
+    '團隊已建立，但重新讀取團隊清單失敗。按「打開團隊」前往，工作台會自動再讀一次。',
   'team.empty': '還沒有團隊。輸入名稱按「建立團隊」，再把 session 加進來。',
   'team.noGoal': '還沒寫目標',
   'team.memberCount': '{n} 位成員',
@@ -231,6 +233,8 @@ registerMessages('en', {
   'team.new.partial':
     'The team was created, but {failed} member(s) did not finish (see above). Everything created was kept; nothing was deleted.',
   'team.new.open': 'Open team',
+  'team.new.refreshFailed':
+    'The team was created, but reloading the team list failed. Use Open team; the workbench will retry.',
   'team.empty': 'No teams yet. Enter a name, press Create team, then add sessions.',
   'team.noGoal': 'No goal yet',
   'team.memberCount': '{n} member(s)',

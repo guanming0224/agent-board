@@ -1,9 +1,10 @@
 // #/team：團隊清單；#/team/<id>：工作台（DISPATCH §5.3-4）。
 import { useEffect, useState } from 'react';
 import { useT } from '../shared/i18n';
+import { useBoard } from '../shared/store';
 import { EmptyState, ErrorState, LoadingState, PageShell, useBoardLoad } from '../views';
 import { NewTeamForm } from './NewTeamForm';
-import { teamColorVar, useTeams, useTeamSync } from './store';
+import { refreshTeams, teamColorVar, useTeams, useTeamSync } from './store';
 import { TeamWorkbench } from './TeamWorkbench';
 
 function teamIdFromHash(): string | null {
@@ -59,6 +60,13 @@ export function TeamPage() {
     addEventListener('hashchange', onChange);
     return () => removeEventListener('hashchange', onChange);
   }, []);
+
+  // 清單裡沒有這個團隊（例如剛建好、清單還沒讀到）：馬上再讀一次，不等下一輪輪詢。
+  const backend = useBoard((s) => s.backend);
+  const known = teamId === null || teams.some((x) => x.id === teamId);
+  useEffect(() => {
+    if (status === 'ready' && !known) refreshTeams(backend).catch(() => {});
+  }, [backend, known, status, teamId]);
 
   let body;
   if (board.status === 'error') {

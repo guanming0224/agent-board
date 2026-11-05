@@ -6,6 +6,7 @@ import {
   addRow,
   changeRole,
   defaultNames,
+  modesFor,
   presetRows,
   renameRows,
   ROLE_DEFAULT_MODE,
@@ -33,6 +34,13 @@ describe('預設組合與命名', () => {
     expect(explore[1]!.mode).toBe('plan');
 
     expect(presetRows('none', '搬遷')).toEqual([]);
+  });
+
+  it('唯讀的 RS／RV 不能選 bypassPermissions；dontAsk 仍可選', () => {
+    expect(modesFor('reviewer')).not.toContain('bypassPermissions');
+    expect(modesFor('researcher')).not.toContain('bypassPermissions');
+    expect(modesFor('reviewer')).toContain('dontAsk');
+    expect(modesFor('worker')).toContain('bypassPermissions');
   });
 
   it('預設權限沒有 bypassPermissions、dontAsk', () => {

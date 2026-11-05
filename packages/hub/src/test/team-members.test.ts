@@ -150,6 +150,19 @@ describe('PUT team member: own worktree required', () => {
     expect((await join(c, await session(c, { useWorktree: false }))).status).toBe(409);
   });
 
+  it('treats an unreadable pending spec as no own worktree (409, not a crash)', async () => {
+    const c = await setup();
+    const first = await session(c, {}, {});
+    await join(c, first);
+    const pending = await session(c, { useWorktree: true });
+    hub.running.db
+      .prepare('UPDATE sessions SET pending_spec = ? WHERE id = ?')
+      .run('{bad', pending);
+    const res = await join(c, pending);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('worktree_required');
+  });
+
   it('ignores members that have ended', async () => {
     const c = await setup();
     const first = await session(c, {}, {});

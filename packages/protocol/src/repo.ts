@@ -25,8 +25,11 @@ export function sameWorkingTree(a: WorkPlace, b: WorkPlace): boolean {
   return nested(normalize(a.repoRoot ?? dirA), normalize(b.repoRoot ?? dirB));
 }
 
-/** 唯讀 session 拿掉的改檔工具（daemon 帶 `--disallowedTools`）。和 `file.changed` 偵測的是同一組。 */
-export const READ_ONLY_DISALLOWED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as const;
+/**
+ * 唯讀 session 拿掉的改檔工具（daemon 帶 `--disallowedTools`）。不放 MultiEdit：2.1.318 已沒有這個工具，
+ * 帶了會印「matches no known tool」警告（Lead 實測 2026-11-06）。
+ */
+export const READ_ONLY_DISALLOWED_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const;
 
 /** 團隊裡可以和別人共用資料夾的角色（GM 2026-11-06）。 */
 export const READ_ONLY_ROLES = ['researcher', 'reviewer'] as const;
