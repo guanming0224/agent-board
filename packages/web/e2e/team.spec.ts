@@ -874,7 +874,7 @@ test('學術研究團隊：依階段組隊、實驗 ⇄ 寫作雙向交接、TEA
   await expect(page.locator('.member', { hasText: '論文-WR' })).toContainText('寫作（WR）');
   await expect(page.locator('.member', { hasText: '論文-EX1' })).toContainText('實驗（EX）');
   const exToWr = page.locator('.rule', { hasText: '論文-EX1 → 論文-WR' });
-  await expect(exToWr.getByLabel('檔案樣式')).toHaveValue('results/**');
+  await expect(exToWr.getByLabel('標記')).toHaveValue('[結果完成]');
   await expect(exToWr.locator('.rule-rounds')).toHaveText('雙向・最多 3 輪');
   const wrToEx = page.locator('.rule', { hasText: '論文-WR → 論文-EX1' });
   await expect(wrToEx.getByLabel('標記')).toHaveValue('[需要實驗]');

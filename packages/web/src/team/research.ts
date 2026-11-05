@@ -11,8 +11,11 @@ import {
 import { DEFAULT_MARKER, triggerChoice, twoWayRules, type RuleInput } from './handoffRules';
 import { PHASE_PRESETS, type ExistingTeam, type PlanRow } from './teamPlan';
 
-/** 實驗交給寫作：results/ 底下有改動（GM 決策）。 */
-export const RESULTS_PATTERN = 'results/**';
+/**
+ * 實驗交給寫作：回覆含 [結果完成]。不用「改到 results/**」：實驗結果多半是跑程式（Bash）產生的，
+ * 只看得到 Write／Edit 的 on_file 幾乎不會觸發。
+ */
+export const RESULTS_MARKER = '[結果完成]';
 
 const ROLE_KIND: Record<TeamMember['role'], ResearchKind> = {
   lead: 'ld',
@@ -90,7 +93,7 @@ export function existingTeam(
 
 /**
  * 研究團隊建好後預設的雙向交接：第一位實驗 ⇄ 第一位寫作。
- * EX→WR：改到 results/**；WR→EX：回覆含 [需要實驗]。共用輪數上限，建好先關著。
+ * EX→WR：回覆含 [結果完成]；WR→EX：回覆含 [需要實驗]。共用輪數上限，建好先關著。
  * 沒有成功建立的實驗或寫作就不建（回傳 null）。
  */
 export function researchPairRules(
@@ -106,7 +109,7 @@ export function researchPairRules(
   return twoWayRules(
     ex,
     wr,
-    triggerChoice('on_file', { filePattern: RESULTS_PATTERN }),
+    triggerChoice('on_marker', { marker: RESULTS_MARKER }),
     triggerChoice('on_marker', { marker: DEFAULT_MARKER }),
     maxRounds,
   );

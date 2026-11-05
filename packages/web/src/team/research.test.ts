@@ -89,7 +89,7 @@ describe('補成員要算進來的現有成員', () => {
 });
 
 describe('研究團隊預設的雙向交接', () => {
-  it('第一位實驗 ⇄ 第一位寫作：results/** 與 [需要實驗]，共用輪數，先關著', () => {
+  it('第一位實驗 ⇄ 第一位寫作：[結果完成] 與 [需要實驗]，共用輪數，先關著', () => {
     const rows = phaseRows('revision', 'P');
     expect(planHasPair(rows)).toBe(true);
     expect(planHasPair(phaseRows('experiment', 'P'))).toBe(false);
@@ -97,8 +97,8 @@ describe('研究團隊預設的雙向交接', () => {
     expect(researchPairRules(rows, ids, 3)).toEqual([
       {
         fromSessionId: 'id-P-EX1',
-        trigger: 'on_file',
-        action: { toSessionId: 'id-P-WR', filePattern: 'results/**', maxRounds: 3 },
+        trigger: 'on_marker',
+        action: { toSessionId: 'id-P-WR', marker: '[結果完成]', maxRounds: 3 },
         enabled: false,
       },
       {

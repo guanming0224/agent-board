@@ -115,10 +115,10 @@ registerMessages('zh-TW', {
   'team.new.researchContext':
     'TEAM.md 會先放研究範本（資料夾分工、數字只能引用 results/、怎麼要求補實驗），建好後可在工作台改。它不會自動送給任何 session。',
   'team.research.contextTemplate':
-    '# 研究團隊\n\n## 資料夾\n- code/：實驗程式\n- results/：實驗結果（表格、log、數字）\n- figures/：圖\n- paper/：論文原稿\n- refs.bib：參考文獻\n\n## 規則\n- 論文數字只能引用 results/ 裡的檔案。\n- 要補實驗時，回覆裡寫 [需要實驗] 並說明：要回答的問題、結果放哪一節哪張表、完成條件。\n',
+    '# 研究團隊\n\n## 資料夾\n- code/：實驗程式\n- results/：實驗結果（表格、log、數字）\n- figures/：圖\n- paper/：論文原稿\n- refs.bib：參考文獻\n\n## 規則\n- 論文數字只能引用 results/ 裡的檔案。\n- 實驗做完時，回覆裡寫 [結果完成] 並列出：結果檔路徑、圖的路徑、重點數字。\n- 要補實驗時，回覆裡寫 [需要實驗] 並說明：要回答的問題、結果放哪一節哪張表、完成條件。\n',
   'team.new.pair': '建立「實驗 ⇄ 寫作」雙向交接',
   'team.new.pairHint':
-    '實驗改到 results/** 時交給寫作；寫作回覆含 [需要實驗] 時交回實驗。建好先關著，到工作台按開啟才會花額度。',
+    '實驗回覆含 [結果完成] 時交給寫作；寫作回覆含 [需要實驗] 時交回實驗。建好先關著，到工作台按開啟才會花額度。',
   'team.new.pairDone': '已建立實驗 ⇄ 寫作的雙向交接（最多 {n} 輪），先關著。',
   'team.new.pairMissing': '實驗或寫作的 session 沒建好，沒有建立雙向交接。可以到工作台自己加。',
   'team.new.pairFailed':
@@ -375,10 +375,10 @@ registerMessages('en', {
   'team.new.researchContext':
     'TEAM.md starts with a research template (folder layout, numbers only from results/, how to ask for an experiment). Edit it in the workbench. It is never sent to a session automatically.',
   'team.research.contextTemplate':
-    '# Research team\n\n## Folders\n- code/: experiment code\n- results/: experiment results (tables, logs, numbers)\n- figures/: figures\n- paper/: manuscript\n- refs.bib: references\n\n## Rules\n- Numbers in the paper may only cite files in results/.\n- To ask for an experiment, write [需要實驗] in your reply and state: the question to answer, which section and table the result goes to, and when it counts as done.\n',
+    '# Research team\n\n## Folders\n- code/: experiment code\n- results/: experiment results (tables, logs, numbers)\n- figures/: figures\n- paper/: manuscript\n- refs.bib: references\n\n## Rules\n- Numbers in the paper may only cite files in results/.\n- When an experiment is done, write [結果完成] in your reply and list: result file paths, figure paths and the key numbers.\n- To ask for an experiment, write [需要實驗] in your reply and state: the question to answer, which section and table the result goes to, and when it counts as done.\n',
   'team.new.pair': 'Create a two-way Experiment ⇄ Writing handoff',
   'team.new.pairHint':
-    'Experiment hands to Writing when results/** changes; Writing hands back when its reply contains [需要實驗]. They start off; turn them on in the workbench when you want them to use quota.',
+    'Experiment hands to Writing when its reply contains [結果完成]; Writing hands back when its reply contains [需要實驗]. They start off; turn them on in the workbench when you want them to use quota.',
   'team.new.pairDone':
     'Created the two-way Experiment ⇄ Writing handoff (up to {n} rounds), off for now.',
   'team.new.pairMissing':
