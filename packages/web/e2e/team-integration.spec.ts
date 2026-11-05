@@ -429,3 +429,66 @@ test('全隊停止：規則先關，session 真的結束，不會因結束再觸
   }[];
   expect(rules.every((r) => !r.enabled)).toBe(true);
 });
+
+test('建立團隊時一起開 LD + BD + RV：真的建出 session、BD 有自己的 worktree、RV 只讀共用資料夾', async ({
+  page,
+}) => {
+  await page.goto('/#/team');
+  await page.getByLabel('團隊名稱').fill('trio');
+  await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '標準' }).click();
+  await page.getByRole('button', { name: '移除第 3 位' }).click();
+  await expect(page.getByLabel('第 2 位的 session 名稱')).toHaveValue('trio-BD1');
+  await expect(page.getByLabel('第 3 位的 session 名稱')).toHaveValue('trio-RV');
+  await page.getByLabel('工作目錄').fill(repo);
+  // daemon 回報這是 git repo：BD 開 worktree，不出現「不是 git」的提醒。
+  await expect(page.locator('.plan-row').nth(1)).toContainText('自己的 worktree');
+  await expect(page.getByTestId('team-not-git')).toHaveCount(0);
+  await page.getByRole('button', { name: '建立團隊和 3 個 session' }).click();
+  await expect(page.getByRole('heading', { name: 'trio' })).toBeVisible({ timeout: 20_000 });
+  const trioId = decodeURIComponent(new URL(page.url()).hash.split('/')[2]!);
+
+  const members = (await (await page.request.get(`/api/teams/${trioId}/members`)).json()) as {
+    sessionId: string;
+    role: string;
+  }[];
+  expect(members).toHaveLength(3);
+  const all = (await (await page.request.get('/api/sessions')).json()) as Session[];
+  const named = (name: string) => all.find((s) => s.name === name)!;
+  const roleOf = (name: string) => members.find((m) => m.sessionId === named(name).id)?.role;
+  expect(roleOf('trio-LD')).toBe('lead');
+  expect(roleOf('trio-BD1')).toBe('worker');
+  expect(roleOf('trio-RV')).toBe('reviewer');
+
+  for (const name of ['trio-LD', 'trio-BD1', 'trio-RV']) {
+    await expectStatus(page.request, named(name).id, 'waiting_input');
+  }
+  const [ld, bd, rv] = await Promise.all(
+    ['trio-LD', 'trio-BD1', 'trio-RV'].map((n) => getSession(page.request, named(n).id)),
+  );
+  expect(ld!).toMatchObject({ worktreePath: null, permissionMode: 'default', readOnly: false });
+  expect(bd!.worktreePath).not.toBeNull();
+  expect(bd!.worktreePath).toContain('.agent-board-wt');
+  expect(bd!.permissionMode).toBe('acceptEdits');
+  expect(bd!.readOnly).toBe(false);
+  expect(rv!).toMatchObject({ worktreePath: null, permissionMode: 'plan', readOnly: true });
+  await expect(page.getByTestId(`member-${rv!.id}`).locator('.chip.read-only')).toHaveText('唯讀');
+
+  // RV 改成 worker 就會改檔案：hub 重新檢查同資料夾並拒絕，畫面說明，角色不變。
+  await page.getByLabel('trio-RV 的角色').selectOption('worker');
+  await expect(page.getByTestId('worktree-conflict')).toContainText('角色維持不變');
+  await expect(page.getByLabel('trio-RV 的角色')).toHaveValue('reviewer');
+  const stillReviewer = (await (await page.request.get(`/api/teams/${trioId}/members`)).json()) as {
+    sessionId: string;
+    role: string;
+  }[];
+  expect(stillReviewer.find((m) => m.sessionId === rv!.id)?.role).toBe('reviewer');
+  expect(rv!.cwd).toBe(ld!.cwd);
+
+  // hub 的規則：RV（唯讀 session）可以和 LD 共用資料夾；不是唯讀的審查（就算角色是 reviewer）照樣擋。
+  const extra = await createSession(page, 'trio-extra', false);
+  const refused = await page.request.put(`/api/teams/${trioId}/members/${extra.id}`, {
+    data: { role: 'reviewer' },
+  });
+  expect(refused.status()).toBe(409);
+  expect(((await refused.json()) as { code: string }).code).toBe('worktree_required');
+});

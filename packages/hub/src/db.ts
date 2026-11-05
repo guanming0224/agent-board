@@ -161,6 +161,9 @@ const migrations: string[] = [
   /* 3：封存時間（CONTRACTS §9）。之前封存的維持 null。 */ `
   ALTER TABLE sessions ADD COLUMN archived_at TEXT;
   `,
+  /* 4：唯讀 session（建立時決定，daemon 拿掉改檔工具；團隊的只讀成員靠它）。舊資料都不是唯讀。 */ `
+  ALTER TABLE sessions ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export function migrate(db: Db): void {

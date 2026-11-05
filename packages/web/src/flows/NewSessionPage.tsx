@@ -186,6 +186,7 @@ export function NewSessionPage() {
   const firstError = Object.values(errors).find(Boolean) ?? null;
 
   const preview = commandPreview({
+    readOnly: false,
     name: name.trim(),
     cwd: cwd.trim(),
     useWorktree,
@@ -235,6 +236,7 @@ export function NewSessionPage() {
         accountProfile: trimmedAccount || null,
         resumeClaudeSessionId: resume.trim() || null,
         firstPrompt: firstPrompt.trim() || null,
+        readOnly: false,
       });
       // 清掉名稱，避免連按建立出第二個一樣的 session。
       setName('');

@@ -4,7 +4,7 @@ import { TeamRole } from '@agent-board/protocol';
 import type { Session, Task, Team, TeamMember } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { Callsign, errorText, handsClass, Lamp, ModeChip } from '../views';
+import { Callsign, errorText, handsClass, Lamp, ModeChip, ReadOnlyChip } from '../views';
 import {
   ActionMessage,
   ColorPicker,
@@ -16,21 +16,14 @@ import {
 import { HandoffPanel } from './HandoffPanel';
 import { refreshTeams, teamColorVar, useTeams } from './store';
 import { TaskBoard } from './TaskBoard';
-import { worktreeConflicts } from './worktree';
+import { ROLE_ABBR } from './teamPlan';
+import { memberClashes, worktreeConflicts } from './worktree';
 
 /** STYLE 沒定義字數，DISPATCH §8-3 的「1 頁」以約 3000 字計。 */
 export const TEAM_MD_PAGE_CHARS = 3000;
 const TASKS_POLL_MS = 5000;
 
 type Role = TeamMember['role'];
-
-/** 角色選單後面顯示的英文縮寫（GM 2026-11-06 試看用；worker 在角色規劃裡叫 Builder）。 */
-const ROLE_ABBR: Record<Role, string> = {
-  lead: 'LD',
-  worker: 'BD',
-  researcher: 'RS',
-  reviewer: 'RV',
-};
 
 const isLive = (s: Session) => s.endedAt === null && s.status !== 'done';
 /** Esc 只送給正在動的：對權限對話框按 Esc 等於拒絕。 */
@@ -100,7 +93,7 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
     const candidate = candidates.find((s) => s.id === pick);
     if (!candidate) return;
     setMessage(null);
-    const conflicts = worktreeConflicts(candidate, members);
+    const conflicts = worktreeConflicts(candidate, members, { candidate: role, of: roleOf });
     if (conflicts.length > 0) {
       setConflict(
         t('team.members.conflict', {
@@ -128,7 +121,16 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
 
   const changeRole = (id: string, next: Role) =>
     run(async () => {
-      await backend.putTeamMember(team.id, id, next);
+      setConflict(null);
+      try {
+        await backend.putTeamMember(team.id, id, next);
+      } catch (e) {
+        // 唯讀成員改成會改檔案的角色：hub 會重新檢查同資料夾（CONTRACTS「團隊事件」）。
+        if ((e as { code?: string }).code !== 'worktree_required') throw e;
+        const name = members.find((s) => s.id === id)?.name ?? id;
+        setConflict(t('team.members.roleConflict', { name, detail: errorText(e) }));
+        return;
+      }
       await refreshTeams(backend);
     });
 
@@ -158,45 +160,60 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
         <p className="sub">{t('team.members.empty')}</p>
       ) : (
         <ul className="members">
-          {members.map((s) => (
-            <li
-              key={s.id}
-              className={`member hands-host ${handsClass(s.permissionMode)}`}
-              data-testid={`member-${s.id}`}
-            >
-              <div className="member-head">
-                <b>{s.name}</b>
-                <Lamp status={s.status} />
-              </div>
-              <div className="sign">
-                <Callsign session={s} />
-                <ModeChip mode={s.permissionMode} />
-              </div>
-              <div className="row">
-                <select
-                  aria-label={t('team.members.roleOf', { name: s.name })}
-                  value={roleOf(s.id)}
-                  onChange={(e) => void changeRole(s.id, e.target.value as Role)}
-                >
-                  {TeamRole.options.map((r) => (
-                    <option key={r} value={r}>
-                      {t('team.role.withAbbr', { role: t(`team.role.${r}`), abbr: ROLE_ABBR[r] })}
-                    </option>
-                  ))}
-                </select>
-                {isLive(s) && (
-                  <button onClick={() => void markDone(s.id)}>{t('team.members.markDone')}</button>
+          {members.map((s) => {
+            const clashes = memberClashes(s, members, roleOf);
+            return (
+              <li
+                key={s.id}
+                className={`member hands-host ${handsClass(s.permissionMode)}`}
+                data-testid={`member-${s.id}`}
+              >
+                <div className="member-head">
+                  <b>{s.name}</b>
+                  <Lamp status={s.status} />
+                </div>
+                <div className="sign">
+                  <Callsign session={s} />
+                  <ModeChip mode={s.permissionMode} />
+                  <ReadOnlyChip session={s} />
+                </div>
+                {clashes.length > 0 && (
+                  <p className="member-clash" role="note" data-testid={`member-clash-${s.id}`}>
+                    <span aria-hidden="true">◆ </span>
+                    {t('team.members.clash', {
+                      others: clashes.map((x) => x.name).join('、'),
+                      dir: s.worktreePath ?? s.cwd,
+                    })}
+                  </p>
                 )}
-                {isLive(s) && firesHandoff(s.id) && (
-                  <>
-                    <CostChip />
-                    <span className="sub">{t('team.members.markDoneHint')}</span>
-                  </>
-                )}
-                <button onClick={() => void remove(s.id)}>{t('team.members.remove')}</button>
-              </div>
-            </li>
-          ))}
+                <div className="row">
+                  <select
+                    aria-label={t('team.members.roleOf', { name: s.name })}
+                    value={roleOf(s.id)}
+                    onChange={(e) => void changeRole(s.id, e.target.value as Role)}
+                  >
+                    {TeamRole.options.map((r) => (
+                      <option key={r} value={r}>
+                        {t('team.role.withAbbr', { role: t(`team.role.${r}`), abbr: ROLE_ABBR[r] })}
+                      </option>
+                    ))}
+                  </select>
+                  {isLive(s) && (
+                    <button onClick={() => void markDone(s.id)}>
+                      {t('team.members.markDone')}
+                    </button>
+                  )}
+                  {isLive(s) && firesHandoff(s.id) && (
+                    <>
+                      <CostChip />
+                      <span className="sub">{t('team.members.markDoneHint')}</span>
+                    </>
+                  )}
+                  <button onClick={() => void remove(s.id)}>{t('team.members.remove')}</button>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
       <div className="row add-member">

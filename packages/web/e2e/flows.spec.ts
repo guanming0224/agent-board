@@ -47,6 +47,7 @@ const session = (over: Partial<Session> & Pick<Session, 'id' | 'name' | 'machine
   endedAt: null,
   archived: false,
   archivedAt: null,
+  readOnly: false,
   ...over,
 });
 
@@ -1160,6 +1161,7 @@ test.describe('新增 session', () => {
           accountProfile: null,
           resumeClaudeSessionId: null,
           firstPrompt: 'hello',
+          readOnly: false,
         },
       },
     ]);

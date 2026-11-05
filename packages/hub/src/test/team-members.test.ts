@@ -1,4 +1,5 @@
 // 加入團隊成員時的 worktree 檢查：hub 是防線，繞過前端也要擋。
+import type { PermissionMode } from '@agent-board/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
 
@@ -35,13 +36,27 @@ const statusOf = (id: string) =>
 /** 建立並等 daemon 收到；`started` 帶入回報的欄位，不帶就停在 starting。 */
 async function session(
   c: Ctx,
-  over: { cwd?: string; useWorktree?: boolean; machineId?: string; daemon?: Peer } = {},
+  over: {
+    cwd?: string;
+    useWorktree?: boolean;
+    machineId?: string;
+    daemon?: Peer;
+    permissionMode?: PermissionMode;
+    readOnly?: boolean;
+  } = {},
   started?: object,
 ) {
-  const { cwd = '/r', useWorktree = false, machineId = c.machineId, daemon = c.daemon } = over;
+  const {
+    cwd = '/r',
+    useWorktree = false,
+    machineId = c.machineId,
+    daemon = c.daemon,
+    permissionMode = 'default',
+    readOnly = false,
+  } = over;
   const res = await hub.api('POST', '/api/sessions', {
     cookie: c.cookie,
-    body: { ...spec({ cwd, useWorktree }), machineId },
+    body: { ...spec({ cwd, useWorktree, permissionMode, readOnly }), machineId },
   });
   const create = await daemon.next('session.create');
   const id = res.body.id as string;
@@ -135,6 +150,19 @@ describe('PUT team member: own worktree required', () => {
     expect((await join(c, await session(c, { useWorktree: false }))).status).toBe(409);
   });
 
+  it('treats an unreadable pending spec as no own worktree (409, not a crash)', async () => {
+    const c = await setup();
+    const first = await session(c, {}, {});
+    await join(c, first);
+    const pending = await session(c, { useWorktree: true });
+    hub.running.db
+      .prepare('UPDATE sessions SET pending_spec = ? WHERE id = ?')
+      .run('{bad', pending);
+    const res = await join(c, pending);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('worktree_required');
+  });
+
   it('ignores members that have ended', async () => {
     const c = await setup();
     const first = await session(c, {}, {});
@@ -163,6 +191,102 @@ describe('PUT team member: own worktree required', () => {
       .prepare('INSERT INTO team_members (team_id, session_id, role) VALUES (?, ?, ?)')
       .run(c.teamId, second, 'worker');
     expect((await join(c, second, 'reviewer')).status).toBe(200);
+  });
+
+  it('lets read-only members (researcher/reviewer on a read-only session) share the folder with a writer', async () => {
+    const c = await setup();
+    const lead = await session(c, {}, {});
+    expect((await join(c, lead, 'lead')).status).toBe(200);
+    const reviewer = await session(c, { readOnly: true }, {});
+    expect((await join(c, reviewer, 'reviewer')).status).toBe(200);
+    // 還沒開好的也一樣（readOnly 建立時就決定）。
+    const researcher = await session(c, { readOnly: true });
+    expect((await join(c, researcher, 'researcher')).status).toBe(200);
+    expect((await memberIds(c)).sort()).toEqual([lead, reviewer, researcher].sort());
+  });
+
+  it('stores readOnly on the session and keeps it for resume', async () => {
+    const c = await setup();
+    const id = await session(c, { readOnly: true }, {});
+    const listed = (await hub.api('GET', '/api/sessions', { cookie: c.cookie })).body.find(
+      (s: { id: string }) => s.id === id,
+    );
+    expect(listed.readOnly).toBe(true);
+    const plain = await session(c, {}, {});
+    const other = (await hub.api('GET', '/api/sessions', { cookie: c.cookie })).body.find(
+      (s: { id: string }) => s.id === plain,
+    );
+    expect(other.readOnly).toBe(false);
+
+    // 接續時 hub 送給 daemon 的 spec 照舊帶 readOnly。
+    c.daemon.send({
+      type: 'session.runtime',
+      session: runtime(id, { cwd: '/r', status: 'error', endedAt: new Date().toISOString() }),
+    });
+    await until(() => hub.running.store.getSession(id)?.endedAt !== null, 'ended');
+    expect((await hub.api('POST', `/api/sessions/${id}/resume`, { cookie: c.cookie })).status).toBe(
+      200,
+    );
+    const resumed = await c.daemon.next('session.create');
+    expect((resumed.spec as { readOnly: boolean }).readOnly).toBe(true);
+  });
+
+  it('needs both the read-only role and a read-only session; plan mode alone is not enough', async () => {
+    const c = await setup();
+    const lead = await session(c, {}, {});
+    await join(c, lead, 'lead');
+    // plan 模式可以被 ExitPlanMode／Shift+Tab 切掉，不算唯讀。
+    const planReviewer = await session(c, { permissionMode: 'plan' }, {});
+    expect((await join(c, planReviewer, 'reviewer')).status).toBe(409);
+    const readOnlyWorker = await session(c, { readOnly: true }, {});
+    expect((await join(c, readOnlyWorker, 'worker')).status).toBe(409);
+    const readOnlyLead = await session(c, { readOnly: true }, {});
+    expect((await join(c, readOnlyLead, 'lead')).status).toBe(409);
+  });
+
+  it('a read-only member already in the folder does not block a writer; two read-only do not clash', async () => {
+    const c = await setup();
+    const reviewer = await session(c, { readOnly: true }, {});
+    await join(c, reviewer, 'reviewer');
+    const researcher = await session(c, { readOnly: true }, {});
+    expect((await join(c, researcher, 'researcher')).status).toBe(200);
+    const writer = await session(c, {}, {});
+    expect((await join(c, writer, 'worker')).status).toBe(200);
+    // 第二個會改檔案的照樣擋：只讀成員不會讓規則失效。
+    const second = await session(c, {}, {});
+    const refused = await join(c, second, 'worker');
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe('worktree_required');
+  });
+
+  it('re-checks a role change that turns a read-only member into a writer', async () => {
+    const c = await setup();
+    const lead = await session(c, {}, {});
+    await join(c, lead, 'lead');
+    const reviewer = await session(c, { readOnly: true }, {});
+    expect((await join(c, reviewer, 'reviewer')).status).toBe(200);
+    const refused = await join(c, reviewer, 'worker');
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe('worktree_required');
+    const members = (await hub.api('GET', `/api/teams/${c.teamId}/members`, { cookie: c.cookie }))
+      .body as { sessionId: string; role: string }[];
+    expect(members.find((m) => m.sessionId === reviewer)?.role).toBe('reviewer');
+    // 只讀角色之間互換照樣可以。
+    expect((await join(c, reviewer, 'researcher')).status).toBe(200);
+  });
+
+  it('always allows a change toward a read-only role, so a clash can be resolved', async () => {
+    const c = await setup();
+    const lead = await session(c, {}, {});
+    await join(c, lead, 'lead');
+    // 舊資料：唯讀 session 以 worker 身分和隊長擠在同資料夾。
+    const stuck = await session(c, { readOnly: true }, {});
+    hub.running.db
+      .prepare('INSERT INTO team_members (team_id, session_id, role) VALUES (?, ?, ?)')
+      .run(c.teamId, stuck, 'worker');
+    expect((await join(c, stuck, 'reviewer')).status).toBe(200);
+    // 寫入者改成另一個寫入角色不用重新檢查（衝突狀態沒變）。
+    expect((await join(c, lead, 'worker')).status).toBe(200);
   });
 
   it('answers 404 for an unknown session or team', async () => {

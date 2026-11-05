@@ -3,51 +3,12 @@ import { useEffect, useState } from 'react';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { EmptyState, ErrorState, LoadingState, PageShell, useBoardLoad } from '../views';
-import { ActionMessage, ColorPicker, useAction } from './common';
-import { refreshTeams, teamColorVar, TEAM_COLORS, useTeams, useTeamSync } from './store';
+import { NewTeamForm } from './NewTeamForm';
+import { refreshTeams, teamColorVar, useTeams, useTeamSync } from './store';
 import { TeamWorkbench } from './TeamWorkbench';
 
 function teamIdFromHash(): string | null {
   return decodeURIComponent(location.hash.replace(/^#\/?/, '').split('/')[1] ?? '') || null;
-}
-
-function NewTeamForm() {
-  const t = useT();
-  const backend = useBoard((s) => s.backend);
-  const [name, setName] = useState('');
-  const [color, setColor] = useState<string>(TEAM_COLORS[0]);
-  const { busy, message, run } = useAction();
-  const create = () =>
-    run(async () => {
-      const team = await backend.createTeam({
-        name: name.trim(),
-        goal: '',
-        doneCriteria: '',
-        color,
-        contextMd: '',
-      });
-      await refreshTeams(backend);
-      location.hash = `#/team/${encodeURIComponent(team.id)}`;
-    });
-  return (
-    <form
-      className="panel new-team"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void create();
-      }}
-    >
-      <label>
-        {t('team.new.name')}
-        <input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
-      </label>
-      <ColorPicker value={color} onChange={setColor} />
-      <button className="primary" disabled={busy || name.trim() === ''}>
-        {t('team.new.create')}
-      </button>
-      <ActionMessage message={message} />
-    </form>
-  );
 }
 
 function TeamList() {
@@ -99,6 +60,13 @@ export function TeamPage() {
     addEventListener('hashchange', onChange);
     return () => removeEventListener('hashchange', onChange);
   }, []);
+
+  // 清單裡沒有這個團隊（例如剛建好、清單還沒讀到）：馬上再讀一次，不等下一輪輪詢。
+  const backend = useBoard((s) => s.backend);
+  const known = teamId === null || teams.some((x) => x.id === teamId);
+  useEffect(() => {
+    if (status === 'ready' && !known) refreshTeams(backend).catch(() => {});
+  }, [backend, known, status, teamId]);
 
   let body;
   if (board.status === 'error') {

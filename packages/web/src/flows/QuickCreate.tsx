@@ -94,6 +94,7 @@ export function QuickCreate({
         accountProfile: null,
         resumeClaudeSessionId: null,
         firstPrompt: firstPrompt.trim() || null,
+        readOnly: false,
       });
       onCreated(created);
     } catch (e) {

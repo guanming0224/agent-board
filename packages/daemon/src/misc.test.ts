@@ -141,6 +141,32 @@ describe('buildClaudeArgs', () => {
       }),
     ).toEqual(['--resume', 'r', '--permission-mode', 'plan', '--model', 'opus', '--name', 'n']);
   });
+
+  it('唯讀：每個工具一個 argv，後面接著別的選項，可變長度參數才不會吞掉 --name', () => {
+    const args = buildClaudeArgs({
+      newSessionId: 'u',
+      permissionMode: 'plan',
+      model: null,
+      name: 'n',
+      readOnly: true,
+    });
+    expect(args).toEqual([
+      '--session-id',
+      'u',
+      '--permission-mode',
+      'plan',
+      '--disallowedTools',
+      'Edit',
+      'Write',
+      'NotebookEdit',
+      '--name',
+      'n',
+    ]);
+    expect(args[args.indexOf('NotebookEdit') + 1]?.startsWith('--')).toBe(true);
+    expect(
+      buildClaudeArgs({ permissionMode: 'default', model: null, name: 'n', readOnly: false }),
+    ).not.toContain('--disallowedTools');
+  });
 });
 
 describe('SessionStore', () => {
@@ -156,6 +182,7 @@ describe('SessionStore', () => {
       accountProfile: null,
       resumeClaudeSessionId: null,
       firstPrompt: null,
+      readOnly: false,
     },
     claudeSessionId: 'c',
     cwd: '/w',

@@ -9,6 +9,7 @@ import type {
   SessionRuntime,
   SessionStatus,
 } from '@agent-board/protocol';
+import { READ_ONLY_DISALLOWED_TOOLS } from '@agent-board/protocol';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import type { Terminal as TerminalType } from '@xterm/headless';
 import { spawn as spawnPty, type IPty } from 'node-pty';
@@ -52,6 +53,8 @@ export interface ClaudeArgsInput {
   permissionMode: PermissionMode;
   model: string | null;
   name: string;
+  /** 唯讀 session：拿掉改檔工具（SessionSpec.readOnly）。 */
+  readOnly?: boolean;
 }
 
 export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
@@ -65,6 +68,9 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
     '--permission-mode',
     input.permissionMode === 'default' ? 'manual' : input.permissionMode,
   );
+  // `--disallowedTools <tools...>` 是可變長度參數：一個工具一個 argv，後面一定接著 --name
+  // （另一個選項），參數才不會被吞掉。只擋這些工具，Bash 仍然寫得了檔案（CONTRACTS 團隊事件）。
+  if (input.readOnly) args.push('--disallowedTools', ...READ_ONLY_DISALLOWED_TOOLS);
   if (input.model) args.push('--model', input.model);
   args.push('--name', input.name);
   return args;

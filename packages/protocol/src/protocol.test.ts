@@ -10,6 +10,8 @@ import {
   QuotaGuards,
   routes,
   sameWorkingTree,
+  isReadOnlyMember,
+  SessionSpec,
   SessionRuntime,
   SessionStatus,
 } from './index';
@@ -171,6 +173,31 @@ describe('fields added for older daemons', () => {
       endedAt: null,
     });
     expect(runtime).toMatchObject({ contextWindow: null, repoRoot: null, repoCommonDir: null });
+  });
+});
+
+describe('isReadOnlyMember', () => {
+  it('needs both a read-only role and a read-only session; permission mode is not involved', () => {
+    expect(isReadOnlyMember('reviewer', { readOnly: true })).toBe(true);
+    expect(isReadOnlyMember('researcher', { readOnly: true })).toBe(true);
+    expect(isReadOnlyMember('reviewer', { readOnly: false })).toBe(false);
+    expect(isReadOnlyMember('worker', { readOnly: true })).toBe(false);
+    expect(isReadOnlyMember('lead', { readOnly: true })).toBe(false);
+  });
+
+  it('readOnly defaults to false for old specs and sessions', () => {
+    const spec = SessionSpec.parse({
+      name: 'n',
+      projectId: null,
+      cwd: '/r',
+      useWorktree: false,
+      permissionMode: 'plan',
+      model: null,
+      accountProfile: null,
+      resumeClaudeSessionId: null,
+      firstPrompt: null,
+    });
+    expect(spec.readOnly).toBe(false);
   });
 });
 

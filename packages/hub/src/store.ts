@@ -75,6 +75,7 @@ interface SessionRow {
   ended_at: string | null;
   archived: number;
   archived_at: string | null;
+  read_only: number;
   pending_spec: string | null;
   pre_offline_status: SessionStatus | null;
 }
@@ -150,6 +151,7 @@ const toSession = (r: SessionRow): Session => ({
   endedAt: r.ended_at,
   archived: r.archived === 1,
   archivedAt: r.archived_at,
+  readOnly: r.read_only === 1,
 });
 
 const toTeam = (r: TeamRow): Team => ({
@@ -418,16 +420,17 @@ export class Store {
         `INSERT INTO sessions (id, machine_id, project_id, name, cwd, branch, worktree_path,
            permission_mode, model, account_profile, status, status_detail, claude_session_id,
            last_lines, last_output_at, status_since, context_tokens, created_at, ended_at, archived,
-           archived_at, pending_spec, context_window, repo_root, repo_common_dir)
+           archived_at, pending_spec, context_window, repo_root, repo_common_dir, read_only)
          VALUES (@id, @machineId, @projectId, @name, @cwd, @branch, @worktreePath,
            @permissionMode, @model, @accountProfile, @status, @statusDetail, @claudeSessionId,
            @lastLines, @lastOutputAt, @statusSince, @contextTokens, @createdAt, @endedAt, @archived,
-           @archivedAt, @pendingSpec, @contextWindow, @repoRoot, @repoCommonDir)`,
+           @archivedAt, @pendingSpec, @contextWindow, @repoRoot, @repoCommonDir, @readOnly)`,
       )
       .run({
         ...session,
         lastLines: JSON.stringify(session.lastLines),
         archived: session.archived ? 1 : 0,
+        readOnly: session.readOnly ? 1 : 0,
         pendingSpec: pendingSpec ? JSON.stringify(pendingSpec) : null,
       });
   }

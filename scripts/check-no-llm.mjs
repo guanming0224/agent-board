@@ -100,6 +100,8 @@ const CLAUDE_FLAGS = new Set([
   '--resume',
   '--session-id',
   '--permission-mode',
+  // 唯讀 session 拿掉改檔工具；只會減少 claude 能做的事（2026-11-06 Lead 決策）。
+  '--disallowedTools',
   '--model',
   '--name',
   '--version',

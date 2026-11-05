@@ -1,6 +1,6 @@
 import type { Session } from '@agent-board/protocol';
 import { describe, expect, it } from 'vitest';
-import { worktreeConflicts } from './worktree';
+import { memberClashes, worktreeConflicts } from './worktree';
 
 const session = (id: string, over: Partial<Session>): Session =>
   ({
@@ -73,6 +73,7 @@ const base: Session = {
   endedAt: null,
   archived: false,
   archivedAt: null,
+  readOnly: false,
 };
 const at = (over: Partial<Session>): Session => ({ ...base, ...over });
 
@@ -98,5 +99,50 @@ describe('worktreeConflicts：daemon 回報的 repo 根目錄', () => {
     const nested = at({ id: 'b', cwd: '/r/a/deep', ...unknown });
     const sibling = at({ id: 'c', cwd: '/r/b', ...unknown });
     expect(worktreeConflicts(at(unknown), [nested, sibling])).toEqual([nested]);
+  });
+});
+
+describe('只讀成員（研究／審查 + 唯讀 session）可以共用資料夾', () => {
+  type Role = 'lead' | 'worker' | 'researcher' | 'reviewer';
+  const roleMap = (map: Record<string, Role>) => (id: string) => map[id] ?? 'worker';
+
+  it('只讀的候選者可以和會改檔案的成員同資料夾；plan 模式不算', () => {
+    const lead = at({ id: 'lead' });
+    const reviewer = at({ id: 'rv', readOnly: true });
+    const of = roleMap({});
+    expect(worktreeConflicts(reviewer, [lead], { candidate: 'reviewer', of })).toEqual([]);
+    // 審查但 session 不是唯讀（就算在 plan）：會改檔案，照樣擋。
+    const planOnly = at({ id: 'rv', permissionMode: 'plan' });
+    expect(worktreeConflicts(planOnly, [lead], { candidate: 'reviewer', of })).toEqual([lead]);
+    // 唯讀 session 但角色是 worker：照樣擋。
+    expect(worktreeConflicts(reviewer, [lead], { candidate: 'worker', of })).toEqual([lead]);
+  });
+
+  it('已有的只讀成員不擋會改檔案的候選者；兩個只讀也不互擋', () => {
+    const researcher = at({ id: 'rs', readOnly: true });
+    const of = roleMap({ rs: 'researcher' });
+    const bd = at({ id: 'bd' });
+    expect(worktreeConflicts(bd, [researcher], { candidate: 'worker', of })).toEqual([]);
+    const reviewer = at({ id: 'rv', readOnly: true });
+    expect(worktreeConflicts(reviewer, [researcher], { candidate: 'reviewer', of })).toEqual([]);
+    // 研究成員被改成 worker 角色：變成會改檔案。
+    expect(
+      worktreeConflicts(bd, [researcher], { candidate: 'worker', of: roleMap({ rs: 'worker' }) }),
+    ).toEqual([researcher]);
+  });
+
+  it('memberClashes：舊資料裡的衝突，兩邊的成員列都會提醒', () => {
+    const lead = at({ id: 'lead' });
+    const rv = at({ id: 'rv', readOnly: true });
+    const of = roleMap({ lead: 'lead', rv: 'reviewer' });
+    expect(memberClashes(rv, [lead, rv], of)).toEqual([]);
+    expect(memberClashes(lead, [lead, rv], of)).toEqual([]);
+    const writer = at({ id: 'rv' });
+    expect(memberClashes(writer, [lead, writer], of)).toEqual([lead]);
+    expect(memberClashes(lead, [lead, writer], of)).toEqual([writer]);
+    // 各自有 worktree 的不提醒；已結束的不提醒。
+    const own = at({ id: 'bd', worktreePath: '/wt/bd', repoRoot: '/wt/bd' });
+    expect(memberClashes(own, [lead, own], of)).toEqual([]);
+    expect(memberClashes({ ...writer, status: 'done' }, [lead], of)).toEqual([]);
   });
 });

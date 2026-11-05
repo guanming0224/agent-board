@@ -96,19 +96,27 @@ export function ColorPicker({
   onChange: (color: string) => void;
 }) {
   const t = useT();
+  // 不認得的名稱畫成 teal（teamColorVar），選單也要標 teal，不然看起來什麼都沒選。
+  const current = TEAM_COLORS.find((c) => c === value) ?? 'teal';
   return (
-    <div className="seg" role="group" aria-label={t('team.color')}>
-      {TEAM_COLORS.map((color) => (
-        <button
-          key={color}
-          type="button"
-          aria-pressed={value === color}
-          onClick={() => onChange(color)}
-        >
-          <i className="swatch" style={{ background: teamColorVar(color) }} aria-hidden="true" />
-          {t(`team.color.${color}`)}
-        </button>
-      ))}
+    <div className="color-picker" role="group" aria-label={t('team.color')}>
+      {TEAM_COLORS.map((color) => {
+        const name = t(`team.color.${color}`);
+        return (
+          <button
+            key={color}
+            type="button"
+            className="color-pick"
+            aria-label={name}
+            title={name}
+            aria-pressed={current === color}
+            data-color={color}
+            onClick={() => onChange(color)}
+          >
+            <i className="swatch" style={{ background: teamColorVar(color) }} aria-hidden="true" />
+          </button>
+        );
+      })}
     </div>
   );
 }

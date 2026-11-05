@@ -69,6 +69,7 @@ const session = (
   endedAt: null,
   archived: false,
   archivedAt: null,
+  readOnly: false,
   ...over,
 });
 
@@ -607,12 +608,17 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       accountLocale = locale;
     },
     async createSession(input) {
+      // 假的 worktree：和 daemon 一樣放在 .agent-board-wt/ 底下、分支 ab/<名稱>，建立團隊時看得出誰有自己的 worktree。
+      const slug = input.name.replace(/[^\w.-]+/g, '-');
       const created = session({
         id: crypto.randomUUID(),
         name: input.name,
         machineId: input.machineId,
         status: 'starting',
         cwd: input.cwd,
+        worktreePath: input.useWorktree ? `/home/demo/.agent-board-wt/${slug}` : null,
+        branch: input.useWorktree ? `ab/${slug}` : 'main',
+        readOnly: input.readOnly,
         permissionMode: input.permissionMode,
         model: input.model,
         projectId: input.projectId,
