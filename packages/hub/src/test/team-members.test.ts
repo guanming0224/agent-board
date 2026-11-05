@@ -299,3 +299,39 @@ describe('PUT team member: own worktree required', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('research teams (phase and member kind)', () => {
+  it('keeps the phase across other updates, and the member kind across role-only changes', async () => {
+    const c = await setup();
+    const created = await hub.api('POST', '/api/teams', {
+      cookie: c.cookie,
+      body: {
+        name: 'Paper',
+        goal: '',
+        doneCriteria: '',
+        color: 'teal',
+        contextMd: '',
+        phase: 'experiment',
+      },
+    });
+    expect(created.body.phase).toBe('experiment');
+    const teamId = created.body.id as string;
+    const patchTeam = (body: object) =>
+      hub.api('PATCH', `/api/teams/${teamId}`, { cookie: c.cookie, body });
+    expect((await patchTeam({ goal: 'g' })).body.phase).toBe('experiment');
+    expect((await patchTeam({ phase: 'writing' })).body.phase).toBe('writing');
+    expect((await patchTeam({ phase: 'nope' })).status).toBe(400);
+    // 程式開發團隊沒有 phase 欄位。
+    const all = await hub.api('GET', '/api/teams', { cookie: c.cookie });
+    expect(all.body.find((t: { id: string }) => t.id === c.teamId)).not.toHaveProperty('phase');
+
+    const id = await session(c, { useWorktree: true });
+    const put = (body: object) =>
+      hub.api('PUT', `/api/teams/${teamId}/members/${id}`, { cookie: c.cookie, body });
+    expect((await put({ role: 'worker', kind: 'wr' })).body).toMatchObject({ kind: 'wr' });
+    expect((await put({ role: 'lead' })).body).toMatchObject({ role: 'lead', kind: 'wr' });
+    const listed = await hub.api('GET', `/api/teams/${teamId}/members`, { cookie: c.cookie });
+    expect(listed.body).toEqual([{ teamId, sessionId: id, role: 'lead', kind: 'wr' }]);
+    expect((await put({ role: 'worker', kind: 'xx' })).status).toBe(400);
+  });
+});

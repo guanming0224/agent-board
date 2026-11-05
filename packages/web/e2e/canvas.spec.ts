@@ -1170,6 +1170,26 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
     await expect(page.getByTestId('handoff-tip-s-auth-s-tests')).toContainText('取消：規則已關閉');
   });
 
+  test('雙向交接：標籤寫第幾輪；到上限停下時寫清楚等你決定', async ({ page }) => {
+    await openCanvas(page);
+    await emit(page, 's-auth', 's-tests', { round: 2, maxRounds: 3 });
+    await expect(page.getByTestId('handoff-round-s-auth-s-tests')).toHaveText('第 2/3 輪');
+    await expect(page.getByTestId('handoff-limit-s-auth-s-tests')).toHaveCount(0);
+
+    await emit(page, 's-tests', 's-auth', { reason: 'round_limit', round: 4, maxRounds: 3 });
+    await expect(page.getByTestId('handoff-limit-s-tests-s-auth')).toHaveText(
+      '來回 3 輪已到上限・等你決定',
+    );
+    await expect(page.getByTestId('handoff-round-s-tests-s-auth')).toHaveText('第 3/3 輪');
+    await label(page, 's-tests', 's-auth').hover();
+    await expect(page.getByTestId('handoff-tip-s-tests-s-auth')).toContainText(
+      '停下：已來回 3 輪，等你決定',
+    );
+    // 單向規則沒有輪數。
+    await emit(page, 's-tests', 's-docs');
+    await expect(page.getByTestId('handoff-round-s-tests-s-docs')).toHaveCount(0);
+  });
+
   test('沒有規則線的兩張卡：交接當下暫時畫一條，播完收掉', async ({ page }) => {
     await openCanvas(page);
     const temp = page.locator('[data-testid="rf__edge-talk:s-tests->s-docs"]');

@@ -2,10 +2,13 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
+  handoffRuleProblem,
   isReadOnlyMember,
   routes,
+  type HandoffRule,
   type RouteName,
   type Routes,
+  type TeamMember,
   type User,
 } from '@agent-board/protocol';
 import { z } from 'zod';
@@ -86,6 +89,13 @@ function merge<T extends object>(current: T, patch: Partial<T>): T {
 }
 
 const ok = { ok: true } as const;
+
+/** 欄位之間的關係（on_marker 要有標記）zod 物件檢查不到，存之前再看一次。 */
+function checkRule(rule: Pick<HandoffRule, 'trigger' | 'action'>): void {
+  if (handoffRuleProblem(rule) === 'marker_required') {
+    throw new HttpError(400, 'marker_required', 'on_marker rules need action.marker');
+  }
+}
 
 function zodMessage(error: z.ZodError): string {
   return error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
@@ -422,15 +432,20 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     },
     teamMembersList: (ctx) => store.listTeamMembers(requireTeam(param(ctx)).id),
     teamMembersPut: (ctx) => {
-      const member = {
-        teamId: requireTeam(param(ctx)).id,
-        sessionId: param(ctx, 'sessionId'),
-        role: ctx.body.role,
-      };
-      const session = store.getSession(member.sessionId);
+      const teamId = requireTeam(param(ctx)).id;
+      const sessionId = param(ctx, 'sessionId');
+      const session = store.getSession(sessionId);
       if (!session) throw notFound('Session');
-      const others = store.listTeamMembers(member.teamId);
-      const existing = others.find((m) => m.sessionId === member.sessionId);
+      const others = store.listTeamMembers(teamId);
+      const existing = others.find((m) => m.sessionId === sessionId);
+      // 只改角色（沒帶 kind）時保留原本的研究分工。
+      const kind = ctx.body.kind ?? existing?.kind;
+      const member: TeamMember = {
+        teamId,
+        sessionId,
+        role: ctx.body.role,
+        ...(kind ? { kind } : {}),
+      };
       // 新成員一律檢查。已經是成員只是改角色：從只讀變成會改檔案才檢查；其他改法都放行，
       // 否則改不了角色也解不開衝突（例如改成審查）。
       const becomesWriter =
@@ -484,6 +499,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     handoffRulesList: (ctx) => store.listRules(requireTeam(param(ctx)).id),
     handoffRulesCreate: (ctx) => {
       const rule = { id: randomUUID(), teamId: requireTeam(param(ctx)).id, ...ctx.body };
+      checkRule(rule);
       store.upsertRule(rule);
       hub.audit(ctx.user.id, rule.fromSessionId, 'handoff_rule.create', JSON.stringify(rule));
       return rule;
@@ -492,6 +508,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       const current = store.getRule(param(ctx));
       if (!current) throw notFound('Handoff rule');
       const next = merge(current, ctx.body);
+      checkRule(next);
       store.upsertRule(next);
       // 開關會決定要不要花目標的額度，要查得到是誰開的。
       hub.audit(ctx.user.id, next.fromSessionId, 'handoff_rule.update', JSON.stringify(next));

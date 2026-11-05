@@ -32,7 +32,13 @@ import type { z } from 'zod';
 import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from './audit';
 import { conflict, HttpError, notFound } from './errors';
 import { HandoffEngine } from './handoff';
-import { attentionPayload, inQuietHours, type PushTransport, type VapidKeys } from './push';
+import {
+  attentionPayload,
+  inQuietHours,
+  type AttentionReason,
+  type PushTransport,
+  type VapidKeys,
+} from './push';
 import { parseRateLimitReset } from './rateLimitReset';
 import { TerminalRelay, type RelayClient } from './relay';
 import type { Store } from './store';
@@ -262,6 +268,10 @@ export class Hub {
       sendInput: (sessionId, data) =>
         this.toSessionDaemon(sessionId, { type: 'terminal.input', sessionId, data }),
       guarded: (label, fn) => this.guarded(label, fn),
+      notifyRoundLimit: (sessionId, maxRounds) => {
+        const session = this.store.getSession(sessionId);
+        if (session) this.notifyAttention(session, { reason: 'handoff_round_limit', maxRounds });
+      },
     });
     // 上次關機時的連線都不在了：機器與 session 先視為離線，等 daemon 回來對帳。
     for (const machine of this.store.listMachines()) this.markMachineOffline(machine.id);
@@ -1633,7 +1643,8 @@ export class Hub {
   }
 
   // ── 推播 ─────────────────────────────────────────────
-  private notifyAttention(session: Session): void {
+  /** 狀態需要人（等你回覆等）時推播；`extra` 是同一條路的其他原因，例如雙向交接到了輪數上限。 */
+  private notifyAttention(session: Session, extra?: AttentionReason): void {
     // 封存的不推播（§9.1）：停止中的 session 可能還會回報一次狀態。
     if (session.archived) return;
     const settings = this.store.getSettings();
@@ -1642,7 +1653,7 @@ export class Hub {
     const subject = settings.publicOrigin?.startsWith('https:')
       ? settings.publicOrigin
       : 'mailto:agent-board@localhost';
-    const payload = attentionPayload(session);
+    const payload = attentionPayload(session, extra);
     for (const subscription of this.store.listPushSubscriptions()) {
       const job = this.deliverPush(subscription, payload, subject).catch((error: unknown) => {
         this.log.warn({ err: error }, 'push delivery failed');

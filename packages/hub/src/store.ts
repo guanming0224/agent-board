@@ -87,6 +87,7 @@ interface TeamRow {
   done_criteria: string;
   color: string;
   context_md: string;
+  phase: Team['phase'] | null;
 }
 
 interface TaskRow {
@@ -161,6 +162,7 @@ const toTeam = (r: TeamRow): Team => ({
   doneCriteria: r.done_criteria,
   color: r.color,
   contextMd: r.context_md,
+  ...(r.phase ? { phase: r.phase } : {}),
 });
 
 const toTask = (r: TaskRow): Task => ({
@@ -758,12 +760,12 @@ export class Store {
   upsertTeam(t: Team): void {
     this.db
       .prepare(
-        `INSERT INTO teams (id, name, goal, done_criteria, color, context_md)
-         VALUES (@id, @name, @goal, @doneCriteria, @color, @contextMd)
+        `INSERT INTO teams (id, name, goal, done_criteria, color, context_md, phase)
+         VALUES (@id, @name, @goal, @doneCriteria, @color, @contextMd, @phase)
          ON CONFLICT (id) DO UPDATE SET name = @name, goal = @goal, done_criteria = @doneCriteria,
-           color = @color, context_md = @contextMd`,
+           color = @color, context_md = @contextMd, phase = @phase`,
       )
-      .run(t);
+      .run({ ...t, phase: t.phase ?? null });
   }
 
   deleteTeam(id: string): boolean {
@@ -775,17 +777,23 @@ export class Store {
       team_id: string;
       session_id: string;
       role: TeamMember['role'];
+      kind: TeamMember['kind'] | null;
     }[];
-    return rows.map((r) => ({ teamId: r.team_id, sessionId: r.session_id, role: r.role }));
+    return rows.map((r) => ({
+      teamId: r.team_id,
+      sessionId: r.session_id,
+      role: r.role,
+      ...(r.kind ? { kind: r.kind } : {}),
+    }));
   }
 
   upsertTeamMember(m: TeamMember): void {
     this.db
       .prepare(
-        `INSERT INTO team_members (team_id, session_id, role) VALUES (?, ?, ?)
-         ON CONFLICT (team_id, session_id) DO UPDATE SET role = excluded.role`,
+        `INSERT INTO team_members (team_id, session_id, role, kind) VALUES (?, ?, ?, ?)
+         ON CONFLICT (team_id, session_id) DO UPDATE SET role = excluded.role, kind = excluded.kind`,
       )
-      .run(m.teamId, m.sessionId, m.role);
+      .run(m.teamId, m.sessionId, m.role, m.kind ?? null);
   }
 
   deleteTeamMember(teamId: string, sessionId: string): boolean {

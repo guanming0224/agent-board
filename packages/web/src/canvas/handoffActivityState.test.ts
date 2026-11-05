@@ -12,6 +12,7 @@ import {
   parseHandoffEvent,
   phaseAt,
   recordHandoff,
+  roundLabel,
   RECENT_MS,
   type ActivityMap,
 } from './handoffActivityState';
@@ -55,6 +56,8 @@ describe('交接事件 → 動畫狀態', () => {
       kind: 'fired',
       reason: null,
       summary: 'Fixed the redirect.',
+      round: null,
+      maxRounds: null,
     });
   });
 
@@ -190,5 +193,29 @@ describe('交接事件 → 動畫狀態', () => {
     expect(describeTalk(loop, t, plain)).toBe('擋下：會形成迴圈');
     const odd = recordHandoff(empty, blocked('new_reason'), 0).get('a->b')!;
     expect(describeTalk(odd, t, plain)).toBe('new_reason');
+  });
+
+  it('雙向交接：帶第幾輪；到上限擋下時說明等你決定', () => {
+    const second = event(
+      'handoff.delivered',
+      { fromSessionId: 'w', toSessionId: 'x', summary: 's', round: 2, maxRounds: 3 },
+      'x',
+    );
+    const activity = recordHandoff(empty, second, 0).get('w->x')!;
+    expect(activity).toMatchObject({ round: 2, maxRounds: 3 });
+    expect(roundLabel(activity, t)).toBe('第 2/3 輪');
+
+    const limit = event(
+      'handoff.blocked',
+      { fromSessionId: 'w', toSessionId: 'x', reason: 'round_limit', round: 4, maxRounds: 3 },
+      'w',
+    );
+    const stopped = recordHandoff(empty, limit, 0).get('w->x')!;
+    expect(roundLabel(stopped, t)).toBe('第 3/3 輪');
+    expect(describeTalk(stopped, t, plain)).toBe('停下：已來回 3 輪，等你決定');
+    // 單向規則、舊版 hub：沒有輪數。
+    expect(roundLabel(recordHandoff(empty, fired(), 0).get('a->b')!, t)).toBeNull();
+    const bad = event('handoff.fired', { fromSessionId: 'a', toSessionId: 'b', round: '2' }, 'a');
+    expect(parseHandoffEvent(bad)).toMatchObject({ round: null });
   });
 });

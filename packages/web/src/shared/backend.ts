@@ -163,7 +163,13 @@ export interface BoardBackend {
   updateTeam(id: string, patch: Partial<Omit<Team, 'id'>>): Promise<Team>;
   deleteTeam(id: string): Promise<void>;
   listTeamMembers(teamId: string): Promise<TeamMember[]>;
-  putTeamMember(teamId: string, sessionId: string, role: TeamMember['role']): Promise<TeamMember>;
+  /** `kind` 是研究團隊的分工；不帶時 hub 保留原本的。 */
+  putTeamMember(
+    teamId: string,
+    sessionId: string,
+    role: TeamMember['role'],
+    kind?: TeamMember['kind'],
+  ): Promise<TeamMember>;
   deleteTeamMember(teamId: string, sessionId: string): Promise<void>;
   listTasks(teamId: string): Promise<Task[]>;
   createTask(teamId: string, input: Pick<Task, 'title' | 'ownerSessionId'>): Promise<Task>;

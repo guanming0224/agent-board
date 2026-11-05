@@ -3,6 +3,7 @@ import {
   AUDIT_SYSTEM_USER,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
+  handoffRuleProblem,
 } from '@agent-board/protocol';
 import type {
   Approval,
@@ -387,7 +388,14 @@ export interface FakeBackendControls {
   emitHandoff(
     fromSessionId: string,
     toSessionId: string,
-    options?: { summary?: string; reason?: string; queuedOnly?: boolean },
+    options?: {
+      summary?: string;
+      reason?: string;
+      queuedOnly?: boolean;
+      /** 雙向交接的輪數（hub 對有 maxRounds 的規則才帶）。 */
+      round?: number;
+      maxRounds?: number;
+    },
   ): void;
 }
 
@@ -794,6 +802,10 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         (r) => r.fromSessionId === fromSessionId && r.action.toSessionId === toSessionId,
       );
       const { reason, summary = 'Fixed the login redirect and added a regression test.' } = options;
+      const rounds =
+        options.round !== undefined && options.maxRounds !== undefined
+          ? { round: options.round, maxRounds: options.maxRounds }
+          : {};
       const type =
         reason === undefined
           ? 'handoff.fired'
@@ -807,6 +819,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         toSessionId,
         ...(type === 'handoff.dropped' ? {} : { summary }),
         ...(reason === undefined ? {} : { reason }),
+        ...rounds,
       });
       // 和 hub 一樣：送達記在目標上。queuedOnly 模擬目標還在忙、只排入。
       if (reason === undefined && !options.queuedOnly) {
@@ -815,6 +828,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
           fromSessionId,
           toSessionId,
           summary,
+          ...rounds,
         });
       }
     },
@@ -909,8 +923,11 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       removeFrom(rules, (x) => x.teamId === id);
     },
     listTeamMembers: async (teamId) => members.filter((x) => x.teamId === teamId),
-    async putTeamMember(teamId, sessionId, role) {
-      const member = { teamId, sessionId, role };
+    async putTeamMember(teamId, sessionId, role, kind) {
+      // 和 hub 相同：沒帶 kind 時保留原本的。
+      const before = members.find((x) => x.teamId === teamId && x.sessionId === sessionId);
+      const keep = kind ?? before?.kind;
+      const member: TeamMember = { teamId, sessionId, role, ...(keep ? { kind: keep } : {}) };
       removeFrom(members, (x) => x.teamId === teamId && x.sessionId === sessionId);
       members.push(member);
       return member;
@@ -939,12 +956,18 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     listHandoffRules: async (teamId) =>
       rules.filter((x) => x.teamId === teamId).map((x) => ({ ...x })),
     async createHandoffRule(teamId, input) {
+      // 和 hub 相同的檢查（rest.ts checkRule）。
+      if (handoffRuleProblem(input)) throw new Error('on_marker rules need action.marker');
       const rule = { ...input, id: crypto.randomUUID(), teamId };
       rules.push(rule);
       return rule;
     },
     async updateHandoffRule(id, patch) {
-      return Object.assign(findIn(rules, id, 'rule'), patch);
+      const rule = findIn(rules, id, 'rule');
+      if (handoffRuleProblem({ ...rule, ...patch })) {
+        throw new Error('on_marker rules need action.marker');
+      }
+      return Object.assign(rule, patch);
     },
     async deleteHandoffRule(id) {
       removeFrom(rules, (x) => x.id === id);

@@ -329,6 +329,18 @@ input.cmd:disabled {
 .edge-label[data-talk='dropped'] .edge-talk-at {
   color: var(--you);
 }
+/* 雙向交接的輪數；到上限時另外一行說明（琥珀：要你決定） */
+.edge-talk-round {
+  margin-left: 6px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.edge-talk-limit {
+  display: block;
+  margin-top: 2px;
+  color: var(--you);
+  font-weight: 600;
+}
 .edge-tip {
   position: absolute;
   top: calc(100% + 4px);

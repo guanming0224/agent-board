@@ -361,8 +361,11 @@ export function createHubBackend() {
       await call('teamsDelete', { params: { id } });
     },
     listTeamMembers: (id) => call('teamMembersList', { params: { id } }),
-    putTeamMember: (id, sessionId, role) =>
-      call('teamMembersPut', { params: { id, sessionId }, body: { role } }),
+    putTeamMember: (id, sessionId, role, kind) =>
+      call('teamMembersPut', {
+        params: { id, sessionId },
+        body: kind ? { role, kind } : { role },
+      }),
     async deleteTeamMember(id, sessionId) {
       await call('teamMembersDelete', { params: { id, sessionId } });
     },

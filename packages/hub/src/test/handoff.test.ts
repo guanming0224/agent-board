@@ -3,10 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { HandoffRule, Session } from '@agent-board/protocol';
 import {
+  containsMarker,
   HandoffEngine,
   handoffMessage,
+  markerSummary,
   matchesFilePattern,
   oneSentence,
+  roundOf,
   type HandoffDeps,
 } from '../handoff';
 import type { Store } from '../store';
@@ -78,14 +81,19 @@ const addRule = async (
   from: string,
   to: string,
   trigger = 'on_done',
-  over: { enabled?: boolean; filePattern?: string } = {},
+  over: { enabled?: boolean; filePattern?: string; maxRounds?: number; marker?: string } = {},
 ) => {
   const res = await hub.api('POST', `/api/teams/${teamId}/handoff-rules`, {
     cookie,
     body: {
       fromSessionId: from,
       trigger,
-      action: { toSessionId: to, filePattern: over.filePattern },
+      action: {
+        toSessionId: to,
+        filePattern: over.filePattern,
+        maxRounds: over.maxRounds,
+        marker: over.marker,
+      },
       enabled: over.enabled ?? true,
     },
   });
@@ -608,6 +616,206 @@ describe('loop protection', () => {
   });
 });
 
+describe('two-way handoff (maxRounds)', () => {
+  const MARKER = '[需要實驗]';
+
+  /** 實驗（a）改了 results/ 底下的檔案、回合結束。 */
+  const experimentTurn = (t: Board, text = 'Ran the experiment and saved the table.') => {
+    fileChanged(t.daemon, t.a, '/r/results/table1.csv');
+    stop(t.daemon, t.a, text);
+  };
+  /** 目標收到交接後做完一個回合。 */
+  const work = async (t: Board, id: string) => {
+    await setStatus(t.daemon, id, 'running');
+    await setStatus(t.daemon, id, 'waiting_input');
+  };
+  const handoffEvents = async (t: Board, id: string, type: string) => {
+    const res = await hub.api('GET', `/api/sessions/${id}/events`, { cookie: t.cookie });
+    return (res.body as { type: string; payload: Record<string, unknown> }[])
+      .filter((e) => e.type === type)
+      .map((e) => e.payload);
+  };
+
+  it('goes back and forth until the round limit, then blocks and notifies the person', async () => {
+    const t = await board();
+    await hub.api('POST', '/api/push/subscriptions', {
+      cookie: t.cookie,
+      body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
+    });
+    await addRule(t, t.a, t.b, 'on_file', { filePattern: 'results/**', maxRounds: 2 });
+    await addRule(t, t.b, t.a, 'on_marker', { marker: MARKER, maxRounds: 2 });
+    t.daemon.clear();
+
+    experimentTurn(t);
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'EX to WR, round 1');
+    await work(t, t.b);
+    stop(t.daemon, t.b, `Draft is done. ${MARKER} Need an ablation for section 4, table 2.`);
+    await until(() => inputsTo(t.daemon, t.a).length === 2, 'WR to EX, round 2');
+    // 摘要從標記開始取。
+    expect(inputsTo(t.daemon, t.a)[0]!.data).toContain(
+      `Summary: ${MARKER} Need an ablation for section 4, table 2.`,
+    );
+    await work(t, t.a);
+    experimentTurn(t, 'Ablation finished and saved.');
+    await until(() => inputsTo(t.daemon, t.b).length === 4, 'EX to WR, round 2');
+    await work(t, t.b);
+    await hub.running.hub.pushesSettled();
+    expect(hub.push.sent.map((p) => p.payload).join()).not.toContain('handoff_round_limit');
+    stop(t.daemon, t.b, `${MARKER} One more run with seed 2 please.`);
+    await until(() => auditActions().includes('handoff.blocked'), 'round limit');
+    await pause();
+    expect(inputsTo(t.daemon, t.a)).toHaveLength(2);
+    expect(JSON.parse(auditDetail('handoff.blocked')!.detail)).toMatchObject({
+      reason: 'round_limit',
+      fromSessionId: t.b,
+      toSessionId: t.a,
+      round: 3,
+      maxRounds: 2,
+    });
+
+    expect(
+      (await handoffEvents(t, t.a, 'handoff.fired')).map((p) => [p.round, p.maxRounds]),
+    ).toEqual([
+      [1, 2],
+      [2, 2],
+    ]);
+    expect((await handoffEvents(t, t.a, 'handoff.delivered')).map((p) => p.round)).toEqual([2]);
+    expect((await handoffEvents(t, t.b, 'handoff.delivered')).map((p) => p.round)).toEqual([1, 2]);
+    expect(await handoffEvents(t, t.b, 'handoff.blocked')).toMatchObject([
+      { reason: 'round_limit', round: 3, maxRounds: 2 },
+    ]);
+
+    // 走一般的推播：session 名稱＋原因代碼與輪數，沒有內容。
+    await hub.running.hub.pushesSettled();
+    const pushed = hub.push.sent.map((p) => JSON.parse(p.payload) as Record<string, unknown>);
+    expect(pushed.filter((p) => p.reason === 'handoff_round_limit')).toEqual([
+      expect.objectContaining({ sessionId: t.b, name: 'b', maxRounds: 2 }),
+    ]);
+    expect(JSON.stringify(pushed)).not.toContain('seed 2');
+  });
+
+  it('a person typing into either session starts fresh rounds', async () => {
+    const t = await board();
+    await addRule(t, t.a, t.b, 'on_file', { maxRounds: 1 });
+    await addRule(t, t.b, t.a, 'on_marker', { marker: MARKER, maxRounds: 1 });
+    const client = await hub.client(t.cookie);
+    t.daemon.clear();
+    experimentTurn(t);
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'EX to WR');
+    await work(t, t.b);
+    stop(t.daemon, t.b, `${MARKER} more please`);
+    await until(() => auditActions().includes('handoff.blocked'), 'limit 1 blocks the way back');
+    expect(inputsTo(t.daemon, t.a)).toEqual([]);
+
+    client.send({ type: 'terminal.input', sessionId: t.b, data: 'ok, go ahead\r' });
+    await until(() => inputsTo(t.daemon, t.b).length === 3, 'typed');
+    await work(t, t.b);
+    stop(t.daemon, t.b, `${MARKER} more please, after the person said so`);
+    await until(() => inputsTo(t.daemon, t.a).length === 2, 'fresh round after typing');
+    const fired = await handoffEvents(t, t.b, 'handoff.fired');
+    expect(fired.at(-1)).toMatchObject({ round: 1, maxRounds: 1 });
+  });
+
+  it('rules without maxRounds keep blocking A -> B -> A as a loop, with no round fields', async () => {
+    const t = await board();
+    await addRule(t, t.a, t.b, 'on_file');
+    await addRule(t, t.b, t.a, 'on_marker', { marker: MARKER });
+    t.daemon.clear();
+    experimentTurn(t);
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'A to B');
+    await work(t, t.b);
+    stop(t.daemon, t.b, `${MARKER} again`);
+    await until(() => auditActions().includes('handoff.blocked'), 'loop');
+    expect(JSON.parse(auditDetail('handoff.blocked')!.detail).reason).toBe('loop');
+    const fired = await handoffEvents(t, t.a, 'handoff.fired');
+    expect(fired[0]).not.toHaveProperty('round');
+    expect(fired[0]).not.toHaveProperty('maxRounds');
+    await hub.running.hub.pushesSettled();
+    expect(hub.push.sent.map((p) => p.payload).join()).not.toContain('handoff_round_limit');
+  });
+
+  it('the per-rule rate limit still applies to rules with maxRounds', async () => {
+    const t = await board();
+    await addRule(t, t.a, t.b, 'on_file', { maxRounds: 10 });
+    t.daemon.clear();
+    for (let i = 0; i < 12; i += 1) experimentTurn(t, `Turn number ${i} finished here.`);
+    await until(() => auditActions().includes('handoff.blocked'), 'rate limited');
+    expect(JSON.parse(auditDetail('handoff.blocked')!.detail).reason).toBe('rate_limit');
+  });
+});
+
+describe('on_marker', () => {
+  it('matches a plain substring and summarises from the marker', () => {
+    expect(containsMarker('a [需要實驗] b', '[需要實驗]')).toBe(true);
+    expect(containsMarker('a [需要實驗 b', '[需要實驗]')).toBe(false);
+    expect(containsMarker('x.y', '.*')).toBe(false);
+    expect(containsMarker(undefined, '[需要實驗]')).toBe(false);
+    expect(containsMarker('anything', undefined)).toBe(false);
+    expect(markerSummary('寫完第三節了。[需要實驗] 補一個消融實驗。另外…', '[需要實驗]')).toBe(
+      '[需要實驗] 補一個消融實驗。',
+    );
+  });
+
+  it('counts rounds from how often the target is already in the chain', () => {
+    const rule = (maxRounds?: number) =>
+      ({ action: { toSessionId: 'ex', ...(maxRounds ? { maxRounds } : {}) } }) as HandoffRule;
+    expect(roundOf(rule(), ['ex', 'wr'])).toBeNull();
+    expect(roundOf(rule(3), [])).toBe(1);
+    expect(roundOf(rule(3), ['ex', 'wr'])).toBe(2);
+    expect(roundOf(rule(3), ['ex', 'wr', 'ex', 'wr'])).toBe(3);
+  });
+
+  it('fires only when the last reply contains the marker as a plain substring', async () => {
+    const t = await board();
+    await addRule(t, t.b, t.a, 'on_marker', { marker: '[需要實驗]' });
+    t.daemon.clear();
+    stop(t.daemon, t.b, 'The draft needs an experiment, but no marker here.');
+    stop(t.daemon, t.b, '[需要 實驗] spaced out is not the marker');
+    await pause();
+    expect(inputsTo(t.daemon, t.a)).toEqual([]);
+    // 正規式的特殊字元照字面比對。
+    stop(
+      t.daemon,
+      t.b,
+      'Section 3 is done.\n\n[需要實驗] Compare against the baseline in table 1.',
+    );
+    await until(() => inputsTo(t.daemon, t.a).length === 2, 'marker fired');
+    expect(JSON.parse(auditDetail('handoff.fired')!.detail)).toMatchObject({
+      trigger: 'on_marker',
+      fromSessionId: t.b,
+    });
+  });
+
+  it('rejects an on_marker rule without a marker, a blank or too long marker, and bad round limits', async () => {
+    const t = await board();
+    const post = (trigger: string, action: object) =>
+      hub.api('POST', `/api/teams/${t.teamId}/handoff-rules`, {
+        cookie: t.cookie,
+        body: {
+          fromSessionId: t.a,
+          trigger,
+          action: { toSessionId: t.b, ...action },
+          enabled: true,
+        },
+      });
+    expect((await post('on_marker', {})).body).toMatchObject({ code: 'marker_required' });
+    expect((await post('on_marker', { marker: '   ' })).status).toBe(400);
+    expect((await post('on_marker', { marker: 'x'.repeat(41) })).status).toBe(400);
+    expect((await post('on_marker', { marker: 'x'.repeat(40) })).status).toBe(200);
+    expect((await post('on_done', { maxRounds: 0 })).status).toBe(400);
+    expect((await post('on_done', { maxRounds: 11 })).status).toBe(400);
+    expect((await post('on_done', { maxRounds: 2.5 })).status).toBe(400);
+    const ok = await post('on_done', { maxRounds: 3 });
+    expect(ok.status).toBe(200);
+    // 改成 on_marker 但沒給標記也擋。
+    const patch = await hub.api('PATCH', `/api/handoff-rules/${ok.body.id}`, {
+      cookie: t.cookie,
+      body: { trigger: 'on_marker' },
+    });
+    expect(patch.body).toMatchObject({ code: 'marker_required' });
+  });
+});
+
 describe('on_file', () => {
   it('fires at most once per detected edit, does not repeat listed files, ignores replays', async () => {
     const t = await board();
@@ -826,6 +1034,7 @@ describe('dropped handoffs (engine)', () => {
       isReachable: () => true,
       sendInput: () => {},
       guarded: (_label, fn) => fn(),
+      notifyRoundLimit: () => {},
     };
     const handoff = new HandoffEngine(deps);
     // a 完成時 b 還在工作：交接排進佇列。
