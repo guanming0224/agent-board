@@ -1006,15 +1006,16 @@ test.describe('新增 session', () => {
     expect(await calls(page)).toEqual([]);
   });
 
-  test('資料夾選擇器：鍵盤、篩選、最近用過、家目錄、記得上次位置', async ({ page }) => {
+  test('資料夾選擇器：鍵盤、篩選、最近用過、家目錄、從桌面開始、自訂起始位置', async ({ page }) => {
     await open(page, 'new', newSeed());
     await page.locator('#ns-machine').selectOption('m-a');
     await page.getByRole('button', { name: '瀏覽', exact: true }).click();
     const browser = page.getByTestId('folder-browser');
     const here = browser.getByRole('navigation').locator('[aria-current]');
     const folder = (name: string) => browser.getByRole('button', { name, exact: true });
-    // 沒填工作目錄、沒瀏覽過：從 ~ 開始，什麼都沒選
-    await expect(here).toHaveText('~');
+    // 沒填工作目錄、沒設起始位置：從桌面開始，什麼都沒選
+    await expect(here).toHaveText('Desktop');
+    await expect(browser.getByTestId('browser-start')).toContainText('桌面（預設）');
     await expect(browser.getByTestId('browser-selected')).toContainText('還沒選');
 
     // 鍵盤：↓ 移動、空白鍵選取、Enter 進入、← 回上一層
@@ -1022,12 +1023,12 @@ test.describe('新增 session', () => {
     await page.keyboard.press('ArrowDown');
     await expect(folder('notes')).toBeFocused();
     await page.keyboard.press('Space');
-    await expect(page.getByLabel('工作目錄')).toHaveValue('~/notes');
+    await expect(page.getByLabel('工作目錄')).toHaveValue('~/Desktop/notes');
     await page.keyboard.press('Enter');
     await expect(here).toHaveText('notes');
     await expect(folder('project')).toBeFocused();
     await page.keyboard.press('ArrowLeft');
-    await expect(here).toHaveText('~');
+    await expect(here).toHaveText('Desktop');
 
     // 篩選：只留符合的；Enter 進入第一個符合的，不送出表單
     const filter = browser.getByRole('searchbox', { name: '篩選這一層的資料夾' });
@@ -1055,12 +1056,27 @@ test.describe('新增 session', () => {
     await expect(here).toHaveText('Desktop');
     await expect(page.getByLabel('工作目錄')).toHaveValue('~/Desktop');
 
-    // Esc 關閉；清掉工作目錄再打開，回到上次的位置
-    await page.keyboard.press('Escape');
+    // 把目前位置設為起始：下次打開從這裡開始；上次位置變成捷徑
+    await recent.click();
+    await expect(here).toHaveText('api');
+    await browser.getByRole('button', { name: '把目前位置設為起始' }).click();
+    await expect(browser.getByTestId('browser-start')).toContainText('/work/api');
+    await browser.getByRole('button', { name: '關閉', exact: true }).click();
     await expect(browser).toHaveCount(0);
     await page.getByLabel('工作目錄').fill('');
     await page.getByRole('button', { name: '瀏覽', exact: true }).click();
+    await expect(here).toHaveText('api');
+
+    // 改回桌面：再打開從桌面開始，上次位置留在捷徑
+    await browser.getByRole('button', { name: '家目錄 ~' }).click();
+    await browser.getByRole('button', { name: '改回桌面' }).click();
+    await expect(browser.getByTestId('browser-start')).toContainText('桌面（預設）');
+    await browser.getByRole('button', { name: '關閉', exact: true }).click();
+    await page.getByLabel('工作目錄').fill('');
+    await page.getByRole('button', { name: '瀏覽', exact: true }).click();
     await expect(here).toHaveText('Desktop');
+    await browser.getByRole('button', { name: '上次：~' }).click();
+    await expect(here).toHaveText('~');
   });
 
   test('資料夾選擇器：Windows 機器用 \\；讀不到時寫原因', async ({ page }) => {

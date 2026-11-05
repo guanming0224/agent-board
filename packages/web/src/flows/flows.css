@@ -875,6 +875,25 @@
   color: var(--fg-muted);
 }
 
+.flows .browser-start {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  overflow-wrap: anywhere;
+}
+
+.flows .browser-start .mono {
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+}
+
+.flows .browser-start button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
 /* 設定 */
 /* 左側分類選單＋右邊只放選中的分類；手機（≤ 640px）選單變成上方分頁 */
 .flows .settings-layout {
