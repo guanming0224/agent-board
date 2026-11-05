@@ -329,6 +329,11 @@ test('audit 有送入的指令與核准決定', async ({ page }) => {
 
 test('daemon 被殺：卡片失聯；重啟：--resume 接回、畫面還在', async ({ page }) => {
   await page.goto('/#/canvas');
+  // 假 claude 不寫對話紀錄；沒有紀錄時 daemon 會改成重新開始，所以放一份讓它走 --resume。
+  const live = await getSession(page.request, session.id);
+  const projectDir = join(claudeConfigDir, 'projects', '-tmp-e2e-resume');
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(join(projectDir, `${live.claudeSessionId}.jsonl`), '{}\n');
   await stopDaemon('SIGKILL');
   await expectStatus(page.request, session.id, 'offline');
   await expect(page.getByText(/失聯/).first()).toBeVisible();

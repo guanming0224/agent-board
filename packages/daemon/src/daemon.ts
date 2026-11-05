@@ -26,7 +26,7 @@ import { HubClient } from './hubClient';
 import { errorMessage, log } from './log';
 import { probeCapabilities, ResourceMonitor, type ResourceMonitorOptions } from './resources';
 import { buildClaudeArgs, ManagedSession } from './session';
-import { claudeConfigFor, inspectSession, purgeSession } from './sessionFiles';
+import { claudeConfigFor, findTranscriptFiles, inspectSession, purgeSession } from './sessionFiles';
 import type { CreateStatusTracker } from './status/types';
 import { SessionStore, type PersistedSession } from './store';
 import { readTranscript } from './transcript';
@@ -640,12 +640,27 @@ export class Daemon {
         continue;
       }
       try {
-        await this.launch(entry, { resumeId: entry.claudeSessionId });
+        await this.launch(entry, await this.restartHow(entry));
       } catch (error) {
         log.error(`無法接回 session ${entry.sessionId}：${errorMessage(error)}`);
         this.store.remove(entry.sessionId);
       }
     }
+  }
+
+  /**
+   * 重啟接回時用 --resume 還是重新開始。開了之後一句話都沒說的 session 沒有對話紀錄，
+   * --resume 會讓 claude 直接結束（exit 1），卡片就變錯誤；這種情況用同一個 id 以 --session-id
+   * 重新開始，沒送出的第一句提示也會照常送。
+   */
+  private async restartHow(
+    entry: PersistedSession,
+  ): Promise<{ resumeId: string } | { newSessionId: string }> {
+    const configDir = claudeConfigFor(entry.spec.accountProfile, this.deps.config.claudeConfigDir);
+    const files = await findTranscriptFiles(configDir, entry.claudeSessionId);
+    if (files.jsonl.length > 0) return { resumeId: entry.claudeSessionId };
+    log.warn(`session ${entry.sessionId} 沒有對話紀錄，改為重新開始（不用 --resume）`);
+    return { newSessionId: entry.claudeSessionId };
   }
 
   /** hook 沒裝上時危險指令檢查不會執行，各種權限模式都不開 PTY（CONTRACTS §4.1）。 */

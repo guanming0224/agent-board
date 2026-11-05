@@ -77,6 +77,13 @@ async function replayFromStart(sessionId: string, size: { cols: number; rows: nu
   return term;
 }
 
+/** 假的對話紀錄：真的 claude 說過話才會有，daemon 重啟時 --resume 才接得回來。 */
+function writeTranscript(claudeId: string, configDir = h.claudeDir): void {
+  const project = join(configDir, 'projects', 'p');
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, `${claudeId}.jsonl`), '{}\n');
+}
+
 describe('session 建立', () => {
   beforeEach(() => h.start().then(() => undefined));
 
@@ -718,6 +725,7 @@ describe('daemon 重啟', () => {
     });
     const claudeId = h.runs()[0]?.argv[1] as string;
     const hookCalls = h.installHookCalls.length;
+    writeTranscript(claudeId);
 
     const countBefore = h.hub.received.length;
     await h.restartDaemon();
@@ -756,13 +764,14 @@ describe('daemon 重啟', () => {
   it('/clear 換了 claude session id 之後，重啟用新的 id', async () => {
     await h.createAndSubscribe('s1');
     const client = await HookClient.connect(h.daemons[0]?.hookSocketPath as string);
-    await client.request('s1', 'SessionStart', { session_id: 'after-clear' });
+    await client.request('s1', 'SessionStart', { session_id: '0a1b2c3d-0000-4000-8000-0000000c1ea7' });
     client.close();
-    await waitUntil(() => persisted().sessions[0]?.claudeSessionId === 'after-clear', '清單更新');
+    await waitUntil(() => persisted().sessions[0]?.claudeSessionId === '0a1b2c3d-0000-4000-8000-0000000c1ea7', '清單更新');
+    writeTranscript('0a1b2c3d-0000-4000-8000-0000000c1ea7');
 
     await h.restartDaemon();
     await waitUntil(() => h.runs().length === 2, '第二次啟動');
-    expect(h.runs()[1]?.argv.slice(0, 2)).toEqual(['--resume', 'after-clear']);
+    expect(h.runs()[1]?.argv.slice(0, 2)).toEqual(['--resume', '0a1b2c3d-0000-4000-8000-0000000c1ea7']);
   });
 
   it('已結束的 session 不會被接回；cwd 消失的從清單移除，不會擋住其他 session', async () => {
@@ -1535,6 +1544,7 @@ describe('hook 執行檔檢查（CONTRACTS §4.3）', () => {
     expect(h.runs()).toHaveLength(1);
     expect(persisted().sessions.map((s) => s.sessionId)).toEqual(['s1']);
 
+    writeTranscript(persisted().sessions[0]?.claudeSessionId as string);
     await h.restartDaemon();
     expect(
       h
@@ -1544,6 +1554,38 @@ describe('hook 執行檔檢查（CONTRACTS §4.3）', () => {
     ).toEqual(['s1']);
     await waitUntil(() => h.runs().length === 2, '接回');
     expect(h.runs()[1]?.argv[0]).toBe('--resume');
+  });
+
+  it('沒有對話紀錄（開了沒說話）：不用 --resume，用同一個 id 重新開始，不會變錯誤', async () => {
+    await h.createAndSubscribe('s1', { name: 'silent' });
+    const claudeId = h.runs()[0]?.argv[1] as string;
+
+    await h.restartDaemon();
+    await waitUntil(() => h.runs().length === 2, '第二次啟動');
+    expect(h.runs()[1]?.argv.slice(0, 2)).toEqual(['--session-id', claudeId]);
+    expect(persisted().sessions.map((s) => s.sessionId)).toEqual(['s1']);
+    expect(persisted().sessions[0]?.claudeSessionId).toBe(claudeId);
+
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 's1' });
+    await h.hub.waitFor('terminal.snapshot', () => true, { includePast: false });
+    input('s1', 'fresh-start');
+    await h.waitForOutput('s1', 'INPUT:fresh-start');
+  });
+
+  it('accountProfile 的 session 到它自己的 CLAUDE_CONFIG_DIR 找對話紀錄', async () => {
+    const profile = join(h.root, 'profile-b');
+    mkdirSync(profile, { recursive: true });
+    await h.createAndSubscribe('s1', { accountProfile: profile });
+    const claudeId = h.runs()[0]?.argv[1] as string;
+    writeTranscript(claudeId); // 預設帳號底下有同名檔不算數
+    await h.restartDaemon();
+    await waitUntil(() => h.runs().length === 2, '第二次啟動');
+    expect(h.runs()[1]?.argv.slice(0, 2)).toEqual(['--session-id', claudeId]);
+
+    writeTranscript(claudeId, profile);
+    await h.restartDaemon();
+    await waitUntil(() => h.runs().length === 3, '第三次啟動');
+    expect(h.runs()[2]?.argv.slice(0, 2)).toEqual(['--resume', claudeId]);
   });
 });
 

@@ -1,6 +1,6 @@
 // 真的把 src/index.ts 當獨立程序跑，測訊號處理與真正的程序重啟（kill -9）。
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -193,6 +193,9 @@ describe('獨立程序', () => {
     await waitUntil(() => h.runs().length === 1, '假 claude 啟動');
     const claudeId = h.runs()[0]?.argv[1] as string;
     expect(h.runs()[0]?.env.AGENT_BOARD_MACHINE_TOKEN).toBeNull();
+    // 真的 claude 說過話才有對話紀錄；沒有的話重啟會改成重新開始而不是 --resume。
+    mkdirSync(join(h.claudeDir, 'projects', 'p'), { recursive: true });
+    writeFileSync(join(h.claudeDir, 'projects', 'p', `${claudeId}.jsonl`), '{}\n');
 
     const gone = exited(first);
     first.kill('SIGKILL');
