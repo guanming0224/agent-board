@@ -1161,6 +1161,7 @@ test.describe('新增 session', () => {
           accountProfile: null,
           resumeClaudeSessionId: null,
           firstPrompt: 'hello',
+          readOnly: false,
         },
       },
     ]);
