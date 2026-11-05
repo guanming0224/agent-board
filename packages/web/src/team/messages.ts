@@ -43,6 +43,7 @@ registerMessages('zh-TW', {
   'team.role.worker': '成員',
   'team.role.researcher': '研究',
   'team.role.reviewer': '審查',
+  'team.role.withAbbr': '{role}（{abbr}）',
   'team.context.hint': '全隊共用的背景。保持精簡：越長，每個讀它的 session 花越多額度。',
   'team.context.count': '{n}／{limit} 字',
   'team.context.tooLong':
@@ -165,6 +166,7 @@ registerMessages('en', {
   'team.role.worker': 'Worker',
   'team.role.researcher': 'Researcher',
   'team.role.reviewer': 'Reviewer',
+  'team.role.withAbbr': '{role} ({abbr})',
   'team.context.hint':
     'Background shared by the team. Keep it short: the longer it is, the more quota every session reading it uses.',
   'team.context.count': '{n} / {limit} characters',

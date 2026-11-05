@@ -24,6 +24,14 @@ const TASKS_POLL_MS = 5000;
 
 type Role = TeamMember['role'];
 
+/** 角色選單後面顯示的英文縮寫（GM 2026-11-06 試看用；worker 在角色規劃裡叫 Builder）。 */
+const ROLE_ABBR: Record<Role, string> = {
+  lead: 'LD',
+  worker: 'BD',
+  researcher: 'RS',
+  reviewer: 'RV',
+};
+
 const isLive = (s: Session) => s.endedAt === null && s.status !== 'done';
 /** Esc 只送給正在動的：對權限對話框按 Esc 等於拒絕。 */
 const isInterruptible = (s: Session) => s.status === 'running' || s.status === 'stuck';
@@ -172,7 +180,7 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
                 >
                   {TeamRole.options.map((r) => (
                     <option key={r} value={r}>
-                      {t(`team.role.${r}`)}
+                      {t('team.role.withAbbr', { role: t(`team.role.${r}`), abbr: ROLE_ABBR[r] })}
                     </option>
                   ))}
                 </select>
@@ -214,7 +222,7 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
         >
           {TeamRole.options.map((r) => (
             <option key={r} value={r}>
-              {t(`team.role.${r}`)}
+              {t('team.role.withAbbr', { role: t(`team.role.${r}`), abbr: ROLE_ABBR[r] })}
             </option>
           ))}
         </select>
