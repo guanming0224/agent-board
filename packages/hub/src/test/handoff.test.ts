@@ -223,6 +223,15 @@ describe('on_done', () => {
     expect(JSON.parse(fired.detail)).toMatchObject({ toSessionId: t.b, trigger: 'on_done' });
     await until(() => auditActions().includes('terminal.input'), 'input audit');
     expect(auditDetail('terminal.input')!.session_id).toBe(t.b);
+
+    // 畫布的交接動畫從事件讀摘要（一句，和送出的相同），不是完整訊息。
+    const events = await hub.api('GET', `/api/sessions/${t.a}/events`, { cookie: t.cookie });
+    const firedEvent = events.body.find((e: { type: string }) => e.type === 'handoff.fired');
+    expect(firedEvent.payload).toMatchObject({
+      fromSessionId: t.a,
+      toSessionId: t.b,
+      summary: 'Fixed the login redirect and added a regression test.',
+    });
   });
 
   it('marked done stays done while idle, and clears once the same process starts working again', async () => {
@@ -464,6 +473,13 @@ describe('on_done', () => {
     await setStatus(t.daemon, t.b, 'waiting_input');
     await until(() => auditActions().includes('handoff.dropped'), 'dropped');
     expect(inputsTo(t.daemon, t.b)).toEqual([]);
+    const events = await hub.api('GET', `/api/sessions/${t.a}/events`, { cookie: t.cookie });
+    const dropped = events.body.find((e: { type: string }) => e.type === 'handoff.dropped');
+    expect(dropped.payload).toMatchObject({
+      fromSessionId: t.a,
+      toSessionId: t.b,
+      reason: 'rule_disabled',
+    });
   });
 });
 

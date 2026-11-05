@@ -1074,3 +1074,118 @@ test.describe('接續', () => {
     await expect.poll(() => resumed(page)).toEqual(['s-tests']);
   });
 });
+
+test.describe('交接動畫：看得到誰在跟誰說話', () => {
+  const SECRET = 'sk-ant-demo0123456789abcdefXYZ';
+  const emit = (page: Page, from: string, to: string, options: object = {}) =>
+    patchStore(
+      page,
+      `useBoard.getState().backend.emitHandoff(${JSON.stringify(from)}, ${JSON.stringify(to)}, ${JSON.stringify(options)});`,
+    );
+  const label = (page: Page, from: string, to: string) =>
+    page.getByTestId(`handoff-label-${from}-${to}`);
+  const anim = (page: Page, from: string, to: string) =>
+    page.getByTestId(`handoff-anim-${from}-${to}`);
+
+  test('成功交接：線往目標流、目標卡有光圈，播完留「已交接」與說明', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    // 遮蔽模式開著：摘要裡的金鑰不能出現在說明裡。
+    await page.addInitScript(() => localStorage.setItem('agent-board.mask-mode', '1'));
+    await openCanvas(page);
+    await expect(label(page, 's-auth', 's-tests')).not.toHaveAttribute('data-phase');
+
+    await emit(page, 's-auth', 's-tests', { summary: `Fixed the redirect.\nexport KEY=${SECRET}` });
+    await expect(anim(page, 's-auth', 's-tests')).toHaveClass('edge-talk-flow');
+    await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-phase', 'active');
+    await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-talk', 'fired');
+    await expect(label(page, 's-auth', 's-tests')).toContainText(/已交接 \d\d:\d\d/);
+    await expect(card(page, 's-tests')).toHaveAttribute('data-handoff', 'in');
+    await expect(card(page, 's-auth')).not.toHaveAttribute('data-handoff');
+    // 流動：虛線位移有動畫。
+    const flow = await anim(page, 's-auth', 's-tests').evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { name: style.animationName, dash: style.strokeDasharray };
+    });
+    expect(flow.name).toContain('talk-flow');
+    expect(flow.dash).not.toBe('none');
+    await shot(page, 'handoff-talk-active');
+
+    await label(page, 's-auth', 's-tests').hover();
+    const tip = page.getByTestId('handoff-tip');
+    await expect(tip).toHaveText(/^Fix login → Write tests：Fixed the redirect\. · \d\d:\d\d$/);
+
+    // 幾秒後動畫結束，線維持「剛說過話」，說明照樣看得到。
+    await expect(anim(page, 's-auth', 's-tests')).toHaveCount(0, { timeout: 8000 });
+    await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-phase', 'recent');
+    await expect(card(page, 's-tests')).not.toHaveAttribute('data-handoff');
+    await page.mouse.move(5, 5);
+    await expect(tip).toHaveCount(0);
+    // 鍵盤也看得到。
+    await label(page, 's-auth', 's-tests').focus();
+    await expect(tip).toContainText('Fix login → Write tests');
+
+    // 金鑰在第一行時要遮掉。
+    await emit(page, 's-auth', 's-tests', { summary: `Use ${SECRET} for the test.` });
+    await expect(tip).toContainText('Use *');
+    await expect(tip).not.toContainText(SECRET);
+  });
+
+  test('擋下：閃一下不流動，說明寫原因，目標卡沒有光圈', async ({ page }) => {
+    await openCanvas(page);
+    await emit(page, 's-auth', 's-tests', { reason: 'loop' });
+    await expect(anim(page, 's-auth', 's-tests')).toHaveClass('edge-talk-flash');
+    await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-talk', 'blocked');
+    await expect(label(page, 's-auth', 's-tests')).toContainText(/擋下 \d\d:\d\d/);
+    await expect(card(page, 's-tests')).not.toHaveAttribute('data-handoff');
+    await label(page, 's-auth', 's-tests').hover();
+    await expect(page.getByTestId('handoff-tip')).toContainText(
+      'Fix login → Write tests：擋下：會形成迴圈',
+    );
+    await expect(anim(page, 's-auth', 's-tests')).toHaveCount(0, { timeout: 5000 });
+
+    await emit(page, 's-auth', 's-tests', { reason: 'rule_disabled' });
+    await expect(label(page, 's-auth', 's-tests')).toHaveAttribute('data-talk', 'dropped');
+    await expect(page.getByTestId('handoff-tip')).toContainText('取消：規則已關閉');
+  });
+
+  test('沒有規則線的兩張卡：交接當下暫時畫一條，播完收掉', async ({ page }) => {
+    await openCanvas(page);
+    const temp = page.locator('[data-testid="rf__edge-talk:s-tests->s-docs"]');
+    await expect(temp).toHaveCount(0);
+    await emit(page, 's-tests', 's-docs');
+    await expect(temp).toHaveCount(1);
+    await expect(anim(page, 's-tests', 's-docs')).toHaveClass('edge-talk-flow');
+    await expect(label(page, 's-tests', 's-docs')).toContainText('沒有規則線');
+    await expect(card(page, 's-docs')).toHaveAttribute('data-handoff', 'in');
+    await expect(temp).toHaveCount(0, { timeout: 8000 });
+  });
+
+  test('減少動態：不流動、不閃，只有靜態的線、光圈和文字', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await openCanvas(page);
+    await emit(page, 's-auth', 's-tests');
+    const flow = anim(page, 's-auth', 's-tests');
+    await expect(flow).toHaveClass('edge-talk-flow');
+    const style = await flow.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { name: s.animationName, dash: s.strokeDasharray, opacity: s.opacity };
+    });
+    expect(style).toEqual({ name: 'none', dash: 'none', opacity: '1' });
+    expect(await card(page, 's-tests').evaluate((el) => getComputedStyle(el).animationName)).toBe(
+      'none',
+    );
+    await expect(card(page, 's-tests')).toHaveAttribute('data-handoff', 'in');
+    await expect(label(page, 's-auth', 's-tests')).toContainText(/已交接 \d\d:\d\d/);
+    await shot(page, 'handoff-talk-reduced');
+
+    await emit(page, 's-auth', 's-tests', { reason: 'rate_limit' });
+    const flash = anim(page, 's-auth', 's-tests');
+    await expect(flash).toHaveClass('edge-talk-flash');
+    expect(
+      await flash.evaluate((el) => {
+        const s = getComputedStyle(el);
+        return [s.animationName, s.opacity];
+      }),
+    ).toEqual(['none', '1']);
+  });
+});

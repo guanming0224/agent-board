@@ -378,6 +378,15 @@ export interface FakeBackendControls {
   /** 模擬 daemon 回報的狀態變化。 */
   setSessionStatus(id: string, status: Session['status']): void;
   addSessionEvent(sessionId: string, type: string, payload: Record<string, unknown>): void;
+  /**
+   * 模擬 hub 的交接事件（畫布的交接動畫）。沒給 reason 是交接成功（handoff.fired）；
+   * 給了就是擋下（handoff.blocked），reason 為 rule_disabled 時是取消（handoff.dropped）。
+   */
+  emitHandoff(
+    fromSessionId: string,
+    toSessionId: string,
+    options?: { summary?: string; reason?: string },
+  ): void;
 }
 
 /** 假隊長的回覆，請隊長拆解在 demo 模式下也能走完。 */
@@ -445,14 +454,17 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     },
   ];
   const events: SessionEvent[] = [];
+  const eventListeners = new Set<(event: SessionEvent) => void>();
   const addEvent = (sessionId: string, type: string, payload: Record<string, unknown>) => {
-    events.push({
+    const event = {
       id: crypto.randomUUID(),
       sessionId,
       type,
       payload,
       at: new Date().toISOString(),
-    });
+    };
+    events.push(event);
+    eventListeners.forEach((l) => l(event));
   };
   const findIn = <T extends { id: string }>(list: T[], id: string, label: string): T => {
     const item = list.find((x) => x.id === id);
@@ -545,6 +557,10 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       listeners.add(listener);
       listener(visible());
       return () => listeners.delete(listener);
+    },
+    watchEvents(listener) {
+      eventListeners.add(listener);
+      return () => eventListeners.delete(listener);
     },
     watchResources(listener: (sample: ResourceSample) => void) {
       const tick = () =>
@@ -766,6 +782,26 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       publish();
     },
     addSessionEvent: addEvent,
+    emitHandoff(fromSessionId, toSessionId, options = {}) {
+      const rule = rules.find(
+        (r) => r.fromSessionId === fromSessionId && r.action.toSessionId === toSessionId,
+      );
+      const { reason, summary = 'Fixed the login redirect and added a regression test.' } = options;
+      const type =
+        reason === undefined
+          ? 'handoff.fired'
+          : reason === 'rule_disabled'
+            ? 'handoff.dropped'
+            : 'handoff.blocked';
+      addEvent(fromSessionId, type, {
+        ruleId: rule?.id ?? null,
+        trigger: rule?.trigger ?? 'on_done',
+        fromSessionId,
+        toSessionId,
+        ...(type === 'handoff.dropped' ? {} : { summary }),
+        ...(reason === undefined ? {} : { reason }),
+      });
+    },
     async decideApproval(approval: Approval) {
       state.approvals = state.approvals.filter((a) => a.id !== approval.id);
       find(approval.sessionId).status = 'running';

@@ -378,6 +378,39 @@ test('A → B → A：回頭的那條被擋下，畫面看得到', async ({ page
   await expect(page.getByTestId(`handoff-${lead.id}-${worker.id}`)).toHaveText('完成時交接');
 });
 
+test('畫布的交接動畫：真的交接時線在動、目標卡有光圈；回頭的那條閃一下並寫原因', async ({
+  page,
+}) => {
+  await page.goto('/#/canvas');
+  const forward = page.getByTestId(`handoff-label-${worker.id}-${plain.id}`);
+  const back = page.getByTestId(`handoff-label-${plain.id}-${worker.id}`);
+  await expect(forward).toBeVisible();
+  await expect(back).toBeVisible();
+  await expectStatus(page.request, worker.id, 'waiting_input');
+  await expectStatus(page.request, plain.id, 'waiting_input');
+
+  // 事件走 hub 的 WebSocket（session.event），畫布不輪詢。
+  await typeInto(page, worker.id, 'edit-file /tmp/ab-team/canvas.ts');
+  await expect(page.getByTestId(`handoff-anim-${worker.id}-${plain.id}`)).toHaveClass(
+    'edge-talk-flow',
+    { timeout: 20_000 },
+  );
+  await expect(forward).toHaveAttribute('data-talk', 'fired');
+  await expect(page.getByTestId(`card-${plain.id}`)).toHaveAttribute('data-handoff', 'in');
+  await forward.hover();
+  await expect(page.getByTestId('handoff-tip')).toContainText(
+    'worker-session → plain-session：done: edit-file /tmp/ab-team/canvas.ts',
+  );
+
+  // plain 改了檔，想交接回 worker：迴圈，被擋下。
+  await expect(back).toHaveAttribute('data-talk', 'blocked', { timeout: 20_000 });
+  await page.mouse.move(5, 5);
+  await back.hover();
+  await expect(page.getByTestId('handoff-tip')).toContainText(
+    'plain-session → worker-session：擋下：會形成迴圈',
+  );
+});
+
 test('全隊停止：規則先關，session 真的結束，不會因結束再觸發交接', async ({ page }) => {
   await page.goto(`/#/team/${teamId}`);
   await page.getByRole('button', { name: '全隊停止' }).click();
