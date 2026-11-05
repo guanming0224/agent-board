@@ -3,6 +3,11 @@
 import { z } from 'zod';
 import {
   Approval,
+  ClaudeSessionId,
+  PurgeOptions,
+  PurgeResult,
+  SessionInspect,
+  TranscriptPage,
   ApprovalDecision,
   Id,
   IsoTime,
@@ -43,6 +48,9 @@ const Resize = z.object({
   rows: z.number().int().positive(),
 });
 
+/** POSIX 或 Windows 的絕對路徑。 */
+export const AbsolutePath = z.string().regex(/^(\/|[A-Za-z]:[\\/])/);
+
 /** 建立 session 的參數。 */
 export const SessionSpec = z.object({
   name: z.string().min(1),
@@ -51,8 +59,9 @@ export const SessionSpec = z.object({
   useWorktree: z.boolean(),
   permissionMode: PermissionMode,
   model: z.string().nullable(),
-  accountProfile: z.string().nullable(),
-  resumeClaudeSessionId: z.string().nullable(),
+  /** 絕對路徑（daemon 拿它找對話紀錄、設 CLAUDE_CONFIG_DIR）。 */
+  accountProfile: AbsolutePath.nullable(),
+  resumeClaudeSessionId: ClaudeSessionId.nullable(),
   firstPrompt: z.string().nullable(),
 });
 export type SessionSpec = z.infer<typeof SessionSpec>;
@@ -64,6 +73,17 @@ export const FolderName = z
   .min(1)
   .max(255)
   .refine((v) => v !== '.' && v !== '..' && !/[\\/\0]/.test(v), { message: 'invalid_folder_name' });
+
+/** daemon 處理已結束 session 的檔案時需要的位置資訊。 */
+export const SessionLocator = z.object({
+  sessionId: Id,
+  cwd: z.string().min(1),
+  worktreePath: z.string().nullable(),
+  branch: z.string().nullable(),
+  claudeSessionId: ClaudeSessionId.nullable(),
+  accountProfile: z.string().nullable(),
+});
+export type SessionLocator = z.infer<typeof SessionLocator>;
 
 export const DirEntry = z.object({ name: z.string(), isDir: z.boolean(), isGitRepo: z.boolean() });
 
@@ -131,6 +151,28 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     repo: RepoInfo.nullable().default(null),
     error: z.string().nullable(),
   }),
+  z.object({
+    type: z.literal('session.inspectResult'),
+    requestId: Id,
+    inspect: SessionInspect.omit({
+      hooksShared: true,
+      worktreeShared: true,
+      transcriptShared: true,
+    }).nullable(),
+    error: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal('session.purgeResult'),
+    requestId: Id,
+    result: PurgeResult.nullable(),
+    error: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal('session.transcriptResult'),
+    requestId: Id,
+    page: TranscriptPage.nullable(),
+    error: z.string().nullable(),
+  }),
 ]);
 export type DaemonToHub = z.infer<typeof DaemonToHub>;
 
@@ -159,6 +201,23 @@ export const HubToDaemon = z.discriminatedUnion('type', [
   z.object({ type: z.literal('fs.list'), requestId: Id, path: z.string() }),
   /** 在 parent 底下建一層新資料夾（parent 要已存在、不覆蓋），成功後回 fs.listResult（path 是新資料夾）。 */
   z.object({ type: z.literal('fs.mkdir'), requestId: Id, parent: z.string(), name: FolderName }),
+  /** 封存與刪除用（CONTRACTS §9）：hub 從資料庫帶齊 session 的路徑，daemon 不必還記得這個 session。 */
+  z.object({ type: z.literal('session.inspect'), requestId: Id, target: SessionLocator }),
+  z.object({
+    type: z.literal('session.purge'),
+    requestId: Id,
+    target: SessionLocator,
+    options: PurgeOptions,
+  }),
+  z.object({
+    type: z.literal('session.transcript'),
+    requestId: Id,
+    claudeSessionId: ClaudeSessionId,
+    accountProfile: z.string().nullable(),
+    cursor: z.number().int().nonnegative(),
+    limit: z.number().int().positive().max(500),
+    query: z.string().max(200).nullable(),
+  }),
 ]);
 export type HubToDaemon = z.infer<typeof HubToDaemon>;
 

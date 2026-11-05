@@ -8,7 +8,7 @@ import type { RepoInfo } from '@agent-board/protocol';
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 60_000;
 
-async function git(args: string[]): Promise<string> {
+export async function git(args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', args, {
     timeout: GIT_TIMEOUT_MS,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },

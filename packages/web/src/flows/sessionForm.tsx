@@ -1,20 +1,20 @@
 // 新增 session 的共用零件：完整表單（NewSessionPage）與畫布上的快速建立（QuickCreate）都用。
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { sameWorkingTree } from '@agent-board/protocol';
 import type { Machine, Project, RepoInfo, Session } from '@agent-board/protocol';
+import type { BoardBackend } from '../shared/backend';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { useProjects as useProjectNames } from '../views/useBoardLoad';
+import { ErrorBox, errorText, Loading, Msg, type Loaded, type Note, type T } from './common';
 import {
-  ErrorBox,
-  errorText,
-  Loading,
-  Msg,
-  useLoad,
-  type Loaded,
-  type Note,
-  type T,
-} from './common';
+  breadcrumbs,
+  childPath,
+  parentPath,
+  readLastFolder,
+  recentFolders,
+  saveLastFolder,
+} from './folders';
 
 export const TASK_TYPES = ['general', 'gpu', 'heavy'] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
@@ -45,6 +45,20 @@ export const trimSlash = (path: string) => path.replace(/[\\/]+$/, '');
 
 /** 路徑最後一段，當成新 session 名稱的預設值。 */
 export const folderName = (path: string) => trimSlash(path).split(/[\\/]/).pop() ?? '';
+
+/**
+ * 選資料夾時帶入名稱：名稱欄是空的，或還是上次自動帶入的資料夾名，才換成新的資料夾名。
+ * 使用者自己打過的名稱不動。
+ */
+export function useFolderNameFill(name: string, setName: (value: string) => void) {
+  const auto = useRef('');
+  return (path: string) => {
+    if (name.trim() && name !== auto.current) return;
+    const next = folderName(path);
+    auto.current = next;
+    setName(next);
+  };
+}
 
 /** 同一個資料夾，或一個在另一個裡面。 */
 function samePlace(a: string, b: string): boolean {
@@ -262,73 +276,266 @@ function NewFolder({
   );
 }
 
+type Listing = Awaited<ReturnType<BoardBackend['browseDirectory']>>;
+
+/**
+ * 瀏覽遠端資料夾。操作：
+ * - 單擊資料夾 = 選取（反白並立刻填入工作目錄欄）；雙擊或列尾「›」= 進入。
+ * - 鍵盤：↑↓ 在資料夾之間移動，空白鍵選取（按鈕的原生行為），Enter 或 → 進入，← 或 Backspace 回上一層，
+ *   Esc 關閉瀏覽（篩選框有字時先清掉字）。篩選框裡按 ↓ 跳到清單、Enter 進入第一個符合的資料夾。
+ *   Enter 用來「進入」而不是「選取」：和檔案總管一樣，往下走是最常做的事；選取已經在單擊時完成。
+ * - 起始位置：工作目錄欄有值就從它的上一層開始並反白它；否則上次在這台機器瀏覽到的位置；再否則 ~。
+ */
 export function FolderBrowser({
   machine,
   start,
+  onSelect,
   onPick,
   onClose,
 }: {
   machine: Machine;
+  /** 工作目錄欄目前的值。 */
   start: string;
+  /** 選取：立刻填入工作目錄欄，瀏覽器留著。 */
+  onSelect: (path: string) => void;
+  /** 選定並關閉（「選這個資料夾」、剛建好的資料夾）。 */
   onPick: (path: string) => void;
   onClose: () => void;
 }) {
   const t = useT();
-  const { backend } = useBoard();
-  const [path, setPath] = useState(start || '~');
+  const { backend, sessions } = useBoard();
   const sep = machine.os === 'win32' ? '\\' : '/';
-  const listing = useLoad(
-    useCallback(() => backend.browseDirectory(machine.id, path), [backend, machine.id, path]),
+  const [initial] = useState(() => {
+    const field = start.trim();
+    if (field) return { path: parentPath(field, sep) ?? field, selected: field };
+    return { path: readLastFolder(machine.id) ?? '~', selected: null };
+  });
+  const [path, setPath] = useState(initial.path);
+  const [selected, setSelected] = useState<string | null>(initial.selected);
+  const [filter, setFilter] = useState('');
+  const [round, setRound] = useState(0);
+  const [result, setResult] = useState<{ for: string; data?: Listing; error?: string } | null>(
+    null,
   );
-  const shown = listing.data?.path ?? path;
-  const up = () => {
-    const cut = trimSlash(shown).lastIndexOf(sep);
-    setPath(cut > 0 ? shown.slice(0, cut) : sep);
+  /** 點捷徑時：等列出來，選 daemon 回的完整路徑（`~` 會被展開）。 */
+  const selectWhenLoaded = useRef<string | null>(null);
+  const list = useRef<HTMLUListElement>(null);
+  // 呼叫端每次重畫都給新的函式；放 ref 才不會讓下面的讀取 effect 一直重跑。
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const select = useCallback((p: string) => {
+    setSelected(p);
+    onSelectRef.current(p);
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    backend.browseDirectory(machine.id, path).then(
+      (data) => {
+        if (!live) return;
+        setResult({ for: path, data });
+        saveLastFolder(machine.id, data.path);
+        if (selectWhenLoaded.current === path) select(data.path);
+        selectWhenLoaded.current = null;
+      },
+      (e: unknown) => {
+        if (!live) return;
+        setResult({ for: path, error: errorText(e) });
+        selectWhenLoaded.current = null;
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [backend, machine.id, path, round, select]);
+
+  const current = result?.for === path ? result : null;
+  const listing = current?.data ?? null;
+  const shown = listing?.path ?? path;
+  const crumbs = breadcrumbs(shown, sep);
+  const up = parentPath(shown, sep);
+  const box = useRef<HTMLDivElement>(null);
+  /** 換資料夾時焦點在瀏覽器裡：清單會先換成「載入中」，焦點會掉到 body，出來後要接回清單第一列。 */
+  const refocus = useRef(false);
+  const go = (p: string) => {
+    refocus.current = box.current?.contains(document.activeElement) ?? false;
+    setPath(p);
+    setFilter('');
   };
-  const folders = listing.data?.entries.filter((e) => e.isDir) ?? [];
+  const jump = (p: string) => {
+    selectWhenLoaded.current = p;
+    go(p);
+  };
+  const needle = filter.trim().toLowerCase();
+  const folders = (listing?.entries ?? [])
+    .filter((e) => e.isDir)
+    .filter((e) => !needle || e.name.toLowerCase().includes(needle));
+  const recent = recentFolders(sessions, machine.id);
+  const home = '~';
+  const desktop = `~${sep}Desktop`;
+
+  const picks = () => [...(list.current?.querySelectorAll<HTMLButtonElement>('.pick') ?? [])];
+  const onRowKey = (e: React.KeyboardEvent<HTMLButtonElement>, full: string) => {
+    const items = picks();
+    const i = items.indexOf(e.currentTarget);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const next = e.key === 'ArrowDown' ? Math.min(i + 1, items.length - 1) : i - 1;
+      if (next >= 0) items[next]?.focus();
+      else document.getElementById(`fb-${machine.id}-filter`)?.focus();
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      (e.key === 'Home' ? items[0] : items[items.length - 1])?.focus();
+    } else if (e.key === 'Enter' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      go(full);
+    } else if ((e.key === 'ArrowLeft' || e.key === 'Backspace') && up) {
+      e.preventDefault();
+      go(up);
+    }
+  };
+  useEffect(() => {
+    if (!listing || !refocus.current) return;
+    refocus.current = false;
+    (picks()[0] ?? document.getElementById(`fb-${machine.id}-filter`))?.focus();
+  }, [listing]);
+
+  const listId = `fb-${machine.id}`;
   return (
-    <div className="browser" data-testid="folder-browser">
-      <div className="browser-head">
-        <span className="callsign">
-          {machine.name}:{shown}
-        </span>
+    <div
+      ref={box}
+      className="browser"
+      data-testid="folder-browser"
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || e.defaultPrevented) return;
+        // 不讓外層（快速建立小卡）一起關掉。
+        e.preventDefault();
+        onClose();
+      }}
+    >
+      <div className="browser-quick" role="group" aria-label={t('flows.new.browseShortcuts')}>
+        {recent.length > 0 && <span className="label">{t('flows.new.browseRecent')}</span>}
+        {recent.map((p) => (
+          <button
+            key={p}
+            type="button"
+            className="mono"
+            title={p}
+            data-testid="recent-folder"
+            onClick={() => jump(p)}
+          >
+            {folderName(p) || p}
+          </button>
+        ))}
+        <button type="button" onClick={() => jump(home)}>
+          {t('flows.new.browseHome')}
+        </button>
+        <button type="button" onClick={() => jump(desktop)}>
+          {t('flows.new.browseDesktop')}
+        </button>
       </div>
-      {listing.error ? (
-        <ErrorBox
-          what={t('flows.new.browseError', { path, error: listing.error })}
-          how={t('flows.new.browseHow')}
-          onRetry={listing.reload}
-        />
-      ) : listing.loading ? (
-        <Loading />
-      ) : folders.length === 0 ? (
-        <p className="hint">{t('flows.new.browseEmpty')}</p>
-      ) : (
-        <ul className="browser-list">
-          {folders.map((entry) => (
-            <li key={entry.name}>
-              <button
-                type="button"
-                onClick={() => setPath(`${trimSlash(shown)}${sep}${entry.name}`)}
-              >
-                {entry.name}
-              </button>
-              {entry.isGitRepo && <span className="chip">git</span>}
-            </li>
-          ))}
-        </ul>
-      )}
-      {listing.data && <NewFolder machine={machine} parent={shown} onMade={onPick} />}
-      <div className="acts">
-        <button type="button" onClick={up}>
+
+      <nav className="crumbs" aria-label={t('flows.new.browseWhere', { machine: machine.name })}>
+        <span className="crumb-machine">{machine.name}:</span>
+        {crumbs.map((c, i) => (
+          <span key={c.path} className="crumb">
+            {i > 0 && !crumbs[i - 1]!.label.endsWith(sep) && (
+              <span className="crumb-sep" aria-hidden="true">
+                {sep}
+              </span>
+            )}
+            <button
+              type="button"
+              aria-current={i === crumbs.length - 1 ? 'location' : undefined}
+              onClick={() => go(c.path)}
+            >
+              {c.label}
+            </button>
+          </span>
+        ))}
+      </nav>
+
+      <div className="browser-tools">
+        <button type="button" className="browser-up" disabled={!up} onClick={() => up && go(up)}>
           {t('flows.new.browseUp')}
         </button>
-        <button
-          type="button"
-          className="primary"
-          disabled={!listing.data}
-          onClick={() => onPick(shown)}
-        >
+        <input
+          id={`${listId}-filter`}
+          type="search"
+          aria-label={t('flows.new.browseFilter')}
+          placeholder={t('flows.new.browseFilter')}
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              picks()[0]?.focus();
+            } else if (e.key === 'Enter') {
+              // 不送出外層表單。
+              e.preventDefault();
+              const first = folders[0];
+              if (first && needle) go(childPath(shown, first.name, sep));
+            } else if (e.key === 'Escape' && filter) {
+              e.preventDefault();
+              setFilter('');
+            }
+          }}
+        />
+      </div>
+
+      {current?.error ? (
+        <ErrorBox
+          what={t('flows.new.browseError', { path, error: current.error })}
+          how={t('flows.new.browseHow')}
+          onRetry={() => setRound((r) => r + 1)}
+        />
+      ) : !listing ? (
+        <Loading />
+      ) : folders.length === 0 ? (
+        <p className="hint">
+          {needle ? t('flows.new.browseNoMatch', { q: filter.trim() }) : t('flows.new.browseEmpty')}
+        </p>
+      ) : (
+        <ul className="browser-list" id={listId} ref={list} aria-label={t('flows.new.browseList')}>
+          {folders.map((entry) => {
+            const full = childPath(shown, entry.name, sep);
+            const on = selected !== null && trimSlash(selected) === trimSlash(full);
+            return (
+              <li key={entry.name} className={on ? 'on' : undefined}>
+                <button
+                  type="button"
+                  className="pick"
+                  aria-pressed={on}
+                  onClick={() => select(full)}
+                  onDoubleClick={() => go(full)}
+                  onKeyDown={(e) => onRowKey(e, full)}
+                >
+                  {entry.name}
+                </button>
+                {entry.isGitRepo && <span className="chip">git</span>}
+                <button
+                  type="button"
+                  className="enter"
+                  aria-label={t('flows.new.browseEnter', { name: entry.name })}
+                  title={t('flows.new.browseEnter', { name: entry.name })}
+                  onClick={() => go(full)}
+                >
+                  ›
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <p className="hint browser-selected" data-testid="browser-selected">
+        {t('flows.new.browseSelected')}{' '}
+        <span className="mono">{selected ?? t('flows.new.browseNone')}</span>
+      </p>
+
+      {listing && <NewFolder machine={machine} parent={shown} onMade={onPick} />}
+      <div className="acts">
+        <button type="button" className="primary" disabled={!listing} onClick={() => onPick(shown)}>
           {t('flows.new.browsePick')}
         </button>
         <button type="button" onClick={onClose}>

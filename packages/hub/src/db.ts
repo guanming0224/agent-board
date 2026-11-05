@@ -158,6 +158,9 @@ const migrations: string[] = [
   ALTER TABLE sessions ADD COLUMN repo_root TEXT;
   ALTER TABLE sessions ADD COLUMN repo_common_dir TEXT;
   `,
+  /* 3：封存時間（CONTRACTS §9）。之前封存的維持 null。 */ `
+  ALTER TABLE sessions ADD COLUMN archived_at TEXT;
+  `,
 ];
 
 export function migrate(db: Db): void {

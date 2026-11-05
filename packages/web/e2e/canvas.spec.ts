@@ -831,3 +831,187 @@ test.describe('在畫布上直接新增', () => {
     expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(844);
   });
 });
+
+test('手機寬度：快速建立的資料夾選擇器可用、不超出畫面', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/#/canvas');
+  await expect(card(page, 's-auth')).toBeVisible();
+  await page.getByRole('banner').getByRole('button', { name: '新增 session' }).click();
+  const quick = page.getByTestId('quick-create');
+  await quick.getByRole('button', { name: '瀏覽' }).click();
+  const browser = quick.getByTestId('folder-browser');
+  // 最近用過：demo-studio 上的 session 資料夾
+  await expect(browser.getByTestId('recent-folder').first()).toBeVisible();
+  // 單擊選取：直接填入，名稱跟著資料夾，瀏覽器留著
+  await browser.getByRole('button', { name: 'notes', exact: true }).click();
+  await expect(quick.locator('#qc-cwd')).toHaveValue(/notes$/);
+  await expect(quick.locator('#qc-name')).toHaveValue('notes');
+  await expect(browser).toBeVisible();
+  for (const target of [quick, browser]) {
+    const box = (await target.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(390);
+  }
+  const overflow = await browser.evaluate((el) => el.scrollWidth - el.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+  // Esc 只關掉瀏覽器，不關快速建立
+  await browser.getByRole('searchbox').focus();
+  await page.keyboard.press('Escape');
+  await expect(browser).toHaveCount(0);
+  await expect(quick).toBeVisible();
+});
+
+test.describe('封存', () => {
+  const menu = (page: Page, id: string) =>
+    card(page, id).getByRole('button', { name: /的更多動作$/ });
+
+  test('「⋯」選單：原地改名；已失聯的直接封存，10 秒內可復原', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+
+    await menu(page, 's-etl').click();
+    await card(page, 's-etl').getByRole('menuitem', { name: '重新命名' }).click();
+    const input = card(page, 's-etl').getByRole('textbox', { name: '新名稱' });
+    await expect(input).toBeFocused();
+    await input.fill('Migrate data v2');
+    await input.press('Enter');
+    await expect(card(page, 's-etl').locator('.title')).toHaveText('Migrate data v2');
+    // Esc 取消，不改名
+    await menu(page, 's-etl').click();
+    await card(page, 's-etl').getByRole('menuitem', { name: '重新命名' }).click();
+    await card(page, 's-etl').getByRole('textbox', { name: '新名稱' }).fill('nope');
+    await page.keyboard.press('Escape');
+    await expect(card(page, 's-etl').locator('.title')).toHaveText('Migrate data v2');
+
+    // 失聯的不用確認
+    await menu(page, 's-web').click();
+    await card(page, 's-web').getByRole('menuitem', { name: '封存' }).click();
+    await expect(page.getByTestId('archive-confirm')).toHaveCount(0);
+    await expect(card(page, 's-web')).toHaveCount(0);
+    const toast = page.getByTestId('archive-toast');
+    await expect(toast).toContainText('已封存 Nav tweaks');
+    await toast.getByRole('button', { name: '復原' }).click();
+    await expect(card(page, 's-web')).toBeVisible();
+    await expect(toast).toHaveCount(0);
+  });
+
+  test('復原時 session 已在刪除：寫原因', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await patchStore(
+      page,
+      `const b = useBoard.getState().backend;
+       const update = b.updateSession;
+       b.updateSession = async (id, patch) => {
+         if (patch.archived === false) throw Object.assign(new Error('x'), { code: 'session_deleting' });
+         return update(id, patch);
+       };`,
+    );
+    await menu(page, 's-web').click();
+    await card(page, 's-web').getByRole('menuitem', { name: '封存' }).click();
+    const toast = page.getByTestId('archive-toast');
+    await toast.getByRole('button', { name: '復原' }).click();
+    await expect(toast.getByRole('alert')).toContainText(
+      '沒復原：這個 session 正在刪除，稍後再試。',
+    );
+    await expect(card(page, 's-web')).toHaveCount(0);
+  });
+
+  test('復原提示 10 秒後消失', async ({ page }) => {
+    await page.clock.install();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await menu(page, 's-web').click();
+    await card(page, 's-web').getByRole('menuitem', { name: '封存' }).click();
+    await expect(page.getByTestId('archive-toast')).toBeVisible();
+    await page.clock.runFor(9_000);
+    await expect(page.getByTestId('archive-toast')).toBeVisible();
+    await page.clock.runFor(1_500);
+    await expect(page.getByTestId('archive-toast')).toHaveCount(0);
+  });
+
+  test('還在跑的先確認「會停止」，列出會暫停的交接規則；排隊中寫取消排隊', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await expect(page.getByTestId('handoff-s-auth-s-tests')).toBeVisible();
+
+    await menu(page, 's-tests').click();
+    await card(page, 's-tests').getByRole('menuitem', { name: '封存' }).click();
+    const dialog = page.getByTestId('archive-confirm');
+    await expect(dialog.getByRole('heading')).toHaveText('封存「Write tests」？');
+    await expect(dialog).toContainText('還在進行，會停止它');
+    await expect(dialog).toContainText('會暫停 1 條交接規則');
+    // 取消：什麼都沒做
+    await dialog.getByRole('button', { name: '取消' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(card(page, 's-tests')).toBeVisible();
+
+    await menu(page, 's-tests').click();
+    await card(page, 's-tests').getByRole('menuitem', { name: '封存' }).click();
+    await page.getByTestId('archive-confirm').getByRole('button', { name: '停止並封存' }).click();
+    await expect(card(page, 's-tests')).toHaveCount(0);
+    await expect(page.getByTestId('archive-toast')).toContainText('暫停了 1 條交接規則');
+
+    await patchStore(page, `useBoard.getState().backend.setSessionStatus('s-docs', 'queued');`);
+    await menu(page, 's-docs').click();
+    await card(page, 's-docs').getByRole('menuitem', { name: '封存' }).click();
+    await expect(page.getByTestId('archive-confirm')).toContainText('還在排隊，會取消排隊');
+  });
+
+  test('選取卡片後按 Delete 開封存確認，不是刪除；打字時的 Backspace 不算', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    // 在指令框打字按 Backspace：不開確認
+    const input = card(page, 's-tests').getByRole('textbox');
+    await input.fill('ab');
+    await input.press('Backspace');
+    await expect(input).toHaveValue('a');
+    await expect(page.getByTestId('archive-confirm')).toHaveCount(0);
+
+    await card(page, 's-docs').locator('.tail').click();
+    await expect(node(page, 's-docs')).toHaveClass(/selected/);
+    await page.keyboard.press('Delete');
+    const dialog = page.getByTestId('archive-confirm');
+    await expect(dialog).toContainText('Tidy docs');
+    // Esc 關掉，卡片還在
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(card(page, 's-docs')).toBeVisible();
+
+    await card(page, 's-docs').locator('.tail').click();
+    await page.keyboard.press('Backspace');
+    await page.getByTestId('archive-confirm').getByRole('button', { name: '停止並封存' }).click();
+    await expect(card(page, 's-docs')).toHaveCount(0);
+  });
+
+  test('Shift＋拖曳框選多張，一起封存，一起復原', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    const a = (await card(page, 's-docs').boundingBox())!;
+    const b = (await card(page, 's-ml').boundingBox())!;
+    const left = Math.min(a.x, b.x) - 12;
+    const top = Math.min(a.y, b.y) - 12;
+    const right = Math.max(a.x + a.width, b.x + b.width) + 12;
+    const bottom = Math.max(a.y + a.height, b.y + b.height) + 12;
+    await page.keyboard.down('Shift');
+    await page.mouse.move(left, top);
+    await page.mouse.down();
+    await page.mouse.move(right, bottom, { steps: 10 });
+    await page.mouse.up();
+    await page.keyboard.up('Shift');
+
+    const button = page.getByTestId('archive-selection').getByRole('button');
+    await expect(button).toHaveText('封存選取的 2 個');
+    await button.click();
+    const dialog = page.getByTestId('archive-confirm');
+    await expect(dialog.getByRole('heading')).toHaveText('封存 2 個 session？');
+    await dialog.getByRole('button', { name: '停止並封存' }).click();
+    await expect(card(page, 's-docs')).toHaveCount(0);
+    await expect(card(page, 's-ml')).toHaveCount(0);
+    const toast = page.getByTestId('archive-toast');
+    await expect(toast).toContainText('已封存 2 個 session');
+    await toast.getByRole('button', { name: '復原' }).click();
+    await expect(card(page, 's-docs')).toBeVisible();
+    await expect(card(page, 's-ml')).toBeVisible();
+  });
+});

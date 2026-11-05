@@ -72,6 +72,7 @@ const base: Session = {
   createdAt: '2026-11-03T00:00:00Z',
   endedAt: null,
   archived: false,
+  archivedAt: null,
 };
 const at = (over: Partial<Session>): Session => ({ ...base, ...over });
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { CanvasPage, QueuePage, TerminalPage } from './canvas';
 import {
+  ArchivePage,
   InboxPage,
   LoginPage,
   NewSessionPage,
@@ -22,6 +23,7 @@ const ROUTES: Record<string, ComponentType> = {
   review: ReviewPage,
   inbox: InboxPage,
   settings: SettingsPage,
+  archive: ArchivePage,
   onboarding: OnboardingPage,
   login: LoginPage,
 };
@@ -31,6 +33,7 @@ const WITH_HEADER: Record<string, TabName> = {
   new: 'canvas',
   review: 'review',
   settings: 'settings',
+  archive: 'settings',
 };
 
 const PUBLIC_ROUTES = new Set(['login', 'onboarding']);

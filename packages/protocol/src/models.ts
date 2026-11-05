@@ -115,8 +115,94 @@ export const Session = z.object({
   createdAt: IsoTime,
   endedAt: IsoTime.nullable(),
   archived: z.boolean(),
+  /** 封存的時間；沒封存是 null。舊資料（schema 3 之前封存的）也是 null。 */
+  archivedAt: IsoTime.nullable().default(null),
 });
 export type Session = z.infer<typeof Session>;
+
+// ── 封存、刪除、看舊資料（CONTRACTS §9） ─────────────────────────
+
+/** Claude Code 的對話 id：只允許 uuid 形式，daemon 拿它組檔名，不能讓它跑出 projects 資料夾。 */
+export const ClaudeSessionId = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+  // 一律小寫：macOS 檔案系統不分大小寫，大寫 id 會指到同一個 jsonl，共用檢查要比得到。
+  .transform((id) => id.toLowerCase());
+
+/** 刪除前的檢查：daemon 在機器上看到的狀況。 */
+export const SessionInspect = z.object({
+  /** 對話紀錄（`<id>.jsonl` 加同名資料夾）的大小；找不到是 null。 */
+  transcriptBytes: z.number().int().nonnegative().nullable(),
+  /** 實際工作資料夾（worktreePath ?? cwd）的 git 狀況；不是 git 或資料夾不見了是 null。 */
+  git: z
+    .object({
+      dir: z.string(),
+      /** `git status --porcelain` 的行數（沒 commit 的改動與未追蹤檔）。 */
+      dirtyFiles: z.number().int().nonnegative(),
+      /** 目前分支領先 upstream 的 commit 數；沒有 upstream 是 null。 */
+      unpushedCommits: z.number().int().nonnegative().nullable(),
+      branch: z.string().nullable(),
+      /** 只有 session 有 worktree 時才算：它的分支有幾個 commit 不在主 worktree 的 HEAD 裡。 */
+      unmergedCommits: z.number().int().nonnegative().nullable(),
+    })
+    .nullable(),
+  /** session 的 worktree 資料夾還在不在；沒有 worktree 是 false。 */
+  worktreeExists: z.boolean(),
+  /** hub 填：同一個 cwd 還有別的（沒被刪的）session，hook 設定不能拿掉。 */
+  hooksShared: z.boolean(),
+  /** hub 填：同機器另一個 session 的 worktreePath 相同，或 cwd 在這個 worktree 裡，worktree 不能移除。 */
+  worktreeShared: z.boolean().default(false),
+  /** hub 填：同機器、同 accountProfile 有另一個 session 記著同一個 claudeSessionId，對話紀錄不能刪。 */
+  transcriptShared: z.boolean().default(false),
+});
+export type SessionInspect = z.infer<typeof SessionInspect>;
+
+export const PurgeOptions = z.object({
+  /** 移除 worktree 資料夾（不加 --force，有改動就留著）並 `git branch -d`（沒合併就留著）。 */
+  removeWorktree: z.boolean(),
+  /** 刪掉 Claude 對話紀錄 `<config>/projects/*\/<claudeSessionId>.jsonl` 與同名資料夾。 */
+  removeTranscript: z.boolean(),
+  /** 從 cwd 的 `.claude/settings.local.json` 拿掉 agent-board-hook 項目（hooksShared 時 hub 拒絕）。 */
+  removeHooks: z.boolean(),
+});
+export type PurgeOptions = z.infer<typeof PurgeOptions>;
+
+/** removed：刪了；kept：故意留著（detail 說原因，例如有改動、分支沒合併）；not_found：本來就沒有；skipped：沒勾或做不到；failed：出錯。 */
+export const PurgeOutcome = z.object({
+  status: z.enum(['removed', 'kept', 'not_found', 'skipped', 'failed']),
+  detail: z.string().nullable(),
+});
+export type PurgeOutcome = z.infer<typeof PurgeOutcome>;
+
+export const PurgeResult = z.object({
+  worktree: PurgeOutcome,
+  transcript: PurgeOutcome,
+  hooks: PurgeOutcome,
+});
+export type PurgeResult = z.infer<typeof PurgeResult>;
+
+/** 對話紀錄的一則。tool：工具呼叫（→ 名稱 參數摘要）或工具結果，內容截短。 */
+export const TranscriptEntry = z.object({
+  /** 在整份對話裡的序號（從 0 起），搜尋結果也保留原序號。 */
+  index: z.number().int().nonnegative(),
+  role: z.enum(['user', 'assistant', 'tool']),
+  at: IsoTime.nullable(),
+  text: z.string(),
+});
+export type TranscriptEntry = z.infer<typeof TranscriptEntry>;
+
+export const TranscriptPage = z.object({
+  entries: z.array(TranscriptEntry),
+  /** 整份對話的則數。 */
+  total: z.number().int().nonnegative(),
+  /** 有搜尋字時，符合的則數；沒搜尋是 null。 */
+  matched: z.number().int().nonnegative().nullable(),
+  /** 下一頁的 cursor；沒有了是 null。 */
+  nextCursor: z.number().int().nonnegative().nullable(),
+  /** 找不到對話紀錄檔（已刪、沒有 claude id、換了機器）。 */
+  missing: z.boolean(),
+});
+export type TranscriptPage = z.infer<typeof TranscriptPage>;
 
 export const SessionEvent = z.object({
   id: Id,

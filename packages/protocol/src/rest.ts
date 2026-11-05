@@ -12,8 +12,11 @@ import {
   MachineOs,
   Note,
   Project,
+  PurgeOptions,
+  PurgeResult,
   Session,
   SessionEvent,
+  SessionInspect,
   Settings,
   Task,
   TaskColumn,
@@ -22,6 +25,7 @@ import {
   TeamRole,
   Template,
   TemplateConfig,
+  TranscriptPage,
   UsageSummary,
   User,
   UserRole,
@@ -231,6 +235,37 @@ export const routes = {
     path: '/api/sessions/:id/resume',
     auth: 'user',
     response: Session,
+  }),
+  /** 刪除前的檢查（對話大小、git 狀況、hook 是否共用）。機器離線回 409 machine_offline。 */
+  sessionInspect: route({
+    method: 'GET',
+    path: '/api/sessions/:id/inspect',
+    auth: 'user',
+    response: SessionInspect,
+  }),
+  /** 讀這個 session 的 Claude 對話紀錄（看舊資料用），可搜尋、分頁。 */
+  sessionTranscript: route({
+    method: 'GET',
+    path: '/api/sessions/:id/transcript',
+    auth: 'user',
+    query: z.object({
+      cursor: z.coerce.number().int().nonnegative().default(0),
+      limit: z.coerce.number().int().positive().max(500).default(100),
+      q: z.string().max(200).optional(),
+    }),
+    response: TranscriptPage,
+  }),
+  /**
+   * 永久刪除：只能刪已封存且已結束的 session（否則 409 not_archived／session_active）。
+   * 勾了任何機器上的清理而機器離線 → 409 machine_offline；removeHooks 而 hook 共用 → 409 hooks_shared。
+   * 成功後廣播 session.removed。操作紀錄（audit_log）保留。
+   */
+  sessionsDelete: route({
+    method: 'POST',
+    path: '/api/sessions/:id/delete',
+    auth: 'owner',
+    body: PurgeOptions,
+    response: z.object({ result: PurgeResult }),
   }),
   sessionEvents: route({
     method: 'GET',

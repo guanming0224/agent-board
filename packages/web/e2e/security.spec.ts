@@ -46,6 +46,7 @@ const session = (over: Partial<Session>): Session => ({
   createdAt: new Date().toISOString(),
   endedAt: null,
   archived: false,
+  archivedAt: null,
   ...over,
 });
 

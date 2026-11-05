@@ -8,16 +8,20 @@ import type {
   Machine,
   Note,
   Project,
+  PurgeOptions,
+  PurgeResult,
   RepoInfo,
   ResourceSample,
   Session,
   SessionEvent,
+  SessionInspect,
   SessionSpec,
   Settings,
   Task,
   Team,
   TeamMember,
   Template,
+  TranscriptPage,
   UsageSummary,
   User,
 } from '@agent-board/protocol';
@@ -44,6 +48,18 @@ export interface AuditFilter {
   /** 1–1000，hub 預設 100。 */
   limit?: number;
 }
+
+/** hub 錯誤的 code（ApiError.code；假後端丟同樣形狀）。沒有就是 null。 */
+export const errorCode = (e: unknown): string | null => {
+  const code = typeof e === 'object' && e !== null ? (e as { code?: unknown }).code : undefined;
+  return typeof code === 'string' ? code : null;
+};
+
+/** 後端回的錯誤是否為「機器離線」（hub 回 409 machine_offline）。 */
+export const isMachineOffline = (e: unknown): boolean => errorCode(e) === 'machine_offline';
+
+/** 這個 session（或同資料夾、同 worktree 的 session）正在刪除（CONTRACTS §9.6 刪除鎖）。 */
+export const isSessionDeleting = (e: unknown): boolean => errorCode(e) === 'session_deleting';
 
 export interface BoardBackend {
   readonly terminal: TerminalStream;
@@ -74,6 +90,21 @@ export interface BoardBackend {
     patch: { name?: string; archived?: boolean; markDone?: true },
   ): Promise<Session>;
   stopSession(id: string): Promise<Session>;
+
+  /** 已封存的 session（CONTRACTS §9）。board 快照不含它們，要另外讀。 */
+  listArchivedSessions(): Promise<Session[]>;
+  /**
+   * 刪除前的檢查：對話大小、git 狀況、hook 是否共用。
+   * 機器離線時丟出 code 為 `machine_offline` 的錯誤（見 isMachineOffline）。
+   */
+  inspectSession(id: string): Promise<SessionInspect>;
+  /** 對話紀錄（看舊資料用）。cursor 是篩選後清單的位置；機器離線同上。 */
+  sessionTranscript(
+    id: string,
+    query: { cursor?: number; limit?: number; q?: string },
+  ): Promise<TranscriptPage>;
+  /** 永久刪除已封存且已結束的 session（只有 owner）。回傳每一項清理的結果。 */
+  deleteSession(id: string, options: PurgeOptions): Promise<PurgeResult>;
   sendPrompt(sessionId: string, text: string): void;
   decideApproval(approval: Approval, decision: ApprovalDecision): Promise<void>;
 

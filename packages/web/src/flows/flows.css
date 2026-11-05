@@ -731,6 +731,90 @@
   background: var(--surface-2);
 }
 
+.flows .browser-quick,
+.flows .crumbs,
+.flows .browser-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.flows .browser-quick .label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.flows .browser-quick button {
+  max-width: 100%;
+  min-height: 28px;
+  padding: 0 10px;
+  overflow: hidden;
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+}
+
+.flows .browser-quick button.mono {
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+
+.flows .crumbs {
+  gap: 0;
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.flows .crumb-machine {
+  margin-right: 4px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.flows .crumb {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.flows .crumb-sep {
+  color: var(--faint);
+}
+
+.flows .crumbs button {
+  min-height: 28px;
+  max-width: 100%;
+  padding: 0 4px;
+  overflow: hidden;
+  border-color: transparent;
+  background: transparent;
+  font: inherit;
+  text-overflow: ellipsis;
+}
+
+.flows .crumbs button:hover:not(:disabled) {
+  border-color: var(--border-2);
+}
+
+.flows .crumbs button[aria-current] {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.flows .browser-tools {
+  margin-top: 8px;
+}
+
+.flows .browser-tools input {
+  flex: 1 1 160px;
+  width: auto;
+  min-width: 0;
+}
+
 .flows .browser-list {
   margin: 8px 0 0;
   padding: 0;
@@ -742,17 +826,53 @@
 .flows .browser-list li {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 2px 0;
+  gap: 6px;
+  padding: 2px;
+  border-radius: var(--radius-control);
 }
 
-.flows .browser-list button {
+.flows .browser-list li.on {
+  background: var(--accent-bg);
+}
+
+.flows .browser-list .pick {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 32px;
   overflow: hidden;
+  border-color: transparent;
+  background: transparent;
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 400;
+  text-align: left;
   text-overflow: ellipsis;
+}
+
+.flows .browser-list .pick:hover:not(:disabled) {
+  border-color: var(--border-2);
+}
+
+.flows .browser-list li.on .pick {
+  border-color: var(--ring);
+  font-weight: 600;
+}
+
+.flows .browser-list .enter {
+  flex: none;
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.flows .browser-selected {
+  overflow-wrap: anywhere;
+}
+
+.flows .browser-selected .mono {
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
 }
 
 /* 設定 */
@@ -1050,5 +1170,314 @@
     bottom: 12px;
     width: auto;
     max-height: 75%;
+  }
+}
+
+/* 對話框（封存確認、刪除確認） */
+.dialog-host {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
+.flows .dialog {
+  width: min(560px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  box-shadow: 0 16px 40px rgb(0 0 0 / 50%);
+}
+
+.flows .dialog:focus {
+  outline: none;
+}
+
+.flows .dialog h2 {
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+
+.flows .archive-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flows .archive-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.flows .archive-list .name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.flows .you-text {
+  color: var(--you);
+  font-size: 13px;
+}
+
+/* 已封存清單（設定頁） */
+.flows .form-card.archived {
+  margin-top: 16px;
+}
+
+.flows .archived > .sub {
+  margin: 4px 0 12px;
+}
+
+.flows .archived-total {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.flows .archived-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flows .archived-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+
+.flows .archived-main {
+  display: grid;
+  flex: 1 1 280px;
+  gap: 2px;
+  min-width: 0;
+}
+
+.flows .archived-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+}
+
+.flows .archived-row .acts {
+  margin-top: 0;
+}
+
+.flows .archived-row .acts a.button,
+.flows .archived-row .acts button {
+  min-height: 32px;
+}
+
+/* 舊資料頁 */
+.flows .back-link {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.flows .archive-head {
+  margin-bottom: 4px;
+}
+
+.flows .archive-head h1 {
+  overflow-wrap: anywhere;
+}
+
+.flows .archive-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+  margin: 16px 0;
+}
+
+.flows .archive-info {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.flows .archive-info > div {
+  display: grid;
+  grid-template-columns: minmax(96px, 30%) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.flows .archive-info dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.flows .archive-info dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.flows .mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.flows .archive-info .acts.inline {
+  margin-top: 4px;
+}
+
+.flows .archive-history {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flows .archive-history li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: baseline;
+}
+
+.flows .transcript-search {
+  margin: 10px 0;
+}
+
+.flows .transcript-search input {
+  flex: 1 1 200px;
+}
+
+/* 對話紀錄：角色用標籤文字與版面分，不用狀態色（STYLE.md 規則一） */
+.flows .transcript {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flows .tr {
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+}
+
+.flows .tr-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.flows .tr-role {
+  color: var(--fg);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.flows .tr-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 你說的話：靠右縮排的實底塊 */
+.flows .tr-user {
+  margin-left: min(48px, 8%);
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+}
+
+/* Claude：無底色，左邊細線 */
+.flows .tr-assistant {
+  margin-right: min(48px, 8%);
+  border-left: 2px solid var(--border-2);
+  border-radius: 0;
+}
+
+/* 工具：等寬小字、虛線框 */
+.flows .tr-tool {
+  margin-right: min(48px, 8%);
+  border: 1px dashed var(--border);
+  color: var(--fg-muted);
+}
+
+.flows .tr-tool .tr-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* 刪除確認框 */
+.flows .purge-group {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.flows div.purge-group {
+  padding-left: 0;
+}
+
+.flows .purge-group .check {
+  align-items: flex-start;
+}
+
+.flows .purge-group .check input {
+  margin-top: 4px;
+}
+
+.flows .purge-group .check > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.flows .mono-path {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.flows .purge-warn {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 8px 12px 8px 30px;
+  border: 1px solid var(--you);
+  border-radius: var(--radius-control);
+  color: var(--fg);
+  font-size: 13.5px;
+}
+
+.flows .purge-warn:empty {
+  display: none;
+}
+
+.flows .purge-result .name {
+  min-width: 96px;
+}
+
+@media (max-width: 860px) {
+  .flows .archive-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

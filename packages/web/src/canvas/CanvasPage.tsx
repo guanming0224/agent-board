@@ -34,6 +34,13 @@ import {
   useBoardLoad,
   useViewsUi,
 } from '../views';
+import {
+  ArchiveConfirm,
+  ArchiveSelection,
+  ArchiveToast,
+  requestArchive,
+  useArchiveUi,
+} from './archive';
 import { HandoffEdge } from './HandoffEdge';
 import { motion } from './motion';
 import {
@@ -58,6 +65,7 @@ const edgeTypes = { handoff: HandoffEdge };
 /** 「全部顯示」不跨過 xterm 門檻，總覽一定是摘要條。 */
 const FIT_OPTIONS = { padding: 0.06, maxZoom: TERMINAL_ZOOM - 0.05, minZoom: 0.05 };
 const SAVE_DEBOUNCE_MS = 400;
+const DELETE_KEYS = ['Backspace', 'Delete'];
 /** 快速建立小卡的寬度（flows.css .quick-create）＋邊距，用來把小卡留在畫面裡。 */
 const QUICK_W = 392;
 const QUICK_MIN_ROOM = 240;
@@ -83,6 +91,12 @@ const toNode = (id: string, rect: Rect): SessionNodeType => ({
   data: { sessionId: id },
   deletable: false,
 });
+
+/** 正在打字或在對話框裡：Delete／Backspace 是編輯文字，不是封存。xterm 的輸入也是 textarea。 */
+const isTyping = (target: EventTarget | null) =>
+  target instanceof Element &&
+  (target.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]') !== null ||
+    target.closest('.term-slot') !== null);
 
 const rectOf = (node: Node): Rect => ({
   x: node.position.x,
@@ -281,6 +295,22 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
 
   const rects = useMemo(() => new Map(cards.map((n) => [n.id, rectOf(n)])), [cards]);
 
+  // ── 封存：選取卡片後 Delete／Backspace 開確認；框選（Shift＋拖曳）多張時出現按鈕 ──
+  const selectedIds = useMemo(() => cards.filter((n) => n.selected).map((n) => n.id), [cards]);
+  const selectedKey = selectedIds.join('|');
+  useEffect(() => {
+    if (selectedIds.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      if (e.defaultPrevented || isTyping(e.target) || useArchiveUi.getState().confirm) return;
+      e.preventDefault();
+      requestArchive(selectedIds, true);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // selectedKey 代表 selectedIds 的內容。
+  }, [selectedKey]);
+
   const liveIds = useMemo(() => new Set(cards.map((n) => n.id)), [cards]);
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
   const edges = useMemo<Edge[]>(
@@ -423,7 +453,8 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
         maxZoom={2}
         zoomOnDoubleClick={false}
         attributionPosition="bottom-left"
-        deleteKeyCode={['Backspace', 'Delete']}
+        // 有選取卡片時 Delete 鍵交給上面的封存；沒有時照舊刪除選取的交接線。卡片本身 deletable: false。
+        deleteKeyCode={selectedIds.length > 0 ? null : DELETE_KEYS}
       >
         <ZoomVariable host={host} />
         <TeamFrames rects={rects} />
@@ -444,6 +475,8 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
           position="bottom-right"
         />
         <ZoomPanel />
+        <ArchiveSelection ids={selectedIds} />
+        <ArchiveToast />
         {selectedHandoff && (
           <Panel position="top-center" className="edge-panel" data-testid="handoff-panel">
             <button
@@ -485,6 +518,7 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
           </Panel>
         )}
       </ReactFlow>
+      <ArchiveConfirm />
       {quick && (
         <QuickCreate
           left={quick.left}

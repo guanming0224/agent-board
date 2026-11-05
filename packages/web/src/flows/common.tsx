@@ -9,6 +9,7 @@ import type {
   SessionStatus,
   User,
 } from '@agent-board/protocol';
+import { isSessionDeleting } from '../shared/backend';
 import { useLocale, useT } from '../shared/i18n';
 import { HANDS_LINE, STATUS_VISUAL } from '../shared/status';
 import { useBoard } from '../shared/store';
@@ -16,6 +17,18 @@ import { useBoard } from '../shared/store';
 export type T = ReturnType<typeof useT>;
 
 export const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** 還原失敗：刪除中（CONTRACTS §9.6）換成白話，其他照原文。 */
+export const restoreErrorText = (t: T, e: unknown) =>
+  isSessionDeleting(e)
+    ? t('flows.err.restoreDeleting')
+    : t('flows.archived.restoreFailed', { error: errorText(e) });
+
+/** 建立失敗：同資料夾（或 worktree）的 session 刪除中換成白話，其他照原文。 */
+export const createErrorText = (t: T, e: unknown) =>
+  isSessionDeleting(e)
+    ? t('flows.err.createDeleting')
+    : t('flows.new.createFailed', { error: errorText(e) });
 
 const baseName = (path: string) =>
   path

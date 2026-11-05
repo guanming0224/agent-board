@@ -7,15 +7,22 @@ import {
   DaemonToHub,
   needsAttention,
   QUEUE_DETAIL_RATE_LIMITED,
+  AbsolutePath,
+  ClaudeSessionId,
+  SessionSpec,
   type Approval,
   type DirEntry,
+  type PurgeOptions,
+  type PurgeResult,
+  type SessionInspect,
+  type SessionLocator,
+  type TranscriptPage,
   type RepoInfo,
   type HubToClient,
   type HubToDaemon,
   type Machine,
   type Session,
   type SessionRuntime,
-  type SessionSpec,
   type SessionStatus,
   type Settings,
   type UsageSummary,
@@ -41,6 +48,12 @@ export interface Timing {
   hardClientBufferBytes: number;
   drainPollMs: number;
   drainTimeoutMs: number;
+  /** 刪除時等 daemon 清掉機器上檔案的上限（CONTRACTS §9.4）。 */
+  purgeTimeoutMs: number;
+  /** 刪除前檢查與讀對話紀錄（daemon 要掃資料夾、跑 git、讀大檔），比資料夾瀏覽久。 */
+  sessionFilesTimeoutMs: number;
+  /** 刪除鎖的上限：daemon 一直不回又不斷線時自動解鎖（daemon 端另有 purging／session_active 防護）。 */
+  deleteLockMaxMs: number;
   /** 送進 TUI 的文字和 Enter 之間的間隔，太短會被當成貼上。 */
   handoffEnterDelayMs: number;
 }
@@ -55,6 +68,9 @@ export const DEFAULT_TIMING: Timing = {
   hardClientBufferBytes: 16 * 1024 * 1024,
   drainPollMs: 200,
   drainTimeoutMs: 60_000,
+  purgeTimeoutMs: 30_000,
+  sessionFilesTimeoutMs: 20_000,
+  deleteLockMaxMs: 5 * 60_000,
   handoffEnterDelayMs: 100,
 };
 
@@ -94,10 +110,39 @@ interface PendingCreate {
   timer: NodeJS.Timeout;
 }
 
-interface PendingBrowse {
+/** 一問一答的 daemon 請求（資料夾瀏覽、封存相關）。 */
+type DaemonRequest = Extract<
+  HubToDaemon,
+  { type: 'fs.list' | 'fs.mkdir' | 'session.inspect' | 'session.purge' | 'session.transcript' }
+>;
+type DaemonReply = Extract<
+  DaemonToHub,
+  {
+    type:
+      | 'fs.listResult'
+      | 'session.inspectResult'
+      | 'session.purgeResult'
+      | 'session.transcriptResult';
+  }
+>;
+
+/** 刪除中的 session（§9.6）：鎖到 daemon 回 purgeResult 或斷線。hub 先回 504 也不解。 */
+interface DeleteLock {
+  userId: string;
   machineId: string;
+  cwd: string;
+  worktreePath: string | null;
+  requestId: string | null;
+  /** 到上限自動解鎖。 */
   timer: NodeJS.Timeout;
-  resolve(value: BrowseResult): void;
+}
+
+interface PendingRequest {
+  machineId: string;
+  /** 期待的回應類型：daemon 不能拿別種回應結掉這個請求。 */
+  expects: DaemonReply['type'];
+  timer: NodeJS.Timeout;
+  resolve(reply: DaemonReply): void;
   reject(error: Error): void;
 }
 
@@ -125,6 +170,42 @@ const sameAccount = (a: AccountKey, b: AccountKey): boolean =>
 /** 重置時間到了之後多等一下再開，時鐘差一點就開會馬上又撞到限流。 */
 const RATE_LIMIT_RESET_GRACE_MS = 60_000;
 
+function browseResult(reply: Extract<DaemonToHub, { type: 'fs.listResult' }>): BrowseResult {
+  if (reply.error !== null) throw new HttpError(400, 'fs_error', reply.error);
+  return { path: reply.path, entries: reply.entries, repo: reply.repo };
+}
+
+/** 資料庫裡的 claude id 不合格式就當沒有：daemon 拿它組檔名，協定也會拒收。 */
+function validClaudeId(id: string | null): string | null {
+  if (id === null) return null;
+  const parsed = ClaudeSessionId.safeParse(id);
+  return parsed.success ? parsed.data : null; // 協定已轉小寫
+}
+
+/** 資料庫裡的 accountProfile（舊資料可能是 '' 或相對路徑）：'' 當 null，不合法回 undefined。 */
+function validAccountProfile(profile: string | null): string | null | undefined {
+  if (!profile) return null;
+  return AbsolutePath.safeParse(profile).success ? profile : undefined;
+}
+
+/** 排隊中的 spec 來自資料庫（可能是舊版寫的）：送出前照協定再驗一次，'' 當 null、id 轉小寫。 */
+function sanitizeSpec(spec: SessionSpec): SessionSpec | null {
+  const parsed = SessionSpec.safeParse({ ...spec, accountProfile: spec.accountProfile || null });
+  return parsed.success ? parsed.data : null;
+}
+
+/** daemon 不一定還記得已結束的 session，路徑一律由 hub 從資料庫帶過去。 */
+function locatorFor(session: Session): SessionLocator {
+  return {
+    sessionId: session.id,
+    cwd: session.cwd,
+    worktreePath: session.worktreePath,
+    branch: session.branch,
+    claudeSessionId: validClaudeId(session.claudeSessionId),
+    accountProfile: session.accountProfile || null,
+  };
+}
+
 export interface HubDeps {
   store: Store;
   log: HubLog;
@@ -142,7 +223,8 @@ export class Hub {
   private readonly clients = new Set<ClientConn>();
   private readonly approvals = new Map<string, { approval: Approval; machineId: string }>();
   private readonly pendingCreates = new Map<string, PendingCreate>();
-  private readonly pendingBrowses = new Map<string, PendingBrowse>();
+  private readonly pendingRequests = new Map<string, PendingRequest>();
+  private readonly deleting = new Map<string, DeleteLock>();
   private readonly usage = new Map<string, UsageSummary>();
   private readonly pushes = new Set<Promise<void>>();
   private readonly relay: TerminalRelay<ClientConn>;
@@ -336,7 +418,10 @@ export class Hub {
         this.usage.set(conn.machineId, { ...msg.summary, machineId: conn.machineId });
         return;
       case 'fs.listResult':
-        this.onFsListResult(conn, msg);
+      case 'session.inspectResult':
+      case 'session.purgeResult':
+      case 'session.transcriptResult':
+        this.onDaemonReply(conn, msg);
         return;
     }
   }
@@ -371,6 +456,11 @@ export class Hub {
         this.store.setPendingSpec(runtime.id, null);
       }
       this.applyRuntime(runtime);
+      // 封存時機器離線、沒停成的，現在補停（§9.1）。
+      const current = this.store.getSession(runtime.id);
+      if (current?.archived && current.endedAt === null) {
+        this.send(conn.ws, { type: 'session.stop', sessionId: runtime.id });
+      }
     }
     for (const session of this.store.listMachineSessions(conn.machineId)) {
       if (reported.has(session.id) || session.endedAt !== null || session.status === 'queued') {
@@ -432,7 +522,10 @@ export class Hub {
       clearTimeout(pending.timer);
       this.pendingCreates.delete(requestId);
     }
-    this.rejectBrowses(machineId, new HttpError(502, 'daemon_disconnected', 'Daemon disconnected'));
+    this.rejectRequests(
+      machineId,
+      new HttpError(502, 'daemon_disconnected', 'Daemon disconnected'),
+    );
     for (const session of this.store.listMachineSessions(machineId)) {
       if (
         session.endedAt !== null ||
@@ -723,6 +816,7 @@ export class Hub {
     const { machineId, ...spec } = input;
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     if (!this.daemonFor(machineId)) throw conflict('machine_offline', 'Machine is offline');
+    this.assertCwdNotDeleting(machineId, spec.cwd);
     const now = this.nowIso();
     const session: Session = {
       id: randomUUID(),
@@ -748,6 +842,7 @@ export class Hub {
       createdAt: now,
       endedAt: null,
       archived: false,
+      archivedAt: null,
     };
     const blocked = this.queueReason(session);
     if (blocked !== undefined) {
@@ -891,8 +986,18 @@ export class Hub {
     for (const { session, spec } of this.store.queuedSessions()) {
       const reason = this.queueReason(session);
       if (reason === undefined && this.daemonFor(session.machineId)) {
+        const clean = sanitizeSpec(spec);
+        // 不合協定的 spec daemon 會整則丟掉，等到逾時；直接標失敗。
+        if (clean === null) {
+          const badProfile = validAccountProfile(spec.accountProfile) === undefined;
+          this.failStart(
+            session.id,
+            badProfile ? 'invalid_account_profile' : 'invalid_session_spec',
+          );
+          continue;
+        }
         const started = this.setStatus(session, 'starting', null, 'dequeued');
-        this.dispatchCreate(started, spec);
+        this.dispatchCreate(started, clean);
         continue;
       }
       // 名額滿了但這個帳號沒限流：維持 null（等名額）。
@@ -922,12 +1027,22 @@ export class Hub {
 
   /** 協定沒有 resume 訊息：沿用 sessionId 再送一次 session.create，帶舊的 claude id。 */
   resumeSession(id: string, user: User): Session {
-    const session = this.requireSession(id);
+    let session = this.requireSession(id);
+    this.assertNotDeleting(id);
     if (session.endedAt === null) throw conflict('session_active', 'Session is still active');
-    if (!session.claudeSessionId) {
+    // 不合 UUID 格式的 id daemon 會整則丟掉（§9.6），當成沒有。
+    const claudeSessionId = validClaudeId(session.claudeSessionId);
+    if (claudeSessionId === null) {
       throw conflict('no_claude_session', 'Session has no Claude conversation to resume');
     }
+    // daemon 會把相對路徑當成相對於它自己的工作資料夾（§9.6）：不送出。
+    const accountProfile = validAccountProfile(session.accountProfile);
+    if (accountProfile === undefined) {
+      throw conflict('invalid_account_profile', 'The account folder is not an absolute path');
+    }
     if (!this.daemonFor(session.machineId)) throw conflict('machine_offline', 'Machine is offline');
+    // 接續已封存的：先還原，不然它會在跑卻不出現在畫布上（§9.1）。
+    if (session.archived) session = this.restore(session, user, 'resume');
     const spec: SessionSpec = {
       name: session.name,
       projectId: session.projectId,
@@ -935,8 +1050,8 @@ export class Hub {
       useWorktree: false,
       permissionMode: session.permissionMode,
       model: session.model,
-      accountProfile: session.accountProfile,
-      resumeClaudeSessionId: session.claudeSessionId,
+      accountProfile,
+      resumeClaudeSessionId: claudeSessionId,
       firstPrompt: null,
     };
     this.audit(user.id, id, 'session.resume', '');
@@ -961,7 +1076,13 @@ export class Hub {
     user: User,
   ): Session {
     let session = this.requireSession(id);
-    const { markDone, ...fields } = patch;
+    const { markDone, archived, ...fields } = patch;
+    // 封存要先停（可能因機器離線失敗），失敗時其他欄位也不改。
+    if (archived === true && !session.archived) session = this.archive(session, user);
+    else if (archived === false && session.archived) {
+      this.assertNotDeleting(id);
+      session = this.restore(session, user);
+    }
     const defined = Object.fromEntries(
       Object.entries(fields).filter(([, value]) => value !== undefined),
     );
@@ -980,6 +1101,36 @@ export class Hub {
       );
     }
     return session;
+  }
+
+  /**
+   * §9.1：還沒結束的先停（排隊的取消，其他與 sessionsStop 同一條路；機器離線就 409，不封存），
+   * 再暫停從它出發或指向它的交接規則。
+   */
+  private archive(session: Session, user: User): Session {
+    const live = session.endedAt === null;
+    // 機器離線停不了：照樣封存，等 daemon 重連的 hello 對帳時補送 stop。
+    const stopPending = live && session.status !== 'queued' && !this.daemonFor(session.machineId);
+    const stopped = live && !stopPending;
+    if (stopped) this.stopSession(session.id, user);
+    if (stopPending) this.handoff.onUserStop(session.id);
+    const rulesPaused = this.store.disableRulesTouching(session.id);
+    const current = this.requireSession(session.id);
+    const next = this.updateFields(current, { archived: true, archivedAt: this.nowIso() });
+    this.audit(
+      user.id,
+      session.id,
+      'session.archive',
+      JSON.stringify({ stopped, stopPending, rulesPaused }),
+    );
+    return next;
+  }
+
+  /** 不自動重開，也不恢復被暫停的交接規則。 */
+  private restore(session: Session, user: User, via: 'resume' | null = null): Session {
+    const next = this.updateFields(session, { archived: false, archivedAt: null });
+    this.audit(user.id, session.id, 'session.restore', via ? JSON.stringify({ via }) : '');
+    return next;
   }
 
   private requireSession(id: string): Session {
@@ -1120,7 +1271,7 @@ export class Hub {
       clearTimeout(pending.timer);
       this.pendingCreates.delete(requestId);
     }
-    this.rejectBrowses(id, new HttpError(502, 'daemon_disconnected', 'Machine removed'));
+    this.rejectRequests(id, new HttpError(502, 'daemon_disconnected', 'Machine removed'));
     this.usage.delete(id);
     // session 已刪，不能寫 session_events；audit 沒有外鍵，照記。
     for (const [approvalId, entry] of [...this.approvals]) {
@@ -1158,8 +1309,14 @@ export class Hub {
     return this.usage.get(machineId) ?? null;
   }
 
-  browse(machineId: string, path: string): Promise<BrowseResult> {
-    return this.askFs(machineId, (requestId) => ({ type: 'fs.list', requestId, path }));
+  async browse(machineId: string, path: string): Promise<BrowseResult> {
+    const reply = await this.askDaemon(
+      machineId,
+      'fs.listResult',
+      this.timing.browseTimeoutMs,
+      (requestId) => ({ type: 'fs.list', requestId, path }),
+    );
+    return browseResult(reply);
   }
 
   /** 在 parent 底下建一層資料夾；回傳新資料夾的列表。不覆蓋已存在的。 */
@@ -1169,52 +1326,288 @@ export class Hub {
     parent: string,
     name: string,
   ): Promise<BrowseResult> {
-    const result = await this.askFs(machineId, (requestId) => ({
-      type: 'fs.mkdir',
-      requestId,
-      parent,
-      name,
-    }));
+    const reply = await this.askDaemon(
+      machineId,
+      'fs.listResult',
+      this.timing.browseTimeoutMs,
+      (requestId) => ({ type: 'fs.mkdir', requestId, parent, name }),
+    );
+    const result = browseResult(reply);
     this.audit(userId, null, 'fs.mkdir', JSON.stringify({ machineId, path: result.path }));
     return result;
   }
 
-  private askFs(
+  // ── 封存、刪除、看舊資料（CONTRACTS §9） ─────────────────
+  /** 刪除前的檢查：daemon 看機器上的狀況，hooksShared 由 hub 依資料庫算。 */
+  async inspectSession(id: string): Promise<SessionInspect> {
+    const session = this.requireSession(id);
+    const reply = await this.askDaemon(
+      session.machineId,
+      'session.inspectResult',
+      this.timing.sessionFilesTimeoutMs,
+      (requestId) => ({ type: 'session.inspect', requestId, target: locatorFor(session) }),
+    );
+    if (reply.error !== null || reply.inspect === null) {
+      throw new HttpError(502, 'daemon_error', reply.error ?? 'Daemon returned no result');
+    }
+    return {
+      ...reply.inspect,
+      hooksShared: this.hooksShared(session),
+      worktreeShared: this.worktreeShared(session),
+      transcriptShared: this.transcriptShared(session),
+    };
+  }
+
+  /** 讀 Claude 的對話紀錄。沒有 claude id（或格式不對，daemon 不會接受）就不用問 daemon。 */
+  async sessionTranscript(
+    id: string,
+    query: { cursor: number; limit: number; q?: string | undefined },
+  ): Promise<TranscriptPage> {
+    const session = this.requireSession(id);
+    const claudeSessionId = validClaudeId(session.claudeSessionId);
+    if (claudeSessionId === null) {
+      return { entries: [], total: 0, matched: null, nextCursor: null, missing: true };
+    }
+    const q = query.q?.trim() ? query.q : null;
+    const reply = await this.askDaemon(
+      session.machineId,
+      'session.transcriptResult',
+      this.timing.sessionFilesTimeoutMs,
+      (requestId) => ({
+        type: 'session.transcript',
+        requestId,
+        claudeSessionId,
+        accountProfile: session.accountProfile || null,
+        cursor: query.cursor,
+        limit: query.limit,
+        query: q,
+      }),
+    );
+    if (reply.error !== null || reply.page === null) {
+      throw new HttpError(502, 'daemon_error', reply.error ?? 'Daemon returned no result');
+    }
+    return reply.page;
+  }
+
+  /**
+   * 永久刪除（§9.4）：只刪已封存且已結束的。勾了清理項目就先等 daemon 清完（逾時不刪 hub 資料），
+   * 再刪資料列並廣播。audit_log 沒有外鍵，紀錄保留。
+   */
+  async deleteSession(id: string, options: PurgeOptions, user: User): Promise<PurgeResult> {
+    const session = this.requireSession(id);
+    this.assertNotDeleting(id);
+    this.assertDeletable(session);
+    const wantsPurge = options.removeWorktree || options.removeTranscript || options.removeHooks;
+    if (wantsPurge && !this.daemonFor(session.machineId)) {
+      throw conflict('machine_offline', 'Machine is offline');
+    }
+    if (options.removeHooks && this.hooksShared(session)) {
+      throw conflict('hooks_shared', 'Another session uses the same folder and its hooks');
+    }
+    if (options.removeWorktree && this.worktreeShared(session)) {
+      throw conflict('worktree_shared', 'Another session works in the same worktree');
+    }
+    if (options.removeTranscript && this.transcriptShared(session)) {
+      throw conflict('transcript_shared', 'Another session uses the same Claude conversation');
+    }
+    const skipped = { status: 'skipped', detail: null } as const;
+    let result: PurgeResult = { worktree: skipped, transcript: skipped, hooks: skipped };
+    if (!wantsPurge) return this.removeSessionRow(id, result, user);
+
+    const lock: DeleteLock = {
+      userId: user.id,
+      machineId: session.machineId,
+      cwd: session.cwd,
+      worktreePath: session.worktreePath,
+      requestId: null,
+      timer: setTimeout(() => {
+        if (this.deleting.get(id) !== lock) return;
+        this.deleting.delete(id);
+        this.log.warn(
+          { sessionId: id, machineId: lock.machineId },
+          'delete lock expired without a purge result',
+        );
+      }, this.timing.deleteLockMaxMs),
+    };
+    lock.timer.unref();
+    this.deleting.set(id, lock);
+    let reply: Extract<DaemonReply, { type: 'session.purgeResult' }>;
+    try {
+      reply = await this.askDaemon(
+        session.machineId,
+        'session.purgeResult',
+        this.timing.purgeTimeoutMs,
+        (requestId) => {
+          lock.requestId = requestId;
+          return { type: 'session.purge', requestId, target: locatorFor(session), options };
+        },
+      );
+    } catch (error) {
+      // 逾時：daemon 可能還在清，鎖留到 purgeResult 或斷線（onDaemonReply／rejectRequests）。
+      if (!(error instanceof HttpError && error.status === 504)) this.releaseDeleteLock(id, lock);
+      throw error;
+    }
+    try {
+      if (reply.error !== null || reply.result === null) {
+        throw new HttpError(
+          reply.error === 'session_active' ? 409 : 502,
+          reply.error === 'session_active' ? 'session_active' : 'daemon_error',
+          reply.error ?? 'Daemon returned no result',
+        );
+      }
+      result = reply.result;
+      return this.removeSessionRow(id, result, user);
+    } finally {
+      this.releaseDeleteLock(id, lock);
+    }
+  }
+
+  private removeSessionRow(id: string, result: PurgeResult, user: User): PurgeResult {
+    // 等 daemon 的期間可能被還原或接續了：那就不刪資料列（機器上已清的檔案記進 audit）。
+    const current = this.store.getSession(id);
+    if (!current) throw notFound('Session');
+    try {
+      this.assertDeletable(current);
+    } catch (error) {
+      this.audit(
+        user.id,
+        id,
+        'session.purge_aborted',
+        JSON.stringify({ name: current.name, result }),
+      );
+      throw error;
+    }
+    this.store.deleteSession(id);
+    this.prompts.forget(id);
+    this.relay.dropSession(id);
+    this.audit(
+      user.id,
+      id,
+      'session.delete',
+      JSON.stringify({
+        name: current.name,
+        cwd: current.cwd,
+        machineId: current.machineId,
+        result,
+      }),
+    );
+    this.broadcast({ type: 'session.removed', sessionId: id });
+    return result;
+  }
+
+  private assertDeletable(session: Session): void {
+    if (!session.archived) throw conflict('not_archived', 'Archive the session before deleting it');
+    if (session.endedAt !== null) return;
+    throw conflict('session_active', 'Session is still active');
+  }
+
+  private assertNotDeleting(id: string): void {
+    if (this.deleting.has(id)) throw conflict('session_deleting', 'Session is being deleted');
+  }
+
+  /** 新 session 開在刪除中 session 的 cwd 或它的 worktree 裡：daemon 可能正在清那裡。 */
+  private assertCwdNotDeleting(machineId: string, cwd: string): void {
+    for (const lock of this.deleting.values()) {
+      if (lock.machineId !== machineId) continue;
+      const wt = lock.worktreePath;
+      if (cwd === lock.cwd || (wt !== null && (cwd === wt || cwd.startsWith(`${wt}/`)))) {
+        throw conflict('session_deleting', 'A session in this folder is being deleted');
+      }
+    }
+  }
+
+  private releaseDeleteLock(id: string, lock: DeleteLock): void {
+    if (this.deleting.get(id) !== lock) return;
+    clearTimeout(lock.timer);
+    this.deleting.delete(id);
+  }
+
+  private worktreeShared(session: Session): boolean {
+    if (session.worktreePath === null) return false;
+    return (
+      this.store.countSessionsInWorktree(session.machineId, session.worktreePath, session.id) > 0
+    );
+  }
+
+  private transcriptShared(session: Session): boolean {
+    if (session.claudeSessionId === null) return false;
+    return (
+      this.store.countSessionsSharingClaudeId(
+        session.machineId,
+        session.accountProfile,
+        session.claudeSessionId,
+        session.id,
+      ) > 0
+    );
+  }
+
+  /** 同機器同 cwd 還有別的 session：hook 設定共用，不能拿掉。 */
+  private hooksShared(session: Session): boolean {
+    return this.store.countSessionsSharingCwd(session.machineId, session.cwd, session.id) > 0;
+  }
+
+  private askDaemon<T extends DaemonReply['type']>(
     machineId: string,
-    message: (requestId: string) => Extract<HubToDaemon, { type: 'fs.list' | 'fs.mkdir' }>,
-  ): Promise<BrowseResult> {
+    expects: T,
+    timeoutMs: number,
+    message: (requestId: string) => DaemonRequest,
+  ): Promise<Extract<DaemonReply, { type: T }>> {
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     const conn = this.daemonFor(machineId);
     if (!conn) throw conflict('machine_offline', 'Machine is offline');
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pendingBrowses.delete(requestId);
+        this.pendingRequests.delete(requestId);
         reject(new HttpError(504, 'daemon_timeout', 'Daemon did not respond in time'));
-      }, this.timing.browseTimeoutMs);
+      }, timeoutMs);
       timer.unref();
-      this.pendingBrowses.set(requestId, { machineId, timer, resolve, reject });
+      this.pendingRequests.set(requestId, {
+        machineId,
+        expects,
+        timer,
+        resolve: (reply) => resolve(reply as Extract<DaemonReply, { type: T }>),
+        reject,
+      });
       this.send(conn.ws, message(requestId));
     });
   }
 
-  private onFsListResult(
-    conn: DaemonConn,
-    msg: Extract<DaemonToHub, { type: 'fs.listResult' }>,
-  ): void {
-    const pending = this.pendingBrowses.get(msg.requestId);
-    if (!pending || pending.machineId !== conn.machineId) return;
+  /** daemon 只能回自己機器、且是同一種請求的 requestId；其他一律丟掉。 */
+  private onDaemonReply(conn: DaemonConn, msg: DaemonReply): void {
+    if (msg.type === 'session.purgeResult') {
+      // hub 已經回 504 的刪除，daemon 晚到的結果也要解鎖。
+      for (const [sessionId, lock] of this.deleting) {
+        if (lock.requestId === msg.requestId && lock.machineId === conn.machineId) {
+          // hub 已經回了 504：沒人等這個結果，但機器上可能已刪了東西，要查得到。
+          if (!this.pendingRequests.has(msg.requestId)) {
+            this.audit(
+              lock.userId,
+              sessionId,
+              'session.purge_late',
+              JSON.stringify({ result: msg.result, error: msg.error }),
+            );
+          }
+          this.releaseDeleteLock(sessionId, lock);
+        }
+      }
+    }
+    const pending = this.pendingRequests.get(msg.requestId);
+    if (!pending || pending.machineId !== conn.machineId || pending.expects !== msg.type) return;
     clearTimeout(pending.timer);
-    this.pendingBrowses.delete(msg.requestId);
-    if (msg.error !== null) pending.reject(new HttpError(400, 'fs_error', msg.error));
-    else pending.resolve({ path: msg.path, entries: msg.entries, repo: msg.repo });
+    this.pendingRequests.delete(msg.requestId);
+    pending.resolve(msg);
   }
 
-  private rejectBrowses(machineId: string, error: Error): void {
-    for (const [requestId, pending] of this.pendingBrowses) {
+  private rejectRequests(machineId: string, error: Error): void {
+    // daemon 斷線或機器被移除：刪除鎖一起解（daemon 那邊的清理已經中斷或結束）。
+    for (const [sessionId, lock] of this.deleting) {
+      if (lock.machineId === machineId) this.releaseDeleteLock(sessionId, lock);
+    }
+    for (const [requestId, pending] of this.pendingRequests) {
       if (pending.machineId !== machineId) continue;
       clearTimeout(pending.timer);
-      this.pendingBrowses.delete(requestId);
+      this.pendingRequests.delete(requestId);
       pending.reject(error);
     }
   }
@@ -1235,6 +1628,8 @@ export class Hub {
 
   // ── 推播 ─────────────────────────────────────────────
   private notifyAttention(session: Session): void {
+    // 封存的不推播（§9.1）：停止中的 session 可能還會回報一次狀態。
+    if (session.archived) return;
     const settings = this.store.getSettings();
     if (!settings.notifications.enabled) return;
     if (inQuietHours(settings.notifications.quietHours, this.deps.now())) return;
@@ -1370,11 +1765,13 @@ export class Hub {
     this.handoff.close();
     for (const pending of this.pendingCreates.values()) clearTimeout(pending.timer);
     this.pendingCreates.clear();
-    for (const pending of this.pendingBrowses.values()) {
+    for (const lock of this.deleting.values()) clearTimeout(lock.timer);
+    this.deleting.clear();
+    for (const pending of this.pendingRequests.values()) {
       clearTimeout(pending.timer);
       pending.reject(new HttpError(503, 'shutting_down', 'Hub is shutting down'));
     }
-    this.pendingBrowses.clear();
+    this.pendingRequests.clear();
     await this.pushesSettled();
     for (const conn of this.daemons.values()) {
       this.retireDaemon(conn);

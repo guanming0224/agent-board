@@ -284,6 +284,11 @@ export function createHubBackend() {
     createSession: (input) => call('sessionsCreate', { body: input }),
     updateSession: (id, patch) => call('sessionsUpdate', { params: { id }, body: patch }),
     stopSession: (id) => call('sessionsStop', { params: { id } }),
+    listArchivedSessions: () => call('sessionsList', { query: { archived: 'true' } }),
+    inspectSession: (id) => call('sessionInspect', { params: { id } }),
+    sessionTranscript: (id, query) => call('sessionTranscript', { params: { id }, query }),
+    deleteSession: async (id, options) =>
+      (await call('sessionsDelete', { params: { id }, body: options })).result,
     sendPrompt(sessionId, text) {
       hub.send({ type: 'terminal.input', sessionId, data: text });
       setTimeout(

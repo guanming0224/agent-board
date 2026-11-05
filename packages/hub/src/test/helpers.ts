@@ -38,7 +38,7 @@ export const runtime = (id: string, over: Partial<SessionRuntime> = {}): Session
   worktreePath: null,
   status: 'running',
   statusDetail: null,
-  claudeSessionId: 'claude-1',
+  claudeSessionId: '00000000-0000-4000-8000-000000000001',
   lastLines: [],
   lastOutputAt: null,
   statusSince: new Date().toISOString(),

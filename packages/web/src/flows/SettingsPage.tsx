@@ -17,6 +17,7 @@ import {
   useTwoStep,
   type Note,
 } from './common';
+import { ArchivedSection } from './ArchivedSection';
 import { AuditSection } from './AuditSection';
 import { chooseLocale, savedLocaleChoice, type LocaleChoice } from './locale';
 import { PairingPanel } from './PairingPanel';
@@ -933,6 +934,7 @@ export function SettingsPage() {
           )}
         </div>
       </div>
+      <ArchivedSection />
       <AuditSection />
     </Page>
   );

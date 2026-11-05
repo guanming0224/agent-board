@@ -1,11 +1,12 @@
 // 新增 session：左邊表單，右邊即時預覽實際執行的指令與額度警告（DISPATCH §5.3-2）。
 import { useCallback, useEffect, useState } from 'react';
-import { PermissionMode } from '@agent-board/protocol';
+import { AbsolutePath, ClaudeSessionId, PermissionMode } from '@agent-board/protocol';
 import type { Machine, Session, Settings } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { commandPreview } from './commandPreview';
 import {
+  createErrorText,
   Empty,
   ErrorBox,
   errorText,
@@ -22,7 +23,7 @@ import {
 import {
   Field,
   FolderBrowser,
-  folderName,
+  useFolderNameFill,
   isActive,
   ProjectSelect,
   suggestMachine,
@@ -127,6 +128,7 @@ export function NewSessionPage() {
   const [taskType, setTaskType] = useState<TaskType>('general');
   const [chosenMachine, setChosenMachine] = useState<string | null>(null);
   const [cwd, setCwd] = useState('');
+  const fillName = useFolderNameFill(name, setName);
   const [browsing, setBrowsing] = useState(false);
   const [worktreeChoice, setWorktreeChoice] = useState<boolean | null>(null);
   const [mode, setMode] = useState<PermissionMode>('default');
@@ -149,7 +151,10 @@ export function NewSessionPage() {
   // 同一個 working tree 才會互相改到檔案：同 repo 的不同子資料夾也算（daemon 回報的根目錄）。
   const advice = useWorktreeAdvice(machine, cwd);
   const useWorktree = worktreeOn(advice, worktreeChoice);
-  const resumable = sessions.filter((s) => s.claudeSessionId);
+  // 舊資料可能有不合格的 id（hub 會拒絕），不放進建議清單。
+  const resumable = sessions.filter(
+    (s) => s.claudeSessionId && ClaudeSessionId.safeParse(s.claudeSessionId).success,
+  );
   const resumed = sessions.find((s) => s.claudeSessionId === resume.trim());
   const accounts = [
     ...new Set(sessions.flatMap((s) => (s.accountProfile ? [s.accountProfile] : []))),
@@ -167,9 +172,14 @@ export function NewSessionPage() {
         ? t('flows.new.err.machineOffline', { machine: machine.name })
         : null,
     cwd: cwd.trim() ? null : t('flows.new.err.cwd'),
+    // 和 hub 的 SessionSpec 用同一組規則（protocol 的 AbsolutePath、ClaudeSessionId）。
     account:
-      trimmedAccount && !/^(\/|[A-Za-z]:[\\/])/.test(trimmedAccount)
+      trimmedAccount && !AbsolutePath.safeParse(trimmedAccount).success
         ? t('flows.new.err.account')
+        : null,
+    resume:
+      resume.trim() && !ClaudeSessionId.safeParse(resume.trim()).success
+        ? t('flows.new.err.resume')
         : null,
   };
   const firstError = Object.values(errors).find(Boolean) ?? null;
@@ -237,7 +247,7 @@ export function NewSessionPage() {
         ),
       });
     } catch (e) {
-      setNote({ text: t('flows.new.createFailed', { error: errorText(e) }), tone: 'err' });
+      setNote({ text: createErrorText(t, e), tone: 'err' });
     } finally {
       setBusy(false);
     }
@@ -428,10 +438,14 @@ export function NewSessionPage() {
               <FolderBrowser
                 machine={machine}
                 start={cwd.trim()}
+                onSelect={(path) => {
+                  setCwd(path);
+                  fillName(path);
+                }}
                 onPick={(path) => {
                   setCwd(path);
+                  fillName(path);
                   setBrowsing(false);
-                  if (!name.trim()) setName(folderName(path));
                 }}
                 onClose={() => setBrowsing(false)}
               />
@@ -504,12 +518,18 @@ export function NewSessionPage() {
             </datalist>
           </Field>
 
-          <Field label={t('flows.new.resume')} htmlFor="ns-resume" hint={t('flows.new.resumeHint')}>
+          <Field
+            label={t('flows.new.resume')}
+            htmlFor="ns-resume"
+            hint={t('flows.new.resumeHint')}
+            error={errors.resume}
+          >
             <input
               id="ns-resume"
               className="mono"
               list="ns-resume-list"
               value={resume}
+              aria-invalid={!!errors.resume}
               onChange={(e) => setResume(e.target.value)}
             />
             <datalist id="ns-resume-list">

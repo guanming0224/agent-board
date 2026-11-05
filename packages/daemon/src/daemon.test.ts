@@ -4,6 +4,7 @@ import { delimiter, dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { DaemonToHub } from '@agent-board/protocol';
 import type { Daemon } from './daemon';
+import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   dumpScreen,
@@ -128,12 +129,12 @@ describe('session 建立', () => {
       permissionMode: 'plan',
       model: 'opus',
       accountProfile: profile,
-      resumeClaudeSessionId: 'old-conversation',
+      resumeClaudeSessionId: '0a1b2c3d-0000-4000-8000-00000000c0de',
     });
     const [run] = h.runs();
     expect(run?.argv).toEqual([
       '--resume',
-      'old-conversation',
+      '0a1b2c3d-0000-4000-8000-00000000c0de',
       '--permission-mode',
       'plan',
       '--model',
@@ -143,7 +144,7 @@ describe('session 建立', () => {
     ]);
     expect(run?.env.CLAUDE_CONFIG_DIR).toBe(profile);
     const created = await h.hub.waitFor('session.created', (m) => m.requestId === 'req-s2');
-    expect(created.session.claudeSessionId).toBe('old-conversation');
+    expect(created.session.claudeSessionId).toBe('0a1b2c3d-0000-4000-8000-00000000c0de');
   });
 
   it('重送同一個 session.create 不會開第二個 PTY', async () => {
@@ -689,7 +690,11 @@ describe('結束', () => {
     await waitUntil(() => persistedEnded().length === 1, '結果記下');
     await h.hub.waitFor('daemon.hello', () => true, { includePast: false, timeoutMs: 15_000 });
     const session = h.daemons[0];
-    await session?.['createSession']('r2', 's1', h.spec({ resumeClaudeSessionId: 'old' }));
+    await session?.['createSession'](
+      'r2',
+      's1',
+      h.spec({ resumeClaudeSessionId: '0a1b2c3d-0000-4000-8000-0000000000aa' }),
+    );
     expect(persistedEnded()).toEqual([]);
     h.hub.send({ type: 'hub.welcome', machineId: 'm', dangerRules: [], stuckMinutes: 5 });
     await h.hub.waitFor('session.created', (m) => m.requestId === 'r2');
@@ -1168,6 +1173,270 @@ describe('其他 hub 指令', () => {
     expect(result.entries).toEqual([{ name: 'child', isDir: true, isGitRepo: false }]);
   });
 
+  it('session.inspect／session.transcript 走訊息流程，用預設的 Claude 設定資料夾', async () => {
+    const id = '0a1b2c3d-aaaa-bbbb-cccc-000011112222';
+    const project = join(h.claudeDir, 'projects', 'p');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(
+      join(project, `${id}.jsonl`),
+      `${JSON.stringify({ type: 'user', message: { content: 'hello' } })}\n`,
+    );
+    const target = {
+      sessionId: 's9',
+      cwd: h.workDir,
+      worktreePath: null,
+      branch: null,
+      claudeSessionId: id,
+      accountProfile: null,
+    };
+    h.hub.send({ type: 'session.inspect', requestId: 'i1', target });
+    const inspect = await h.hub.waitFor('session.inspectResult', (m) => m.requestId === 'i1');
+    expect(inspect.error).toBeNull();
+    expect(inspect.inspect).toMatchObject({ git: null, worktreeExists: false });
+    expect(inspect.inspect?.transcriptBytes).toBeGreaterThan(0);
+
+    h.hub.send({
+      type: 'session.transcript',
+      requestId: 't1',
+      claudeSessionId: id,
+      accountProfile: null,
+      cursor: 0,
+      limit: 10,
+      query: null,
+    });
+    const transcript = await h.hub.waitFor('session.transcriptResult', (m) => m.requestId === 't1');
+    expect(transcript.page).toMatchObject({
+      total: 1,
+      missing: false,
+      entries: [{ index: 0, role: 'user', text: 'hello' }],
+    });
+  });
+
+  it('session.purge：活著的 session 回 session_active、什麼都不清；結束後才清並忘掉', async () => {
+    await h.createAndSubscribe('s1');
+    const id = '0a1b2c3d-aaaa-bbbb-cccc-000011113333';
+    const project = join(h.claudeDir, 'projects', 'p');
+    mkdirSync(project, { recursive: true });
+    const transcript = join(project, `${id}.jsonl`);
+    writeFileSync(transcript, '{}\n');
+    mkdirSync(join(h.workDir, '.claude'), { recursive: true });
+    const settings = join(h.workDir, '.claude', 'settings.local.json');
+    const hookSettings = JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'agent-board-hook Stop' }] }] },
+    });
+    writeFileSync(settings, hookSettings);
+    const all = { removeWorktree: true, removeTranscript: true, removeHooks: true };
+    const target = {
+      sessionId: 's1',
+      cwd: h.workDir,
+      worktreePath: null,
+      branch: null,
+      claudeSessionId: id,
+      accountProfile: null,
+    };
+    const daemon = h.daemons[0]!;
+    h.hub.send({ type: 'session.purge', requestId: 'p1', target, options: all });
+    const first = await h.hub.waitFor('session.purgeResult', (m) => m.requestId === 'p1');
+    expect(first).toMatchObject({ result: null, error: 'session_active' });
+    expect(existsSync(transcript)).toBe(true);
+    expect(readFileSync(settings, 'utf8')).toBe(hookSettings);
+    expect(persisted().sessions.map((s) => s.sessionId)).toEqual(['s1']);
+    expect(daemon['sessions'].has('s1')).toBe(true);
+
+    input('s1', 'exit 0');
+    await h.hub.waitFor(
+      'session.runtime',
+      (m) => m.session.id === 's1' && m.session.endedAt !== null,
+    );
+    expect(daemon['sessions'].has('s1')).toBe(true); // 結束的畫面還留著給人看
+    // 同一個 id 連送兩次：依序執行，第二次看到的是已經清掉的狀態。
+    h.hub.send({ type: 'session.purge', requestId: 'p2', target, options: all });
+    h.hub.send({ type: 'session.purge', requestId: 'p3', target, options: all });
+    const second = await h.hub.waitFor('session.purgeResult', (m) => m.requestId === 'p2');
+    const third = await h.hub.waitFor('session.purgeResult', (m) => m.requestId === 'p3');
+    expect(second.result).toMatchObject({
+      transcript: { status: 'removed' },
+      hooks: { status: 'removed' },
+      worktree: { status: 'not_found' },
+    });
+    expect(third.result).toMatchObject({
+      transcript: { status: 'not_found' },
+      hooks: { status: 'not_found' },
+    });
+    expect(existsSync(transcript)).toBe(false);
+    expect(daemon['sessions'].has('s1')).toBe(false);
+    expect(persisted().sessions).toEqual([]);
+    expect(persistedEnded()).toEqual([]);
+  });
+
+  it('清理中的 session 不能建立（session_deleting）', async () => {
+    const daemon = h.daemons[0]!;
+    daemon['purging'].add('s2');
+    h.hub.send({ type: 'session.create', requestId: 'c2', sessionId: 's2', spec: h.spec() });
+    const failed = await h.hub.waitFor('session.createFailed', (m) => m.requestId === 'c2');
+    expect(failed.error).toBe('session_deleting');
+    expect(h.installHookCalls).toEqual([]);
+  });
+
+  it('accountProfile 不是絕對路徑：勾對話紀錄的 purge 回 error，不忘掉 session；沒勾就照常清', async () => {
+    await h.createAndSubscribe('s3');
+    input('s3', 'exit 0');
+    await h.hub.waitFor(
+      'session.runtime',
+      (m) => m.session.id === 's3' && m.session.endedAt !== null,
+    );
+    const daemon = h.daemons[0]!;
+    const target = {
+      sessionId: 's3',
+      cwd: h.workDir,
+      worktreePath: null,
+      branch: null,
+      claudeSessionId: null,
+      accountProfile: 'rel/.claude',
+    };
+    const none = { removeWorktree: false, removeTranscript: false, removeHooks: false };
+    h.hub.send({
+      type: 'session.purge',
+      requestId: 'p9',
+      target,
+      options: { ...none, removeTranscript: true },
+    });
+    const result = await h.hub.waitFor('session.purgeResult', (m) => m.requestId === 'p9');
+    expect(result.result).toBeNull();
+    expect(result.error).toContain('absolute');
+    expect(daemon['sessions'].has('s3')).toBe(true); // 驗證失敗不先忘掉
+
+    h.hub.send({
+      type: 'session.purge',
+      requestId: 'p10',
+      target,
+      options: { ...none, removeHooks: true },
+    });
+    const ok = await h.hub.waitFor('session.purgeResult', (m) => m.requestId === 'p10');
+    expect(ok).toMatchObject({ error: null, result: { hooks: { status: 'not_found' } } });
+    expect(daemon['sessions'].has('s3')).toBe(false);
+  });
+
+  it('清理範圍裡有其他活著或建立中的 session：回 session_active、什麼都不清、撤銷登記', async () => {
+    const wt = join(h.workDir, 'wt2');
+    const sub = join(wt, 'sub');
+    mkdirSync(sub, { recursive: true });
+    const settings = join(sub, '.claude', 'settings.local.json');
+    mkdirSync(dirname(settings));
+    const hooks = JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'agent-board-hook Stop' }] }] },
+    });
+    writeFileSync(settings, hooks);
+    const transcriptId = '0a1b2c3d-aaaa-bbbb-cccc-000011114444';
+    const project = join(h.claudeDir, 'projects', 'p');
+    mkdirSync(project, { recursive: true });
+    const transcript = join(project, `${transcriptId}.jsonl`);
+    writeFileSync(transcript, '{}\n');
+    const all = { removeWorktree: true, removeTranscript: true, removeHooks: true };
+    const purge = async (requestId: string, over: object) => {
+      h.hub.send({
+        type: 'session.purge',
+        requestId,
+        target: {
+          sessionId: 'old',
+          cwd: sub,
+          worktreePath: null,
+          branch: null,
+          claudeSessionId: transcriptId,
+          accountProfile: null,
+          ...over,
+        },
+        options: all,
+      });
+      return h.hub.waitFor('session.purgeResult', (m) => m.requestId === requestId);
+    };
+    const daemon = h.daemons[0]!;
+
+    // 另一個 session 正在這個 worktree 的子資料夾裡跑。
+    await h.createAndSubscribe('other', { cwd: sub });
+    expect(await purge('b1', {})).toMatchObject({ result: null, error: 'session_active' });
+    expect(await purge('b2', { cwd: join(h.workDir, 'x'), worktreePath: wt })).toMatchObject({
+      error: 'session_active',
+    });
+    expect(readFileSync(settings, 'utf8')).toBe(hooks);
+    expect(existsSync(transcript)).toBe(true);
+    expect(daemon['purging'].size).toBe(0);
+    expect(daemon['purgingDirs'].size).toBe(0);
+
+    // 結束後就不算，照常清。
+    input('other', 'exit 0');
+    await h.hub.waitFor(
+      'session.runtime',
+      (m) => m.session.id === 'other' && m.session.endedAt !== null,
+    );
+    const ok = await purge('b3', {});
+    expect(ok.error).toBeNull();
+    expect(ok.result).toMatchObject({
+      hooks: { status: 'removed' },
+      transcript: { status: 'removed' },
+    });
+
+    // 建立中（還沒開起來）的也算。
+    let finish!: () => void;
+    daemon['creating'].set('pending', new Promise<void>((resolve) => (finish = resolve)));
+    daemon['sessionDirs'].set('pending', realpathSync(sub));
+    expect(await purge('b4', {})).toMatchObject({ error: 'session_active' });
+    finish();
+    daemon['creating'].delete('pending');
+  });
+
+  it('清理中的 worktree／cwd 不能開新 session（hub 的鎖不在也擋得住），清完就可以', async () => {
+    const wt = join(h.workDir, 'wt');
+    const cwd = join(wt, 'sub');
+    mkdirSync(cwd, { recursive: true });
+    // 卡住 cwd 的 hook 設定檔鎖，讓 purge 停在拿 hook 的那一步。
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const locked = withFileLock(await hookSettingsLockKey(cwd), () => held);
+    h.hub.send({
+      type: 'session.purge',
+      requestId: 'pd',
+      target: {
+        sessionId: 'gone',
+        cwd,
+        worktreePath: wt,
+        branch: 'ab/x',
+        claudeSessionId: null,
+        accountProfile: null,
+      },
+      options: { removeWorktree: true, removeTranscript: false, removeHooks: true },
+    });
+    const daemon = h.daemons[0]!;
+    await waitUntil(() => daemon['purgingDirs'].size === 1, 'purge 開始');
+
+    for (const [requestId, dir] of [
+      ['in-wt', wt],
+      ['in-sub', cwd],
+    ] as const) {
+      h.hub.send({
+        type: 'session.create',
+        requestId,
+        sessionId: requestId,
+        spec: h.spec({ cwd: dir }),
+      });
+      const failed = await h.hub.waitFor('session.createFailed', (m) => m.requestId === requestId);
+      expect(failed.error).toBe('session_deleting');
+    }
+
+    release();
+    await locked;
+    const done = await h.hub.waitFor('session.purgeResult', (m) => m.requestId === 'pd');
+    expect(done.error).toBeNull();
+    expect(daemon['purgingDirs'].size).toBe(0);
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'after',
+      sessionId: 'after',
+      spec: h.spec({ cwd: wt }),
+    });
+    await h.hub.waitFor('session.created', (m) => m.requestId === 'after');
+  });
+
   it('連上後回報 usage（來自設定資料夾）', async () => {
     for (const daemon of h.daemons.splice(0)) await daemon.stop();
     const project = join(h.claudeDir, 'projects', 'p');
@@ -1418,7 +1687,7 @@ describe('與 hub 的語意（Agent C）', () => {
       type: 'session.create',
       requestId: 'resume-alive',
       sessionId: 's1',
-      spec: h.spec({ resumeClaudeSessionId: 'whatever' }),
+      spec: h.spec({ resumeClaudeSessionId: '0a1b2c3d-0000-4000-8000-0000000000bb' }),
     });
     await h.hub.waitFor('session.created', (m) => m.requestId === 'resume-alive');
     expect(h.runs()).toHaveLength(1);
@@ -1462,7 +1731,7 @@ describe('與 hub 的語意（Agent C）', () => {
       type: 'session.create',
       requestId: 'resume-main',
       sessionId: 'plain',
-      spec: h.spec({ cwd: repo, resumeClaudeSessionId: 'x' }),
+      spec: h.spec({ cwd: repo, resumeClaudeSessionId: '0a1b2c3d-0000-4000-8000-0000000000cc' }),
     });
     const plain = await h.hub.waitFor('session.created', (m) => m.requestId === 'resume-main');
     expect(plain.session.worktreePath).toBeNull();

@@ -7,6 +7,7 @@ registerMessages('zh-TW', zhTW);
 registerMessages('en', en);
 restoreLocale();
 
+export { ArchivePage } from './ArchivePage';
 export { InboxPage } from './InboxPage';
 export { LoginPage } from './LoginPage';
 export { NewSessionPage } from './NewSessionPage';
@@ -14,3 +15,4 @@ export { QuickCreate } from './QuickCreate';
 export { OnboardingPage } from './OnboardingPage';
 export { ReviewPage, SessionReviewCards } from './ReviewPage';
 export { SettingsPage } from './SettingsPage';
+export { Dialog } from './Dialog';

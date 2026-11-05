@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties, type RefObject } from 'react';
+import { useCallback, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import {
   Handle,
   Position,
@@ -25,6 +25,7 @@ import {
   ModeChip,
   useViewsUi,
 } from '../views';
+import { CardMenu, MenuButton, RenameInput } from './CardMenu';
 import { CommandInput } from './CommandInput';
 import { DoneHint } from './DoneHint';
 import { fitCardZoom, STRIP_W } from './layout';
@@ -110,17 +111,31 @@ function Actions({
   );
 }
 
-export function CardHead({ session }: { session: Session }) {
+/** menu：畫布上的卡片才有「⋯」（重新命名、封存）；全尺寸頁沒有。 */
+export function CardHead({ session, menu = false }: { session: Session; menu?: boolean }) {
   const t = useT();
   const danger = useBoard((s) => dangerApproval(s.approvals, session.id));
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
   return (
     <>
       {danger && <div className="danger-tag">{t('canvas.danger')}</div>}
       <div className="head">
         <Lamp status={session.status} />
-        <span className="title">{session.name}</span>
+        {renaming ? (
+          <RenameInput session={session} onDone={() => setRenaming(false)} />
+        ) : (
+          <span className="title">{session.name}</span>
+        )}
         <Age session={session} />
+        {menu && (
+          <MenuButton session={session} open={menuOpen} onToggle={() => setMenuOpen((v) => !v)} />
+        )}
       </div>
+      {menuOpen && (
+        <CardMenu session={session} onRename={() => setRenaming(true)} onClose={closeMenu} />
+      )}
       <div className="sign">
         <Callsign session={session} />
         <ModeChip mode={session.permissionMode} />
@@ -237,7 +252,7 @@ export function SessionNode({
               if (expanded && !fromControl(e.target)) toggleExpanded(session.id);
             }}
           >
-            <CardHead session={session} />
+            <CardHead session={session} menu />
             <div className="term-acts">
               <Actions session={session} isTerminal onOpenTerminal={() => {}} inputRef={inputRef} />
               <button className="nodrag" onClick={openFull} data-testid="open-full">
@@ -277,7 +292,7 @@ export function SessionNode({
             if (session.status !== 'offline' && !fromControl(e.target)) openTerminal();
           }}
         >
-          <CardHead session={session} />
+          <CardHead session={session} menu />
           <pre className="tail">{mask(session.lastLines.join('\n'))}</pre>
           {session.status !== 'offline' && (
             <ContextUsage tokens={session.contextTokens} window={session.contextWindow} />

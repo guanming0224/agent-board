@@ -327,6 +327,11 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     sessionsUpdate: (ctx) => hub.updateSession(param(ctx), ctx.body, ctx.user),
     sessionsStop: (ctx) => hub.stopSession(param(ctx), ctx.user),
     sessionsResume: (ctx) => hub.resumeSession(param(ctx), ctx.user),
+    sessionInspect: (ctx) => hub.inspectSession(param(ctx)),
+    sessionTranscript: (ctx) => hub.sessionTranscript(param(ctx), ctx.query),
+    sessionsDelete: async (ctx) => ({
+      result: await hub.deleteSession(param(ctx), ctx.body, ctx.user),
+    }),
     sessionEvents: (ctx) => {
       const id = param(ctx);
       if (!store.getSession(id)) throw notFound('Session');

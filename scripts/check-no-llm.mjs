@@ -68,6 +68,7 @@ const CALL_SITES = new Set([
   'packages/daemon/src/resources.ts child-process',
   'packages/daemon/src/resources.ts systeminformation',
   'packages/daemon/src/worktree.ts child-process',
+  'packages/daemon/src/sessionFiles.ts child-process',
   'packages/daemon/src/hookServer.ts node-network',
   // hook：只連 daemon 的本機 socket
   'packages/hook/src/cli.ts node-network',

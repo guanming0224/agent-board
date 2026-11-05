@@ -1,5 +1,13 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -35,6 +43,8 @@ test.describe.configure({ mode: 'serial' });
 
 let daemon: ChildProcess | undefined;
 let daemonDir: string;
+/** daemon 的 CLAUDE_CONFIG_DIR：對話紀錄的讀取與刪除只碰這個暫存資料夾，絕不碰真的 ~/.claude。 */
+let claudeConfigDir: string;
 let repo: string;
 let session: Session;
 
@@ -45,6 +55,7 @@ function daemonEnv(dataDir: string): NodeJS.ProcessEnv {
     AGENT_BOARD_DATA_DIR: dataDir,
     AGENT_BOARD_CLAUDE_BIN: FAKE_CLAUDE,
     AGENT_BOARD_MACHINE_NAME: 'e2e-machine',
+    CLAUDE_CONFIG_DIR: claudeConfigDir,
   };
 }
 
@@ -71,6 +82,13 @@ async function getSession(request: APIRequestContext, id: string): Promise<Sessi
   const sessions = (await (await request.get('/api/sessions')).json()) as Session[];
   const found = sessions.find((s) => s.id === id);
   if (!found) throw new Error(`no session ${id}`);
+  return found;
+}
+
+async function getArchived(request: APIRequestContext, id: string): Promise<Session> {
+  const sessions = (await (await request.get('/api/sessions?archived=true')).json()) as Session[];
+  const found = sessions.find((s) => s.id === id);
+  if (!found) throw new Error(`no archived session ${id}`);
   return found;
 }
 
@@ -119,6 +137,7 @@ test.beforeAll(async ({ browser }) => {
   shared = await browser.newContext({ baseURL: HUB, locale: 'zh-TW' });
   chmodSync(FAKE_CLAUDE, 0o755);
   daemonDir = mkdtempSync(join(tmpdir(), 'ab-e2e-daemon-'));
+  claudeConfigDir = mkdtempSync(join(tmpdir(), 'ab-e2e-claude-'));
   repo = mkdtempSync(join(tmpdir(), 'ab-e2e-repo-'));
   execFileSync('git', ['init', '-q', '-b', 'main', repo]);
 });
@@ -328,6 +347,84 @@ test('claude 自己結束（exit 0）轉為完成；異常結束顯示錯誤', a
   await expectStatus(page.request, session.id, 'done');
   const ended = await getSession(page.request, session.id);
   expect(ended.endedAt).not.toBeNull();
+});
+
+test('封存 → 已封存清單 → 舊資料頁讀對話與搜尋 → 刪除（真 hub、真 daemon）', async ({ page }) => {
+  const ended = await getSession(page.request, session.id);
+  expect(ended.endedAt).not.toBeNull();
+  // 假 claude 不寫對話紀錄：放一份到 daemon 的 CLAUDE_CONFIG_DIR，位置照 Claude Code 的規則。
+  const projectDir = join(claudeConfigDir, 'projects', '-tmp-e2e-repo');
+  mkdirSync(projectDir, { recursive: true });
+  const transcript = join(projectDir, `${ended.claudeSessionId}.jsonl`);
+  const line = (fields: Record<string, unknown>) => JSON.stringify(fields);
+  writeFileSync(
+    transcript,
+    [
+      line({
+        type: 'user',
+        timestamp: '2026-11-05T01:00:00Z',
+        message: { content: 'hello archive' },
+      }),
+      line({
+        type: 'assistant',
+        timestamp: '2026-11-05T01:00:05Z',
+        message: { content: [{ type: 'text', text: 'Sure, writing notes.md' }] },
+      }),
+      line({ type: 'user', isMeta: true, message: { content: 'meta line is skipped' } }),
+      line({ type: 'user', timestamp: '2026-11-05T01:01:00Z', message: { content: 'thanks' } }),
+    ].join('\n') + '\n',
+  );
+
+  // 畫布：卡片的「⋯」→ 封存（已結束的直接封存），卡片消失
+  await page.goto('/#/canvas');
+  const card = page.getByTestId(`card-${session.id}`);
+  await card.getByRole('button', { name: /的更多動作$/ }).click();
+  await card.getByRole('menuitem', { name: '封存' }).click();
+  await expect(card).toHaveCount(0);
+  const archived = await getArchived(page.request, session.id);
+  expect(archived.archived).toBe(true);
+  expect(archived.archivedAt).not.toBeNull();
+
+  // 設定頁已封存清單：對話大小由 daemon 實際量到
+  await page.goto('/#/settings');
+  const row = page.getByTestId(`archived-${session.id}`);
+  await expect(row.getByTestId('archived-size')).toHaveText(/^對話 \d+(\.\d+)? (B|KB)$/);
+
+  // 舊資料頁：讀對話、搜尋
+  await row
+    .getByRole('link', { name: '開啟' })
+    .or(row.getByRole('button', { name: '開啟' }))
+    .click();
+  await expect(page).toHaveURL(new RegExp(`#/archive/${session.id}$`));
+  await expect(page.getByTestId('transcript-count')).toHaveText('共 3 則');
+  await expect(page.getByTestId('transcript-entry').first()).toContainText('hello archive');
+  await page.getByRole('searchbox').last().fill('notes');
+  await page.getByRole('searchbox').last().press('Enter');
+  await expect(page.getByTestId('transcript-count')).toHaveText('符合 1 則（共 3 則）');
+
+  // 刪除：勾對話紀錄，按兩次
+  await page.goto('/#/settings');
+  await page.getByTestId(`archived-${session.id}`).getByRole('button', { name: '刪除' }).click();
+  const dialog = page.getByTestId('purge-dialog');
+  await dialog.getByRole('checkbox', { name: /刪掉 Claude 對話紀錄/ }).check();
+  await dialog.getByRole('button', { name: '刪除', exact: true }).click();
+  await page.waitForTimeout(400);
+  await dialog.getByRole('button', { name: '確認刪除' }).click();
+  await expect(dialog.getByRole('heading', { level: 2 })).toContainText('已刪除');
+  await expect(dialog.getByTestId('purge-outcome').nth(2)).toHaveAttribute(
+    'data-status',
+    'removed',
+  );
+
+  // 機器上：對話紀錄沒了，專案資料夾還在；hub：紀錄沒了，audit 留著
+  expect(existsSync(transcript)).toBe(false);
+  expect(existsSync(join(repo, '.git'))).toBe(true);
+  const left = (await (await page.request.get('/api/sessions?archived=true')).json()) as Session[];
+  expect(left.some((s) => s.id === session.id)).toBe(false);
+  const audit = (await (
+    await page.request.get(`/api/audit?sessionId=${session.id}&action=session.delete`)
+  ).json()) as unknown[];
+  expect(audit).toHaveLength(1);
 });
 
 test('登出之後，API 與 WebSocket 都進不去', async ({ page }) => {

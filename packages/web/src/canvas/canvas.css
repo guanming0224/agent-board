@@ -375,3 +375,82 @@ input.cmd:disabled {
   line-height: 1.4;
   color: var(--muted);
 }
+
+/* 卡片「⋯」選單：展開在標題列下方，不浮在 xterm 上（規則三之一） */
+.menu-btn {
+  min-height: 24px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+}
+.menu-btn[aria-expanded='true'] {
+  border-color: var(--border-2);
+  background: var(--surface-2);
+  color: var(--fg);
+}
+.card-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -2px;
+  cursor: auto;
+}
+.card-menu button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+.rename {
+  display: inline-flex;
+  flex: 1 1 140px;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  cursor: auto;
+}
+.rename .msg {
+  color: var(--fault);
+  font-size: 12px;
+}
+/* 選取的卡片（點一下或 Shift＋拖曳框選）：白色虛線，和「框出」的實線分開 */
+.canvas .react-flow__node.selected .frame {
+  outline: calc(2px / var(--z)) dashed var(--ring);
+  outline-offset: calc(4px / var(--z));
+}
+.canvas .react-flow__node.selected .frame.spot {
+  outline-style: solid;
+}
+.canvas .react-flow__nodesselection-rect,
+.canvas .react-flow__selection {
+  border: 1px dashed var(--ring);
+  background: var(--accent-bg);
+}
+/* 封存後的「復原」提示 */
+.canvas .archive-toast {
+  display: grid;
+  gap: 8px;
+  max-width: min(520px, calc(100% - 32px));
+  margin-bottom: 16px;
+}
+.canvas .archive-toast .toast-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+  font-size: 13.5px;
+}
+.canvas .archive-toast .toast-row button {
+  min-height: 30px;
+}
+.canvas .archive-toast .alert button {
+  min-height: 28px;
+  margin-left: auto;
+}

@@ -1,7 +1,8 @@
 // 把 PTY、hub 連線、hook socket、approval、資源與用量接在一起。狀態機與 hook 安裝由外部注入。
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, statSync } from 'node:fs';
-import { basename, delimiter, dirname, extname, resolve } from 'node:path';
+import { realpath } from 'node:fs/promises';
+import { basename, delimiter, dirname, extname, resolve, sep } from 'node:path';
 import {
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
@@ -19,13 +20,16 @@ import pkg from '../package.json' with { type: 'json' };
 import { ApprovalManager } from './approvals';
 import type { DaemonConfig } from './config';
 import { listDirectory, makeDirectory } from './fsList';
+import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { HookServer, type HookOutput } from './hookServer';
 import { HubClient } from './hubClient';
 import { errorMessage, log } from './log';
 import { probeCapabilities, ResourceMonitor, type ResourceMonitorOptions } from './resources';
 import { buildClaudeArgs, ManagedSession } from './session';
+import { claudeConfigFor, inspectSession, purgeSession } from './sessionFiles';
 import type { CreateStatusTracker } from './status/types';
 import { SessionStore, type PersistedSession } from './store';
+import { readTranscript } from './transcript';
 import { summarizeUsage } from './usage';
 import {
   createWorktree,
@@ -126,6 +130,13 @@ function findHook(bin: string, env: NodeJS.ProcessEnv): string {
   return found;
 }
 
+const realDir = (dir: string): Promise<string> => realpath(dir).catch(() => resolve(dir));
+
+/** path（已 realpath）等於或落在任一 dirs 裡。 */
+function within(path: string, dirs: readonly string[]): boolean {
+  return dirs.some((dir) => path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep));
+}
+
 function assertDirectory(path: string): void {
   let isDir = false;
   try {
@@ -174,6 +185,16 @@ export class Daemon {
   private readonly resources: ResourceMonitor;
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly creating = new Map<string, Promise<void>>();
+  /** 正在清理檔案的 session（§9.6）：期間不能建立；同一個 id 的 purge 依序執行。 */
+  private readonly purging = new Set<string>();
+  private readonly purgeChains = new Map<string, Promise<void>>();
+  /**
+   * 清理中的 worktree 與 cwd（realpath），以 session id 為鍵。新 session 開在這些資料夾裡一律拒絕：
+   * hub 的鎖可能已經不在（斷線、到期、hub 重啟），這是第二道防線（§9.6）。
+   */
+  private readonly purgingDirs = new Map<string, string[]>();
+  /** 每個 session 的工作資料夾 realpath（建立中先記 spec.cwd，開起來後換成實際 cwd），purge 用來找「其他」session。 */
+  private readonly sessionDirs = new Map<string, string>();
   private readonly accountProfiles = new Set<string>();
   private readonly baseEnv: NodeJS.ProcessEnv;
   private dangerRules: string[];
@@ -357,9 +378,143 @@ export class Daemon {
           this.send(result),
         );
         return;
+      case 'session.inspect':
+      case 'session.purge':
+      case 'session.transcript':
+        void this.handleSessionFiles(message);
+        return;
       default:
         message satisfies never;
     }
+  }
+
+  /** 封存與刪除（CONTRACTS §9）：例外一律變成 error 回給 hub，不讓它等到逾時。 */
+  private async handleSessionFiles(
+    message: Extract<
+      HubToDaemon,
+      { type: 'session.inspect' | 'session.purge' | 'session.transcript' }
+    >,
+  ): Promise<void> {
+    const { requestId } = message;
+    const configDir = this.deps.config.claudeConfigDir;
+    try {
+      switch (message.type) {
+        case 'session.inspect': {
+          const inspect = await inspectSession(message.target, configDir);
+          this.send({ type: 'session.inspectResult', requestId, inspect, error: null });
+          return;
+        }
+        case 'session.purge':
+          await this.purgeSerialized(message);
+          return;
+        case 'session.transcript': {
+          const page = await readTranscript(
+            claudeConfigFor(message.accountProfile, configDir),
+            message.claudeSessionId,
+            { cursor: message.cursor, limit: message.limit, query: message.query },
+          );
+          this.send({ type: 'session.transcriptResult', requestId, page, error: null });
+          return;
+        }
+      }
+    } catch (error) {
+      const text = errorMessage(error);
+      log.warn(`${message.type} 失敗：${text}`);
+      if (message.type === 'session.inspect') {
+        this.send({ type: 'session.inspectResult', requestId, inspect: null, error: text });
+      } else if (message.type === 'session.purge') {
+        this.send({ type: 'session.purgeResult', requestId, result: null, error: text });
+      } else {
+        this.send({ type: 'session.transcriptResult', requestId, page: null, error: text });
+      }
+    }
+  }
+
+  /** 同一個 id 的 purge 依序執行，不讓兩次清理交錯。 */
+  private purgeSerialized(message: Extract<HubToDaemon, { type: 'session.purge' }>): Promise<void> {
+    const id = message.target.sessionId;
+    const run = (this.purgeChains.get(id) ?? Promise.resolve()).then(() => this.purgeOnce(message));
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.purgeChains.set(id, tail);
+    void tail.then(() => {
+      if (this.purgeChains.get(id) === tail) this.purgeChains.delete(id);
+    });
+    return run;
+  }
+
+  /**
+   * hub 已保證 session 結束了；萬一 PTY 還活著或正在開（例如刪除期間被接續），
+   * 回 error 'session_active'，什麼都不清、不殺（§9.6）。
+   */
+  private async purgeOnce(message: Extract<HubToDaemon, { type: 'session.purge' }>): Promise<void> {
+    const { requestId, target, options } = message;
+    const id = target.sessionId;
+    // 先驗證再忘掉 session：accountProfile 不合法就整個拒絕，本機清單保持原樣。
+    if (options.removeTranscript) {
+      claudeConfigFor(target.accountProfile, this.deps.config.claudeConfigDir);
+    }
+    const dirs = [
+      ...new Set(
+        await Promise.all(
+          [target.worktreePath, target.cwd]
+            .filter((dir): dir is string => dir !== null)
+            .map(realDir),
+        ),
+      ),
+    ];
+    // 從這裡到登記 purging 之間沒有 await：檢查與登記不會被建立插隊。
+    if (this.sessions.get(id)?.isAlive || this.creating.has(id)) {
+      log.warn(`session ${id} 還在執行，不清理`);
+      this.send({ type: 'session.purgeResult', requestId, result: null, error: 'session_active' });
+      return;
+    }
+    this.purging.add(id);
+    this.purgingDirs.set(id, dirs);
+    // 同一個同步區段：清理中的資料夾裡有其他活著或建立中的 session → 不清，撤銷登記。
+    // createSessionOnce 也是「先查 purgingDirs、再登記 sessionDirs」同步完成，誰先誰後都看得到對方。
+    const busy = [...this.sessionDirs].find(
+      ([other, dir]) =>
+        other !== id &&
+        (this.sessions.get(other)?.isAlive === true || this.creating.has(other)) &&
+        within(dir, dirs),
+    );
+    if (busy) {
+      this.purging.delete(id);
+      this.purgingDirs.delete(id);
+      log.warn(`清理範圍裡有執行中的 session ${busy[0]}，不清理 ${id}`);
+      this.send({ type: 'session.purgeResult', requestId, result: null, error: 'session_active' });
+      return;
+    }
+    try {
+      this.forgetSession(id);
+      const result = await purgeSession(target, options, this.deps.config.claudeConfigDir);
+      this.send({ type: 'session.purgeResult', requestId, result, error: null });
+    } finally {
+      this.purging.delete(id);
+      this.purgingDirs.delete(id);
+    }
+  }
+
+  /** realCwd（已 realpath）等於或落在清理中的資料夾裡。同步，讓檢查與登記在同一個區段。 */
+  private inPurgingDir(realCwd: string): boolean {
+    for (const dirs of this.purgingDirs.values()) {
+      if (within(realCwd, dirs)) return true;
+    }
+    return false;
+  }
+
+  /** hub 要永久刪除：本機清單（接回清單、還沒送出的結果、留著給人看的畫面）都忘掉這個 id。 */
+  private forgetSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    session?.dispose();
+    this.sessions.delete(sessionId);
+    this.sessionDirs.delete(sessionId);
+    this.approvals.cancelSession(sessionId);
+    if (this.store.sessions.some((s) => s.sessionId === sessionId)) this.store.remove(sessionId);
+    this.store.removeEnded(sessionId);
   }
 
   private withSession(id: string, action: string, fn: (session: ManagedSession) => void): void {
@@ -405,6 +560,12 @@ export class Daemon {
     let worktree: WorktreeInfo | null = null;
     try {
       if (this.stopping) throw new Error('daemon 正在關閉');
+      const realCwd = await realDir(spec.cwd);
+      // 同步區段：查清理中的資料夾、登記自己（與 purgeOnce 對稱）。
+      if (this.purging.has(sessionId) || this.inPurgingDir(realCwd)) {
+        throw new Error('session_deleting');
+      }
+      this.sessionDirs.set(sessionId, realCwd);
       this.assertCanLaunch();
       assertDirectory(spec.cwd);
       if (spec.useWorktree) worktree = await createWorktree(spec.cwd, spec.name, sessionId);
@@ -441,6 +602,8 @@ export class Daemon {
           log.warn(`清除 worktree 失敗：${errorMessage(cleanupError)}`),
         );
       }
+      // 沒開起來：不留登記（同 id 還留著已結束的畫面時，它本來就不算活著）。
+      if (!this.sessions.get(sessionId)?.isAlive) this.sessionDirs.delete(sessionId);
       this.send({ type: 'session.createFailed', requestId, error: errorMessage(error) });
     }
   }
@@ -488,7 +651,8 @@ export class Daemon {
   /** hook 沒裝上時危險指令檢查不會執行，各種權限模式都不開 PTY（CONTRACTS §4.1）。 */
   private async installHooksOrThrow(cwd: string): Promise<void> {
     try {
-      await this.deps.installHooks(cwd);
+      // 與刪除時的 hook 移除共用同一把鎖（§9.6）。
+      await withFileLock(await hookSettingsLockKey(cwd), () => this.deps.installHooks(cwd));
     } catch (error) {
       throw new Error(
         `無法安裝 hook 設定（${errorMessage(error)}）。請修好 ${cwd}/.claude/settings.local.json，再重新開啟 session。`,
@@ -544,6 +708,8 @@ export class Daemon {
       onExit: (exitCode) => this.handleSessionExit(sessionId, exitCode),
     });
     this.sessions.set(sessionId, session);
+    // 實際的工作資料夾（worktree session 是 worktree 裡的 cwd）；daemon 重啟接回的也在這裡登記。
+    this.sessionDirs.set(sessionId, await realDir(entry.cwd));
     return session;
   }
 
@@ -574,6 +740,7 @@ export class Daemon {
     for (const session of ended.slice(0, Math.max(0, ended.length - MAX_ENDED_SESSIONS))) {
       session.dispose();
       this.sessions.delete(session.id);
+      this.sessionDirs.delete(session.id);
     }
   }
 

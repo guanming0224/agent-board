@@ -74,6 +74,7 @@ interface SessionRow {
   created_at: string;
   ended_at: string | null;
   archived: number;
+  archived_at: string | null;
   pending_spec: string | null;
   pre_offline_status: SessionStatus | null;
 }
@@ -148,6 +149,7 @@ const toSession = (r: SessionRow): Session => ({
   createdAt: r.created_at,
   endedAt: r.ended_at,
   archived: r.archived === 1,
+  archivedAt: r.archived_at,
 });
 
 const toTeam = (r: TeamRow): Team => ({
@@ -416,11 +418,11 @@ export class Store {
         `INSERT INTO sessions (id, machine_id, project_id, name, cwd, branch, worktree_path,
            permission_mode, model, account_profile, status, status_detail, claude_session_id,
            last_lines, last_output_at, status_since, context_tokens, created_at, ended_at, archived,
-           pending_spec, context_window, repo_root, repo_common_dir)
+           archived_at, pending_spec, context_window, repo_root, repo_common_dir)
          VALUES (@id, @machineId, @projectId, @name, @cwd, @branch, @worktreePath,
            @permissionMode, @model, @accountProfile, @status, @statusDetail, @claudeSessionId,
            @lastLines, @lastOutputAt, @statusSince, @contextTokens, @createdAt, @endedAt, @archived,
-           @pendingSpec, @contextWindow, @repoRoot, @repoCommonDir)`,
+           @archivedAt, @pendingSpec, @contextWindow, @repoRoot, @repoCommonDir)`,
       )
       .run({
         ...session,
@@ -438,7 +440,8 @@ export class Store {
            claude_session_id = @claudeSessionId, last_lines = @lastLines,
            last_output_at = @lastOutputAt, status_since = @statusSince,
            context_tokens = @contextTokens, ended_at = @endedAt, archived = @archived,
-           context_window = @contextWindow, repo_root = @repoRoot, repo_common_dir = @repoCommonDir
+           archived_at = @archivedAt, context_window = @contextWindow, repo_root = @repoRoot,
+           repo_common_dir = @repoCommonDir
          WHERE id = @id`,
       )
       .run({
@@ -457,6 +460,7 @@ export class Store {
         contextTokens: session.contextTokens,
         endedAt: session.endedAt,
         archived: session.archived ? 1 : 0,
+        archivedAt: session.archivedAt,
         contextWindow: session.contextWindow,
         repoRoot: session.repoRoot,
         repoCommonDir: session.repoCommonDir,
@@ -483,6 +487,60 @@ export class Store {
             .prepare('SELECT * FROM sessions WHERE archived = ? ORDER BY created_at, rowid')
             .all(archived ? 1 : 0);
     return (rows as SessionRow[]).map(toSession);
+  }
+
+  /**
+   * 永久刪除（CONTRACTS §9.4）：events、layouts、團隊成員、從它出發的交接規則由外鍵 CASCADE；
+   * 指向它的規則另外刪；audit 保留。
+   */
+  deleteSession(id: string): boolean {
+    return this.db.transaction(() => {
+      // 指向它的交接規則沒有外鍵可 CASCADE，一起刪掉，不留懸空的目標。
+      this.db
+        .prepare("DELETE FROM handoff_rules WHERE json_extract(action, '$.toSessionId') = ?")
+        .run(id);
+      return this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes === 1;
+    })();
+  }
+
+  /** 同一台機器、同一個 cwd 的其他 session（不論是否封存）：hook 設定是共用的。 */
+  countSessionsSharingCwd(machineId: string, cwd: string, exceptId: string): number {
+    const row = this.db
+      .prepare('SELECT count(*) AS n FROM sessions WHERE machine_id = ? AND cwd = ? AND id != ?')
+      .get(machineId, cwd, exceptId) as { n: number };
+    return row.n;
+  }
+
+  /** 同機器另一個 session 用同一個 worktree，或 cwd 在這個 worktree 底下（§9.6）。 */
+  countSessionsInWorktree(machineId: string, worktreePath: string, exceptId: string): number {
+    // 不用 LIKE：路徑裡的 % 與 _ 會被當萬用字元。
+    const row = this.db
+      .prepare(
+        `SELECT count(*) AS n FROM sessions WHERE machine_id = @machineId AND id != @exceptId
+           AND (worktree_path = @wt OR cwd = @wt
+             OR substr(cwd, 1, length(@wt) + 1) = @wt || '/')`,
+      )
+      .get({ machineId, exceptId, wt: worktreePath }) as { n: number };
+    return row.n;
+  }
+
+  /**
+   * 同機器、同帳號（accountProfile，null 與空字串視為同一個）另一個 session 記著同一段對話。
+   * id 不分大小寫：macOS 檔案系統不分大小寫，大寫 id 指到同一個 jsonl。
+   */
+  countSessionsSharingClaudeId(
+    machineId: string,
+    accountProfile: string | null,
+    claudeSessionId: string,
+    exceptId: string,
+  ): number {
+    const row = this.db
+      .prepare(
+        `SELECT count(*) AS n FROM sessions WHERE machine_id = ? AND id != ?
+           AND lower(claude_session_id) = lower(?) AND coalesce(account_profile, '') = ?`,
+      )
+      .get(machineId, exceptId, claudeSessionId, accountProfile ?? '') as { n: number };
+    return row.n;
   }
 
   listMachineSessions(machineId: string): Session[] {
@@ -783,6 +841,16 @@ export class Store {
            action = @action, enabled = @enabled`,
       )
       .run({ ...r, action: JSON.stringify(r.action), enabled: r.enabled ? 1 : 0 });
+  }
+
+  /** 封存時暫停從它出發或指向它的交接規則，回傳實際關掉的條數（本來就關的不算）。 */
+  disableRulesTouching(sessionId: string): number {
+    return this.db
+      .prepare(
+        `UPDATE handoff_rules SET enabled = 0
+         WHERE enabled = 1 AND (from_session_id = ? OR json_extract(action, '$.toSessionId') = ?)`,
+      )
+      .run(sessionId, sessionId).changes;
   }
 
   deleteRule(id: string): boolean {

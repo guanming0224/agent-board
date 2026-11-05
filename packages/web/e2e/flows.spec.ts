@@ -46,6 +46,7 @@ const session = (over: Partial<Session> & Pick<Session, 'id' | 'name' | 'machine
   createdAt: minutesAgo(30),
   endedAt: null,
   archived: false,
+  archivedAt: null,
   ...over,
 });
 
@@ -67,6 +68,9 @@ const rigGpu = machine({
   capabilities: { ...rigA.capabilities, hasGpu: true, gpuName: 'Test GPU' },
 });
 const rigOff = machine({ id: 'm-off', name: 'rig-off', online: false, lastSeenAt: minutesAgo(40) });
+
+/** Claude 對話 id 必須是 UUID（protocol 的 ClaudeSessionId）。 */
+const OLD_CONV = '5a1f0c2e-7b3d-4e8f-9a6b-1c2d3e4f5a6b';
 
 const DANGER_CMD = 'git push --force origin main && echo finished';
 
@@ -868,7 +872,7 @@ test.describe('新增 session', () => {
         machineId: 'm-g',
         cwd: '/x',
         status: 'done',
-        claudeSessionId: 'old-conv',
+        claudeSessionId: OLD_CONV,
         contextTokens: 150_000,
       }),
     ],
@@ -887,10 +891,10 @@ test.describe('新增 session', () => {
     await page.getByLabel('模型').fill('opus');
     await page.getByLabel('帳號').fill('/home/me/.claude-b');
     await page.getByRole('radio', { name: /acceptEdits/ }).check();
-    await page.getByLabel('接續舊對話').fill('old-conv');
+    await page.getByLabel('接續舊對話').fill(OLD_CONV);
     await page.getByLabel('第一個指令').fill('run tests');
     await expect(preview(page)).toHaveText(
-      "cd /work/web\nCLAUDE_CONFIG_DIR=/home/me/.claude-b claude --resume old-conv --permission-mode acceptEdits --model opus --name 'Fix login'",
+      `cd /work/web\nCLAUDE_CONFIG_DIR=/home/me/.claude-b claude --resume ${OLD_CONV} --permission-mode acceptEdits --model opus --name 'Fix login'`,
     );
     await expect(page.locator('aside').getByText('run tests')).toBeVisible();
     await expect(page.getByTestId('quota-warnings')).toContainText('150k tokens');
@@ -951,30 +955,163 @@ test.describe('新增 session', () => {
     expect(await findGreenOutsideDiff(page)).toEqual([]);
   });
 
-  test('瀏覽遠端資料夾', async ({ page }) => {
+  test('資料夾選擇器：從上一層開始、單擊選取、雙擊進入、麵包屑、列尾進入', async ({ page }) => {
     await open(page, 'new', newSeed());
-    await page.getByLabel('工作目錄').fill('/home/me');
-    await page.getByRole('button', { name: '瀏覽' }).click();
+    await page.locator('#ns-machine').selectOption('m-a');
+    await page.getByLabel('工作目錄').fill('/home/me/project');
+    await page.getByRole('button', { name: '瀏覽', exact: true }).click();
     const browser = page.getByTestId('folder-browser');
+    const crumbs = browser.getByRole('navigation');
+    const here = crumbs.locator('[aria-current]');
+    const folder = (name: string) => browser.getByRole('button', { name, exact: true });
+    // 工作目錄有值：從上一層開始，反白它
+    await expect(here).toHaveText('me');
+    await expect(folder('project')).toHaveAttribute('aria-pressed', 'true');
     await expect(browser.getByText('git')).toBeVisible();
-    await browser.getByRole('button', { name: 'project' }).click();
-    await expect(browser.locator('.callsign')).toContainText('/home/me/project');
-    await browser.getByRole('button', { name: '上一層' }).click();
-    await expect(browser.locator('.callsign')).toContainText('/home/me');
-    await browser.getByRole('button', { name: 'notes' }).click();
-    await browser.getByRole('button', { name: '選這個資料夾' }).click();
+
+    // 單擊 = 選取：立刻填入、名稱空的就帶資料夾名、不會進去
+    await folder('notes').click();
     await expect(page.getByLabel('工作目錄')).toHaveValue('/home/me/notes');
+    await expect(page.getByLabel('名稱')).toHaveValue('notes');
+    await expect(browser.getByTestId('browser-selected')).toContainText('/home/me/notes');
+    await expect(here).toHaveText('me');
+    // 換選：自動帶入的名稱跟著換
+    await folder('project').click();
+    await expect(page.getByLabel('名稱')).toHaveValue('project');
+
+    // 雙擊 = 進入
+    await folder('project').dblclick();
+    await expect(here).toHaveText('project');
+    // 麵包屑每一段都能點
+    await expect(crumbs).toContainText('rig-a:');
+    await crumbs.getByRole('button', { name: 'home', exact: true }).click();
+    await expect(here).toHaveText('home');
+    await crumbs.getByRole('button', { name: '/', exact: true }).click();
+    await expect(here).toHaveText('/');
+    await expect(browser.getByRole('button', { name: '上一層' })).toBeDisabled();
+    // 列尾 › 進入
+    await browser.getByRole('button', { name: '進入 notes' }).click();
+    await expect(here).toHaveText('notes');
+
+    // 使用者自己打的名稱不會被換掉
+    await page.getByLabel('名稱').fill('我的名稱');
+    await folder('project').click();
+    await expect(page.getByLabel('名稱')).toHaveValue('我的名稱');
+    await expect(page.getByLabel('工作目錄')).toHaveValue('/notes/project');
+
+    // 「選這個資料夾」選目前所在的資料夾並關閉
+    await browser.getByRole('button', { name: '選這個資料夾' }).click();
+    await expect(page.getByLabel('工作目錄')).toHaveValue('/notes');
     await expect(browser).toHaveCount(0);
+    expect(await calls(page)).toEqual([]);
+  });
+
+  test('資料夾選擇器：鍵盤、篩選、最近用過、家目錄、記得上次位置', async ({ page }) => {
+    await open(page, 'new', newSeed());
+    await page.locator('#ns-machine').selectOption('m-a');
+    await page.getByRole('button', { name: '瀏覽', exact: true }).click();
+    const browser = page.getByTestId('folder-browser');
+    const here = browser.getByRole('navigation').locator('[aria-current]');
+    const folder = (name: string) => browser.getByRole('button', { name, exact: true });
+    // 沒填工作目錄、沒瀏覽過：從 ~ 開始，什麼都沒選
+    await expect(here).toHaveText('~');
+    await expect(browser.getByTestId('browser-selected')).toContainText('還沒選');
+
+    // 鍵盤：↓ 移動、空白鍵選取、Enter 進入、← 回上一層
+    await folder('project').focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(folder('notes')).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(page.getByLabel('工作目錄')).toHaveValue('~/notes');
+    await page.keyboard.press('Enter');
+    await expect(here).toHaveText('notes');
+    await expect(folder('project')).toBeFocused();
+    await page.keyboard.press('ArrowLeft');
+    await expect(here).toHaveText('~');
+
+    // 篩選：只留符合的；Enter 進入第一個符合的，不送出表單
+    const filter = browser.getByRole('searchbox', { name: '篩選這一層的資料夾' });
+    await filter.fill('NO');
+    await expect(folder('notes')).toBeVisible();
+    await expect(folder('project')).toHaveCount(0);
+    await filter.fill('zzz');
+    await expect(browser).toContainText('這一層沒有名稱含「zzz」的資料夾');
+    await filter.fill('no');
+    await filter.press('Enter');
+    await expect(here).toHaveText('notes');
+    await expect(filter).toHaveValue('');
+    expect(await calls(page)).toEqual([]);
+
+    // 最近用過：同一台機器的 session 資料夾；點了直接選取並移到那裡
+    const recent = browser.getByTestId('recent-folder');
+    await expect(recent).toHaveText(['api']);
+    await recent.click();
+    await expect(here).toHaveText('api');
+    await expect(page.getByLabel('工作目錄')).toHaveValue('/work/api');
+    await browser.getByRole('button', { name: '家目錄 ~' }).click();
+    await expect(here).toHaveText('~');
+    await expect(page.getByLabel('工作目錄')).toHaveValue('~');
+    await browser.getByRole('button', { name: '桌面 ~/Desktop' }).click();
+    await expect(here).toHaveText('Desktop');
+    await expect(page.getByLabel('工作目錄')).toHaveValue('~/Desktop');
+
+    // Esc 關閉；清掉工作目錄再打開，回到上次的位置
+    await page.keyboard.press('Escape');
+    await expect(browser).toHaveCount(0);
+    await page.getByLabel('工作目錄').fill('');
+    await page.getByRole('button', { name: '瀏覽', exact: true }).click();
+    await expect(here).toHaveText('Desktop');
+  });
+
+  test('資料夾選擇器：Windows 機器用 \\；讀不到時寫原因', async ({ page }) => {
+    const rigWin = machine({ id: 'm-w', name: 'rig-win', os: 'win32' });
+    await open(page, 'new', { ...newSeed(), machines: [rigWin] });
+    await page.getByLabel('工作目錄').fill('C:\\Users\\me\\proj');
+    await page.getByRole('button', { name: '瀏覽', exact: true }).click();
+    const browser = page.getByTestId('folder-browser');
+    const crumbs = browser.getByRole('navigation');
+    await expect(crumbs.getByRole('button')).toHaveText(['C:\\', 'Users', 'me']);
+    await browser.getByRole('button', { name: 'project', exact: true }).click();
+    await expect(page.getByLabel('工作目錄')).toHaveValue('C:\\Users\\me\\project');
+    await crumbs.getByRole('button', { name: 'C:\\' }).click();
+    await expect(crumbs.getByRole('button')).toHaveText(['C:\\']);
 
     await open(page, 'new', {
       ...newSeed(),
       patch: patchBackend('browseDirectory', `async () => { throw new Error('no access'); }`),
     });
-    await page.getByLabel('工作目錄').fill('/secret');
-    await page.getByRole('button', { name: '瀏覽' }).click();
+    await page.getByLabel('工作目錄').fill('/secret/x');
+    await page.getByRole('button', { name: '瀏覽', exact: true }).click();
     await expect(page.getByTestId('folder-browser').locator('[data-state=error]')).toContainText(
       '讀不到 /secret：no access',
     );
+  });
+
+  test('接續舊對話要是 UUID；同資料夾的 session 刪除中時說明', async ({ page }) => {
+    await open(page, 'new', {
+      ...newSeed(),
+      patch: patchBackend(
+        'createSession',
+        `async () => { throw Object.assign(new Error('x'), { code: 'session_deleting' }); }`,
+      ),
+    });
+    await page.getByLabel('名稱').fill('Fix');
+    await page.getByLabel('工作目錄').fill('/work/api');
+    const resume = page.getByLabel('接續舊對話');
+    await resume.fill('old-conv');
+    await expect(resume).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('.field-error', { hasText: '格式是 UUID' })).toBeVisible();
+    await page.getByRole('button', { name: '建立 session' }).click();
+    await expect(page.locator('form .acts .msg.err')).toContainText('格式是 UUID');
+    expect(await calls(page)).toEqual([]);
+
+    await resume.fill(OLD_CONV.toUpperCase());
+    await expect(resume).toHaveAttribute('aria-invalid', 'false');
+    await page.getByRole('button', { name: '建立 session' }).click();
+    await expect(page.locator('form .acts .msg.err')).toHaveText(
+      '同一個資料夾（或 worktree）的 session 正在刪除，現在不能在這裡建立。稍後再試，內容都還在。',
+    );
+    await expect(page.getByLabel('名稱')).toHaveValue('Fix');
   });
 
   test('缺欄位不可建立；建立送出完整內容，清掉名稱防重複', async ({ page }) => {
@@ -1230,7 +1367,7 @@ test.describe('設定', () => {
     await page.getByLabel('同時執行的 session 上限').fill('3');
     await expect(page.locator('#s-quota .chip.unsaved')).toHaveText('未存檔');
     await expect(bar).toContainText('1 項未存檔');
-    await page.getByRole('button', { name: '還原' }).click();
+    await bar.getByRole('button', { name: '還原' }).click();
     await expect(page.locator('#s-quota .chip.unsaved')).toHaveCount(0);
     await expect(page.getByLabel('同時執行的 session 上限')).toHaveValue('');
 

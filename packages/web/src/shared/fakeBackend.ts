@@ -11,14 +11,17 @@ import type {
   Layout,
   Machine,
   Project,
+  PurgeOutcome,
   ResourceSample,
   Session,
   SessionEvent,
+  SessionInspect,
   Settings,
   Task,
   Team,
   TeamMember,
   Template,
+  TranscriptEntry,
   UsageSummary,
   User,
 } from '@agent-board/protocol';
@@ -65,6 +68,7 @@ const session = (
   createdAt: minutesAgo(90),
   endedAt: null,
   archived: false,
+  archivedAt: null,
   ...over,
 });
 
@@ -94,6 +98,7 @@ export function demoSnapshot(): BoardSnapshot {
         branch: 'ab/auth-tests',
         permissionMode: 'acceptEdits',
         worktreePath: '/home/demo/.agent-board-wt/auth-tests',
+        claudeSessionId: DEMO_SHARED_CONVERSATION,
         lastLines: ['Edit  tests/auth.test.ts', '  + 42 lines', 'Running vitest', '  18 passed'],
       }),
       session({
@@ -163,6 +168,104 @@ export function demoSnapshot(): BoardSnapshot {
     ],
   };
 }
+
+/** s-tests 與已封存的 s-old-resumed 共用的對話 id。 */
+const DEMO_SHARED_CONVERSATION = '3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0c';
+
+/** 已封存的範例（設定頁「已封存」與舊資料頁用）。board 快照不含它們，和 hub 一樣。 */
+function demoArchived(): Session[] {
+  return [
+    session({
+      id: 's-old-api',
+      name: 'Old API refactor',
+      machineId: 'm-studio',
+      status: 'done',
+      cwd: '/home/demo/api',
+      branch: 'ab/old-api',
+      worktreePath: '/home/demo/.agent-board-wt/old-api',
+      permissionMode: 'acceptEdits',
+      model: 'opus',
+      claudeSessionId: '0b7c6a52-3f1e-4c2a-9a51-6f2d8e1c4b90',
+      createdAt: minutesAgo(3 * 24 * 60),
+      endedAt: minutesAgo(2 * 24 * 60 + 30),
+      archived: true,
+      archivedAt: minutesAgo(2 * 24 * 60),
+    }),
+    session({
+      id: 's-old-shared',
+      name: 'Readme pass',
+      machineId: 'm-gpu',
+      status: 'done',
+      branch: 'main',
+      claudeSessionId: '7d0e2f44-1a2b-4c3d-8e9f-0a1b2c3d4e5f',
+      createdAt: minutesAgo(9 * 24 * 60),
+      endedAt: minutesAgo(8 * 24 * 60),
+      archived: true,
+      archivedAt: minutesAgo(5 * 24 * 60),
+    }),
+    // Write tests（s-tests）接續了這段對話、也在用同一個 worktree：刪除時兩項都不能清。
+    session({
+      id: 's-old-resumed',
+      name: 'Auth tests draft',
+      machineId: 'm-studio',
+      status: 'done',
+      branch: 'ab/auth-tests',
+      worktreePath: '/home/demo/.agent-board-wt/auth-tests',
+      claudeSessionId: DEMO_SHARED_CONVERSATION,
+      createdAt: minutesAgo(7 * 24 * 60),
+      endedAt: minutesAgo(6 * 24 * 60 + 60),
+      archived: true,
+      archivedAt: minutesAgo(6 * 24 * 60),
+    }),
+    session({
+      id: 's-old-laptop',
+      name: 'Nav spike',
+      machineId: 'm-laptop',
+      status: 'offline',
+      cwd: '/home/demo/web',
+      branch: 'ab/nav-spike',
+      createdAt: minutesAgo(40 * 24 * 60),
+      endedAt: minutesAgo(39 * 24 * 60),
+      archived: true,
+      // schema 3 之前封存的資料沒有封存時間。
+      archivedAt: null,
+    }),
+  ];
+}
+
+const DEMO_TOPICS = ['auth', 'billing', 'search', 'upload'];
+
+/** 假對話紀錄：user／assistant／tool 輪流，夠長才測得到「載入更多」。 */
+function demoTranscript(): TranscriptEntry[] {
+  const start = Date.now() - 3 * DAY_MS;
+  return Array.from({ length: 230 }, (_, index) => {
+    const topic = DEMO_TOPICS[Math.floor(index / 3) % DEMO_TOPICS.length]!;
+    const at = new Date(start + index * 45_000).toISOString();
+    const step = Math.floor(index / 3) + 1;
+    if (index % 3 === 0) {
+      return { index, role: 'user', at, text: `Step ${step}: refactor the ${topic} handler` };
+    }
+    if (index % 3 === 1) {
+      const extra = index === 1 ? '\nexport API_KEY=sk-ant-demo0123456789abcdefXYZ' : '';
+      return {
+        index,
+        role: 'assistant',
+        at,
+        text: `I'll split the ${topic} handler into smaller functions.${extra}`,
+      };
+    }
+    return {
+      index,
+      role: 'tool',
+      at,
+      text: `→ Edit {"file_path":"src/api/${topic}.ts","old_string":"handler(","new_string":"handle${step}("}`,
+    };
+  });
+}
+
+/** 和 hub 一樣的錯誤形狀（status、code），畫面才能分辨。 */
+const apiError = (status: number, code: string, message: string) =>
+  Object.assign(new Error(message), { status, code });
 
 /** 假 PTY：訂閱時送快照，之後每秒一行輸出；輸入會回顯。 */
 export class FakeTerminalStream implements TerminalStream {
@@ -292,6 +395,11 @@ const DEMO_VAPID_PUBLIC_KEY =
 
 export function createFakeBackend(): BoardBackend & FakeBackendControls {
   const state = demoSnapshot();
+  // 已封存的也放在同一份清單（hub 的資料庫也是），送給畫面時濾掉。
+  state.sessions.push(...demoArchived());
+  const transcripts = new Map<string, TranscriptEntry[]>([
+    ['0b7c6a52-3f1e-4c2a-9a51-6f2d8e1c4b90', demoTranscript()],
+  ]);
   const pushEndpoints = new Set<string>();
   const projects: Project[] = [];
   /** 假的「建資料夾」：parent → 建過的名稱。 */
@@ -373,7 +481,58 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       .filter((e) => !filter.to || e.at <= filter.to);
   let accountLocale: User['locale'] = demoUser.locale;
   let password = DEMO_PASSWORD;
-  const publish = () => listeners.forEach((l) => l({ ...state }));
+  const visible = (): BoardSnapshot => ({
+    ...state,
+    sessions: state.sessions.filter((x) => !x.archived),
+  });
+  const publish = () => listeners.forEach((l) => l(visible()));
+  const machineOnline = (s: Session) =>
+    state.machines.find((m) => m.id === s.machineId)?.online ?? false;
+  const hooksShared = (s: Session) =>
+    state.sessions.some((x) => x.id !== s.id && x.machineId === s.machineId && x.cwd === s.cwd);
+  // 和 hub 相同（CONTRACTS §9.6）：同機器另一個 session 用同一個 worktree（或 cwd 在裡面）、
+  // 同機器同帳號另一個 session 記著同一段對話。
+  const worktreeShared = (s: Session) =>
+    s.worktreePath !== null &&
+    state.sessions.some(
+      (x) =>
+        x.id !== s.id &&
+        x.machineId === s.machineId &&
+        (x.worktreePath === s.worktreePath || x.cwd.startsWith(`${s.worktreePath}/`)),
+    );
+  const transcriptShared = (s: Session) =>
+    s.claudeSessionId !== null &&
+    state.sessions.some(
+      (x) =>
+        x.id !== s.id &&
+        x.machineId === s.machineId &&
+        x.accountProfile === s.accountProfile &&
+        x.claudeSessionId === s.claudeSessionId,
+    );
+  /** 範例 s-old-api 的 worktree 有沒 commit、沒 push、沒合併的東西，刪除確認框要警告。 */
+  const inspectOf = (s: Session): SessionInspect => {
+    const messy = s.id === 's-old-api';
+    return {
+      transcriptBytes: s.claudeSessionId
+        ? transcripts.has(s.claudeSessionId)
+          ? 1_843_200
+          : null
+        : s.id.startsWith('s-old')
+          ? null
+          : 348_160,
+      git: {
+        dir: s.worktreePath ?? s.cwd,
+        dirtyFiles: messy ? 2 : 0,
+        unpushedCommits: messy ? 1 : s.branch ? 0 : null,
+        branch: s.branch,
+        unmergedCommits: s.worktreePath ? (messy ? 3 : 0) : null,
+      },
+      worktreeExists: s.worktreePath !== null,
+      hooksShared: hooksShared(s),
+      worktreeShared: worktreeShared(s),
+      transcriptShared: transcriptShared(s),
+    };
+  };
   const find = (id: string) => {
     const s = state.sessions.find((x) => x.id === id);
     if (!s) throw new Error(`unknown session ${id}`);
@@ -384,7 +543,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     terminal,
     watchBoard(listener) {
       listeners.add(listener);
-      listener({ ...state });
+      listener(visible());
       return () => listeners.delete(listener);
     },
     watchResources(listener: (sample: ResourceSample) => void) {
@@ -448,7 +607,37 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     async updateSession(id, patch) {
       const s = find(id);
       if (patch.name) s.name = patch.name;
-      if (patch.archived !== undefined) s.archived = patch.archived;
+      if (patch.archived === true && !s.archived) {
+        // 和 hub 相同（CONTRACTS §9.1）：還沒結束的先停掉，相關交接規則全部關掉。
+        const stopped = s.endedAt === null && !['done', 'error', 'offline'].includes(s.status);
+        if (stopped) s.status = 'done';
+        if (s.endedAt === null) s.endedAt = new Date().toISOString();
+        const paused = rules.filter(
+          (r) => r.enabled && (r.fromSessionId === id || r.action.toSessionId === id),
+        );
+        for (const rule of paused) rule.enabled = false;
+        s.archived = true;
+        s.archivedAt = new Date().toISOString();
+        audit.unshift({
+          id: crypto.randomUUID(),
+          userId: demoUser.id,
+          sessionId: id,
+          action: 'session.archive',
+          detail: JSON.stringify({ stopped, rulesPaused: paused.length }),
+          at: new Date().toISOString(),
+        });
+      } else if (patch.archived === false && s.archived) {
+        s.archived = false;
+        s.archivedAt = null;
+        audit.unshift({
+          id: crypto.randomUUID(),
+          userId: demoUser.id,
+          sessionId: id,
+          action: 'session.restore',
+          detail: '',
+          at: new Date().toISOString(),
+        });
+      }
       if (patch.markDone && s.status !== 'done') {
         // 和 hub 一樣留狀態事件，完成提示靠它判斷標記前是不是在等輸入。
         addEvent(id, 'status', { from: s.status, to: 'done', reason: 'user_marked_done' });
@@ -462,6 +651,81 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       s.status = 'done';
       publish();
       return s;
+    },
+    listArchivedSessions: async () =>
+      state.sessions.filter((x) => x.archived).map((x) => ({ ...x })),
+    async inspectSession(id) {
+      const s = find(id);
+      if (!machineOnline(s)) throw apiError(409, 'machine_offline', 'Machine is offline');
+      return inspectOf(s);
+    },
+    async sessionTranscript(id, { cursor = 0, limit = 100, q }) {
+      const s = find(id);
+      if (!machineOnline(s)) throw apiError(409, 'machine_offline', 'Machine is offline');
+      const all = s.claudeSessionId ? transcripts.get(s.claudeSessionId) : undefined;
+      if (!all) {
+        return { entries: [], total: 0, matched: null, nextCursor: null, missing: true };
+      }
+      const needle = q?.trim().toLowerCase();
+      const list = needle ? all.filter((e) => e.text.toLowerCase().includes(needle)) : all;
+      const end = cursor + limit;
+      return {
+        entries: list.slice(cursor, end),
+        total: all.length,
+        matched: needle ? list.length : null,
+        nextCursor: end < list.length ? end : null,
+        missing: false,
+      };
+    },
+    async deleteSession(id, options) {
+      const s = find(id);
+      if (!s.archived) throw apiError(409, 'not_archived', 'Archive the session first');
+      if (s.endedAt === null) throw apiError(409, 'session_active', 'The session is still running');
+      const any = options.removeWorktree || options.removeTranscript || options.removeHooks;
+      if (any && !machineOnline(s)) throw apiError(409, 'machine_offline', 'Machine is offline');
+      if (options.removeWorktree && worktreeShared(s)) {
+        throw apiError(409, 'worktree_shared', 'Another session uses this worktree');
+      }
+      if (options.removeTranscript && transcriptShared(s)) {
+        throw apiError(409, 'transcript_shared', 'Another session resumed this conversation');
+      }
+      if (options.removeHooks && hooksShared(s)) {
+        throw apiError(409, 'hooks_shared', 'Another session uses the same folder');
+      }
+      const skipped: PurgeOutcome = { status: 'skipped', detail: null };
+      const inspect = inspectOf(s);
+      const worktree: PurgeOutcome = !options.removeWorktree
+        ? skipped
+        : s.worktreePath === null
+          ? { status: 'not_found', detail: null }
+          : (inspect.git?.dirtyFiles ?? 0) > 0
+            ? { status: 'kept', detail: `${inspect.git?.dirtyFiles} uncommitted files` }
+            : { status: 'removed', detail: null };
+      const transcript: PurgeOutcome = !options.removeTranscript
+        ? skipped
+        : inspect.transcriptBytes === null
+          ? { status: 'not_found', detail: null }
+          : { status: 'removed', detail: null };
+      const hooks: PurgeOutcome = options.removeHooks
+        ? { status: 'removed', detail: null }
+        : skipped;
+      const result = { worktree, transcript, hooks };
+      if (s.claudeSessionId && transcript.status === 'removed')
+        transcripts.delete(s.claudeSessionId);
+      removeFrom(state.sessions, (x) => x.id === id);
+      removeFrom(members, (x) => x.sessionId === id);
+      removeFrom(rules, (x) => x.fromSessionId === id);
+      layouts = layouts.filter((l) => l.sessionId !== id);
+      audit.unshift({
+        id: crypto.randomUUID(),
+        userId: demoUser.id,
+        sessionId: id,
+        action: 'session.delete',
+        detail: JSON.stringify({ name: s.name, cwd: s.cwd, machineId: s.machineId, result }),
+        at: new Date().toISOString(),
+      });
+      publish();
+      return result;
     },
     sendPrompt(sessionId, text) {
       terminal.emit(sessionId, `${text}\r\n`);

@@ -1704,7 +1704,7 @@ describe('session lifecycle', () => {
       session: runtime(session.id, {
         status: 'error',
         endedAt: new Date().toISOString(),
-        claudeSessionId: 'claude-xyz',
+        claudeSessionId: '0a1b2c3d-0000-4000-8000-00000000beef',
         worktreePath: '/fake/wt',
       }),
     });
@@ -1718,7 +1718,7 @@ describe('session lifecycle', () => {
     const create = await daemon.next('session.create');
     expect(create.sessionId).toBe(session.id);
     expect(create.spec).toMatchObject({
-      resumeClaudeSessionId: 'claude-xyz',
+      resumeClaudeSessionId: '0a1b2c3d-0000-4000-8000-00000000beef',
       cwd: '/fake/wt',
       useWorktree: false,
       firstPrompt: null,
@@ -1984,6 +1984,787 @@ describe('directory browsing', () => {
       error: null,
     });
     expect((await pending).status).toBe(504);
+  });
+});
+
+describe('archive, inspect, transcript and delete (§9)', () => {
+  const CLAUDE_ID = '0a1b2c3d-1111-2222-3333-444455556666';
+  const patch = (cookie: string, id: string, body: object) =>
+    hub.api('PATCH', `/api/sessions/${id}`, { cookie, body });
+  const purgeAll = { removeWorktree: true, removeTranscript: true, removeHooks: true };
+  const noPurge = { removeWorktree: false, removeTranscript: false, removeHooks: false };
+  const removed = (status = 'removed') => ({ status, detail: null });
+
+  /** daemon 回報 PTY 已結束。 */
+  const endSession = async (daemon: Peer, id: string, over: object = {}) => {
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(id, {
+        status: 'done',
+        endedAt: new Date().toISOString(),
+        claudeSessionId: CLAUDE_ID,
+        ...over,
+      }),
+    });
+    await until(() => hub.running.store.getSession(id)?.endedAt !== null, 'ended');
+  };
+
+  /** 已結束並封存的 session。 */
+  const archivedSession = async (over: object = {}) => {
+    const started = await startedSession();
+    await endSession(started.daemon, started.session.id, over);
+    expect((await patch(started.cookie, started.session.id, { archived: true })).status).toBe(200);
+    return started;
+  };
+
+  const addTeamRules = async (cookie: string, sessionId: string, otherId: string) => {
+    const team = await hub.api('POST', '/api/teams', {
+      cookie,
+      body: { name: 't', goal: '', doneCriteria: '', color: '#888888', contextMd: '' },
+    });
+    const rule = async (from: string, to: string, enabled = true) =>
+      (
+        await hub.api('POST', `/api/teams/${team.body.id}/handoff-rules`, {
+          cookie,
+          body: { fromSessionId: from, trigger: 'on_done', action: { toSessionId: to }, enabled },
+        })
+      ).body.id as string;
+    return {
+      fromIt: await rule(sessionId, otherId),
+      toIt: await rule(otherId, sessionId),
+      alreadyOff: await rule(otherId, sessionId, false),
+      unrelated: await rule(otherId, otherId),
+    };
+  };
+
+  it('archiving a running session stops it, pauses its handoff rules, and restore keeps them paused', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession();
+    const other = await newSession(cookie, machineId);
+    await daemon.next('session.create');
+    const rules = await addTeamRules(cookie, session.id, other.id);
+
+    const res = await patch(cookie, session.id, { archived: true });
+    expect(res.status).toBe(200);
+    expect(res.body.archived).toBe(true);
+    expect(Date.parse(res.body.archivedAt)).not.toBeNaN();
+    expect((await daemon.next('session.stop')).sessionId).toBe(session.id);
+    const enabled = (id: string) => hub.running.store.getRule(id)?.enabled;
+    expect(enabled(rules.fromIt)).toBe(false);
+    expect(enabled(rules.toIt)).toBe(false);
+    expect(enabled(rules.unrelated)).toBe(true);
+    const archiveRow = auditRows().find((r) => r.action === 'session.archive');
+    expect(archiveRow?.session_id).toBe(session.id);
+    expect(JSON.parse(String(archiveRow?.detail))).toEqual({
+      stopped: true,
+      stopPending: false,
+      rulesPaused: 2,
+    });
+    expect(auditRows().some((r) => r.action === 'session.stop')).toBe(true);
+
+    // 已封存的才列在 archived=true。
+    const listed = await hub.api('GET', '/api/sessions?archived=true', { cookie });
+    expect(listed.body.map((s: { id: string }) => s.id)).toEqual([session.id]);
+
+    // 再封存一次不重複停止、不重記。
+    await patch(cookie, session.id, { archived: true });
+    expect(auditRows().filter((r) => r.action === 'session.archive')).toHaveLength(1);
+
+    const restored = await patch(cookie, session.id, { archived: false });
+    expect(restored.body).toMatchObject({ archived: false, archivedAt: null });
+    expect(auditRows().some((r) => r.action === 'session.restore')).toBe(true);
+    expect(enabled(rules.fromIt)).toBe(false);
+    // 還原不自動重開。
+    expect(daemon.of('session.create')).toHaveLength(0);
+  });
+
+  it('archiving a queued session cancels it without contacting the daemon', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId } = await startedSession();
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { quotaGuards: { denyReadPaths: [], maxConcurrentSessions: 1 } },
+    });
+    const queued = await newSession(cookie, machineId);
+    expect(queued.status).toBe('queued');
+    const res = await patch(cookie, queued.id, { archived: true });
+    expect(res.body).toMatchObject({ archived: true, status: 'done' });
+    expect(res.body.endedAt).not.toBeNull();
+    expect(daemon.of('session.stop')).toHaveLength(0);
+    const actions = auditRows().map((r) => r.action);
+    expect(actions).toContain('session.cancel');
+    const row = auditRows().find((r) => r.action === 'session.archive');
+    expect(JSON.parse(String(row?.detail))).toEqual({
+      stopped: true,
+      stopPending: false,
+      rulesPaused: 0,
+    });
+  });
+
+  it('an ended session archives without stopping; a live one on an offline machine is stopped on reconnect', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session, machineId, token } = await startedSession();
+    const live = await newSession(cookie, machineId);
+    const create = await daemon.next('session.create');
+    daemon.send({
+      type: 'session.created',
+      requestId: create.requestId,
+      session: runtime(live.id),
+    });
+    await endSession(daemon, session.id);
+    await patch(cookie, session.id, { archived: true });
+    expect(daemon.of('session.stop')).toHaveLength(0);
+    const row = auditRows().find((r) => r.action === 'session.archive');
+    expect(JSON.parse(String(row?.detail))).toEqual({
+      stopped: false,
+      stopPending: false,
+      rulesPaused: 0,
+    });
+
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getMachine(machineId)?.online === false, 'offline');
+    const archived = await patch(cookie, live.id, { archived: true, name: 'x' });
+    expect(archived).toMatchObject({ status: 200, body: { archived: true, name: 'x' } });
+    const rows = auditRows().filter((r) => r.action === 'session.archive');
+    expect(JSON.parse(String(rows.at(-1)?.detail))).toEqual({
+      stopped: false,
+      stopPending: true,
+      rulesPaused: 0,
+    });
+
+    // 重連：hello 還列著它（沒停成）→ 補送 stop；已結束的不送。
+    const back = await hub.daemon(token);
+    back.send(hello({ sessions: [runtime(live.id)] }));
+    await back.next('hub.welcome');
+    expect((await back.next('session.stop')).sessionId).toBe(live.id);
+    expect(back.of('session.stop')).toHaveLength(0);
+    // 停完回報結束後，再重連就不再送。
+    back.send({
+      type: 'session.runtime',
+      session: runtime(live.id, { status: 'done', endedAt: new Date().toISOString() }),
+    });
+    await until(() => hub.running.store.getSession(live.id)?.endedAt !== null, 'ended');
+    back.ws.terminate();
+    await until(() => hub.running.store.getMachine(machineId)?.online === false, 'offline again');
+    const again = await hub.daemon(token);
+    again.send(hello());
+    await again.next('hub.welcome');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(again.of('session.stop')).toHaveLength(0);
+  });
+
+  it('resuming an archived session restores it first', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    await endSession(daemon, session.id);
+    await patch(cookie, session.id, { archived: true });
+    const res = await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie });
+    expect(res).toMatchObject({
+      status: 200,
+      body: { archived: false, archivedAt: null, status: 'starting' },
+    });
+    const create = await daemon.next('session.create');
+    expect(create).toMatchObject({ spec: { resumeClaudeSessionId: CLAUDE_ID } });
+    const restore = auditRows().find((r) => r.action === 'session.restore');
+    expect(JSON.parse(String(restore?.detail))).toEqual({ via: 'resume' });
+    expect(hub.running.store.getSession(session.id)?.archived).toBe(false);
+  });
+
+  it('a failed resume of an archived session leaves it archived', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession();
+    await endSession(daemon, session.id);
+    await patch(cookie, session.id, { archived: true });
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getMachine(machineId)?.online === false, 'offline');
+    const res = await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie });
+    expect(res).toMatchObject({ status: 409, body: { code: 'machine_offline' } });
+    expect(hub.running.store.getSession(session.id)?.archived).toBe(true);
+    expect(auditRows().some((r) => r.action === 'session.restore')).toBe(false);
+  });
+
+  it('inspect sends the locator from the database and adds hooksShared', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await archivedSession({
+      cwd: '/repo/wt/sub',
+      worktreePath: '/repo/wt',
+      branch: 'ab/x',
+    });
+    const inspect = {
+      transcriptBytes: 1234,
+      git: {
+        dir: '/repo/wt',
+        dirtyFiles: 2,
+        unpushedCommits: null,
+        branch: 'ab/x',
+        unmergedCommits: 1,
+      },
+      worktreeExists: true,
+    };
+    const ask = async () => {
+      const pending = hub.api('GET', `/api/sessions/${session.id}/inspect`, { cookie });
+      const req = await daemon.next('session.inspect');
+      daemon.send({
+        type: 'session.inspectResult',
+        requestId: req.requestId,
+        inspect,
+        error: null,
+      });
+      return { req, res: await pending };
+    };
+    const first = await ask();
+    expect(first.req.target).toEqual({
+      sessionId: session.id,
+      cwd: '/repo/wt/sub',
+      worktreePath: '/repo/wt',
+      branch: 'ab/x',
+      claudeSessionId: CLAUDE_ID,
+      accountProfile: null,
+    });
+    expect(first.res).toMatchObject({ status: 200, body: { ...inspect, hooksShared: false } });
+
+    // 同機器同 cwd 有別的 session（就算已結束）→ 共用。
+    await newSession(cookie, machineId, { cwd: '/repo/wt/sub' });
+    await daemon.next('session.create');
+    expect((await ask()).res.body.hooksShared).toBe(true);
+  });
+
+  it('inspect: daemon errors are 502, timeouts 504, offline 409; foreign or mismatched replies are ignored', async () => {
+    hub = await startHub({ timing: { sessionFilesTimeoutMs: 80 } });
+    const { cookie, daemon, machineId, session } = await archivedSession();
+    const { daemon: other } = await hub.onlineDaemon(cookie);
+    const url = `/api/sessions/${session.id}/inspect`;
+
+    const failing = hub.api('GET', url, { cookie });
+    let req = await daemon.next('session.inspect');
+    daemon.send({
+      type: 'session.inspectResult',
+      requestId: req.requestId,
+      inspect: null,
+      error: 'boom',
+    });
+    expect(await failing).toMatchObject({ status: 502, body: { code: 'daemon_error' } });
+
+    const forged = hub.api('GET', url, { cookie });
+    req = await daemon.next('session.inspect');
+    const fake = { transcriptBytes: 1, git: null, worktreeExists: false };
+    other.send({
+      type: 'session.inspectResult',
+      requestId: req.requestId,
+      inspect: fake,
+      error: null,
+    });
+    // 同一台機器但回錯類型也不算。
+    daemon.send({
+      type: 'session.transcriptResult',
+      requestId: req.requestId,
+      page: null,
+      error: 'x',
+    });
+    expect(await forged).toMatchObject({ status: 504, body: { code: 'daemon_timeout' } });
+
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getMachine(machineId)?.online === false, 'offline');
+    expect(await hub.api('GET', url, { cookie })).toMatchObject({
+      status: 409,
+      body: { code: 'machine_offline' },
+    });
+    expect((await hub.api('GET', '/api/sessions/nope/inspect', { cookie })).status).toBe(404);
+  });
+
+  it('transcript forwards paging and search; without a claude id it is missing without asking', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await archivedSession({
+      accountProfile: null,
+    });
+    const page = {
+      entries: [{ index: 3, role: 'user', at: null, text: 'hello' }],
+      total: 10,
+      matched: 1,
+      nextCursor: null,
+      missing: false,
+    };
+    const pending = hub.api(
+      'GET',
+      `/api/sessions/${session.id}/transcript?cursor=5&limit=20&q=${encodeURIComponent('hel')}`,
+      { cookie },
+    );
+    const req = await daemon.next('session.transcript');
+    expect(req).toMatchObject({
+      claudeSessionId: CLAUDE_ID,
+      accountProfile: null,
+      cursor: 5,
+      limit: 20,
+      query: 'hel',
+    });
+    daemon.send({ type: 'session.transcriptResult', requestId: req.requestId, page, error: null });
+    expect(await pending).toMatchObject({ status: 200, body: page });
+
+    // 預設值與空白搜尋字。
+    const defaults = hub.api('GET', `/api/sessions/${session.id}/transcript?q=%20`, { cookie });
+    const req2 = await daemon.next('session.transcript');
+    expect(req2).toMatchObject({ cursor: 0, limit: 100, query: null });
+    daemon.send({ type: 'session.transcriptResult', requestId: req2.requestId, page, error: null });
+    expect((await defaults).status).toBe(200);
+
+    const tooMany = await hub.api('GET', `/api/sessions/${session.id}/transcript?limit=501`, {
+      cookie,
+    });
+    expect(tooMany.status).toBe(400);
+
+    // 沒有 claude id（排隊中就取消的）：不問 daemon。
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { quotaGuards: { denyReadPaths: [], maxConcurrentSessions: 1 } },
+    });
+    await newSession(cookie, machineId);
+    await daemon.next('session.create');
+    const queued = await newSession(cookie, machineId);
+    expect(queued.status).toBe('queued');
+    const missing = await hub.api('GET', `/api/sessions/${queued.id}/transcript`, { cookie });
+    expect(missing.body).toEqual({
+      entries: [],
+      total: 0,
+      matched: null,
+      nextCursor: null,
+      missing: true,
+    });
+    expect(daemon.of('session.transcript')).toHaveLength(0);
+  });
+
+  it('delete is owner-only and requires an archived, ended session', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    const member = await hub.createMember(cookie);
+    const url = `/api/sessions/${session.id}/delete`;
+    const del = (c: string, body: object = noPurge) => hub.api('POST', url, { cookie: c, body });
+
+    expect((await del(member.cookie)).status).toBe(403);
+    expect(await del(cookie)).toMatchObject({ status: 409, body: { code: 'not_archived' } });
+    // 封存會送 stop，但 daemon 還沒回報結束。
+    await patch(cookie, session.id, { archived: true });
+    expect(await del(cookie)).toMatchObject({ status: 409, body: { code: 'session_active' } });
+    await endSession(daemon, session.id);
+    expect((await del(member.cookie)).status).toBe(403);
+    expect((await hub.api('POST', url, { cookie, body: { removeHooks: true } })).status).toBe(400);
+    expect(
+      (
+        await hub.api('POST', '/api/sessions/nope/delete', {
+          cookie,
+          body: noPurge,
+        })
+      ).status,
+    ).toBe(404);
+    expect(hub.running.store.getSession(session.id)).not.toBeNull();
+  });
+
+  it('delete with nothing to clean does not contact the daemon, even offline', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await archivedSession();
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getMachine(machineId)?.online === false, 'offline');
+    const url = `/api/sessions/${session.id}/delete`;
+    expect(
+      await hub.api('POST', url, { cookie, body: { ...noPurge, removeTranscript: true } }),
+    ).toMatchObject({ status: 409, body: { code: 'machine_offline' } });
+    const res = await hub.api('POST', url, { cookie, body: noPurge });
+    expect(res).toMatchObject({
+      status: 200,
+      body: {
+        result: {
+          worktree: removed('skipped'),
+          transcript: removed('skipped'),
+          hooks: removed('skipped'),
+        },
+      },
+    });
+    expect(daemon.of('session.purge')).toHaveLength(0);
+    expect(hub.running.store.getSession(session.id)).toBeNull();
+  });
+
+  it('refuses to remove hooks another session in the same folder still uses', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await archivedSession();
+    await newSession(cookie, machineId); // 同樣的 /fake/project
+    await daemon.next('session.create');
+    const res = await hub.api('POST', `/api/sessions/${session.id}/delete`, {
+      cookie,
+      body: purgeAll,
+    });
+    expect(res).toMatchObject({ status: 409, body: { code: 'hooks_shared' } });
+    expect(daemon.of('session.purge')).toHaveLength(0);
+  });
+
+  it('a purge timeout keeps the hub data and the lock until the daemon answers; daemon errors keep the data', async () => {
+    hub = await startHub({ timing: { purgeTimeoutMs: 60 } });
+    const { cookie, daemon, session } = await archivedSession();
+    const url = `/api/sessions/${session.id}/delete`;
+    const timeout = await hub.api('POST', url, { cookie, body: purgeAll });
+    expect(timeout).toMatchObject({ status: 504, body: { code: 'daemon_timeout' } });
+    const late = await daemon.next('session.purge');
+    expect(hub.running.store.getSession(session.id)).not.toBeNull();
+    // daemon 可能還在清：504 之後仍鎖著。
+    expect(await hub.api('POST', url, { cookie, body: purgeAll })).toMatchObject({
+      status: 409,
+      body: { code: 'session_deleting' },
+    });
+    expect(await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie })).toMatchObject({
+      status: 409,
+      body: { code: 'session_deleting' },
+    });
+    // 晚到的結果解鎖（資料列不刪，要再按一次刪除）。
+    const lateResult = {
+      worktree: removed('not_found'),
+      transcript: removed('not_found'),
+      hooks: removed('not_found'),
+    };
+    daemon.send({
+      type: 'session.purgeResult',
+      requestId: late.requestId,
+      result: lateResult,
+      error: null,
+    });
+
+    await until(() => hub.running.hub['deleting'].size === 0, 'lock released');
+    // 晚到的結果記進 audit（機器上可能已刪了東西）。
+    const lateRow = auditRows().find((r) => r.action === 'session.purge_late');
+    expect(lateRow?.session_id).toBe(session.id);
+    expect(JSON.parse(String(lateRow?.detail))).toEqual({ result: lateResult, error: null });
+    const failing = hub.api('POST', url, { cookie, body: purgeAll });
+    const req = await daemon.next('session.purge');
+    daemon.send({
+      type: 'session.purgeResult',
+      requestId: req.requestId,
+      result: null,
+      error: 'x',
+    });
+    expect(await failing).toMatchObject({ status: 502, body: { code: 'daemon_error' } });
+    expect(hub.running.store.getSession(session.id)).not.toBeNull();
+
+    // daemon 發現 session 還活著。
+    const active = hub.api('POST', url, { cookie, body: purgeAll });
+    const req2 = await daemon.next('session.purge');
+    daemon.send({
+      type: 'session.purgeResult',
+      requestId: req2.requestId,
+      result: null,
+      error: 'session_active',
+    });
+    expect(await active).toMatchObject({ status: 409, body: { code: 'session_active' } });
+    expect(hub.running.store.getSession(session.id)).not.toBeNull();
+    expect(auditRows().some((r) => r.action === 'session.delete')).toBe(false);
+  });
+
+  it('the delete lock expires after deleteLockMaxMs even if the daemon never answers', async () => {
+    hub = await startHub({ timing: { purgeTimeoutMs: 40, deleteLockMaxMs: 150 } });
+    const { cookie, daemon, session } = await archivedSession();
+    const url = `/api/sessions/${session.id}/delete`;
+    expect((await hub.api('POST', url, { cookie, body: purgeAll })).status).toBe(504);
+    await daemon.next('session.purge');
+    expect(hub.running.hub['deleting'].size).toBe(1);
+    expect(await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie })).toMatchObject({
+      status: 409,
+      body: { code: 'session_deleting' },
+    });
+    await until(() => hub.running.hub['deleting'].size === 0, 'lock expired', 2000);
+    // 解鎖後照常可以再刪（這次不勾清理，不用等 daemon）。
+    const res = await hub.api('POST', url, { cookie, body: noPurge });
+    expect(res.status).toBe(200);
+    expect(hub.running.store.getSession(session.id)).toBeNull();
+  });
+
+  it('a daemon disconnect releases the delete lock', async () => {
+    hub = await startHub({ timing: { purgeTimeoutMs: 60 } });
+    const { cookie, daemon, machineId, token, session } = await archivedSession();
+    const url = `/api/sessions/${session.id}/delete`;
+    expect((await hub.api('POST', url, { cookie, body: purgeAll })).status).toBe(504);
+    daemon.ws.terminate();
+    await until(() => hub.running.store.getMachine(machineId)?.online === false, 'offline');
+    const back = await hub.daemon(token);
+    back.send(hello());
+    await back.next('hub.welcome');
+    expect(hub.running.hub['deleting'].size).toBe(0);
+    const pending = hub.api('POST', url, { cookie, body: noPurge });
+    expect(await pending).toMatchObject({ status: 200 });
+  });
+
+  it('a successful delete purges on the machine, removes the row, broadcasts, and keeps the audit log', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await archivedSession({
+      cwd: '/repo/wt',
+      worktreePath: '/repo/wt',
+      branch: 'ab/x',
+    });
+    const other = await newSession(cookie, machineId);
+    await daemon.next('session.create');
+    const rules = await addTeamRules(cookie, session.id, other.id);
+    const client = await hub.client(cookie);
+    const auditBefore = auditRows().filter((r) => r.session_id === session.id).length;
+    expect(auditBefore).toBeGreaterThan(0);
+
+    const pending = hub.api('POST', `/api/sessions/${session.id}/delete`, {
+      cookie,
+      body: { ...purgeAll, removeTranscript: false },
+    });
+    const req = await daemon.next('session.purge');
+    expect(req.target).toMatchObject({
+      sessionId: session.id,
+      cwd: '/repo/wt',
+      worktreePath: '/repo/wt',
+      branch: 'ab/x',
+      claudeSessionId: CLAUDE_ID,
+    });
+    expect(req.options).toEqual({ ...purgeAll, removeTranscript: false });
+    const result = {
+      worktree: { status: 'removed', detail: '分支 ab/x 沒合併，保留' },
+      transcript: removed('skipped'),
+      hooks: removed(),
+    };
+    daemon.send({ type: 'session.purgeResult', requestId: req.requestId, result, error: null });
+    expect(await pending).toMatchObject({ status: 200, body: { result } });
+
+    expect(hub.running.store.getSession(session.id)).toBeNull();
+    const count = (sql: string) => (hub.running.db.prepare(sql).get(session.id) as { n: number }).n;
+    expect(count('SELECT count(*) AS n FROM session_events WHERE session_id = ?')).toBe(0);
+    expect(count('SELECT count(*) AS n FROM handoff_rules WHERE from_session_id = ?')).toBe(0);
+    // 指向它的規則也刪掉，不留懸空；不相關的規則還在。
+    expect(
+      count(
+        "SELECT count(*) AS n FROM handoff_rules WHERE json_extract(action, '$.toSessionId') = ?",
+      ),
+    ).toBe(0);
+    expect(hub.running.store.getRule(rules.unrelated)).not.toBeNull();
+    expect((await client.next('session.removed')).sessionId).toBe(session.id);
+    const rows = auditRows().filter((r) => r.session_id === session.id);
+    expect(rows.length).toBe(auditBefore + 1);
+    const del = rows.find((r) => r.action === 'session.delete');
+    expect(JSON.parse(String(del?.detail))).toEqual({
+      name: session.name,
+      cwd: '/repo/wt',
+      machineId,
+      result,
+    });
+    // 再刪一次就是不存在了。
+    expect(
+      (await hub.api('POST', `/api/sessions/${session.id}/delete`, { cookie, body: noPurge }))
+        .status,
+    ).toBe(404);
+  });
+
+  it('while purging, resume, restore, a second delete, and new sessions in its folders get 409 session_deleting', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await archivedSession({
+      cwd: '/repo/.agent-board-wt/x/sub',
+      worktreePath: '/repo/.agent-board-wt/x',
+      branch: 'ab/x',
+    });
+    const deleting = { status: 409, body: { code: 'session_deleting' } };
+    const pending = hub.api('POST', `/api/sessions/${session.id}/delete`, {
+      cookie,
+      body: { ...noPurge, removeTranscript: true },
+    });
+    const req = await daemon.next('session.purge');
+    expect(await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie })).toMatchObject(
+      deleting,
+    );
+    expect(await patch(cookie, session.id, { archived: false })).toMatchObject(deleting);
+    expect(
+      await hub.api('POST', `/api/sessions/${session.id}/delete`, { cookie, body: noPurge }),
+    ).toMatchObject(deleting);
+    for (const cwd of [
+      '/repo/.agent-board-wt/x/sub',
+      '/repo/.agent-board-wt/x',
+      '/repo/.agent-board-wt/x/other',
+    ]) {
+      const res = await hub.api('POST', '/api/sessions', {
+        cookie,
+        body: { ...spec({ cwd }), machineId },
+      });
+      expect(res, cwd).toMatchObject(deleting);
+    }
+    // 名稱相似但不在 worktree 裡的照常建立。
+    const sibling = await hub.api('POST', '/api/sessions', {
+      cookie,
+      body: { ...spec({ cwd: '/repo/.agent-board-wt/x2' }), machineId },
+    });
+    expect(sibling.status).toBe(200);
+    await daemon.next('session.create');
+    expect(daemon.of('session.create')).toHaveLength(0);
+
+    const result = {
+      worktree: removed('skipped'),
+      transcript: removed(),
+      hooks: removed('skipped'),
+    };
+    daemon.send({ type: 'session.purgeResult', requestId: req.requestId, result, error: null });
+    expect(await pending).toMatchObject({ status: 200, body: { result } });
+    expect(hub.running.store.getSession(session.id)).toBeNull();
+  });
+
+  it('worktreeShared and transcriptShared: reported by inspect, and block those cleanups', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await archivedSession({
+      cwd: '/repo/.agent-board-wt/x',
+      worktreePath: '/repo/.agent-board-wt/x',
+      branch: 'ab/x',
+    });
+    const inspect = async () => {
+      const pending = hub.api('GET', `/api/sessions/${session.id}/inspect`, { cookie });
+      const req = await daemon.next('session.inspect');
+      daemon.send({
+        type: 'session.inspectResult',
+        requestId: req.requestId,
+        inspect: { transcriptBytes: null, git: null, worktreeExists: true },
+        error: null,
+      });
+      return (await pending).body;
+    };
+    const del = (body: object) =>
+      hub.api('POST', `/api/sessions/${session.id}/delete`, {
+        cookie,
+        body: { ...noPurge, ...body },
+      });
+    expect(await inspect()).toMatchObject({ worktreeShared: false, transcriptShared: false });
+
+    // 另一個 session 開在這個 worktree 的子資料夾，且接續同一段對話（同帳號）。
+    const other = await newSession(cookie, machineId, {
+      cwd: '/repo/.agent-board-wt/x/sub',
+      resumeClaudeSessionId: CLAUDE_ID,
+    });
+    await daemon.next('session.create');
+    expect(await inspect()).toMatchObject({
+      hooksShared: false,
+      worktreeShared: true,
+      transcriptShared: true,
+    });
+    expect(await del({ removeWorktree: true })).toMatchObject({
+      status: 409,
+      body: { code: 'worktree_shared' },
+    });
+    expect(await del({ removeTranscript: true })).toMatchObject({
+      status: 409,
+      body: { code: 'transcript_shared' },
+    });
+    expect(daemon.of('session.purge')).toHaveLength(0);
+
+    // 換成別的帳號、別的資料夾就不算共用；路徑裡的 % 不當萬用字元。
+    hub.running.db
+      .prepare('UPDATE sessions SET account_profile = ?, cwd = ? WHERE id = ?')
+      .run('/Users/x/.claude-work', '/repo/.agent-board-wt/x%', other.id);
+    expect(await inspect()).toMatchObject({ worktreeShared: false, transcriptShared: false });
+  });
+
+  it('claude ids are compared and sent in lower case', async () => {
+    hub = await startHub();
+    const upper = CLAUDE_ID.toUpperCase();
+    const { cookie, daemon, machineId, session } = await archivedSession({
+      claudeSessionId: upper,
+    });
+    const pending = hub.api('GET', `/api/sessions/${session.id}/inspect`, { cookie });
+    const req = await daemon.next('session.inspect');
+    expect(req).toMatchObject({ target: { claudeSessionId: CLAUDE_ID } });
+    daemon.send({
+      type: 'session.inspectResult',
+      requestId: req.requestId,
+      inspect: { transcriptBytes: null, git: null, worktreeExists: false },
+      error: null,
+    });
+    expect((await pending).body.transcriptShared).toBe(false);
+
+    // 另一個 session 用小寫記著同一段對話：算共用。
+    const other = await newSession(cookie, machineId, { cwd: '/elsewhere' });
+    await daemon.next('session.create');
+    hub.running.db
+      .prepare('UPDATE sessions SET claude_session_id = ? WHERE id = ?')
+      .run(CLAUDE_ID, other.id);
+    expect(
+      await hub.api('POST', `/api/sessions/${session.id}/delete`, {
+        cookie,
+        body: { ...noPurge, removeTranscript: true },
+      }),
+    ).toMatchObject({ status: 409, body: { code: 'transcript_shared' } });
+
+    // 接續送出的 id 也是小寫。
+    const resumed = await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie });
+    expect(resumed.status).toBe(200);
+    const create = await daemon.next('session.create');
+    expect(create).toMatchObject({ spec: { resumeClaudeSessionId: CLAUDE_ID } });
+  });
+
+  it('resume: an empty account folder means the default; a relative one is refused (409)', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await startedSession();
+    await endSession(daemon, session.id);
+    const setProfile = (value: string) =>
+      hub.running.db
+        .prepare('UPDATE sessions SET account_profile = ? WHERE id = ?')
+        .run(value, session.id);
+
+    setProfile('relative/.claude');
+    expect(await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie })).toMatchObject({
+      status: 409,
+      body: { code: 'invalid_account_profile' },
+    });
+    expect(daemon.of('session.create')).toHaveLength(0);
+    expect(hub.running.store.getSession(session.id)?.endedAt).not.toBeNull();
+
+    setProfile('');
+    expect((await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie })).status).toBe(
+      200,
+    );
+    const create = await daemon.next('session.create');
+    expect(create).toMatchObject({ spec: { accountProfile: null } });
+  });
+
+  it('a queued spec that no longer passes the protocol fails instead of being sent', async () => {
+    hub = await startHub();
+    const { cookie, daemon, machineId, session } = await startedSession();
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { quotaGuards: { denyReadPaths: [], maxConcurrentSessions: 1 } },
+    });
+    const queued = await newSession(cookie, machineId);
+    const empty = await newSession(cookie, machineId);
+    expect([queued.status, empty.status]).toEqual(['queued', 'queued']);
+    // 舊版寫進資料庫的 pending_spec：相對路徑與空字串。
+    const setSpec = (id: string, accountProfile: string) =>
+      hub.running.db
+        .prepare('UPDATE sessions SET pending_spec = ? WHERE id = ?')
+        .run(JSON.stringify({ ...spec(), accountProfile }), id);
+    setSpec(queued.id, 'relative/.claude');
+    setSpec(empty.id, '');
+    // 放出名額。
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(session.id, { status: 'done', endedAt: new Date().toISOString() }),
+    });
+    await until(() => hub.running.store.getSession(queued.id)?.status === 'error', 'failed');
+    expect(hub.running.store.getSession(queued.id)?.statusDetail).toBe('invalid_account_profile');
+    const create = await daemon.next('session.create');
+    expect(create).toMatchObject({ sessionId: empty.id, spec: { accountProfile: null } });
+  });
+
+  it('the locator drops a claude id that is not a strict UUID', async () => {
+    hub = await startHub();
+    const { cookie, daemon, session } = await archivedSession({ claudeSessionId: 'claude-1' });
+    const pending = hub.api('GET', `/api/sessions/${session.id}/inspect`, { cookie });
+    const req = await daemon.next('session.inspect');
+    expect(req).toMatchObject({ target: { claudeSessionId: null } });
+    daemon.send({
+      type: 'session.inspectResult',
+      requestId: req.requestId,
+      inspect: { transcriptBytes: null, git: null, worktreeExists: false },
+      error: null,
+    });
+    expect((await pending).status).toBe(200);
+    const transcript = await hub.api('GET', `/api/sessions/${session.id}/transcript`, { cookie });
+    expect(transcript.body.missing).toBe(true);
+    expect(daemon.of('session.transcript')).toHaveLength(0);
+    // 接續也一樣：不送 daemon 會丟掉的 id。
+    const resume = await hub.api('POST', `/api/sessions/${session.id}/resume`, { cookie });
+    expect(resume).toMatchObject({ status: 409, body: { code: 'no_claude_session' } });
+    expect(daemon.of('session.create')).toHaveLength(0);
+    expect(hub.running.store.getSession(session.id)?.archived).toBe(true);
   });
 });
 
@@ -2618,9 +3399,19 @@ describe('rate-limit queue (§8-5)', () => {
   it('null and empty accountProfile are the same default account', async () => {
     hub = await startHub();
     const { cookie, daemon, machineId, session } = await startedSession({ accountProfile: null });
+    // API 已不收空字串（AbsolutePath），只剩舊資料會有：直接寫進資料庫。
+    hub.running.db.prepare("UPDATE sessions SET account_profile = '' WHERE id = ?").run(session.id);
     limit(daemon, session.id);
     await until(() => statusOf(session.id)?.status === 'rate_limited', 'limited');
-    expect((await newSession(cookie, machineId, { accountProfile: '' })).status).toBe('queued');
+    expect((await newSession(cookie, machineId, { accountProfile: null })).status).toBe('queued');
+    expect(
+      (
+        await hub.api('POST', '/api/sessions', {
+          cookie,
+          body: { ...spec({ accountProfile: '' }), machineId },
+        })
+      ).status,
+    ).toBe(400);
   });
 
   it('a session that ended while rate limited does not block', async () => {

@@ -5,11 +5,11 @@ import { PermissionMode } from '@agent-board/protocol';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { errorText, ModeChip, Msg, useProjects, type Note } from './common';
+import { createErrorText, ModeChip, Msg, useProjects, type Note } from './common';
 import {
   Field,
   FolderBrowser,
-  folderName,
+  useFolderNameFill,
   ProjectSelect,
   suggestMachine,
   useWorktreeAdvice,
@@ -34,6 +34,7 @@ export function QuickCreate({
   const projects = useProjects();
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState('');
+  const fillName = useFolderNameFill(name, setName);
   const [projectId, setProjectId] = useState('');
   const [firstPrompt, setFirstPrompt] = useState('');
   const [more, setMore] = useState(false);
@@ -96,7 +97,7 @@ export function QuickCreate({
       });
       onCreated(created);
     } catch (e) {
-      setNote({ text: t('flows.new.createFailed', { error: errorText(e) }), tone: 'err' });
+      setNote({ text: createErrorText(t, e), tone: 'err' });
       setBusy(false);
     }
   };
@@ -164,10 +165,14 @@ export function QuickCreate({
                 <FolderBrowser
                   machine={machine}
                   start={cwd.trim()}
+                  onSelect={(path) => {
+                    setCwd(path);
+                    fillName(path);
+                  }}
                   onPick={(path) => {
                     setCwd(path);
+                    fillName(path);
                     setBrowsing(false);
-                    if (!name.trim()) setName(folderName(path));
                   }}
                   onClose={() => setBrowsing(false)}
                 />

@@ -451,6 +451,22 @@ describe('database', () => {
     }
   });
 
+  it('v3 adds sessions.archived_at to an existing v2 database', async () => {
+    hub = await startHub();
+    const path = join(hub.dir, 'v2.db');
+    const first = openDatabase(path);
+    // 退回 v2 的樣子：沒有 archived_at。
+    first.exec('ALTER TABLE sessions DROP COLUMN archived_at');
+    first.pragma('user_version = 2');
+    first.close();
+    const db = openDatabase(path);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(3);
+    const columns = db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+    expect(columns.map((c) => c.name)).toContain('archived_at');
+    db.close();
+  });
+
   it('refuses a database from a newer version', async () => {
     hub = await startHub();
     const path = join(hub.dir, 'other.db');
