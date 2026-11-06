@@ -70,6 +70,18 @@ describe('交接事件 → 動畫狀態', () => {
     expect(parseHandoffEvent(event('handoff.delivered', { toSessionId: 'b' }, 'b'))).toBeNull();
   });
 
+  it('任務自動執行的送審／退回（task.delivered）也畫在同一條線；沒有來源成員的不畫', () => {
+    expect(
+      parseHandoffEvent(
+        event('task.delivered', { kind: 'review', fromSessionId: 'a', toSessionId: 'b' }, 'b'),
+      ),
+    ).toMatchObject({ key: 'a->b', kind: 'delivered' });
+    expect(
+      parseHandoffEvent(event('task.delivered', { kind: 'start', toSessionId: 'b' }, 'b')),
+    ).toBeNull();
+    expect(parseHandoffEvent(event('task.dispatched', { toSessionId: 'b' }, 'b'))).toBeNull();
+  });
+
   it('來源一定是事件所屬的 session；payload 的 fromSessionId 不一致就不採用', () => {
     expect(
       parseHandoffEvent(event('handoff.fired', { fromSessionId: 'x', toSessionId: 'b' }, 'a')),

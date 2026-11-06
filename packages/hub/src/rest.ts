@@ -417,15 +417,19 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
 
     teamsList: () => store.listTeams(),
     teamsCreate: (ctx) => {
-      const team = { id: randomUUID(), ...ctx.body };
+      const team = { id: randomUUID(), ...ctx.body, taskAuto: ctx.body.taskAuto ?? false };
       store.upsertTeam(team);
+      if (team.taskAuto) {
+        hub.audit(
+          ctx.user.id,
+          null,
+          'team.task_auto',
+          JSON.stringify({ teamId: team.id, on: true }),
+        );
+      }
       return team;
     },
-    teamsUpdate: (ctx) => {
-      const next = merge(requireTeam(param(ctx)), ctx.body);
-      store.upsertTeam(next);
-      return next;
-    },
+    teamsUpdate: (ctx) => hub.updateTeam(requireTeam(param(ctx)).id, ctx.body, ctx.user),
     teamsDelete: (ctx) => {
       if (!store.deleteTeam(param(ctx))) throw notFound('Team');
       return ok;
@@ -471,29 +475,11 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       return ok;
     },
     tasksList: (ctx) => store.listTasks(requireTeam(param(ctx)).id),
-    tasksCreate: (ctx) => {
-      const task = {
-        id: randomUUID(),
-        teamId: requireTeam(param(ctx)).id,
-        title: ctx.body.title,
-        ownerSessionId: ctx.body.ownerSessionId,
-        column: 'todo' as const,
-      };
-      store.upsertTask(task);
-      return task;
-    },
-    tasksUpdate: (ctx) => {
-      const current = store.getTask(param(ctx));
-      if (!current) throw notFound('Task');
-      const next = merge(current, ctx.body);
-      if (next.column !== 'todo' && next.ownerSessionId === null) {
-        throw conflict('task_unassigned', 'Assign the task before moving it');
-      }
-      store.upsertTask(next);
-      return next;
-    },
+    tasksCreate: (ctx) => hub.createTask(requireTeam(param(ctx)).id, ctx.body),
+    // 移欄、換負責人的規則與任務自動執行都在 hub.updateTask。
+    tasksUpdate: (ctx) => hub.updateTask(param(ctx), ctx.body, ctx.user),
     tasksDelete: (ctx) => {
-      if (!store.deleteTask(param(ctx))) throw notFound('Task');
+      hub.deleteTask(param(ctx));
       return ok;
     },
     handoffRulesList: (ctx) => store.listRules(requireTeam(param(ctx)).id),

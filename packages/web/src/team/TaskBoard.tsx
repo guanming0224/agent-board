@@ -1,4 +1,5 @@
 // 任務板：待分配 → 進行中 → 待審查 → 完成；未指派不可推進（hub 也會回 409）。
+// 任務自動執行（GM 2026-11-06）：開關在這裡，實際送字與移欄由 hub 做（hub/src/tasks.ts），這裡只顯示進度。
 import { useEffect, useRef, useState } from 'react';
 import { TaskColumn } from '@agent-board/protocol';
 import type { Session, SessionEvent, Task, Team } from '@agent-board/protocol';
@@ -6,8 +7,9 @@ import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { ActionMessage, CostChip, useAction } from './common';
-import { decomposePrompt, parseTaskList } from './decompose';
-import { useTeams } from './store';
+import { assignOwners, decomposePrompt, parseTaskList, presentAbbrs, roleRefs } from './decompose';
+import { refreshTeams, useTeams } from './store';
+import { dropReasonKey, shortName, taskStatusLines } from './taskStatus';
 
 const DECOMPOSE_POLL_MS = 1500;
 const COLUMNS = TaskColumn.options;
@@ -20,12 +22,50 @@ const replyOf = (event: SessionEvent): string | null => {
     : null;
 };
 
+/** 自動執行做到哪（例：已送給 BD1・等回覆、RV 退回 1/3）。 */
+function TaskAutoStatus({ task, team }: { task: Task; team: Team }) {
+  const t = useT();
+  const mask = useMaskText();
+  const sessions = useBoard((s) => s.sessions);
+  const nameOf = (id: string | null) => {
+    const session = id === null ? undefined : sessions.find((s) => s.id === id);
+    return session ? shortName(session.name, team.name) : null;
+  };
+  const lines = taskStatusLines(task, nameOf);
+  if (lines.length === 0) return null;
+  const text = lines
+    .map(({ key, params }) =>
+      key === 'team.tasks.auto.dropped'
+        ? t(key, { ...params, reason: t(dropReasonKey(String(params.reason))) })
+        : t(key, params),
+    )
+    .join('・');
+  // 退回原因、完成摘要是成員回覆裡的一句：放在提示文字，遮蔽模式照樣打碼。
+  const note = task.auto?.note;
+  const showNote = note && task.auto?.state !== 'dropped' ? mask(note) : undefined;
+  return (
+    <p
+      className={`task-hint${task.needsUser ? ' attention' : ''}`}
+      data-testid="task-auto-status"
+      title={showNote}
+    >
+      {task.needsUser ? '◆ ' : '◇ '}
+      {text}
+      {task.needsUser && showNote && (
+        <span className="sub"> — {t('team.tasks.auto.reason', { reason: showNote })}</span>
+      )}
+    </p>
+  );
+}
+
 function TaskCard({
   task,
+  team,
   members,
   reload,
 }: {
   task: Task;
+  team: Team;
   members: Session[];
   reload: () => Promise<void>;
 }) {
@@ -61,7 +101,9 @@ function TaskCard({
 
   return (
     <li className="task" data-testid={`task-${task.id}`} data-column={task.column}>
-      <p className="task-title">{task.title}</p>
+      <p className="task-title">
+        <span className="num sub">#{task.number}</span> {task.title}
+      </p>
       <select
         aria-label={t('team.tasks.ownerOf', { title: task.title })}
         value={task.ownerSessionId ?? ''}
@@ -86,6 +128,7 @@ function TaskCard({
           ◆ {t('team.tasks.assignFirst')}
         </p>
       )}
+      <TaskAutoStatus task={task} team={team} />
       <div className="row task-actions">
         {previous && move(previous, t(`team.column.${previous}`), false, '◂')}
         {following && move(following, t(`team.column.${following}`), unassigned, '▸')}
@@ -125,6 +168,13 @@ function Decompose({
   const roles = useTeams((s) => s.members);
   const leadId = roles.find((m) => m.teamId === team.id && m.role === 'lead')?.sessionId;
   const lead = members.find((m) => m.id === leadId);
+  const sessions = useBoard((s) => s.sessions);
+  // 可以接任務的成員與縮寫：提示請隊長標 role，回覆依它指派（不另外花額度）。
+  const refs = roleRefs(
+    team,
+    roles.filter((m) => m.teamId === team.id),
+    sessions,
+  );
   const [waiting, setWaiting] = useState(false);
   const stopWaiting = useRef<(() => void) | null>(null);
   // 離開頁面就不再輪詢；回覆晚點到，回來按「重新讀取回覆」即可。
@@ -154,14 +204,16 @@ function Decompose({
       );
     }
     const existing = new Set(tasks.map((task) => task.title));
-    const fresh = parsed.titles.filter((title) => !existing.has(title));
-    for (const title of fresh) {
-      await backend.createTask(team.id, { title, ownerSessionId: null });
+    const fresh = parsed.tasks.filter((task) => !existing.has(task.title));
+    const owners = assignOwners(fresh, refs);
+    for (const [i, task] of fresh.entries()) {
+      await backend.createTask(team.id, { title: task.title, ownerSessionId: owners[i] ?? null });
     }
     await reload();
     return t('team.decompose.added', {
       n: fresh.length,
-      skipped: parsed.titles.length - fresh.length,
+      skipped: parsed.tasks.length - fresh.length,
+      assigned: owners.filter((owner) => owner !== null).length,
     });
   };
 
@@ -210,7 +262,7 @@ function Decompose({
     void run(async () => {
       try {
         const seen = new Set((await backend.sessionEvents(lead.id)).map((e) => e.id));
-        backend.sendPrompt(lead.id, decomposePrompt(team));
+        backend.sendPrompt(lead.id, decomposePrompt(team, presentAbbrs(refs)));
         const reply = await nextReply(lead.id, seen);
         return reply === null ? t('team.decompose.cancelled') : await accept(reply);
       } finally {
@@ -297,6 +349,39 @@ function NewTask({ team, reload }: { team: Team; reload: () => Promise<void> }) 
   );
 }
 
+/** 任務自動執行的開關：會花成員的額度，預設關；全隊暫停、全隊停止也會關掉。 */
+function TaskAutoToggle({ team }: { team: Team }) {
+  const t = useT();
+  const backend = useBoard((s) => s.backend);
+  const { busy, message, run } = useAction();
+  const on = team.taskAuto === true;
+  return (
+    <div className="task-auto" data-testid="task-auto">
+      <div className="row">
+        <label>
+          <input
+            type="checkbox"
+            checked={on}
+            disabled={busy}
+            data-testid="task-auto-toggle"
+            onChange={() =>
+              void run(async () => {
+                await backend.updateTeam(team.id, { taskAuto: !on });
+                await refreshTeams(backend);
+                return t(on ? 'team.tasks.auto.turnedOff' : 'team.tasks.auto.turnedOn');
+              })
+            }
+          />{' '}
+          {t('team.tasks.auto.label')}
+        </label>
+        <CostChip />
+        <ActionMessage message={message} testId="task-auto-msg" />
+      </div>
+      <p className="sub">{t('team.tasks.auto.help')}</p>
+    </div>
+  );
+}
+
 export function TaskBoard({
   team,
   members,
@@ -317,6 +402,7 @@ export function TaskBoard({
       ) : (
         <>
           <Decompose team={team} members={members} tasks={tasks} reload={reload} />
+          <TaskAutoToggle team={team} />
           <div className="columns">
             {COLUMNS.map((column) => {
               const list = tasks.filter((task) => task.column === column);
@@ -331,7 +417,13 @@ export function TaskBoard({
                   ) : (
                     <ul>
                       {list.map((task) => (
-                        <TaskCard key={task.id} task={task} members={members} reload={reload} />
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          team={team}
+                          members={members}
+                          reload={reload}
+                        />
                       ))}
                     </ul>
                   )}

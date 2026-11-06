@@ -512,18 +512,30 @@ test('請隊長拆解：要有 ◈ 耗額度；隊長忙時不能按；回覆解
   await action.click();
   await expect(page.getByTestId('decompose-waiting')).toBeVisible();
   await expect(page.getByTestId('decompose-msg')).toHaveText(
-    '放入待分配 3 項（已有的略過 0 項）。',
+    '放入待分配 3 項（已有的略過 0 項），依角色指派了 2 項。',
     { timeout: 8000 },
   );
   const todo = page.getByTestId('column-todo');
   await expect(todo.locator('.task', { hasText: 'Map the login redirect paths' })).toBeVisible();
   await expect(todo.locator('.task', { hasText: 'Fix the redirect' })).toBeVisible();
-  await expect(todo.getByTestId('task-unassigned')).toHaveCount(4);
+  // 依隊長標的 role 指派：BD → Fix login（worker）、LD → Write tests（隊長）；沒標的留給使用者。
+  await expect(
+    task(page, 'Map the login redirect paths').getByLabel(
+      '「Map the login redirect paths」的負責人',
+    ),
+  ).toHaveValue('s-auth');
+  await expect(
+    task(page, 'Write regression tests').getByLabel('「Write regression tests」的負責人'),
+  ).toHaveValue('s-tests');
+  await expect(task(page, 'Fix the redirect').getByTestId('task-unassigned')).toBeVisible();
+  await expect(todo.getByTestId('task-unassigned')).toHaveCount(2);
+  // 卡片帶團隊內的短編號（demo 已有 #1、#2）。
+  await expect(task(page, 'Fix the redirect').locator('.task-title')).toContainText('#5');
 
   // 重新讀取不花額度，也不會重複加
   await page.getByRole('button', { name: '重新讀取回覆' }).click();
   await expect(page.getByTestId('decompose-msg')).toHaveText(
-    '放入待分配 0 項（已有的略過 3 項）。',
+    '放入待分配 0 項（已有的略過 3 項），依角色指派了 0 項。',
   );
   await expect(todo.locator('.task')).toHaveCount(4);
 });
@@ -567,7 +579,54 @@ test('送進隊長的提示是一行且包含目標，不在畫面上花到別�
   expect(sent[0]![0]).toBe('s-tests');
   expect(sent[0]![1]).toContain('Goal: Fix the login redirect loop');
   expect(sent[0]![1]).toContain('JSON array');
+  // 只列團隊裡有的縮寫。
+  expect(sent[0]![1]).toContain('"role":"BD"');
+  expect(sent[0]![1]).toContain('one of: BD (builder), LD (lead).');
   expect(sent[0]![1]).not.toMatch(/[\r\n]/);
+});
+
+test('任務自動執行：開關預設關、標耗額度，卡片顯示做到哪；全隊暫停會關掉', async ({ page }) => {
+  await openWorkbench(page);
+  const toggle = page.getByTestId('task-auto-toggle');
+  const box = page.getByTestId('task-auto');
+  await expect(toggle).not.toBeChecked();
+  await expect(box.locator('.chip.cost')).toHaveText('◈ 耗額度');
+  await expect(box).toContainText('每一步都會花成員的額度');
+  await toggle.check();
+  await expect(page.getByTestId('task-auto-msg')).toContainText('已開啟');
+  await expect(toggle).toBeChecked();
+
+  // hub 送出後的狀態（假後端不送字，直接改任務模擬）：卡片寫出送給誰、退回幾次。
+  await fake(
+    page,
+    `backend.patchTask('task-1', { rejectCount: 1, reviewerSessionId: 's-tests', auto: { state: 'sent', sessionId: 's-auth', at: new Date().toISOString() } })`,
+  );
+  // 任務板每 5 秒重新讀取。
+  const card = task(page, 'Reproduce the redirect loop');
+  await expect(card.getByTestId('task-auto-status')).toHaveText(
+    '◇ 已送給 Fix login・等回覆・Write tests 退回 1/3',
+    { timeout: 8000 },
+  );
+  await expect(card.locator('.task-title')).toContainText('#1');
+  await shot(page, 'team-task-auto');
+
+  // 到上限：顯示要你決定與原因。
+  await fake(
+    page,
+    `backend.patchTask('task-1', { column: 'review', rejectCount: 3, needsUser: true, auto: { state: 'limit', sessionId: 's-tests', note: 'Still no mobile test.', at: new Date().toISOString() } })`,
+  );
+  await expect(card.getByTestId('task-auto-status')).toContainText(
+    'Write tests 退回 3/3・等你決定',
+    { timeout: 8000 },
+  );
+  await expect(card.getByTestId('task-auto-status')).toContainText('原因：Still no mobile test.');
+  // 使用者自己移卡片：清掉「等你決定」，退回次數保留。
+  await card.getByRole('button', { name: '移到「進行中」' }).click();
+  await expect(card.getByTestId('task-auto-status')).toHaveText('◇ Write tests 退回 3/3');
+
+  await page.getByRole('button', { name: '全隊暫停' }).click();
+  await expect(page.getByTestId('team-controls-msg')).toContainText('任務自動執行也關了');
+  await expect(toggle).not.toBeChecked();
 });
 
 test('解析不到要說明原因，頁面不當機，之後可以重讀', async ({ page }) => {

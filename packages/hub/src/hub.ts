@@ -25,12 +25,15 @@ import {
   type SessionRuntime,
   type SessionStatus,
   type Settings,
+  type Task,
+  type Team,
   type UsageSummary,
   type User,
 } from '@agent-board/protocol';
 import type { z } from 'zod';
 import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from './audit';
 import { conflict, HttpError, notFound } from './errors';
+import { SafeDelivery } from './delivery';
 import { HandoffEngine } from './handoff';
 import {
   attentionPayload,
@@ -42,6 +45,7 @@ import {
 import { parseRateLimitReset } from './rateLimitReset';
 import { TerminalRelay, type RelayClient } from './relay';
 import type { Store } from './store';
+import { TaskEngine } from './tasks';
 
 export interface Timing {
   heartbeatMs: number;
@@ -235,7 +239,10 @@ export class Hub {
   private readonly pushes = new Set<Promise<void>>();
   private readonly relay: TerminalRelay<ClientConn>;
   private readonly prompts = new PromptWatcher();
+  /** 交接與任務自動執行共用的送字佇列：同一個目標一次只送一則。 */
+  private readonly delivery: SafeDelivery;
   private readonly handoff: HandoffEngine;
+  private readonly tasks: TaskEngine;
   private heartbeat: NodeJS.Timeout | null = null;
   /** 限流帳號的重置時間到時重新排隊（§8-5）。 */
   private resetTimer: NodeJS.Timeout | null = null;
@@ -255,24 +262,51 @@ export class Hub {
       drainTimeoutMs: deps.timing.drainTimeoutMs,
       now: () => deps.now().getTime(),
     });
-    this.handoff = new HandoffEngine({
+    const sendDeps = {
       store: deps.store,
       now: deps.now,
       enterDelayMs: deps.timing.handoffEnterDelayMs,
-      audit: (sessionId, action, detail) => this.audit(null, sessionId, action, detail),
-      addEvent: (sessionId, type, payload, at) => this.addEvent(sessionId, type, payload, at),
-      isReachable: (sessionId) => {
+      audit: (sessionId: string, action: string, detail: string) =>
+        this.audit(null, sessionId, action, detail),
+      isReachable: (sessionId: string) => {
         const machineId = this.store.sessionMachineId(sessionId);
         return machineId !== null && this.daemonFor(machineId) !== null;
       },
-      sendInput: (sessionId, data) =>
+      // hub 唯一自己送字進 PTY 的地方（交接規則與任務自動執行，docs/no-llm-review.md）。
+      // 直接送給 daemon，不經過使用者輸入那條路：不算使用者輸入，不會重設交接鏈。
+      sendInput: (sessionId: string, data: string) =>
         this.toSessionDaemon(sessionId, { type: 'terminal.input', sessionId, data }),
-      guarded: (label, fn) => this.guarded(label, fn),
+      guarded: (label: string, fn: () => void) => this.guarded(label, fn),
+    };
+    this.delivery = new SafeDelivery(sendDeps);
+    this.handoff = new HandoffEngine({
+      ...sendDeps,
+      delivery: this.delivery,
+      addEvent: (sessionId, type, payload, at) => this.addEvent(sessionId, type, payload, at),
       notifyRoundLimit: (sessionId, maxRounds) => {
         const session = this.store.getSession(sessionId);
         if (session) this.notifyAttention(session, { reason: 'handoff_round_limit', maxRounds });
       },
     });
+    this.tasks = new TaskEngine({
+      store: deps.store,
+      now: deps.now,
+      delivery: this.delivery,
+      audit: (sessionId, action, detail) => this.audit(null, sessionId, action, detail),
+      addEvent: (sessionId, type, payload, at) => this.addEvent(sessionId, type, payload, at),
+      notifyLimit: (sessionId, task, limit) => {
+        const session = this.store.getSession(sessionId);
+        if (session) {
+          this.notifyAttention(session, {
+            reason: 'task_reject_limit',
+            maxRounds: limit,
+            task: task.number,
+          });
+        }
+      },
+    });
+    // 送字佇列在記憶體，上次關機時排隊的已經不在：標成沒送出，不自動重送。
+    this.tasks.restore();
     // 上次關機時的連線都不在了：機器與 session 先視為離線，等 daemon 回來對帳。
     for (const machine of this.store.listMachines()) this.markMachineOffline(machine.id);
     this.heartbeat = setInterval(
@@ -391,11 +425,12 @@ export class Hub {
         return;
       }
       case 'session.event':
-        // handoff.* 只能由 hub 自己寫（交接引擎讀它當分界，畫布拿它畫動畫），daemon 送來的不收。
-        if (msg.event.type.startsWith('handoff.')) return;
+        // handoff.*、task.* 只能由 hub 自己寫（引擎讀它當分界，畫布拿它畫動畫），daemon 送來的不收。
+        if (msg.event.type.startsWith('handoff.') || msg.event.type.startsWith('task.')) return;
         if (this.ownsSession(conn, msg.event.sessionId) && this.store.insertEvent(msg.event)) {
           this.broadcast({ type: 'session.event', event: msg.event });
           this.guarded('handoff', () => this.handoff.onEvent(msg.event));
+          this.guarded('tasks', () => this.tasks.onEvent(msg.event));
         }
         return;
       case 'terminal.output':
@@ -1238,6 +1273,7 @@ export class Hub {
     if (mayNotify && entered && needsAttention(next.status)) {
       this.notifyAttention(next);
     }
+    this.guarded('delivery', () => this.delivery.onSessionChange(prev, next));
     this.guarded('handoff', () => this.handoff.onSessionChange(prev, next, mayNotify && entered));
     // 離開限流（例如重置後繼續工作）也可能放出同帳號排隊中的 session（§8-5）；
     // 進入限流或重置時間變了，要重排計時器。
@@ -1257,6 +1293,90 @@ export class Hub {
     const event = { id: randomUUID(), sessionId, type, payload, at };
     this.store.insertEvent(event);
     this.broadcast({ type: 'session.event', event });
+  }
+
+  // ── 團隊任務（任務自動執行，GM 2026-11-06）────────────
+  createTask(teamId: string, input: Pick<Task, 'title' | 'ownerSessionId'>): Task {
+    const task: Task = {
+      id: randomUUID(),
+      teamId,
+      title: input.title,
+      ownerSessionId: input.ownerSessionId,
+      column: 'todo',
+      number: this.store.takeTaskNumber(teamId),
+      rejectCount: 0,
+      needsUser: false,
+      reviewerSessionId: null,
+      auto: null,
+    };
+    this.store.upsertTask(task);
+    return task;
+  }
+
+  /**
+   * 使用者在任務板上改任務。移欄或換負責人：清掉「等你決定」與最後一步的顯示（使用者已經接手），
+   * 退回次數保留（是任務的歷史，不悄悄歸零）。開關開著時，進入進行中／待審查會自動送出。
+   */
+  updateTask(
+    id: string,
+    patch: Partial<Pick<Task, 'title' | 'ownerSessionId' | 'column'>>,
+    user: User,
+  ): Task {
+    const current = this.store.getTask(id);
+    if (!current) throw notFound('Task');
+    const defined = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ) as typeof patch;
+    let next: Task = { ...current, ...defined };
+    if (next.column !== 'todo' && next.ownerSessionId === null) {
+      throw conflict('task_unassigned', 'Assign the task before moving it');
+    }
+    const moved = next.column !== current.column || next.ownerSessionId !== current.ownerSessionId;
+    if (moved) next = { ...next, needsUser: false, auto: null };
+    this.store.upsertTask(next);
+    if (moved) {
+      this.audit(
+        user.id,
+        next.ownerSessionId,
+        'task.update',
+        JSON.stringify({
+          taskId: id,
+          teamId: next.teamId,
+          number: next.number,
+          column: next.column,
+          ownerSessionId: next.ownerSessionId,
+        }),
+      );
+    }
+    this.guarded('tasks', () => this.tasks.userChanged(current, next));
+    return this.store.getTask(id) ?? next;
+  }
+
+  deleteTask(id: string): void {
+    const current = this.store.getTask(id);
+    if (!current || !this.store.deleteTask(id)) throw notFound('Task');
+    this.tasks.userDeleted(current);
+  }
+
+  /** 開關會決定要不要花成員的額度：誰開、誰關都寫 audit。關掉時排隊中的任務不送了。 */
+  updateTeam(id: string, patch: Partial<Omit<Team, 'id'>>, user: User): Team {
+    const current = this.store.getTeam(id);
+    if (!current) throw notFound('Team');
+    const defined = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ) as typeof patch;
+    const next: Team = { ...current, ...defined };
+    this.store.upsertTeam(next);
+    if (Boolean(current.taskAuto) !== Boolean(next.taskAuto)) {
+      this.audit(
+        user.id,
+        null,
+        'team.task_auto',
+        JSON.stringify({ teamId: id, on: !!next.taskAuto }),
+      );
+    }
+    this.guarded('tasks', () => this.tasks.teamChanged(current, next));
+    return this.store.getTeam(id) ?? next;
   }
 
   // ── 機器 ─────────────────────────────────────────────
@@ -1761,7 +1881,7 @@ export class Hub {
       if (conn.helloed) this.store.touchMachine(conn.machineId, now);
     }
     this.store.pruneExpired(now);
-    this.handoff.flush();
+    this.delivery.flush();
   }
 
   async close(): Promise<void> {
@@ -1779,7 +1899,7 @@ export class Hub {
     if (this.heartbeat) clearInterval(this.heartbeat);
     if (this.resetTimer) clearTimeout(this.resetTimer);
     this.relay.close();
-    this.handoff.close();
+    this.delivery.close();
     for (const pending of this.pendingCreates.values()) clearTimeout(pending.timer);
     this.pendingCreates.clear();
     for (const lock of this.deleting.values()) clearTimeout(lock.timer);

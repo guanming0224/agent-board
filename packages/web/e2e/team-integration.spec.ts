@@ -256,7 +256,7 @@ test('請隊長拆解：提示真的送進隊長，回覆解析後放入待分�
 
   await page.getByRole('button', { name: '請隊長拆解' }).click();
   await expect(page.getByTestId('decompose-msg')).toHaveText(
-    '放入待分配 2 項（已有的略過 0 項）。',
+    '放入待分配 2 項（已有的略過 0 項），依角色指派了 0 項。',
     {
       timeout: 20_000,
     },

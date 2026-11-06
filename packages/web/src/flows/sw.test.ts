@@ -118,6 +118,28 @@ describe('sw.js push', () => {
     expect(en.shown[0]!.options).toMatchObject({ body: 'A session is waiting on you' });
   });
 
+  it('says why when a task hit its reject limit, with the task number', async () => {
+    const payload = {
+      sessionId: 's2',
+      name: 'T-RV',
+      status: 'waiting_input',
+      reason: 'task_reject_limit',
+      maxRounds: 3,
+      task: 7,
+    };
+    const zh = loadWorker('zh-TW');
+    await zh.dispatch('push', pushEvent(payload));
+    expect(zh.shown[0]!.options).toMatchObject({
+      body: '任務 #7 被退回 3 次，自動執行停下，等你決定',
+      tag: 'task-s2',
+    });
+    const en = loadWorker('en');
+    await en.dispatch('push', pushEvent(payload));
+    expect(en.shown[0]!.options.body).toBe(
+      'Task #7 was sent back 3 times and stopped. Waiting for you.',
+    );
+  });
+
   it('still notifies when the payload is missing or malformed', async () => {
     const worker = loadWorker('en');
     await worker.dispatch('push', pushEvent(undefined));

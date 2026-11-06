@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HandoffRule, routes, type RouteName } from '@agent-board/protocol';
+import { HandoffRule, routes, Task, type RouteName } from '@agent-board/protocol';
 import { assertBindableHost, loadEnvConfig, UnsafeBindError } from '../config';
 import { openDatabase, SCHEMA_VERSION } from '../db';
 import { createHub } from '../server';
@@ -417,6 +417,15 @@ describe('listening address', () => {
   });
 });
 
+/** 退回 v5 的樣子：拿掉 v6 加的欄位（任務自動執行）。 */
+const dropV6 = (db: ReturnType<typeof openDatabase>) => {
+  for (const column of ['task_auto', 'task_seq'])
+    db.exec(`ALTER TABLE teams DROP COLUMN ${column}`);
+  for (const column of ['number', 'reject_count', 'needs_user', 'reviewer_session_id', 'auto']) {
+    db.exec(`ALTER TABLE tasks DROP COLUMN ${column}`);
+  }
+};
+
 describe('database', () => {
   it('migrates to the latest version and starts with no sample data', async () => {
     hub = await startHub();
@@ -461,6 +470,7 @@ describe('database', () => {
     first.exec('ALTER TABLE sessions DROP COLUMN read_only');
     first.exec('ALTER TABLE teams DROP COLUMN phase');
     first.exec('ALTER TABLE team_members DROP COLUMN kind');
+    dropV6(first);
     first.pragma('user_version = 2');
     first.close();
     const db = openDatabase(path);
@@ -478,6 +488,7 @@ describe('database', () => {
     first.exec('ALTER TABLE sessions DROP COLUMN read_only');
     first.exec('ALTER TABLE teams DROP COLUMN phase');
     first.exec('ALTER TABLE team_members DROP COLUMN kind');
+    dropV6(first);
     first.pragma('user_version = 3');
     first.close();
     const db = openDatabase(path);
@@ -496,6 +507,7 @@ describe('database', () => {
     const first = openDatabase(path);
     first.exec('ALTER TABLE teams DROP COLUMN phase');
     first.exec('ALTER TABLE team_members DROP COLUMN kind');
+    dropV6(first);
     first.pragma('user_version = 4');
     // v4 時代的資料：團隊、成員、action 沒有 maxRounds／marker 的交接規則。
     first.exec(`
@@ -510,8 +522,7 @@ describe('database', () => {
     `);
     first.close();
     const db = openDatabase(path);
-    expect(SCHEMA_VERSION).toBe(5);
-    expect(db.pragma('user_version', { simple: true })).toBe(5);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     const store = new Store(db, '127.0.0.1');
     expect(store.getTeam('t')).toEqual({
       id: 't',
@@ -520,11 +531,63 @@ describe('database', () => {
       doneCriteria: '',
       color: 'teal',
       contextMd: '',
+      taskAuto: false,
     });
     expect(store.listTeamMembers('t')).toEqual([{ teamId: 't', sessionId: 's1', role: 'worker' }]);
     const rule = store.getRule('r')!;
     expect(HandoffRule.parse(rule)).toEqual(rule);
     expect(rule.action).toEqual({ toSessionId: 's2', filePattern: '*.ts' });
+    db.close();
+  });
+
+  it('v6 adds task automation: old teams are off, old tasks get numbers in creation order', async () => {
+    hub = await startHub();
+    const path = join(hub.dir, 'v5.db');
+    const first = openDatabase(path);
+    dropV6(first);
+    first.pragma('user_version = 5');
+    // v5 時代的資料：兩個團隊、各自的任務，沒有編號與自動執行欄位。
+    first.exec(`
+      INSERT INTO machines (id, name, os, token_hash, capabilities) VALUES ('m', 'm', 'darwin', 'h', '{}');
+      INSERT INTO sessions (id, machine_id, name, cwd, permission_mode, status, status_since, created_at)
+        VALUES ('s1', 'm', 'a', '/r', 'default', 'done', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO teams (id, name, goal, done_criteria, color, context_md, phase)
+        VALUES ('t', 'T', '', '', 'teal', '', NULL), ('u', 'U', '', '', 'teal', '', 'writing');
+      INSERT INTO tasks (id, team_id, title, owner_session_id, "column") VALUES
+        ('a', 't', 'first', 's1', 'doing'),
+        ('b', 'u', 'other team', NULL, 'todo'),
+        ('c', 't', 'second', NULL, 'todo');
+    `);
+    first.close();
+    const db = openDatabase(path);
+    expect(SCHEMA_VERSION).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(6);
+    const store = new Store(db, '127.0.0.1');
+    expect(store.getTeam('t')?.taskAuto).toBe(false);
+    expect(store.getTeam('u')).toMatchObject({ phase: 'writing', taskAuto: false });
+    expect(store.listTasks('t')).toEqual([
+      {
+        id: 'a',
+        teamId: 't',
+        title: 'first',
+        ownerSessionId: 's1',
+        column: 'doing',
+        number: 1,
+        rejectCount: 0,
+        needsUser: false,
+        reviewerSessionId: null,
+        auto: null,
+      },
+      expect.objectContaining({ id: 'c', number: 2 }),
+    ]);
+    expect(store.listTasks('u')).toEqual([expect.objectContaining({ id: 'b', number: 1 })]);
+    for (const task of [...store.listTasks('t'), ...store.listTasks('u')]) {
+      expect(Task.parse(task)).toEqual(task);
+    }
+    // 下一個編號接著發；刪掉最大的也不重發。
+    expect(store.takeTaskNumber('t')).toBe(3);
+    store.deleteTask('c');
+    expect(store.takeTaskNumber('t')).toBe(4);
     db.close();
   });
 

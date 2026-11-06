@@ -19,15 +19,19 @@ const STATUS_TEXT = {
   },
 };
 
-/** 狀態以外的原因（hub push.ts 的 AttentionReason）。{n} 是輪數上限。 */
+/** 狀態以外的原因（hub push.ts 的 AttentionReason）。{n} 是上限（輪數或退回次數），{task} 是任務編號。 */
 const REASON_TEXT = {
   'zh-TW': {
     handoff_round_limit: '雙向交接已來回 {n} 輪，自動交接停下，等你決定',
+    task_reject_limit: '任務 #{task} 被退回 {n} 次，自動執行停下，等你決定',
   },
   en: {
     handoff_round_limit: 'Two-way handoff reached {n} rounds and stopped. Waiting for you.',
+    task_reject_limit: 'Task #{task} was sent back {n} times and stopped. Waiting for you.',
   },
 };
+
+const intText = (value) => String(Number.isInteger(value) ? value : '?');
 
 const FALLBACK = {
   'zh-TW': { title: 'Agent Board', body: '有 session 在等你' },
@@ -75,7 +79,7 @@ self.addEventListener('push', (event) => {
     data && typeof data.reason === 'string' ? REASON_TEXT[lang][data.reason] : undefined;
   const reason =
     reasonTemplate &&
-    reasonTemplate.replace('{n}', String(Number.isInteger(data.maxRounds) ? data.maxRounds : '?'));
+    reasonTemplate.replace('{n}', intText(data.maxRounds)).replace('{task}', intText(data.task));
   const status = reason || (data && STATUS_TEXT[lang][data.status]);
   const title =
     data && typeof data.name === 'string' && data.name ? data.name : FALLBACK[lang].title;
@@ -84,8 +88,10 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body: status || FALLBACK[lang].body,
-      // 輪數上限另外一則：不能被同一個 session 接著來的「等你回覆」蓋掉。
-      tag: sessionId ? `${reason ? 'handoff' : 'session'}-${sessionId}` : 'agent-board',
+      // 上限另外一則：不能被同一個 session 接著來的「等你回覆」蓋掉。
+      tag: sessionId
+        ? `${reason ? (data.reason === 'task_reject_limit' ? 'task' : 'handoff') : 'session'}-${sessionId}`
+        : 'agent-board',
       renotify: true,
       icon: '/icon-192.png',
       badge: '/icon-192.png',

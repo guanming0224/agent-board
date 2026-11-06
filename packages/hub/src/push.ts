@@ -63,11 +63,14 @@ export function inQuietHours(quiet: Settings['notifications']['quietHours'], at:
   return start < end ? current >= start && current < end : current >= start || current < end;
 }
 
-/** 狀態以外要人決定的事。目前只有雙向交接來回到上限（迴圈停下等使用者）。 */
-export interface AttentionReason {
-  reason: 'handoff_round_limit';
-  maxRounds: number;
-}
+/**
+ * 狀態以外要人決定的事（自動流程停下等使用者）。
+ * handoff_round_limit：雙向交接到了輪數上限（maxRounds）。
+ * task_reject_limit：任務被審查退回到上限（maxRounds 是上限次數、task 是任務編號 #n），自動流程停下。
+ */
+export type AttentionReason =
+  | { reason: 'handoff_round_limit'; maxRounds: number }
+  | { reason: 'task_reject_limit'; maxRounds: number; task: number };
 
 /**
  * 推播內容經過第三方推播服務（已加密），只放 session 名稱與狀態，絕不放終端機內容。
