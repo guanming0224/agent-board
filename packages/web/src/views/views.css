@@ -45,8 +45,44 @@
   gap: 6px;
   color: var(--you);
 }
+a.waiting {
+  text-decoration: none;
+}
+a.waiting:hover b {
+  text-decoration: underline;
+}
 .waiting.none {
   color: var(--muted);
+}
+/* 同時等你的超過上限：頁首下方一條，手機寬度會換行，不撐出橫向捲動。 */
+.waiting-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--you);
+  border-radius: var(--radius-control);
+  color: var(--you);
+  background: color-mix(in srgb, var(--you) 10%, transparent);
+  font-size: 13.5px;
+  min-width: 0;
+}
+.waiting-banner .text {
+  flex: 1 1 12em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.waiting-banner .go {
+  color: inherit;
+  font-weight: 600;
+}
+.chip.auto-continue {
+  border-color: var(--quota);
+  color: var(--quota);
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .waiting span {
   font-size: 13px;

@@ -1,7 +1,14 @@
 // hub 端設定（只有 owner）：分散在「通知」「Session 與額度」「安全」三個分類，共用一份草稿與一個儲存列。
 // 草稿放在設定頁這一層，切換分類不會不見；選單用 dirtyCategories 標出哪些分類還沒存。
 import { useEffect, useState } from 'react';
-import type { Settings } from '@agent-board/protocol';
+import {
+  NOTIFY_MAX_WINDOW_MS,
+  NOTIFY_PERMISSION_WINDOW_MS,
+  NOTIFY_WINDOW_MS,
+  WAITING_LIMIT_MAX,
+  WAITING_LIMIT_MIN,
+  type Settings,
+} from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { errorText, Msg, type Note } from './common';
@@ -19,6 +26,7 @@ interface Texts {
   deny: string;
   max: string;
   stuck: string;
+  limit: string;
   newRule: string;
 }
 
@@ -26,6 +34,7 @@ const textsOf = (s: Settings | null): Texts => ({
   deny: s?.quotaGuards.denyReadPaths.join('\n') ?? '',
   max: s?.quotaGuards.maxConcurrentSessions?.toString() ?? '',
   stuck: s ? String(s.stuckMinutes) : '',
+  limit: s ? String(s.notifications.waitingLimit) : '',
   newRule: '',
 });
 
@@ -43,6 +52,7 @@ export interface ServerSettingsForm {
   badOrigin: boolean;
   stuckValid: boolean;
   maxValid: boolean;
+  limitValid: boolean;
   quietInvalid: boolean;
   ruleNote: Note | null;
   addRule: () => void;
@@ -97,9 +107,10 @@ export function useServerSettings(loaded: Settings | null): ServerSettingsForm |
   const maxValid = texts.max.trim() === '' || POSITIVE_INT.test(texts.max.trim());
   const quiet = draft.notifications.quietHours;
   const quietInvalid = quiet !== null && (!quiet.start || !quiet.end);
+  const limitValid = waitingLimitOf(texts.limit) !== null;
 
   const invalidCategories = new Set<Category>();
-  if (quietInvalid) invalidCategories.add('notify');
+  if (quietInvalid || !limitValid) invalidCategories.add('notify');
   if (!stuckValid || !maxValid) invalidCategories.add('sessions');
   if (addressError !== null || badOrigin) invalidCategories.add('security');
 
@@ -156,6 +167,7 @@ export function useServerSettings(loaded: Settings | null): ServerSettingsForm |
     badOrigin,
     stuckValid,
     maxValid,
+    limitValid,
     quietInvalid,
     ruleNote,
     addRule,
@@ -166,9 +178,19 @@ export function useServerSettings(loaded: Settings | null): ServerSettingsForm |
   };
 }
 
+/** 同時等你的上限：1–20 的整數；不合法回 null。 */
+function waitingLimitOf(text: string): number | null {
+  const value = text.trim();
+  if (!POSITIVE_INT.test(value)) return null;
+  const n = Number(value);
+  return n >= WAITING_LIMIT_MIN && n <= WAITING_LIMIT_MAX ? n : null;
+}
+
+const seconds = (ms: number) => Math.round(ms / 1000);
+
 export function NotifySection({ form }: { form: ServerSettingsForm }) {
   const t = useT();
-  const { draft, patch, quietInvalid } = form;
+  const { draft, patch, quietInvalid, limitValid } = form;
   const quiet = draft.notifications.quietHours;
   return (
     <Section id="notify" title={t('flows.settings.notify')} dirty={form.isDirty('notifications')}>
@@ -232,6 +254,53 @@ export function NotifySection({ form }: { form: ServerSettingsForm }) {
         </div>
       )}
       {quietInvalid && <p className="field-error">{t('flows.notify.needTimes')}</p>}
+      <div className="field">
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="notify-coalesce"
+            checked={draft.notifications.coalesce}
+            onChange={(e) =>
+              patch({ notifications: { ...draft.notifications, coalesce: e.target.checked } })
+            }
+          />
+          {t('flows.notify.coalesce')}
+        </label>
+        <p className="hint" data-testid="notify-coalesce-hint">
+          {draft.notifications.coalesce
+            ? t('flows.notify.coalesceHint', {
+                window: seconds(NOTIFY_WINDOW_MS),
+                permission: seconds(NOTIFY_PERMISSION_WINDOW_MS),
+                max: seconds(NOTIFY_MAX_WINDOW_MS),
+              })
+            : t('flows.notify.coalesceOff')}
+        </p>
+      </div>
+      <div className="field">
+        <label htmlFor="st-waiting-limit">{t('flows.notify.waitingLimit')}</label>
+        <input
+          id="st-waiting-limit"
+          data-testid="notify-waiting-limit"
+          className="short num"
+          inputMode="numeric"
+          value={form.texts.limit}
+          aria-invalid={!limitValid}
+          onChange={(e) => {
+            form.setText('limit', e.target.value);
+            const n = waitingLimitOf(e.target.value);
+            if (n !== null) patch({ notifications: { ...draft.notifications, waitingLimit: n } });
+          }}
+        />
+        <p className="hint">{t('flows.notify.waitingLimitHint')}</p>
+        {!limitValid && (
+          <p className="field-error">
+            {t('flows.notify.waitingLimitRange', {
+              min: WAITING_LIMIT_MIN,
+              max: WAITING_LIMIT_MAX,
+            })}
+          </p>
+        )}
+      </div>
     </Section>
   );
 }
@@ -409,6 +478,33 @@ export function QuotaSection({ form }: { form: ServerSettingsForm }) {
           {t('flows.quota.queueLimited')}
         </label>
         <p className="hint">{t('flows.quota.queueLimitedHint')}</p>
+      </div>
+    </Section>
+  );
+}
+
+/** 額度恢復後自動接續（會花額度，預設關；和任務自動執行一樣標 ◈）。 */
+export function AutoContinueSection({ form }: { form: ServerSettingsForm }) {
+  const t = useT();
+  const { draft, patch } = form;
+  return (
+    <Section
+      id="autocontinue"
+      title={t('flows.settings.autoContinue')}
+      dirty={form.isDirty('autoContinue')}
+    >
+      <div className="field">
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="auto-continue-toggle"
+            checked={draft.autoContinue}
+            onChange={(e) => patch({ autoContinue: e.target.checked })}
+          />
+          {t('flows.autoContinue.label')}
+          <span className="chip cost">◈ {t('flows.autoContinue.cost')}</span>
+        </label>
+        <p className="hint">{t('flows.autoContinue.hint')}</p>
       </div>
     </Section>
   );

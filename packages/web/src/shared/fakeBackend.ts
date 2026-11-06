@@ -71,6 +71,7 @@ const session = (
   archived: false,
   archivedAt: null,
   readOnly: false,
+  autoContinue: null,
   ...over,
 });
 
@@ -370,7 +371,8 @@ const defaultSettings: Settings = {
     maxConcurrentSessions: null,
     queueWhenRateLimited: true,
   },
-  notifications: { enabled: true, quietHours: null },
+  notifications: { enabled: true, quietHours: null, coalesce: true, waitingLimit: 3 },
+  autoContinue: false,
 };
 
 /** 測試可以改掉 demoReply，模擬隊長回了無法解析的內容。 */
@@ -379,6 +381,8 @@ export interface FakeBackendControls {
   demoReply: string | null;
   /** 模擬 daemon 回報的狀態變化。 */
   setSessionStatus(id: string, status: Session['status']): void;
+  /** 模擬 hub 改了 session 的其他欄位（statusDetail、autoContinue…）。 */
+  patchSession(id: string, patch: Partial<Session>): void;
   /** 模擬 hub 的任務自動執行改了任務（最後一步、退回次數…）。假後端自己不送字、不移欄。 */
   patchTask(id: string, patch: Partial<Task>): void;
   addSessionEvent(sessionId: string, type: string, payload: Record<string, unknown>): void;
@@ -521,6 +525,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   const visible = (): BoardSnapshot => ({
     ...state,
     sessions: state.sessions.filter((x) => !x.archived),
+    waitingLimit: settings.notifications.waitingLimit,
   });
   const publish = () => listeners.forEach((l) => l(visible()));
   const machineOnline = (s: Session) =>
@@ -814,6 +819,10 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       find(id).status = status;
       publish();
     },
+    patchSession(id, patch) {
+      Object.assign(find(id), patch);
+      publish();
+    },
     addSessionEvent: addEvent,
     emitHandoff(fromSessionId, toSessionId, options = {}) {
       const rule = rules.find(
@@ -901,6 +910,8 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     getSettings: async () => settings,
     async updateSettings(patch) {
       settings = { ...settings, ...patch };
+      // hub 會把新的上限廣播給每個人（board.waitingLimit）。
+      publish();
       return settings;
     },
     pushVapidKey: async () => DEMO_VAPID_PUBLIC_KEY,

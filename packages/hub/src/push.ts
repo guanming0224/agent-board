@@ -67,10 +67,14 @@ export function inQuietHours(quiet: Settings['notifications']['quietHours'], at:
  * 狀態以外要人決定的事（自動流程停下等使用者）。
  * handoff_round_limit：雙向交接到了輪數上限（maxRounds）。
  * task_reject_limit：任務被審查退回到上限（maxRounds 是上限次數、task 是任務編號 #n），自動流程停下。
+ * auto_continued：不是要人決定，是告知：額度恢復後已自動接續。
+ * 合併通知（attention.ts 的 SummaryPayload）帶的是同樣這些欄位的清單。
  */
 export type AttentionReason =
   | { reason: 'handoff_round_limit'; maxRounds: number }
-  | { reason: 'task_reject_limit'; maxRounds: number; task: number };
+  | { reason: 'task_reject_limit'; maxRounds: number; task: number }
+  /** 額度恢復後自動接續送出了（合併通知關著時單獨一則）。 */
+  | { reason: 'auto_continued' };
 
 /**
  * 推播內容經過第三方推播服務（已加密），只放 session 名稱與狀態，絕不放終端機內容。

@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { MaskChip, useMaskText } from '../security';
+import { AutoContinueNote, WaitingBanner } from '../views';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import {
@@ -317,6 +318,7 @@ function InboxItem({
           <>
             <Callsign text={callsign(session, context.machines, context.projects)} />
             <ModeChip mode={session.permissionMode} />
+            <AutoContinueNote session={session} />
           </>
         ) : (
           <Callsign text={t('flows.review.unknownSession')} />
@@ -363,6 +365,7 @@ export function InboxPage() {
         </span>
         <MaskChip />
       </header>
+      <WaitingBanner />
       {projects.error && (
         <ErrorBox
           what={t('flows.error.projects', { error: projects.error })}

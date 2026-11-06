@@ -119,6 +119,27 @@ const TRUST_PROMPT = /Yes, I trust this folder/;
 
 const RULE_LINE = /^[\s─╌━-]+(?:\S+[\s─╌━-]+)?$/;
 
+/** 輸入框下面只會有橫線與一兩行狀態列；離最底下更遠的 `❯` 是舊畫面。 */
+const INPUT_BOX_TAIL = 8;
+/** 選單的選項（權限對話框、額度選單）：`❯ 1. Yes`。 */
+const MENU_OPTION = /^\s*❯\s+\d+\./;
+
+/**
+ * 畫面最下面是不是 claude 平常的輸入框（橫線下一行 `❯`）。對話框（權限、額度選單）出現時輸入框會被換掉，
+ * 選項 `❯ 1. …` 上面也不是橫線。hub 只用它判斷限流中的 session 能不能送自動接續（CONTRACTS §3.5）。
+ * 認不出來就是 false（不送）。
+ */
+export function inputBoxVisible(lines: readonly string[]): boolean {
+  let end = lines.length;
+  while (end > 0 && !lines[end - 1]) end -= 1;
+  for (let y = end - 1; y > 0 && y >= end - INPUT_BOX_TAIL; y -= 1) {
+    const line = lines[y]!;
+    if (MENU_OPTION.test(line)) return false;
+    if (/^\s*❯(\s|$)/.test(line) && RULE_LINE.test(lines[y - 1]!)) return true;
+  }
+  return false;
+}
+
 /**
  * 摘要卡要看對話，不是輸入框和狀態列。claude 的輸入框是一條橫線下面一行 `❯`；
  * 權限對話框的 `❯ 1. Yes` 上面不是橫線，所以不會被切掉。認不出來就原樣回傳。
@@ -193,6 +214,7 @@ export class ManagedSession {
   private statusDetail: string | null = null;
   private statusSince: string;
   private lastLines: string[] = [];
+  private inputReady = false;
   private fingerprint = '';
   private lastOutputAt: string | null = null;
   private contextTokens: number | null = null;
@@ -270,6 +292,7 @@ export class ManagedSession {
         (this.status === 'error' && this.exitCode !== null ? `exit code ${this.exitCode}` : null),
       claudeSessionId: this.claudeSessionId,
       lastLines: this.lastLines,
+      inputReady: this.inputReady,
       lastOutputAt: this.lastOutputAt,
       statusSince: this.statusSince,
       contextTokens: this.contextTokens,
@@ -552,7 +575,10 @@ export class ManagedSession {
   }
 
   private refreshLastLines(): void {
-    if (!this.termDisposed) this.lastLines = readLastLines(this.term);
+    if (this.termDisposed) return;
+    const screen = readScreen(this.term);
+    this.lastLines = withoutPromptBox(screen).filter(Boolean).slice(-LAST_LINES);
+    this.inputReady = inputBoxVisible(screen);
   }
 
   private scheduleRuntime(): void {

@@ -31,6 +31,11 @@ export interface BoardSnapshot {
   machines: Machine[];
   sessions: Session[];
   approvals: Approval[];
+  /**
+   * 同時等你的上限（`Settings.notifications.waitingLimit`）。設定只有 owner 讀得到，
+   * 頁首的橫幅每個人都要，所以 hub 跟著 board.state 送。舊版 hub 沒有就是 undefined（用預設 3）。
+   */
+  waitingLimit?: number;
 }
 
 export type BoardListener = (snapshot: BoardSnapshot) => void;

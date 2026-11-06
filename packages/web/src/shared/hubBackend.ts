@@ -192,8 +192,11 @@ class HubConnection implements TerminalStream {
           machines: message.machines,
           sessions: message.sessions,
           approvals: message.approvals,
+          waitingLimit: message.waitingLimit,
         });
         return;
+      case 'board.waitingLimit':
+        return this.patch((s) => ({ ...s, waitingLimit: message.waitingLimit }));
       case 'terminal.snapshot':
       case 'terminal.output':
       case 'terminal.size':

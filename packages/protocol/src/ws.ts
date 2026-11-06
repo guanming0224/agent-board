@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   Approval,
   ClaudeSessionId,
+  DEFAULT_WAITING_LIMIT,
   PurgeOptions,
   PurgeResult,
   SessionInspect,
@@ -116,6 +117,12 @@ export const SessionRuntime = Session.pick({
   repoRoot: true,
   repoCommonDir: true,
   endedAt: true,
+}).extend({
+  /**
+   * 畫面最下面是 claude 平常的輸入框（橫線下一行 `❯`），沒有被對話框（權限、額度選單）蓋住。
+   * hub 只拿它判斷限流中的 session 能不能送自動接續；舊版 daemon 不送（當成 false）。
+   */
+  inputReady: z.boolean().optional(),
 });
 export type SessionRuntime = z.infer<typeof SessionRuntime>;
 
@@ -261,7 +268,11 @@ export const HubToClient = z.discriminatedUnion('type', [
     machines: z.array(Machine),
     sessions: z.array(Session),
     approvals: z.array(Approval),
+    /** 同時等你的上限（`Settings.notifications.waitingLimit`）：設定只有 owner 讀得到，橫幅每個人都要。 */
+    waitingLimit: z.number().int().positive().default(DEFAULT_WAITING_LIMIT),
   }),
+  /** 上限改了。 */
+  z.object({ type: z.literal('board.waitingLimit'), waitingLimit: z.number().int().positive() }),
   TerminalData.extend({ type: z.literal('terminal.output') }),
   TerminalSnapshot.extend({ type: z.literal('terminal.snapshot') }),
   /** PTY 目前的尺寸與擁有者。快照之後、尺寸或擁有者改變時送給該 session 的每個訂閱者。 */

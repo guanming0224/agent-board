@@ -1232,3 +1232,121 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
     ).toEqual(['none', '1']);
   });
 });
+
+test.describe('等你的數量與上限（GM 2026-11-06）', () => {
+  const noOverflow = (page: Page) =>
+    page.evaluate(() => {
+      const el = document.documentElement;
+      return el.scrollWidth <= el.clientWidth && document.body.scrollWidth <= el.clientWidth;
+    });
+  /** 再多一個在等你：假後端的 s-tests 原本在工作。 */
+  const oneMore = (page: Page) =>
+    patchStore(page, `useBoard.getState().backend.setSessionStatus('s-tests', 'waiting_input');`);
+
+  test('頁首的「等你」數量連到收件匣；剛開好、閒著的不算', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await expect(page.getByTestId('waiting-count')).toHaveText('3');
+    await patchStore(
+      page,
+      `useBoard.getState().backend.patchSession('s-tests', { status: 'waiting_input', statusDetail: 'idle:start' });`,
+    );
+    await expect(card(page, 's-tests').locator('.lamp')).toContainText('等你回覆');
+    await expect(page.getByTestId('waiting-count')).toHaveText('3');
+    await patchStore(
+      page,
+      `useBoard.getState().backend.patchSession('s-tests', { statusDetail: null });`,
+    );
+    await expect(page.getByTestId('waiting-count')).toHaveText('4');
+    await page.getByTestId('waiting-link').click();
+    await expect(page).toHaveURL(/#\/inbox$/);
+  });
+
+  test('超過上限（預設 3）出現橫幅；知道了收起，回到上限以內再超過又出現', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await expect(page.getByTestId('waiting-banner')).toHaveCount(0);
+    await oneMore(page);
+    const banner = page.getByTestId('waiting-banner');
+    await expect(banner).toContainText('同時有 4 個 session 在等你，超過上限 3');
+    await shot(page, 'waiting-banner');
+    await page.getByTestId('waiting-banner-dismiss').click();
+    await expect(banner).toHaveCount(0);
+    // 還在上限以上：不會自己再跳出來。
+    await patchStore(page, `useBoard.getState().backend.setSessionStatus('s-docs', 'error');`);
+    await expect(page.getByTestId('waiting-count')).toHaveText('5');
+    await expect(banner).toHaveCount(0);
+    // 回到上限以內再超過：重新出現。
+    await patchStore(
+      page,
+      `const b = useBoard.getState().backend;
+       b.setSessionStatus('s-tests', 'running');
+       b.setSessionStatus('s-docs', 'running');`,
+    );
+    await expect(page.getByTestId('waiting-count')).toHaveText('3');
+    await oneMore(page);
+    await expect(banner).toBeVisible();
+    await banner.getByRole('link', { name: '去收件匣' }).click();
+    await expect(page).toHaveURL(/#\/inbox$/);
+    // 收件匣也有同一條橫幅。
+    await expect(page.getByTestId('waiting-banner')).toBeVisible();
+  });
+
+  test('上限跟著設定（hub 廣播）：改成 5 就不算超過', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await oneMore(page);
+    await expect(page.getByTestId('waiting-banner')).toBeVisible();
+    await patchStore(
+      page,
+      `const b = useBoard.getState().backend;
+       void b.getSettings().then((s) =>
+         b.updateSettings({ notifications: { ...s.notifications, waitingLimit: 5 } }));`,
+    );
+    await expect(page.getByTestId('waiting-banner')).toHaveCount(0);
+  });
+
+  test('卡片寫「額度恢復後自動接續：HH:MM」', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await patchStore(
+      page,
+      `useBoard.getState().backend.patchSession('s-docs', {
+         autoContinue: {
+           state: 'scheduled',
+           at: new Date(2026, 10, 6, 15, 1).toISOString(),
+           resetAt: new Date(2026, 10, 6, 15, 0).toISOString(),
+           limitSince: new Date(2026, 10, 6, 14, 0).toISOString(),
+           reason: null,
+         },
+       });`,
+    );
+    await expect(page.getByTestId('auto-continue-s-docs')).toHaveText('額度恢復後自動接續：15:01');
+    await patchStore(
+      page,
+      `const s = useBoard.getState().sessions.find((x) => x.id === 's-docs');
+       useBoard.getState().backend.patchSession('s-docs', {
+         autoContinue: { ...s.autoContinue, state: 'cancelled', reason: 'user_input' },
+       });`,
+    );
+    await expect(page.getByTestId('auto-continue-s-docs')).toHaveCount(0);
+  });
+
+  for (const width of [320, 375]) {
+    for (const route of ['canvas', 'queue', 'inbox']) {
+      test(`${width}px ${route}：數量與橫幅不撐出水平捲軸`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 700 });
+        await page.goto(`/#/${route}`);
+        await expect(page.locator('[data-state="loading"]')).toHaveCount(0);
+        if (route !== 'inbox') await expect(page.getByTestId('waiting-count')).toHaveText('3');
+        await oneMore(page);
+        await expect(page.getByTestId('waiting-banner')).toBeVisible();
+        expect(await noOverflow(page)).toBe(true);
+        const box = (await page.getByTestId('waiting-banner').boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(width);
+        await shot(page, `waiting-banner-${width}-${route}`);
+      });
+    }
+  }
+});

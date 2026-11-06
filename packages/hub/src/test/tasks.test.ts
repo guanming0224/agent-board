@@ -12,6 +12,7 @@ import {
   startHub,
   until,
   type TestHub,
+  perEventPush,
 } from './helpers';
 
 let hub: TestHub;
@@ -33,8 +34,12 @@ interface Board {
 
 const GOAL = 'Fix the login redirect loop.';
 
-async function board(options: { reviewers?: number; taskAuto?: boolean } = {}): Promise<Board> {
-  hub = await startHub({ timing: { handoffEnterDelayMs: 20 } });
+async function board(
+  options: { reviewers?: number; taskAuto?: boolean; notifyWindowMs?: number } = {},
+): Promise<Board> {
+  hub = await startHub({
+    timing: { handoffEnterDelayMs: 20, notifyWindowMs: options.notifyWindowMs ?? 15_000 },
+  });
   const cookie = await hub.setupOwner();
   const { daemon, machineId, token } = await hub.onlineDaemon(cookie);
   const start = async (name: string) => {
@@ -322,6 +327,7 @@ describe('task automation (full loop)', () => {
 
   it('stops at the reject limit: stays in 待審查, needs the person, and notifies', async () => {
     const t = await board();
+    await perEventPush(hub, t.cookie);
     await hub.api('POST', '/api/push/subscriptions', {
       cookie: t.cookie,
       body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
@@ -361,6 +367,54 @@ describe('task automation (full loop)', () => {
     const moved = await patchTask(t, task.id, { column: 'doing' });
     expect(moved).toMatchObject({ needsUser: false, rejectCount: 3 });
     await until(() => textsTo(t.daemon, t.bd).length === 4, 'resent after the person decided');
+  });
+
+  it('coalesced: the reject limit is listed in the summary with the task number, without content', async () => {
+    const t = await board({ notifyWindowMs: 50 });
+    await hub.api('POST', '/api/push/subscriptions', {
+      cookie: t.cookie,
+      body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
+    });
+    const task = await newTask(t, 'Fix the redirect');
+    await patchTask(t, task.id, { column: 'doing' });
+    for (let round = 1; round <= 3; round += 1) {
+      await until(() => textsTo(t.daemon, t.bd).length === round, `owner prompt ${round}`);
+      await work(t.daemon, t.bd);
+      stop(t.daemon, t.bd, `[完成 #1] Attempt ${round}.`);
+      await until(() => textsTo(t.daemon, t.rv).length === round, `review ${round}`);
+      await work(t.daemon, t.rv);
+      stop(t.daemon, t.rv, `[退回 #1] Still wrong (${round}).`);
+      await until(() => taskNow(task.id).rejectCount === round, `reject ${round}`);
+    }
+    type Summary = { kind: string; items: Record<string, unknown>[] };
+    const summaries = () =>
+      hub.push.sent
+        .map((p) => JSON.parse(p.payload) as Summary)
+        .filter((p) => p.kind === 'summary');
+    const limited = () =>
+      summaries()
+        .flatMap((p) => p.items)
+        .filter((i) => i.reason === 'task_reject_limit');
+    await until(() => limited().length > 0, 'limit in a summary');
+    expect(limited()[0]).toEqual({
+      sessionId: t.rv,
+      name: 'RV1',
+      status: 'waiting_input',
+      reason: 'task_reject_limit',
+      maxRounds: 3,
+      task: 1,
+    });
+    expect(hub.push.sent.map((p) => p.payload).join()).not.toContain('Still wrong');
+    // 使用者接手（移卡片）之後，下一則總表不再列它。
+    await patchTask(t, task.id, { column: 'doing' });
+    const before = summaries().length;
+    await setStatus(t.daemon, t.bd2, 'error');
+    await until(() => summaries().length > before, 'next summary');
+    expect(
+      summaries()
+        .at(-1)!
+        .items.some((i) => i.reason === 'task_reject_limit'),
+    ).toBe(false);
   });
 
   it('bare [完成] only counts when the owner has exactly one task in 進行中', async () => {

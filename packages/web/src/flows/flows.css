@@ -1600,3 +1600,10 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* 會花額度的開關（和任務板的 ◈ 一樣用額度色）。 */
+.flows .chip.cost {
+  border-color: var(--quota);
+  color: var(--quota);
+  margin-left: 6px;
+}

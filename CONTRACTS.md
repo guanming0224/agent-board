@@ -105,6 +105,19 @@ worktree：`git worktree add <repo>/../.agent-board-wt/<slug> -b ab/<slug>`。
 - 重置時間：hub 從限流 session 的 `statusDetail` 解析（`hub/src/rateLimitReset.ts`），格式取自 claude 2.1.317：`resets 3pm (Asia/Taipei)`、`resets Nov 5, 3pm (UTC)`、跨年加年份。認不出來（例如 `StopFailure` 的 `429 Too Many Requests`）就只等狀態改變。到期後再等 60 秒才放行。限流 session 本身的狀態不變，仍顯示 `rate_limited`。
 - daemon：`StopFailure` 先到、畫面上帶重置時間的訊息後到時，狀態機送一次 `from === to` 的 `StatusChange` 補上 `statusDetail`，`at` 沿用進入限流的時間（`statusSince` 不重算）。
 
+### 3.5 額度恢復後自動接續（GM 2026-11-06）
+
+`Settings.autoContinue`（預設 `false`，會花額度；設定頁「Session 與額度」，標 ◈ 耗額度）。hub `packages/hub/src/autoContinue.ts`（`AutoContinueEngine`），固定規則、不呼叫模型。
+
+- **偵測（沿用 3.4）**：session 進入 `rate_limited`（`StopFailure` + `rate_limit`，或 daemon 比對到畫面上的用量上限訊息），`statusDetail` 用 `parseRateLimitReset` 讀得出重置時間 → 排在**重置時間＋60 秒**（`AUTO_CONTINUE_GRACE_MS`，和排隊放行同一個值），寫在 `Session.autoContinue`（`{ state: 'scheduled', at, resetAt, limitSince, reason }`，schema v7 `sessions.auto_continue` JSON），hub 重啟照樣計時（啟動時 `restore`，心跳時也再看一次）。`limitSince` 是那次限流的 `statusSince`：**同一次限流只排一次**（排過、送過、取消過都算）。
+- **不排**：設定關著；讀不出重置時間（例如只有 `429 Too Many Requests`）——不猜，session 照舊停在 `rate_limited`；訊息含 `continuing automatically`（Claude Code 自己的自動繼續在倒數，讓它送）；重置時間已經過了（時鐘差或額度根本沒回來，送了只會再撞）；上一次限流已經送過、而且是同一個重置時間（防迴圈）。
+- **送出**：時間到就排進 `SafeDelivery`（和交接、任務同一條佇列：文字和 Enter 分開、送 Enter 前再確認、60 秒確認逾時）。能送的時候：`waiting_input`（例如 daemon 重啟後接回），**或**還在同一次 `rate_limited`（`statusSince === limitSince`）而且 daemon 回報 `SessionRuntime.inputReady === true`。`inputReady` 是 daemon 從畫面判斷的：最下面 8 行內有 claude 平常的輸入框（橫線下一行 `❯`，`daemon/src/session.ts` 的 `inputBoxVisible`），選單選項 `❯ 1. …`（權限、額度選單「What do you want to do?」）不算。舊版 daemon 不送 → false → 只有 `waiting_input` 才送。送的是固定一行 `AUTO_CONTINUE_PROMPT`：`[Auto] The usage limit has reset. Continue where you left off.`。送出前再確認：還是 scheduled、設定還開著、`lastLines` 沒有 `continuing automatically`。
+- **取消**（`state: 'cancelled'`，`reason`）：使用者在網頁上對它送了任何 `terminal.input`（任何按鍵，不只 Enter）或 `terminal.signal` → `user_input`；session 自己動起來（`running`、`waiting_permission`、`plan_review`、`error`、`stuck`、`done`：Claude Code 自己接續、有人在機器上直接下指令）→ `resumed`；結束或封存 → `ended`；又撞到新的限流 → `new_limit`（照新的重排）；設定關掉 → `setting_off`；文字打進去但按 Enter 前不能打字了 → `aborted`（字留給使用者，不重試）。`offline`、`starting`、`waiting_input` 不取消。
+- **紀錄**：audit `session.auto_continue`（detail `{"state":"scheduled","at"}`／`{"state":"cancelled","reason"}`／`{"state":"sent","at"}`，user 為 null）；送字照舊寫 `terminal.input`（user 為 null）；送出時 session 事件 `auto_continue.sent`。**不算使用者輸入**：直接送給 daemon，不清交接鏈。
+- **通知**：送出後放進合併通知（「BD1 已自動接續」）；合併通知關著時單獨一則 `attentionPayload` 帶 `reason: 'auto_continued'`，service worker 用 `auto-<sessionId>` tag。
+- **前端**：`state === 'scheduled'` 時卡片（畫布、收件匣）顯示「額度恢復後自動接續：HH:MM」（`at`，瀏覽器時區）。
+- **未驗證**：沒有真的撞過上限。claude 2.1.319 有自己的 `autoContinueAtUsageLimit` 設定：開著時它自己接續（我們偵測到 `running` 就取消，或看到 `continuing automatically` 不排）；關著時會跳「What do you want to do?」選單，選單開著時 `inputReady` 為 false，我們不送，要使用者先關掉選單（未在真實限流下確認選單的畫面）。
+
 ## 4. Hook 協定
 
 ### 4.1 安裝
@@ -154,23 +167,23 @@ PermissionRequest hook → daemon（建 Approval，卡住）→ hub → 瀏覽�
 
 ## 5. 狀態機（DISPATCH §4）
 
-| 事件                                                                            | 新狀態                                                                                         |
-| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| PTY 開啟                                                                        | `starting`                                                                                     |
-| `SessionStart`（`source` 為 startup 或 resume）且目前是 `starting`              | `waiting_input`                                                                                |
-| `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`           | `running`                                                                                      |
-| `Notification` + `permission_prompt`，或 `PermissionRequest`                    | `waiting_permission`                                                                           |
-| `Notification` + `idle_prompt`（不覆蓋 `plan_review`、`rate_limited`、`error`） | `waiting_input`                                                                                |
-| `PermissionRequest` 且 `tool_name == 'ExitPlanMode'`                            | `plan_review`（實測：計畫是這樣送出的；plan 模式下的 `Stop` 可能只是提問或計畫剛被拒絕，不算） |
-| `Stop`                                                                          | `waiting_input`                                                                                |
-| `StopFailure` + `rate_limit`，或輸出比對到用量上限                              | `rate_limited`                                                                                 |
-| `StopFailure` 其他                                                              | `error`                                                                                        |
-| PTY exit ≠ 0                                                                    | `error`                                                                                        |
-| PTY exit 0（使用者自己離開）                                                    | `done`，並設 `endedAt`                                                                         |
-| `running` 且超過 `stuckMinutes` 沒輸出                                          | `stuck`；有新輸出回 `running`                                                                  |
-| 使用者標記（hub）                                                               | `done`                                                                                         |
-| 機器斷線（hub）                                                                 | `offline`                                                                                      |
-| 超過併發上限（hub）                                                             | `queued`                                                                                       |
+| 事件                                                                            | 新狀態                                                                                          |
+| ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| PTY 開啟                                                                        | `starting`                                                                                      |
+| `SessionStart`（`source` 為 startup 或 resume）且目前是 `starting`              | `waiting_input`，detail `idle:start`（`IDLE_START_DETAIL`：剛開好、閒著，不算「等你」，見 §10） |
+| `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`           | `running`                                                                                       |
+| `Notification` + `permission_prompt`，或 `PermissionRequest`                    | `waiting_permission`                                                                            |
+| `Notification` + `idle_prompt`（不覆蓋 `plan_review`、`rate_limited`、`error`） | `waiting_input`                                                                                 |
+| `PermissionRequest` 且 `tool_name == 'ExitPlanMode'`                            | `plan_review`（實測：計畫是這樣送出的；plan 模式下的 `Stop` 可能只是提問或計畫剛被拒絕，不算）  |
+| `Stop`                                                                          | `waiting_input`                                                                                 |
+| `StopFailure` + `rate_limit`，或輸出比對到用量上限                              | `rate_limited`                                                                                  |
+| `StopFailure` 其他                                                              | `error`                                                                                         |
+| PTY exit ≠ 0                                                                    | `error`                                                                                         |
+| PTY exit 0（使用者自己離開）                                                    | `done`，並設 `endedAt`                                                                          |
+| `running` 且超過 `stuckMinutes` 沒輸出                                          | `stuck`；有新輸出回 `running`                                                                   |
+| 使用者標記（hub）                                                               | `done`                                                                                          |
+| 機器斷線（hub）                                                                 | `offline`                                                                                       |
+| 超過併發上限（hub）                                                             | `queued`                                                                                        |
 
 | 同帳號有 session 限流（hub，3.4） | `queued` |
 
@@ -229,7 +242,7 @@ client 看得到側欄時送 `resources.watch: true`。hub 有任何 watcher 才
 - audit 查詢與匯出（`auditList`、`auditExport`）吃同一組篩選 `AuditQuery`：`action`、`sessionId`、`userId`、`from`、`to`，全部是 AND、時間含兩端。`userId=system`（`AUDIT_SYSTEM_USER`）查沒有使用者的紀錄（daemon、交接、登入失敗、reset-password 指令）。列表有 `limit`（預設 100、上限 1000）；匯出沒有上限、由舊到新、開頭有 BOM、防公式注入，`audit.export` 的 detail 記下用了哪些條件。
 - 密碼：改自己的走 `usersUpdate`，必附 `currentPassword`。owner 重設**別人**的走 `usersResetPassword`（不需對方舊密碼，對方所有登入與 WebSocket 立刻失效，audit `user.password_reset`，detail 只有 id 與名稱）；對自己用回 400 `own_password`。唯一的 owner 忘記密碼：在 hub 機器上執行 `agent-board-hub reset-password <name>`（`packages/hub/src/resetPassword.ts`），直接改 `$AGENT_BOARD_DATA_DIR/hub.db`，終端機不回顯輸入、非終端機讀 stdin 第一行，撤銷該帳號所有登入，audit 記為系統（`via: cli`），不印密碼。資料庫不存在就停，不建新檔。hub 不帶參數才啟動，未知子指令 exit 2。
 - 語言：登入前用這個瀏覽器的選擇（localStorage），沒有就跟瀏覽器。登入後（登入、開頁確認已登入）一律用 `User.locale`，並記到這個瀏覽器。登入後在頁首或設定頁換語言，畫面、瀏覽器、帳號（`PATCH /api/users/:id { locale }`）一起改。`flows/locale.ts`。
-- 推播：每台裝置在設定頁各自訂閱（`flows/push.ts`），`pushSubscribe` 只收公開的 https endpoint。payload 是 `{ sessionId, name, status, at }`，不含終端機內容。service worker 是 `web/src/flows/pwa/sw.js`，hub 從網站根目錄以 `/sw.js`、`Cache-Control: no-cache` 提供，CSP 有 `worker-src 'self'`；點通知開 `#/inbox/<sessionId>`。
+- 推播：每台裝置在設定頁各自訂閱（`flows/push.ts`），`pushSubscribe` 只收公開的 https endpoint。payload 是 `{ sessionId, name, status, at }`，不含終端機內容。合併通知開著（預設）時改送總表，見 §10。service worker 是 `web/src/flows/pwa/sw.js`，hub 從網站根目錄以 `/sw.js`、`Cache-Control: no-cache` 提供，CSP 有 `worker-src 'self'`；點通知開 `#/inbox/<sessionId>`。
 
 ## 8. 前端（`packages/web`）
 
@@ -304,3 +317,34 @@ hub 用資料庫裡的路徑組 `SessionLocator` 送 `session.inspect`，等 `se
 - daemon 的第二道防線：清理中的 worktree／cwd（realpath）記在 `purgingDirs`，新 session 的 cwd 等於或落在其中 → `session_deleting`，就算 hub 的鎖已遺失（斷線、到期、重啟）也擋得住。
 - 接續時資料庫的 `accountProfile` 不是絕對路徑（舊資料）→ `""` 當 null，其他回 409 `invalid_account_profile`，不送出。daemon 只在處理對話紀錄時才要求 accountProfile 是絕對路徑；驗證失敗不先忘掉 session。
 - 前端：`daemon_timeout`／`daemon_disconnected`／`daemon_error` 的刪除錯誤要說「機器可能還在清理，部分檔案可能已刪除」，並重新檢查；`*_shared` 409 後重新檢查。
+
+## 10. 通知與「等你」（GM 2026-11-06）
+
+### 10.1 「等你」的定義
+
+`packages/protocol/src/attention.ts`，hub 與 web 共用：
+
+- `sessionWaitsForUser`：沒封存、狀態是收件匣的範圍（`ATTENTION_STATUSES`：等你允許、回覆、審計畫、錯誤、卡住），**但不含 `statusDetail === 'idle:start'` 的 `waiting_input`**（daemon 在 `SessionStart` startup／resume 時標的：剛開好或剛接回，沒有新回覆）。做完一回合（`Stop`）detail 就變回 null，算「等你」；`idle_prompt` 不改 detail。信任對話框（detail `trust`）算。舊版 daemon 不標，照舊算。
+- `waitingSessions(sessions, approvals)`：上面這些，加上有還沒決定的 approval 的 session（危險指令命中時常常還是 `running`），每個 session 只算一次。
+- 收件匣、「下一個等我的」的清單**沒有改**（閒著的 `waiting_input` 照樣列出、照樣可回覆）；只有數量、上限與推播用這個定義。
+- `rate_limited` 不在範圍裡（和收件匣一樣）。
+
+### 10.2 合併通知（`Settings.notifications.coalesce`，預設開）
+
+hub `packages/hub/src/attention.ts`（`NotifyCoalescer`、`buildSummary`）。觸發點和原本 `notifyAttention` 一樣：進入需要人的狀態、交接到輪數上限（`roundLimits`）、任務退回到上限（`taskLimits`）、自動接續送出、跨過「等你」上限。
+
+- **時間**（`protocol` 的 `NOTIFY_*`）：第一個事件起等 15 秒；期間有新事件就從新事件再算 15 秒，但從第一個事件起最多 60 秒。**權限請求**（`waiting_permission`）最急：批次裡有它時最晚在它發生後 5 秒送出，後來的事件不會再延長。
+- **送什麼**：時間到才看當下——`waitingSessions` 的全部（不只這一批觸發的），加上交接上限（使用者在那個 session 按 Enter 就清掉）與任務上限（任務 `needsUser` 還是 true）的 session。等待期間已經處理掉的不列；什麼都不剩（也沒有自動接續）就不送。勿擾與總開關在送出時再看一次。
+- **payload**（一個 tag `agent-board-summary`，新的蓋舊的、`renotify`）：`{ kind: 'summary', count, items: [{ sessionId, name, status, reason?, maxRounds?, task? }], more, autoContinued: [{ sessionId, name }], overLimit?, at }`。欄位和單則推播一樣只有名稱、狀態、原因代碼與數字，沒有對話內容；最多 5 項（其餘算在 `more`），名稱超過 60 字截斷。順序：權限請求 → 自動流程停下的 → 這一批觸發的（新的在前）→ 其他。
+- **service worker**：標題「3 個 session 在等你」（跨過上限時加「（超過上限 N）」），內文「BD1 問權限、RV 退回 #3、EX 來回到上限、還有 N 個、BD2 已自動接續」。只有一個在等時點了到 `#/inbox/<id>`，否則 `#/inbox`。
+- **關掉**＝舊行為：每個事件一則 `attentionPayload`（`session-`／`handoff-`／`task-`／`auto-<id>` tag）。從開改成關時，手上這一批馬上送出。
+
+### 10.3 同時等你的上限（`Settings.notifications.waitingLimit`，1–20，預設 3）
+
+- hub `checkWaiting`：每次 session 狀態、detail、封存或 approval 改變時算 `waitingSessions` 的數量，用 `WaitingThreshold`：數量 > 上限、而且上一次 ≤ 上限才算「跨過」，**每次跨過通知一次**，回到 ≤ 上限才重設。機器重連帶回原本的狀態時只更新計數、不通知（和單則推播的「不重複推播」同一個判斷）。上限改低也算跨過。
+- 合併通知開著：跨過時併進下一則總表（`overLimit` = 上限，送出時還超過才標）；關著：單獨一則 `{ kind: 'overload', count, limit, at }`，tag `agent-board-overload`。
+- 前端：設定只有 owner 讀得到，所以上限跟著 `board.state.waitingLimit` 給每個人，改了廣播 `board.waitingLimit`。頁首「等你 N」連到 `#/inbox`；超過上限時頁首下方（與收件匣）一條橫幅「同時有 N 個 session 在等你，超過上限 M」＋去收件匣＋知道了（只收起這一次跨過，`views/waiting.tsx`）。
+
+### 10.4 設定頁
+
+「通知」：合併通知（寫出 15／5／60 秒）、同時等你的上限（1–20，不合法不能存）。「Session 與額度」：額度恢復後自動接續（§3.5，◈ 耗額度，區塊 id `autocontinue`）。舊設定沒有這些鍵：`coalesce` 視為開、`waitingLimit` 3、`autoContinue` 關。

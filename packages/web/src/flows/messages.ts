@@ -203,6 +203,11 @@ export const zhTW: Record<string, string> = {
   'flows.settings.notify': '通知與勿擾',
   'flows.settings.security': '安全',
   'flows.settings.quota': '省額度預設',
+  'flows.settings.autoContinue': '額度恢復後自動接續',
+  'flows.autoContinue.label': '額度恢復後自動接續',
+  'flows.autoContinue.cost': '耗額度',
+  'flows.autoContinue.hint':
+    'session 因額度用完停下、而且畫面上寫了重置時間時，在重置後 1 分鐘送一行固定的「[Auto] … Continue where you left off.」（只在它等你輸入、沒有對話框時送，同一次只送一次）。期間你打了任何字、它自己動起來或設定關掉就取消；不知道重置時間就不送，留給你處理。會花額度，預設關。',
   'flows.settings.language': '語言',
   'flows.settings.unsaved': '未存檔',
   'flows.settings.unsavedCount': '{n} 項未存檔',
@@ -364,6 +369,14 @@ export const zhTW: Record<string, string> = {
   'flows.notify.start': '開始',
   'flows.notify.end': '結束',
   'flows.notify.needTimes': '勿擾時段要填開始與結束時間',
+  'flows.notify.coalesce': '合併通知',
+  'flows.notify.coalesceHint':
+    '有事時先等 {window} 秒（權限請求 {permission} 秒），期間又有新的就再等，最多 {max} 秒，合成一則列出所有在等你的；已經處理掉的不列。',
+  'flows.notify.coalesceOff': '關閉：每個 session、每件事各自推播一則（舊的做法）。',
+  'flows.notify.waitingLimit': '同時等你的上限',
+  'flows.notify.waitingLimitHint':
+    '在等你的超過這個數字時，頁面上方顯示提醒並推播一次；降回上限以內後，下次超過才會再通知。剛開好、還沒做事的 session 不算。',
+  'flows.notify.waitingLimitRange': '請填 {min}–{max} 的整數',
 
   'flows.push.title': '這台裝置的推播',
   'flows.push.isOn': '這台裝置會收到推播。',
@@ -822,6 +835,11 @@ export const en: Record<string, string> = {
   'flows.settings.notify': 'Notifications and quiet hours',
   'flows.settings.security': 'Security',
   'flows.settings.quota': 'Quota defaults',
+  'flows.settings.autoContinue': 'Auto-continue after the usage limit resets',
+  'flows.autoContinue.label': 'Auto-continue after the usage limit resets',
+  'flows.autoContinue.cost': 'Uses quota',
+  'flows.autoContinue.hint':
+    'When a session stops at the usage limit and the screen shows the reset time, one fixed line ("[Auto] … Continue where you left off.") is sent a minute after the reset — only while it is waiting for input with no dialog open, and only once per stop. Typing anything, the session moving on by itself, or turning this off cancels it. Without a known reset time nothing is sent. Uses quota; off by default.',
   'flows.settings.language': 'Language',
   'flows.settings.unsaved': 'Unsaved',
   'flows.settings.unsavedCount': '{n} unsaved',
@@ -991,6 +1009,14 @@ export const en: Record<string, string> = {
   'flows.notify.start': 'Start',
   'flows.notify.end': 'End',
   'flows.notify.needTimes': 'Quiet hours need a start and an end time',
+  'flows.notify.coalesce': 'Combine notifications',
+  'flows.notify.coalesceHint':
+    'Waits {window} s ({permission} s for permission prompts), longer while new things keep coming, up to {max} s, then sends one notification listing everything waiting on you. Things already handled are left out.',
+  'flows.notify.coalesceOff': 'Off: one notification per session and event (the old behaviour).',
+  'flows.notify.waitingLimit': 'Waiting-on-you limit',
+  'flows.notify.waitingLimitHint':
+    'When more sessions than this are waiting on you, the page shows a warning and you get one notification. After it drops back to the limit, the next time it goes over notifies again. Sessions that just started and have done nothing yet do not count.',
+  'flows.notify.waitingLimitRange': 'Enter a whole number from {min} to {max}',
 
   'flows.push.title': 'Push on this device',
   'flows.push.isOn': 'This device gets push notifications.',

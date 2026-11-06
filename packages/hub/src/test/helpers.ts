@@ -298,3 +298,12 @@ export async function startHub(options: Partial<HubOptions> = {}): Promise<TestH
   };
   return hub;
 }
+
+/** 每個事件各自推播（合併通知關掉，舊行為）：測單則推播內容的測試用。 */
+export async function perEventPush(hub: TestHub, cookie: string): Promise<void> {
+  const res = await hub.api('PATCH', '/api/settings', {
+    cookie,
+    body: { notifications: { enabled: true, quietHours: null, coalesce: false } },
+  });
+  if (res.status !== 200) throw new Error(`settings failed: ${res.status}`);
+}

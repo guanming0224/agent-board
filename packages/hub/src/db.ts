@@ -191,6 +191,12 @@ const migrations: string[] = [
   );
   UPDATE teams SET task_seq = (SELECT COUNT(*) FROM tasks WHERE tasks.team_id = teams.id);
   `,
+  /*
+   * 7：額度恢復後自動接續（GM 2026-11-06）。sessions.auto_continue 是 hub 寫的 JSON（`AutoContinue`），
+   * 排定的時間存在這裡，hub 重啟後照樣會送。舊資料都是 null（沒排過）。
+   */ `
+  ALTER TABLE sessions ADD COLUMN auto_continue TEXT;
+  `,
 ];
 
 export function migrate(db: Db): void {

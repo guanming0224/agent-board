@@ -21,7 +21,15 @@ export interface DeliveryItem {
   aborted(): void;
   /** Enter 已送出。 */
   delivered(): void;
+  /**
+   * 目標現在能不能打字。沒給就是只在 `waiting_input` 才送（交接、任務都是這樣）。
+   * 自動接續另外接受「還在同一次限流、daemon 看到平常的輸入框」（CONTRACTS §3.5）。
+   */
+  ready?(target: Session): boolean;
 }
+
+const readyFor = (item: DeliveryItem, target: Session): boolean =>
+  item.ready ? item.ready(target) : target.status === 'waiting_input';
 
 export interface DeliveryDeps {
   store: Pick<Store, 'getSession'>;
@@ -59,10 +67,19 @@ export class SafeDelivery {
 
   /** 由 hub 在 session 每次變動時呼叫。 */
   onSessionChange(prev: Session, next: Session): void {
-    if (prev.status === next.status) return;
-    if (prev.status === 'waiting_input') this.awaitingAck.delete(next.id);
-    if (next.status === 'waiting_input') this.deliverNext(next.id);
-    if (isGone(next)) this.dropPendingTo(next.id);
+    if (isGone(next)) {
+      if (prev.status !== next.status) this.dropPendingTo(next.id);
+      return;
+    }
+    // 送出後狀態變了（輸入被接受、開始工作）才放下一則。
+    if (prev.status !== next.status) this.awaitingAck.delete(next.id);
+    // 狀態沒變也可能變得能送（例如限流中的 session 輸入框出現了），有排隊的才看。
+    if (prev.status !== next.status || this.hasPendingFor(next.id)) this.deliverNext(next.id);
+  }
+
+  private hasPendingFor(targetId: string): boolean {
+    for (const item of this.pending.values()) if (item.targetId === targetId) return true;
+    return false;
   }
 
   /** 心跳時呼叫：機器重連、確認逾時之後，沒有狀態變化也要繼續送。 */
@@ -100,14 +117,8 @@ export class SafeDelivery {
       this.dropPendingTo(targetId);
       return;
     }
-    if (
-      target.status !== 'waiting_input' ||
-      this.awaitingAck.has(targetId) ||
-      !deps.isReachable(targetId)
-    ) {
-      return;
-    }
-    const next = this.takeNext(targetId);
+    if (this.awaitingAck.has(targetId) || !deps.isReachable(targetId)) return;
+    const next = this.takeNext(target);
     if (!next) return;
     this.awaitingAck.set(targetId, deps.now().getTime());
     deps.sendInput(targetId, next.message);
@@ -119,9 +130,10 @@ export class SafeDelivery {
     this.timers.add(timer);
   }
 
-  private takeNext(targetId: string): DeliveryItem | null {
+  /** 第一則現在能送的；還不能送的留在佇列裡。 */
+  private takeNext(target: Session): DeliveryItem | null {
     for (const [key, item] of this.pending) {
-      if (item.targetId !== targetId) continue;
+      if (item.targetId !== target.id || !readyFor(item, target)) continue;
       this.pending.delete(key);
       const reason = item.check();
       if (reason === null) return item;
@@ -133,7 +145,7 @@ export class SafeDelivery {
   private pressEnter(targetId: string, item: DeliveryItem): void {
     const { store, audit, isReachable, sendInput } = this.deps;
     const current = store.getSession(targetId);
-    if (current?.status !== 'waiting_input' || !isReachable(targetId)) {
+    if (!current || !readyFor(item, current) || !isReachable(targetId)) {
       this.awaitingAck.delete(targetId);
       item.aborted();
       return;

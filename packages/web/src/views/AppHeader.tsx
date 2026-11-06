@@ -7,6 +7,7 @@ import { nextInQueue, pendingQueue } from './queue';
 import { useViewsUi } from './uiStore';
 import { formatTokens, formatTokensFull, usageTotals } from './usage';
 import { useUsagePolling, useUsageStore } from './usageStore';
+import { useWaiting, WaitingBanner } from './waiting';
 
 export type TabName = 'canvas' | 'queue' | 'review' | 'team' | 'settings';
 
@@ -68,6 +69,8 @@ export function AppHeader({ tab }: { tab: TabName }) {
   const [announce, setAnnounce] = useState('');
   useUsagePolling();
   const queue = pendingQueue(sessions, approvals);
+  // 頁首的數字：真的在等你的（剛開好、閒著的不算；protocol attention.ts）。「下一個」照舊巡所有待處理的。
+  const { count: waiting } = useWaiting();
   const online = machines.filter((m) => m.online).length;
   const off = machines.length - online;
 
@@ -104,17 +107,20 @@ export function AppHeader({ tab }: { tab: TabName }) {
     <header className="top">
       <div className="bar">
         <span className="brand">{t('views.brand')}</span>
-        {queue.length > 0 ? (
-          <span
+        {waiting > 0 ? (
+          <a
             className="waiting"
+            href="#/inbox"
             role="status"
-            aria-label={t('views.waiting.aria', { n: queue.length })}
+            aria-label={t('views.waiting.aria', { n: waiting })}
+            title={t('views.waiting.link')}
+            data-testid="waiting-link"
           >
             <span>{t('label.waiting')}</span>
             <b className="num" data-testid="waiting-count">
-              {queue.length}
+              {waiting}
             </b>
-          </span>
+          </a>
         ) : (
           <span className="waiting none" role="status" data-testid="waiting-none">
             <span>{t('views.waiting.none')}</span>
@@ -167,6 +173,7 @@ export function AppHeader({ tab }: { tab: TabName }) {
           {t('views.newSession')}
         </button>
       </div>
+      <WaitingBanner />
       <nav className="tabs" aria-label={t('views.tab.nav')}>
         {TABS.map((item) =>
           item.hash ? (
