@@ -64,7 +64,8 @@ registerMessages('zh-TW', {
   'views.hands.bypass': '紅粗線 略過權限',
   'views.mode.bypass': '略過權限',
   'views.dispatchedBy': '派工自 {name}',
-  'views.dispatchedBy.title': '{name} 用派工工具開了這個 session，做完一回合的結果會自動送回 {name}。',
+  'views.dispatchedBy.title':
+    '{name} 用派工工具開了這個 session，做完一回合的結果會自動送回 {name}。',
   'views.readOnly': '唯讀',
   'views.readOnly.title': '拿掉了改檔工具（Edit、Write 等）。Bash 仍然寫得了檔案。',
   'views.ctx.window': '這個模型的 context 上限是 {window} tokens',

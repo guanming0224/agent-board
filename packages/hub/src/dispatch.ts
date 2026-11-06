@@ -115,9 +115,10 @@ export function resultMessage(
   memberNameText: string,
   input: { summary: string; files: readonly string[]; branch: string | null },
 ): string {
-  return [`[Result from ${clip(memberNameText, NAME_MAX_CHARS)}]`, reportParts(input).join(' | ')].join(
-    ' ',
-  );
+  return [
+    `[Result from ${clip(memberNameText, NAME_MAX_CHARS)}]`,
+    reportParts(input).join(' | '),
+  ].join(' ');
 }
 
 const SpawnArgs = z.object({
@@ -359,7 +360,8 @@ export class DispatchEngine {
       caller.permissionMode,
       args.role,
     );
-    const useWorktree = readOnly ? (args.useWorktree ?? false) : (args.useWorktree ?? caller.repoRoot !== null);
+    // 寫入者預設開 worktree；不是 git（或 daemon 還沒回報）就開不了，除非明確說不要。
+    const useWorktree = args.useWorktree ?? !readOnly;
     if (useWorktree && caller.repoRoot === null) {
       return fail(
         'worktree_unavailable',
@@ -489,7 +491,9 @@ export class DispatchEngine {
     return okJson({
       member: target.name,
       state: busy ? 'queued' : 'sent',
-      ...(replaced ? { note: 'Replaced your previous task to this member that was not delivered yet.' } : {}),
+      ...(replaced
+        ? { note: 'Replaced your previous task to this member that was not delivered yet.' }
+        : {}),
       detail: busy
         ? `${target.name} is busy (${now?.status ?? 'unknown'}); the task is typed in when it waits for input.`
         : `Typed into ${target.name}.`,

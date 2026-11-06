@@ -658,7 +658,12 @@ describe('database', () => {
     expect(old.dispatchedBy).toBeNull();
     expect(Session.parse(old)).toEqual(old);
     expect(store.dispatchWork('s1')).toBeNull();
-    const work = { from: 'caller', workId: 'w1', kind: 'send' as const, at: '2026-01-01T00:00:00.000Z' };
+    const work = {
+      from: 'caller',
+      workId: 'w1',
+      kind: 'send' as const,
+      at: '2026-01-01T00:00:00.000Z',
+    };
     store.setDispatchWork('s1', work);
     db.close();
     const again = openDatabase(path);

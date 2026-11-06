@@ -24,7 +24,7 @@ const INSTRUCTIONS = [
   'list_members shows your team. spawn_member starts a new member in this same project (writers get their own git worktree; researcher/reviewer are read-only) and gives it your prompt.',
   'send_task types a new task into one of your members once it is waiting for input.',
   'When a member finishes the turn that handled your work, its result is typed back into this session automatically as "[Result from <name>] Summary: … | Detected file edits: … | Branch: …". Do not poll; wait for it.',
-  'get_result shows a member\'s latest summary, files and branch on demand.',
+  "get_result shows a member's latest summary, files and branch on demand.",
 ].join(' ');
 
 const TOOLS = [
@@ -105,10 +105,7 @@ function readSecret(): string | null {
 const secret = readSecret();
 
 /** 一次呼叫一條連線：送一行請求，等同一個 requestId 的回答。 */
-function callDaemon(
-  tool: string,
-  args: Json,
-): Promise<{ ok: boolean; text: string }> {
+function callDaemon(tool: string, args: Json): Promise<{ ok: boolean; text: string }> {
   const socketPath = process.env[SOCKET_ENV];
   const sessionId = process.env[SESSION_ID_ENV];
   if (!socketPath || !sessionId || !secret) {

@@ -1,0 +1,268 @@
+// 派工工具（CONTRACTS §11）在 daemon 這一段：開 PTY 時掛 --mcp-config（設定開著才掛）、設定檔與密鑰檔的權限、
+// 密鑰驗證、把工具呼叫轉給 hub 再把回答交回。用假 claude、假 hub，另外用真的 MCP server（hook 套件）走一次 stdio。
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { connect } from 'node:net';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { McpReply } from '@agent-board/protocol';
+import { DISPATCH_TOOL_NAMES, secretMatches } from './mcpFiles';
+import { Harness, waitUntil } from './test-support/harness';
+
+const MCP_SERVER = fileURLToPath(new URL('../../hook/src/mcp.ts', import.meta.url));
+
+let h: Harness;
+afterEach(async () => {
+  await h?.cleanup();
+});
+
+const mode = (path: string) => statSync(path).mode & 0o777;
+
+/** 像 MCP server 一樣送一則派工請求，等回答。 */
+function askDaemon(
+  socketPath: string,
+  request: Record<string, unknown>,
+): Promise<Pick<McpReply, 'ok' | 'text'>> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(socketPath);
+    let buffer = '';
+    socket.setEncoding('utf8');
+    socket.on('connect', () =>
+      socket.write(`${JSON.stringify({ type: 'mcp', requestId: 'r1', ...request })}\n`),
+    );
+    socket.on('error', reject);
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf('\n');
+      if (newline === -1) return;
+      const reply = JSON.parse(buffer.slice(0, newline)) as McpReply;
+      socket.destroy();
+      resolve({ ok: reply.ok, text: reply.text });
+    });
+  });
+}
+
+async function start(dispatch: boolean | undefined, mcpServer: string | null = MCP_SERVER) {
+  h = new Harness();
+  h.hub.dispatch = dispatch;
+  h.mcpServer = mcpServer;
+  const daemon = await h.start();
+  await h.createAndSubscribe('s1');
+  return daemon;
+}
+
+const mcpConfigPath = () => join(h.dataDir, 'mcp', 's1.json');
+const secretPath = () => join(h.dataDir, 'mcp', 's1.key');
+
+describe('派工工具：開 PTY 的參數', () => {
+  it('hub 開著派工：帶 --mcp-config 與四個工具的 --allowedTools，最後接 --name', async () => {
+    await start(true);
+    const { argv, env } = h.runs()[0]!;
+    const at = argv.indexOf('--mcp-config');
+    expect(at).toBeGreaterThan(-1);
+    expect(argv[at + 1]).toBe(mcpConfigPath());
+    expect(argv[at + 2]).toBe('--allowedTools');
+    expect(argv.slice(at + 3, at + 3 + DISPATCH_TOOL_NAMES.length)).toEqual([
+      'mcp__agent-board__list_members',
+      'mcp__agent-board__spawn_member',
+      'mcp__agent-board__send_task',
+      'mcp__agent-board__get_result',
+    ]);
+    expect(argv[at + 3 + DISPATCH_TOOL_NAMES.length]).toBe('--name');
+    expect(argv).not.toContain('--strict-mcp-config');
+
+    // 權限：資料夾 0700、設定與密鑰 0600。
+    expect(mode(join(h.dataDir, 'mcp'))).toBe(0o700);
+    expect(mode(mcpConfigPath())).toBe(0o600);
+    expect(mode(secretPath())).toBe(0o600);
+    const secret = readFileSync(secretPath(), 'utf8');
+    expect(secret.length).toBeGreaterThanOrEqual(40);
+    // 密鑰不在 argv、不在 claude 的環境變數、不在 MCP 設定檔。
+    expect(JSON.stringify(argv)).not.toContain(secret);
+    expect(JSON.stringify(env)).not.toContain(secret);
+    const config = readFileSync(mcpConfigPath(), 'utf8');
+    expect(config).not.toContain(secret);
+    const server = JSON.parse(config).mcpServers['agent-board'];
+    expect(server).toMatchObject({
+      type: 'stdio',
+      command: process.execPath,
+      args: [MCP_SERVER],
+      env: {
+        AGENT_BOARD_SESSION_ID: 's1',
+        AGENT_BOARD_SOCKET: env.AGENT_BOARD_SOCKET,
+        AGENT_BOARD_MCP_SECRET_FILE: secretPath(),
+      },
+    });
+  });
+
+  it('設定關著、舊版 hub（沒送 dispatch）、找不到 MCP server：都不帶，也不寫檔', async () => {
+    for (const [dispatch, server] of [
+      [false, MCP_SERVER],
+      [undefined, MCP_SERVER],
+      [true, null],
+    ] as const) {
+      await start(dispatch, server);
+      const { argv } = h.runs()[0]!;
+      expect(argv).not.toContain('--mcp-config');
+      expect(argv).not.toContain('--allowedTools');
+      expect(existsSync(mcpConfigPath())).toBe(false);
+      await h.cleanup();
+    }
+  });
+
+  it('設定改關之後新開的不掛；daemon 重啟沒連上 hub 前照上次的設定', async () => {
+    await start(true);
+    h.hub.send({
+      type: 'hub.welcome',
+      machineId: 'machine-1',
+      dangerRules: [],
+      stuckMinutes: 7,
+      dispatch: false,
+    });
+    await waitUntil(() => !h.daemons[0]!['dispatchEnabled'], 'dispatch 關掉');
+    h.hub.send({ type: 'session.create', requestId: 'r2', sessionId: 's2', spec: h.spec() });
+    await h.hub.waitFor('session.created', (m) => m.requestId === 'r2');
+    await waitUntil(() => h.runs().length === 2, '第二個 claude');
+    expect(h.runs()[1]!.argv).not.toContain('--mcp-config');
+  });
+});
+
+describe('派工工具：密鑰與轉送', () => {
+  it('密鑰正確才轉給 hub；hub 的回答原樣交回', async () => {
+    const daemon = await start(true);
+    const secret = readFileSync(secretPath(), 'utf8');
+    const pending = askDaemon(daemon.hookSocketPath, {
+      sessionId: 's1',
+      secret,
+      tool: 'list_members',
+      args: {},
+    });
+    const request = await h.hub.waitFor('dispatch.request');
+    expect(request).toMatchObject({ sessionId: 's1', tool: 'list_members', args: {} });
+    // 密鑰不會送到 hub。
+    expect(JSON.stringify(request)).not.toContain(secret);
+    h.hub.send({
+      type: 'dispatch.reply',
+      requestId: request.requestId,
+      ok: true,
+      text: '{"teams":[]}',
+    });
+    expect(await pending).toEqual({ ok: true, text: '{"teams":[]}' });
+  });
+
+  it('密鑰不對、冒用別的 session、session 已結束：一律拒絕，不轉給 hub', async () => {
+    const daemon = await start(true);
+    const secret = readFileSync(secretPath(), 'utf8');
+    expect(secretMatches(secret, secret)).toBe(true);
+    expect(secretMatches(secret, `${secret}x`)).toBe(false);
+    const wrong = await askDaemon(daemon.hookSocketPath, {
+      sessionId: 's1',
+      secret: 'x'.repeat(43),
+      tool: 'list_members',
+      args: {},
+    });
+    expect(wrong.ok).toBe(false);
+    expect(wrong.text).toMatch(/^unauthorized:/);
+    const other = await askDaemon(daemon.hookSocketPath, {
+      sessionId: 'someone-else',
+      secret,
+      tool: 'spawn_member',
+      args: {},
+    });
+    expect(other.text).toMatch(/^unauthorized:/);
+
+    h.hub.send({ type: 'session.stop', sessionId: 's1' });
+    await h.hub.waitFor('session.event', (m) => m.event.type === 'exit');
+    // 結束的 session：檔案刪掉、密鑰作廢。
+    await waitUntil(() => !existsSync(secretPath()), '密鑰檔刪除');
+    expect(existsSync(mcpConfigPath())).toBe(false);
+    const ended = await askDaemon(daemon.hookSocketPath, {
+      sessionId: 's1',
+      secret,
+      tool: 'list_members',
+      args: {},
+    });
+    expect(ended.text).toMatch(/^unauthorized:/);
+    expect(h.hub.received.some((m) => m.type === 'dispatch.request')).toBe(false);
+  });
+
+  it('hub 不回答就逾時；格式不對的請求回 invalid_request', async () => {
+    h = new Harness();
+    h.hub.dispatch = true;
+    h.mcpServer = MCP_SERVER;
+    mkdirSync(h.workDir, { recursive: true });
+    await h.hub.start();
+    const daemon = await h.startDaemon({ dispatchReplyTimeoutMs: 100 });
+    await h.createAndSubscribe('s1');
+    const secret = readFileSync(secretPath(), 'utf8');
+    const timedOut = await askDaemon(daemon.hookSocketPath, {
+      sessionId: 's1',
+      secret,
+      tool: 'get_result',
+      args: { member: 'x' },
+    });
+    expect(timedOut.text).toMatch(/^timeout:/);
+    const bad = await askDaemon(daemon.hookSocketPath, { sessionId: 's1', secret, tool: 'rm_rf' });
+    expect(bad.text).toMatch(/^invalid_request:/);
+  });
+
+  it('真的 MCP server（stdio）：initialize → tools/list → tools/call 經 daemon 到 hub 再回來', async () => {
+    await start(true);
+    const config = JSON.parse(readFileSync(mcpConfigPath(), 'utf8')).mcpServers['agent-board'];
+    const child = spawn(config.command, config.args, {
+      env: { PATH: process.env.PATH, ...config.env },
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    const lines: Record<string, unknown>[] = [];
+    let buffer = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      buffer += chunk;
+      let newline: number;
+      while ((newline = buffer.indexOf('\n')) !== -1) {
+        lines.push(JSON.parse(buffer.slice(0, newline)));
+        buffer = buffer.slice(newline + 1);
+      }
+    });
+    const rpc = (id: number, method: string, params: unknown = {}) =>
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+    const reply = (id: number) => waitUntil(() => lines.find((l) => l.id === id), `reply ${id}`);
+    try {
+      rpc(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+      expect(((await reply(1)).result as { protocolVersion: string }).protocolVersion).toBe(
+        '2025-06-18',
+      );
+      child.stdin.write(
+        `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`,
+      );
+      rpc(2, 'tools/list');
+      const tools = ((await reply(2)).result as { tools: { name: string }[] }).tools;
+      expect(tools.map((t) => t.name)).toEqual([
+        'list_members',
+        'spawn_member',
+        'send_task',
+        'get_result',
+      ]);
+      rpc(3, 'tools/call', { name: 'send_task', arguments: { member: 'BD1', text: 'go' } });
+      const request = await h.hub.waitFor('dispatch.request');
+      expect(request).toMatchObject({
+        sessionId: 's1',
+        tool: 'send_task',
+        args: { member: 'BD1', text: 'go' },
+      });
+      h.hub.send({
+        type: 'dispatch.reply',
+        requestId: request.requestId,
+        ok: false,
+        text: 'not_your_member: nope',
+      });
+      expect((await reply(3)).result).toEqual({
+        content: [{ type: 'text', text: 'not_your_member: nope' }],
+        isError: true,
+      });
+    } finally {
+      child.kill();
+    }
+  });
+});

@@ -860,7 +860,10 @@ export class Daemon {
     const alive = this.sessions.get(request.sessionId)?.isAlive === true;
     if (!expected || !alive || !secretMatches(expected, request.secret)) {
       log.warn(`拒絕派工請求：session ${request.sessionId} 的密鑰不符或已結束`);
-      return { ok: false, text: 'unauthorized: This session is not allowed to use Agent Board tools.' };
+      return {
+        ok: false,
+        text: 'unauthorized: This session is not allowed to use Agent Board tools.',
+      };
     }
     if (!this.hub.connected) {
       return {
