@@ -47,17 +47,42 @@ function useSettingsTarget() {
 const SCROLL_WAIT_MS = 1000;
 /** 連續這麼多個畫格位置不變才算穩定。 */
 const STABLE_FRAMES = 10;
+/** 捲到之後再盯這麼久：上方內容晚到、把目標推走時再捲一次。使用者自己捲動就不再管。 */
+const PIN_MS = 3000;
 
-/** 網址指定區塊時，等它出現而且版面不再移動，再捲過去。 */
+/** 網址指定區塊時，等它出現而且版面不再移動，再捲過去；之後一小段時間內版面變了就再捲一次。 */
 function useScrollToSection(section: string | null, ready: boolean, current: Category) {
   useEffect(() => {
     if (!section || !ready) return;
     const start = performance.now();
     let last = '';
     let stable = 0;
+    let pinnedAt: number | null = null;
+    let pinnedTop = 0;
+    let userMoved = false;
+    const onUser = () => {
+      userMoved = true;
+    };
+    const userEvents = ['wheel', 'touchstart', 'keydown', 'mousedown'] as const;
+    for (const name of userEvents) addEventListener(name, onUser, { passive: true });
+    const stop = () => {
+      for (const name of userEvents) removeEventListener(name, onUser);
+    };
     let frame = requestAnimationFrame(function tick() {
+      if (userMoved) return stop();
       const element = document.getElementById(`s-${section}`);
-      const late = performance.now() - start > SCROLL_WAIT_MS;
+      const now = performance.now();
+      if (pinnedAt !== null) {
+        if (now - pinnedAt > PIN_MS || !element) return stop();
+        const top = Math.round(element.getBoundingClientRect().top);
+        if (Math.abs(top - pinnedTop) > 1) {
+          element.scrollIntoView({ block: 'start' });
+          pinnedTop = Math.round(element.getBoundingClientRect().top);
+        }
+        frame = requestAnimationFrame(tick);
+        return;
+      }
+      const late = now - start > SCROLL_WAIT_MS;
       if (element && !element.closest('[hidden]')) {
         const top = Math.round(element.getBoundingClientRect().top + scrollY);
         const layout = `${top}/${document.documentElement.scrollHeight}`;
@@ -65,14 +90,18 @@ function useScrollToSection(section: string | null, ready: boolean, current: Cat
         last = layout;
         if (stable >= STABLE_FRAMES || late) {
           element.scrollIntoView({ block: 'start' });
-          return;
+          pinnedAt = now;
+          pinnedTop = Math.round(element.getBoundingClientRect().top);
         }
       } else if (late) {
-        return;
+        return stop();
       }
       frame = requestAnimationFrame(tick);
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      stop();
+    };
   }, [section, ready, current]);
 }
 
