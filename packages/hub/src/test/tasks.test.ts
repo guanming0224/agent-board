@@ -323,6 +323,14 @@ describe('task automation (full loop)', () => {
       toSessionId: t.rv,
       number: 1,
     });
+    // 審查判定（通過、退回）也是審查 → 負責人。
+    const verdicts = (events.body as { type: string; payload: Record<string, unknown> }[]).filter(
+      (e) => e.type === 'task.reviewed' || e.type === 'task.rejected',
+    );
+    expect(verdicts.map((e) => e.type).sort()).toEqual(['task.rejected', 'task.reviewed']);
+    for (const verdict of verdicts) {
+      expect(verdict.payload).toMatchObject({ fromSessionId: t.rv, toSessionId: t.bd });
+    }
   });
 
   it('stops at the reject limit: stays in 待審查, needs the person, and notifies', async () => {

@@ -54,6 +54,10 @@ describe('交接事件 → 動畫狀態', () => {
       from: 'a',
       to: 'b',
       kind: 'fired',
+      channel: 'handoff',
+      type: 'handoff.fired',
+      what: 'canvas.link.what.handoff',
+      ref: null,
       reason: null,
       summary: 'Fixed the redirect.',
       round: null,
@@ -80,6 +84,46 @@ describe('交接事件 → 動畫狀態', () => {
       parseHandoffEvent(event('task.delivered', { kind: 'start', toSessionId: 'b' }, 'b')),
     ).toBeNull();
     expect(parseHandoffEvent(event('task.dispatched', { toSessionId: 'b' }, 'b'))).toBeNull();
+  });
+
+  it('任務：排入（task.dispatched）記在收的那一邊；審查判定記在審查，畫成審查 → 負責人', () => {
+    const queued = event(
+      'task.dispatched',
+      { kind: 'review', fromSessionId: 'a', toSessionId: 'b', taskId: 't1' },
+      'b',
+    );
+    expect(parseHandoffEvent(queued)).toMatchObject({
+      key: 'a->b',
+      kind: 'fired',
+      channel: 'task',
+      what: 'canvas.link.what.task_review',
+      ref: 't1',
+    });
+    // 記錯邊的不採用。
+    expect(
+      parseHandoffEvent(event('task.dispatched', { fromSessionId: 'a', toSessionId: 'b' }, 'a')),
+    ).toBeNull();
+    const pass = event(
+      'task.reviewed',
+      { verdict: 'pass', fromSessionId: 'rv', toSessionId: 'bd', taskId: 't1' },
+      'rv',
+    );
+    const parsedPass = parseHandoffEvent(pass)!;
+    expect(parsedPass).toMatchObject({ key: 'rv->bd', kind: 'verdict', channel: 'task' });
+    // 判定沒有摘要：說明寫判定本身。
+    const activity = recordHandoff(empty, pass, 0).get('rv->bd')!;
+    expect(describeTalk(activity, t, plain)).toBe('審查通過');
+    const reject = event(
+      'task.rejected',
+      { reason: 'Missing a test.', fromSessionId: 'rv', toSessionId: 'bd' },
+      'rv',
+    );
+    expect(parseHandoffEvent(reject)).toMatchObject({
+      what: 'canvas.link.what.reject',
+      summary: 'Missing a test.',
+    });
+    // 舊版 hub 的判定沒有 toSessionId：不畫。
+    expect(parseHandoffEvent(event('task.reviewed', { verdict: 'pass' }, 'rv'))).toBeNull();
   });
 
   it('來源一定是事件所屬的 session；payload 的 fromSessionId 不一致就不採用', () => {
@@ -245,8 +289,10 @@ describe('session 派工（CONTRACTS §11）也畫在同一條線上', () => {
       [event('dispatch.blocked', { ...go, reason: 'rate_limit' }, 'lead'), 'blocked', 'lead->bd'],
     ];
     for (const [e, kind, key] of cases) {
-      expect(parseHandoffEvent(e), e.type).toMatchObject({ kind, key });
+      expect(parseHandoffEvent(e), e.type).toMatchObject({ kind, key, channel: 'dispatch' });
     }
+    expect(parseHandoffEvent(cases[0]![0])?.what).toBe('canvas.link.what.spawn');
+    expect(parseHandoffEvent(cases[3]![0])?.what).toBe('canvas.link.what.result');
     // 記錯邊的（payload 和事件所屬的 session 對不上）不採用。
     expect(parseHandoffEvent(event('dispatch.result_delivered', back, 'bd'))).toBeNull();
   });

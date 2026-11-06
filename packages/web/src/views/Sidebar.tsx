@@ -14,18 +14,14 @@ import {
 } from './usage';
 import { useUsageStore } from './usageStore';
 
-const LEGEND_ORDER: SessionStatus[] = [
-  'waiting_permission',
-  'waiting_input',
-  'plan_review',
-  'error',
-  'stuck',
-  'running',
-  'starting',
-  'queued',
-  'rate_limited',
-  'done',
-  'offline',
+/** 狀態圖例分三組：要你處理的、agent 在做的、其他（等額度、結束、失聯）。和卡片上的徽章同一套樣式。 */
+const LEGEND_GROUPS: { key: 'needsYou' | 'working' | 'other'; statuses: SessionStatus[] }[] = [
+  {
+    key: 'needsYou',
+    statuses: ['waiting_permission', 'waiting_input', 'plan_review', 'error', 'stuck'],
+  },
+  { key: 'working', statuses: ['running', 'starting', 'queued'] },
+  { key: 'other', statuses: ['rate_limited', 'done', 'offline'] },
 ];
 
 const HANDS_ORDER: HandsLine[] = ['dotted', 'dashed', 'solid', 'heavy', 'bypass'];
@@ -131,6 +127,43 @@ function UsageSection() {
   );
 }
 
+function StatusLegend() {
+  const t = useT();
+  const sessions = useBoard((s) => s.sessions);
+  const counts = new Map<SessionStatus, number>();
+  for (const s of sessions) {
+    if (!s.archived) counts.set(s.status, (counts.get(s.status) ?? 0) + 1);
+  }
+  return (
+    <div className="legend-groups">
+      {LEGEND_GROUPS.map((group) => (
+        <div key={group.key} className={`legend-group g-${group.key}`}>
+          <h4>{t(`views.legend.${group.key}`)}</h4>
+          <ul className="legend legend-badges">
+            {group.statuses.map((status) => {
+              const v = STATUS_VISUAL[status];
+              const n = counts.get(status) ?? 0;
+              return (
+                <li key={status} className={`l-${v.holder}`} data-testid={`legend-${status}`}>
+                  <span className={`lamp badge l-${v.holder}`}>
+                    <b aria-hidden="true">{v.glyph}</b>
+                    {t(v.labelKey)}
+                  </span>
+                  {n > 0 && (
+                    <span className="legend-n num" title={t('views.legend.count', { n })}>
+                      {n}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** 只有展開時才掛上，所以收合就會退訂 watchResources（CONTRACTS.md §6.2）。 */
 function SidebarBody() {
   const t = useT();
@@ -157,17 +190,7 @@ function SidebarBody() {
       <UsageSection />
       <section>
         <h3>{t('views.side.legend')}</h3>
-        <ul className="legend">
-          {LEGEND_ORDER.map((status) => {
-            const v = STATUS_VISUAL[status];
-            return (
-              <li key={status} className={`l-${v.holder}`}>
-                <b aria-hidden="true">{v.glyph}</b>
-                {t(v.labelKey)}
-              </li>
-            );
-          })}
-        </ul>
+        <StatusLegend />
         <h3 className="legend-next">{t('views.side.hands')}</h3>
         <ul className="legend hands-legend">
           {HANDS_ORDER.map((line) => (

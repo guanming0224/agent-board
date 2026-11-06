@@ -7,6 +7,7 @@ import { HANDS_LINE, STATUS_VISUAL } from '../shared/status';
 import { useBoard } from '../shared/store';
 import { contextPercent, formatTokens } from './usage';
 import { useProjects } from './useBoardLoad';
+import '../shared/styles/status.css';
 
 type T = ReturnType<typeof useT>;
 
@@ -29,11 +30,15 @@ export function Callsign({ session }: { session: Session }) {
   return <span className="callsign">{callsign(session, machines, projects)}</span>;
 }
 
-export function Lamp({ status }: { status: Session['status'] }) {
+/**
+ * 狀態燈：符號＋文字，不只靠顏色（規則一）。
+ * badge：膠囊徽章（shared/styles/status.css），卡片標題列與圖例用；其他頁面要醒目也可以用。
+ */
+export function Lamp({ status, badge = false }: { status: Session['status']; badge?: boolean }) {
   const t = useT();
   const v = STATUS_VISUAL[status];
   return (
-    <span className={`lamp l-${v.holder}`}>
+    <span className={`lamp l-${v.holder}${badge ? ' badge' : ''}`} data-status={status}>
       <i aria-hidden="true">{v.glyph}</i>
       {t(v.labelKey)}
     </span>

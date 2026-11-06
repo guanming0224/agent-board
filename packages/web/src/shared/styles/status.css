@@ -1,0 +1,75 @@
+/*
+ * 狀態的共用樣式（GM 2026-11-06）。顏色只回答「球在誰手上」（STYLE.md 規則一），每個狀態一定有符號＋文字。
+ *
+ * 狀態徽章 .lamp.badge.l-<holder>（<Lamp status badge />）：
+ * - 你（--you）、壞了（--fault）、等額度（--quota）：實心色塊、深色字（--on-*），一眼就跳出來；
+ * - agent（--agent）：淡底＋描邊，安靜；
+ * - 結束或不在場（--idle）：灰。
+ * 卡片的狀態帶用 .st-<holder>：設定 --st（狀態色）與 --st-tint（淡底），元件自己決定怎麼畫。
+ */
+.lamp.badge {
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.16em 0.62em 0.16em 0.5em;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+}
+.lamp.badge i,
+.lamp.badge b {
+  font-style: normal;
+  font-size: 1.08em;
+  line-height: 1;
+}
+.lamp.badge.l-you {
+  background: var(--you);
+  color: var(--on-you);
+}
+.lamp.badge.l-fault {
+  background: var(--fault);
+  color: var(--on-fault);
+}
+.lamp.badge.l-quota {
+  background: var(--quota);
+  color: var(--on-quota);
+}
+.lamp.badge.l-agent {
+  background: var(--agent-tint);
+  border-color: color-mix(in srgb, var(--agent) 55%, transparent);
+  color: var(--agent);
+}
+.lamp.badge.l-idle {
+  background: var(--idle-tint);
+  border-color: var(--border-2);
+  color: var(--idle);
+}
+
+.st-you {
+  --st: var(--you);
+  --st-tint: var(--you-tint);
+}
+.st-fault {
+  --st: var(--fault);
+  --st-tint: var(--fault-tint);
+}
+.st-quota {
+  --st: var(--quota);
+  --st-tint: var(--quota-tint);
+}
+.st-agent {
+  --st: color-mix(in srgb, var(--agent) 70%, var(--surface));
+  --st-tint: var(--agent-tint);
+}
+.st-idle {
+  --st: var(--border-2);
+  --st-tint: var(--surface);
+}
+
+/* 高對比模式：系統色會蓋掉底色，加框維持膠囊的形狀 */
+@media (forced-colors: active) {
+  .lamp.badge {
+    border-color: CanvasText;
+  }
+}

@@ -84,6 +84,21 @@ test('摘要條內容與規格：放手線、晶片、呼號、失聯、等你�
   await expect(auth.getByRole('button', { name: '檢視並決定' })).toBeVisible();
   await expect(auth.getByRole('textbox')).toBeVisible();
 
+  // 狀態徽章：實心膠囊、深色字；工作中是淡底描邊（GM 2026-11-06）。
+  await expect(auth.locator('.lamp')).toHaveClass(/\bbadge\b/);
+  await expect(auth.locator('.lamp')).toHaveCSS('background-color', 'rgb(242, 179, 61)');
+  await expect(card(page, 's-ml').locator('.lamp')).toHaveCSS(
+    'background-color',
+    'rgb(240, 102, 95)',
+  );
+  await expect(card(page, 's-tests').locator('.lamp')).not.toHaveCSS(
+    'background-color',
+    'rgb(74, 163, 255)',
+  );
+  // 標題列是狀態帶：上緣 4px 狀態色。
+  await expect(auth.locator('.strip > .head')).toHaveCSS('border-top-width', '4px');
+  await expect(auth.locator('.strip > .head')).toHaveCSS('border-top-color', 'rgb(242, 179, 61)');
+
   // 等你的卡 2px 琥珀框；其他 1px。外框經過 scale，看 computed 的邏輯值。
   await expect(auth.locator('.strip')).toHaveCSS('border-top-width', '2px');
   await expect(auth.locator('.strip')).toHaveCSS('border-top-color', 'rgb(242, 179, 61)');
@@ -522,6 +537,11 @@ test('側欄：機器與用量、失聯列、圖例；收合時退訂', async ({
   for (const glyph of ['◆', '◇', '▣', '✕', '⚠', '●', '◌', '⋯', '⧖', '✓', '⊘']) {
     await expect(sidebar.locator('.legend b', { hasText: glyph })).toHaveCount(1);
   }
+  // 圖例分三組，和卡片同一套徽章，右邊是目前幾個。
+  await expect(sidebar.locator('.legend-group h4')).toHaveText(['需要你', '進行中', '其他']);
+  await expect(sidebar.locator('.g-needsYou .lamp.badge')).toHaveCount(5);
+  await expect(page.getByTestId('legend-waiting_permission')).toContainText('等你允許1');
+  await expect(page.getByTestId('legend-error').locator('.legend-n')).toHaveCount(0);
   await expect(sidebar.locator('.hands-sample')).toHaveCount(5);
 
   await page.getByTestId('side-toggle').click();
@@ -1190,7 +1210,7 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
     await expect(page.getByTestId('handoff-round-s-tests-s-docs')).toHaveCount(0);
   });
 
-  test('沒有規則線的兩張卡：交接當下暫時畫一條，播完收掉', async ({ page }) => {
+  test('沒有規則線的兩張卡：交接當下暫時畫一條，播完留著（最近往來）並寫次數', async ({ page }) => {
     await openCanvas(page);
     const temp = page.locator('[data-testid="rf__edge-talk:s-tests->s-docs"]');
     await expect(temp).toHaveCount(0);
@@ -1199,7 +1219,10 @@ test.describe('交接動畫：看得到誰在跟誰說話', () => {
     await expect(anim(page, 's-tests', 's-docs')).toHaveClass('edge-talk-flow');
     await expect(label(page, 's-tests', 's-docs')).toContainText('沒有規則線');
     await expect(card(page, 's-docs')).toHaveAttribute('data-handoff', 'in');
-    await expect(temp).toHaveCount(0, { timeout: 8000 });
+    // 播完：線留著（10 分鐘內有往來），排入＋送達算一則。
+    await expect(anim(page, 's-tests', 's-docs')).toHaveCount(0, { timeout: 8000 });
+    await expect(temp).toHaveCount(1);
+    await expect(page.getByTestId('pair-count-s-tests-s-docs')).toHaveText('1');
   });
 
   test('減少動態：不流動、不閃，只有靜態的線、光圈和文字', async ({ page }) => {
@@ -1591,4 +1614,271 @@ test('縮小時用摘要的開關：關掉後縮小也是終端機，重新載�
 
   await page.getByRole('button', { name: /^摘要模式/ }).click();
   await expect(card(page, 's-auth')).toHaveAttribute('data-mode', 'summary');
+});
+
+test.describe('session 之間的往來：關係線、往來、篩選、紀錄（GM 2026-11-06）', () => {
+  const SECRET = 'sk-ant-demo0123456789abcdefXYZ';
+  const edge = (page: Page, id: string) => page.locator(`.react-flow__edge[data-id="${id}"]`);
+  const event = (page: Page, at: string, type: string, payload: object) =>
+    patchStore(
+      page,
+      `useBoard.getState().backend.addSessionEvent(${JSON.stringify(at)}, ${JSON.stringify(type)}, ${JSON.stringify(payload)});`,
+    );
+  const dispatchedBy = (page: Page, id: string, by: string | null) =>
+    patchStore(
+      page,
+      `useBoard.getState().backend.patchSession(${JSON.stringify(id)}, { dispatchedBy: ${JSON.stringify(by)} });`,
+    );
+
+  test('關係線：派工畫實線、交接規則虛線；隊長 → 成員只在沒有其他線時畫', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await expect(edge(page, 'dispatch:s-etl->s-docs')).toHaveCount(0);
+    await dispatchedBy(page, 's-docs', 's-etl');
+    await expect(edge(page, 'dispatch:s-etl->s-docs')).toHaveCount(1);
+    const style = (id: string) =>
+      edge(page, id)
+        .locator('.react-flow__edge-path')
+        .evaluate((el) => {
+          const s = getComputedStyle(el);
+          return [s.strokeDasharray, s.strokeWidth];
+        });
+    expect(await style('dispatch:s-etl->s-docs')).toEqual(['none', '2px']);
+    expect((await style('s-auth->s-tests'))[0]).not.toBe('none');
+    // 隊長 s-tests 和成員 s-auth 之間已經有交接規則：不另外畫隊長線。
+    await expect(edge(page, 'team:s-tests->s-auth')).toHaveCount(0);
+    // 刪掉規則後就畫隊長線（點線、沒有箭頭）。
+    await edge(page, 's-auth->s-tests').click({ force: true });
+    await page.keyboard.press('Delete');
+    await expect(edge(page, 's-auth->s-tests')).toHaveCount(0);
+    const team = edge(page, 'team:s-tests->s-auth');
+    await expect(team).toHaveCount(1);
+    expect(await team.locator('.react-flow__edge-path').getAttribute('marker-end')).toBeNull();
+    // 圖例：線型樣本。
+    await page.getByTestId('link-panel').getByRole('button', { name: /^線/ }).click();
+    await expect(page.locator('.link-legend li')).toHaveCount(6);
+    await expect(page.locator('.link-legend')).toContainText('派工：呼叫者 → 成員');
+  });
+
+  test('沒有任何線的兩張卡也看得到往來：派工排入 → 送達，標籤寫做了什麼與摘要（遮蔽）', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.addInitScript(() => localStorage.setItem('agent-board.mask-mode', '1'));
+    await openCanvas(page);
+    const temp = edge(page, 'talk:s-etl->s-docs');
+    await expect(temp).toHaveCount(0);
+    const payload = {
+      fromSessionId: 's-etl',
+      toSessionId: 's-docs',
+      workId: 'w1',
+      summary: `Use ${SECRET} to fetch.`,
+    };
+    await event(page, 's-etl', 'dispatch.send', payload);
+    await expect(temp).toHaveCount(1);
+    const anim = page.getByTestId('handoff-anim-s-etl-s-docs');
+    await expect(anim).toHaveClass('edge-talk-flow');
+    await expect(anim).toHaveAttribute('data-channel', 'dispatch');
+    await expect(anim).toHaveAttribute('data-kind', 'fired');
+    const label = page.getByTestId('handoff-label-s-etl-s-docs');
+    await expect(label).toContainText('派工');
+    await expect(label).toContainText(/已排入 \d\d:\d\d/);
+    await expect(page.getByTestId('talk-sum-s-etl-s-docs')).toContainText('Use *');
+    await expect(label).not.toContainText(SECRET);
+    // 只排入：目標卡不亮。
+    await expect(card(page, 's-docs')).not.toHaveAttribute('data-handoff');
+
+    await event(page, 's-docs', 'dispatch.delivered', payload);
+    await expect(label).toContainText(/已送達 \d\d:\d\d/);
+    await expect(anim).toHaveAttribute('data-kind', 'delivered');
+    await expect(card(page, 's-docs')).toHaveAttribute('data-handoff', 'in');
+    // 排入＋送達是同一則。
+    await expect(page.getByTestId('pair-count-s-etl-s-docs')).toHaveText('1');
+
+    // 回報結果是反方向：另一條暫時線。
+    await event(page, 's-docs', 'dispatch.result', {
+      fromSessionId: 's-docs',
+      toSessionId: 's-etl',
+      workId: 'w1',
+      summary: 'Done.',
+    });
+    await expect(edge(page, 'talk:s-docs->s-etl')).toHaveCount(1);
+    await expect(page.getByTestId('handoff-label-s-docs-s-etl')).toContainText('回報結果');
+  });
+
+  test('派工線上的往來畫在派工線上；任務判定也畫出來', async ({ page }) => {
+    await openCanvas(page);
+    await dispatchedBy(page, 's-docs', 's-etl');
+    await expect(edge(page, 'dispatch:s-etl->s-docs')).toHaveCount(1);
+    await event(page, 's-docs', 'dispatch.spawn', {
+      fromSessionId: 's-etl',
+      toSessionId: 's-docs',
+      summary: 'Start.',
+    });
+    await expect(page.getByTestId('handoff-anim-s-etl-s-docs')).toHaveClass('edge-talk-flow');
+    await expect(edge(page, 'talk:s-etl->s-docs')).toHaveCount(0);
+    await expect(page.getByTestId('link-label-dispatch-s-etl-s-docs')).toContainText('派工開成員');
+    await expect(page.getByTestId('pair-count-s-etl-s-docs')).toHaveText('1');
+
+    await event(page, 's-ml', 'task.reviewed', {
+      verdict: 'pass',
+      fromSessionId: 's-ml',
+      toSessionId: 's-docs',
+      taskId: 't1',
+    });
+    await expect(page.getByTestId('handoff-anim-s-ml-s-docs')).toHaveAttribute(
+      'data-kind',
+      'verdict',
+    );
+    await expect(page.getByTestId('handoff-label-s-ml-s-docs')).toContainText('審查通過');
+  });
+
+  test('篩選：關掉的類別不畫、不播；重新載入還記得', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    const toggle = page.getByTestId('link-filter-dispatch');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await event(page, 's-etl', 'dispatch.send', { fromSessionId: 's-etl', toSessionId: 's-docs' });
+    await expect(edge(page, 'talk:s-etl->s-docs')).toHaveCount(0);
+    await expect(page.getByTestId('handoff-anim-s-etl-s-docs')).toHaveCount(0);
+    // 交接關掉：規則線也藏起來。
+    await page.getByTestId('link-filter-handoff').click();
+    await expect(edge(page, 's-auth->s-tests')).toHaveCount(0);
+    await page.getByTestId('link-filter-handoff').click();
+    await expect(edge(page, 's-auth->s-tests')).toHaveCount(1);
+    // 打開派工：剛才的往來（還在 10 分鐘內）出現。
+    await toggle.click();
+    await expect(edge(page, 'talk:s-etl->s-docs')).toHaveCount(1);
+    await toggle.click();
+
+    await page.reload();
+    await expect(card(page, 's-auth')).toBeVisible();
+    await expect(page.getByTestId('link-filter-dispatch')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByTestId('link-filter-task')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('link-panel')).toContainText('線 3/4');
+  });
+
+  test('儲存讀寫失敗（私密視窗）：開關照常可用，一開始全開', async ({ page }) => {
+    await page.addInitScript(() => {
+      const get = Storage.prototype.getItem;
+      const set = Storage.prototype.setItem;
+      Storage.prototype.getItem = function (key: string) {
+        if (key === 'agent-board.canvas.link-filters') throw new Error('blocked');
+        return get.call(this, key);
+      };
+      Storage.prototype.setItem = function (key: string, value: string) {
+        if (key === 'agent-board.canvas.link-filters') throw new Error('blocked');
+        set.call(this, key, value);
+      };
+    });
+    await openCanvas(page);
+    const toggle = page.getByTestId('link-filter-task');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('點線看兩張卡最近的往來；Esc 或「關閉」收掉', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.addInitScript(() => localStorage.setItem('agent-board.mask-mode', '1'));
+    await openCanvas(page);
+    await event(page, 's-etl', 'dispatch.send', {
+      fromSessionId: 's-etl',
+      toSessionId: 's-docs',
+      workId: 'w1',
+      summary: `First line\nkey ${SECRET}`,
+    });
+    await event(page, 's-etl', 'dispatch.blocked', {
+      fromSessionId: 's-etl',
+      toSessionId: 's-docs',
+      reason: 'rate_limit',
+    });
+    await event(page, 's-docs', 'dispatch.result', {
+      fromSessionId: 's-docs',
+      toSessionId: 's-etl',
+      workId: 'w1',
+      summary: `Result with ${SECRET}`,
+    });
+    await expect(page.getByTestId('pair-count-s-etl-s-docs')).toHaveText('2');
+    await page.getByTestId('pair-count-s-etl-s-docs').click();
+    const pop = page.getByTestId('pair-popover-s-etl-s-docs');
+    await expect(pop).toBeVisible();
+    await expect(pop).toContainText('Migrate data ↔ Tidy docs');
+    const rows = pop.getByTestId('pair-row');
+    // 兩個方向、新的在前。
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(0)).toContainText('Tidy docs → Migrate data');
+    await expect(rows.nth(0)).toContainText('回報結果・已排入');
+    await expect(rows.nth(1)).toContainText('派工・擋下');
+    await expect(rows.nth(1)).toContainText('10 分鐘內觸發太多次');
+    await expect(rows.nth(2)).toContainText('派工・已排入');
+    await expect(rows.nth(2)).toContainText('First line');
+    await expect(pop).not.toContainText(SECRET);
+    await shot(page, 'pair-popover');
+    await page.keyboard.press('Escape');
+    await expect(pop).toHaveCount(0);
+
+    // 點線本身也打開（兩條線的中點重疊、線也可能在卡片底下：直接對這條線送 click）。
+    await edge(page, 'talk:s-docs->s-etl').dispatchEvent('click');
+    const back = page.getByTestId('pair-popover-s-docs-s-etl');
+    await expect(back).toBeVisible();
+    await back.getByRole('button', { name: '關閉' }).click();
+    await expect(back).toHaveCount(0);
+  });
+
+  test('手機寬度：線的開關收成一顆按鈕，不撐出水平捲軸', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 760 });
+    await openCanvas(page);
+    const panel = page.getByTestId('link-panel');
+    await expect(page.getByTestId('link-filter-dispatch')).toBeHidden();
+    await panel.getByRole('button', { name: /^線/ }).click();
+    await expect(page.getByTestId('link-filter-dispatch')).toBeVisible();
+    const box = (await panel.boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(375);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+  });
+});
+
+test.describe('狀態一眼看得出來（GM 2026-11-06）', () => {
+  const ring = (page: Page, id: string) =>
+    card(page, id).evaluate((el) => {
+      const s = getComputedStyle(el, '::after');
+      return { name: s.animationName, opacity: s.opacity };
+    });
+
+  test('等你、故障的卡外圈慢慢呼吸；工作中的不動；故障 2px 紅框', async ({ page }) => {
+    await openCanvas(page);
+    expect((await ring(page, 's-auth')).name).toBe('needs-you');
+    expect((await ring(page, 's-ml')).name).toBe('needs-you');
+    expect(await ring(page, 's-tests')).toEqual({ name: 'none', opacity: '0' });
+    await expect(card(page, 's-ml')).toHaveAttribute('data-holder', 'fault');
+    await expect(card(page, 's-ml').locator('.strip')).toHaveCSS('border-top-width', '2px');
+    await expect(card(page, 's-ml').locator('.strip')).toHaveCSS(
+      'border-top-color',
+      'rgb(240, 102, 95)',
+    );
+  });
+
+  test('減少動態：外圈靜止', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await openCanvas(page);
+    expect(await ring(page, 's-auth')).toEqual({ name: 'none', opacity: '0.5' });
+  });
+
+  test('縮小時狀態徽章與名稱跟著放大，螢幕上仍看得清楚', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    for (let i = 0; i < 4; i += 1) {
+      await page.getByRole('button', { name: '縮小' }).click();
+    }
+    expect(await zoomLevel(page)).toBeLessThan(30);
+    const lamp = (await card(page, 's-auth').locator('.lamp').boundingBox())!;
+    // 符號＋「等你允許」在螢幕上至少約 11px 高。
+    expect(lamp.height).toBeGreaterThanOrEqual(11);
+    await shot(page, 'status-zoomed-out');
+  });
 });
