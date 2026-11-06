@@ -1419,6 +1419,67 @@ test.describe('設定', () => {
     expect(patch.quotaGuards).toMatchObject({ queueWhenRateLimited: false });
   });
 
+  test('通知：合併通知預設開、寫出等多久；同時等你的上限 1–20', async ({ page }) => {
+    await open(page, 'settings/notify');
+    const coalesce = page.getByLabel('合併通知');
+    await expect(coalesce).toBeChecked();
+    await expect(page.getByTestId('notify-coalesce-hint')).toContainText(
+      '先等 15 秒（權限請求 5 秒）',
+    );
+    await expect(page.getByTestId('notify-coalesce-hint')).toContainText('最多 60 秒');
+    await coalesce.uncheck();
+    await expect(page.getByTestId('notify-coalesce-hint')).toContainText('各自推播');
+
+    const limit = page.getByLabel('同時等你的上限');
+    await expect(limit).toHaveValue('3');
+    for (const bad of ['0', '21', 'x']) {
+      await limit.fill(bad);
+      await expect(page.locator('#s-notify')).toContainText('請填 1–20 的整數');
+    }
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg.err')).toContainText('先修正');
+    expect(await calls(page)).toEqual([]);
+    await limit.fill('5');
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    const patch = ((await calls(page))[0] as { patch: { notifications: unknown } }).patch;
+    expect(patch).toEqual({
+      notifications: { enabled: true, quietHours: null, coalesce: false, waitingLimit: 5 },
+    });
+  });
+
+  test('額度恢復後自動接續：預設關、標耗額度，打開後存檔', async ({ page }) => {
+    await open(page, 'settings/sessions');
+    const section = page.locator('#s-autocontinue');
+    await expect(section.locator('.chip.cost')).toHaveText('◈ 耗額度');
+    const toggle = section.getByTestId('auto-continue-toggle');
+    await expect(toggle).not.toBeChecked();
+    await toggle.check();
+    await expect(section.locator('.chip.unsaved')).toHaveText('未存檔');
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    expect(((await calls(page))[0] as { patch: unknown }).patch).toEqual({ autoContinue: true });
+    // 舊連結 #/settings/autocontinue 也落到這一區。
+    await open(page, 'settings/autocontinue');
+    await expect(page.locator('#s-autocontinue')).toBeInViewport();
+  });
+
+  for (const width of [320, 375]) {
+    test(`${width}px 通知與自動接續設定不撐出水平捲軸`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 740 });
+      for (const route of ['settings/notify', 'settings/autocontinue']) {
+        await open(page, route);
+        await expect(
+          page.locator(route.endsWith('notify') ? '#s-notify' : '#s-autocontinue'),
+        ).toBeVisible();
+        const overflow = await page.evaluate(
+          () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        );
+        expect(overflow, route).toBeLessThanOrEqual(0);
+      }
+    });
+  }
+
   test('危險指令清單：新增、去重、移除、清空警告', async ({ page }) => {
     await open(page, 'settings/security');
     const rules = page.getByTestId('danger-rules');

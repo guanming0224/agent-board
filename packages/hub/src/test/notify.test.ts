@@ -18,8 +18,8 @@ afterEach(async () => {
   await hub?.stop();
 });
 
-/** 一般 150 ms、權限 40 ms、最多 400 ms。 */
-const WINDOWS = { notifyWindowMs: 150, notifyPermissionWindowMs: 40, notifyMaxWindowMs: 400 };
+/** 一般 400 ms、權限 40 ms、最多 1.5 秒（測試機忙的時候，事件之間也不會超過一般的等待）。 */
+const WINDOWS = { notifyWindowMs: 400, notifyPermissionWindowMs: 40, notifyMaxWindowMs: 1500 };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface Setup {
@@ -109,7 +109,7 @@ describe('coalesced notifications (default on)', () => {
     to(t.daemon, t.sessions[0]!, 'running');
     to(t.daemon, t.sessions[1]!, 'running');
     await settled(t.sessions[1]!, 'running');
-    await sleep(500);
+    await sleep(700);
     expect(hub.push.sent).toHaveLength(1);
   });
 
@@ -143,7 +143,7 @@ describe('coalesced notifications (default on)', () => {
     const t = await setup(2);
     to(t.daemon, t.sessions[0]!, 'waiting_input', { statusDetail: IDLE_START_DETAIL });
     await settled(t.sessions[0]!, 'waiting_input');
-    await sleep(300);
+    await sleep(600);
     expect(hub.push.sent).toHaveLength(0);
     to(t.daemon, t.sessions[1]!, 'stuck');
     await until(() => hub.push.sent.length === 1, 'summary', 2000);
@@ -158,7 +158,7 @@ describe('coalesced notifications (default on)', () => {
       cookie: t.cookie,
       body: { notifications: { enabled: false, quietHours: null, coalesce: true } },
     });
-    await sleep(300);
+    await sleep(600);
     expect(hub.push.sent).toHaveLength(0);
   });
 

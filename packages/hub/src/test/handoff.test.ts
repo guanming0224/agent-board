@@ -43,8 +43,8 @@ interface Board {
 
 const LONG_REPLY = `Fixed the login redirect and added a regression test. ${'Secret transcript detail. '.repeat(200)}`;
 
-async function board(): Promise<Board> {
-  hub = await startHub({ timing: { handoffEnterDelayMs: 20 } });
+async function board(notifyWindowMs = 15_000): Promise<Board> {
+  hub = await startHub({ timing: { handoffEnterDelayMs: 20, notifyWindowMs } });
   const cookie = await hub.setupOwner();
   const { daemon, machineId, token } = await hub.onlineDaemon(cookie);
   const start = async (name: string) => {
@@ -694,6 +694,47 @@ describe('two-way handoff (maxRounds)', () => {
       expect.objectContaining({ sessionId: t.b, name: 'b', maxRounds: 2 }),
     ]);
     expect(JSON.stringify(pushed)).not.toContain('seed 2');
+  });
+
+  it('coalesced: the round limit is listed in the summary until the person types into it', async () => {
+    const t = await board(50);
+    await hub.api('POST', '/api/push/subscriptions', {
+      cookie: t.cookie,
+      body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
+    });
+    await addRule(t, t.a, t.b, 'on_file', { filePattern: 'results/**', maxRounds: 1 });
+    await addRule(t, t.b, t.a, 'on_marker', { marker: MARKER, maxRounds: 1 });
+    t.daemon.clear();
+    experimentTurn(t);
+    await until(() => inputsTo(t.daemon, t.b).length === 2, 'EX to WR, round 1');
+    await work(t, t.b);
+    stop(t.daemon, t.b, `${MARKER} Need one more table.`);
+    await until(() => auditActions().includes('handoff.blocked'), 'round limit');
+    type Summary = { kind: string; items: Record<string, unknown>[] };
+    const summaries = () =>
+      hub.push.sent
+        .map((p) => JSON.parse(p.payload) as Summary)
+        .filter((p) => p.kind === 'summary');
+    const limited = () =>
+      summaries()
+        .flatMap((p) => p.items)
+        .filter((i) => i.reason === 'handoff_round_limit');
+    await until(() => limited().length > 0, 'round limit in a summary');
+    expect(limited()[0]).toMatchObject({ sessionId: t.b, name: 'b', maxRounds: 1 });
+    expect(hub.push.sent.map((p) => p.payload).join()).not.toContain('one more table');
+
+    // 使用者在 b 按了 Enter（親自接手）：下一則總表不再寫「來回到上限」。
+    const client = await hub.client(t.cookie);
+    client.send({ type: 'terminal.input', sessionId: t.b, data: 'ok\r' });
+    await setStatus(t.daemon, t.b, 'running');
+    await setStatus(t.daemon, t.b, 'waiting_input');
+    const before = summaries().length;
+    await until(() => summaries().length > before, 'next summary');
+    expect(
+      summaries()
+        .at(-1)!
+        .items.some((i) => i.reason === 'handoff_round_limit'),
+    ).toBe(false);
   });
 
   it('a person typing into either session starts fresh rounds', async () => {
