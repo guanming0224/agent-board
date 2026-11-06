@@ -22,7 +22,7 @@ const ESM_BANNER = [
   'const require = __abCreateRequire(import.meta.url);',
 ].join('\n');
 
-/** 三個打包檔的 esbuild 設定。 */
+/** 四個打包檔（hub、daemon、hook、派工 MCP server）的 esbuild 設定。 */
 export function bundleOptions(root, stage) {
   const service = {
     bundle: true,
@@ -57,6 +57,18 @@ export function bundleOptions(root, stage) {
       logLevel: 'warning',
       entryPoints: [join(root, 'packages/hook/src/cli.ts')],
       outfile: join(stage, 'daemon/node_modules/.bin/agent-board-hook'),
+    },
+    // 派工工具的 MCP server（CONTRACTS §11）：claude 用 daemon 的 node 執行。只有 node 內建模組。
+    // 放在 daemon/dist、不放 .bin：.bin 會加進 PTY 的 PATH，只能有 hook。
+    mcp: {
+      bundle: true,
+      platform: 'node',
+      target: 'node22.18',
+      format: 'esm',
+      legalComments: 'none',
+      logLevel: 'warning',
+      entryPoints: [join(root, 'packages/hook/src/mcp.ts')],
+      outfile: join(stage, 'daemon/dist/agent-board-mcp.mjs'),
     },
   };
 }

@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { connect, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HookReply, HookRequest } from '@agent-board/protocol';
+import { HookReply, HookRequest, McpReply, McpRequest } from '@agent-board/protocol';
 import { errorMessage, log } from './log';
 
 /** macOS 的 sun_path 上限 104 bytes，保守一點。 */
@@ -14,6 +14,8 @@ const MAX_LINE_BYTES = 16 * 1024 * 1024;
 export type HookOutput = HookReply['output'];
 /** signal 在 hook 連線斷掉時 abort。 */
 export type HookHandler = (request: HookRequest, signal: AbortSignal) => Promise<HookOutput>;
+/** 派工 MCP server 的工具呼叫（CONTRACTS §11）：同一個 socket，`type: 'mcp'`。 */
+export type McpHandler = (request: McpRequest) => Promise<Pick<McpReply, 'ok' | 'text'>>;
 
 interface SocketLocation {
   path: string;
@@ -54,6 +56,7 @@ export class HookServer {
   constructor(
     private readonly dataDir: string,
     private readonly handler: HookHandler,
+    private readonly mcpHandler: McpHandler | null = null,
   ) {}
 
   get path(): string {
@@ -136,6 +139,10 @@ export class HookServer {
       log.warn('hook 訊息不是合法 JSON，已丟棄');
       return;
     }
+    if ((json as { type?: unknown } | null)?.type === 'mcp') {
+      await this.handleMcp(json, socket);
+      return;
+    }
     const parsed = HookRequest.safeParse(json);
     if (!parsed.success) {
       log.warn('hook 訊息不符合協定');
@@ -151,6 +158,28 @@ export class HookServer {
       log.error(`處理 hook ${parsed.data.event} 失敗：${errorMessage(error)}`);
     }
     this.reply(socket, parsed.data.requestId, output);
+  }
+
+  /** 驗證交給 handler（daemon 比對密鑰）；這裡只負責格式。訊息內容（含密鑰）不進 log。 */
+  private async handleMcp(json: unknown, socket: Socket): Promise<void> {
+    const parsed = McpRequest.safeParse(json);
+    const requestId = (json as { requestId?: unknown }).requestId;
+    let result: Pick<McpReply, 'ok' | 'text'>;
+    if (!parsed.success || !this.mcpHandler) {
+      log.warn('派工請求格式不對或沒有啟用，已拒絕');
+      result = { ok: false, text: 'invalid_request: Agent Board could not read this request.' };
+    } else {
+      try {
+        result = await this.mcpHandler(parsed.data);
+      } catch (error) {
+        log.error(`處理派工請求失敗：${errorMessage(error)}`);
+        result = { ok: false, text: 'internal_error: Agent Board daemon failed on this request.' };
+      }
+    }
+    if (typeof requestId !== 'string' || !requestId) return;
+    if (socket.destroyed || !socket.writable) return;
+    const reply: McpReply = { type: 'mcp.reply', requestId, ...result };
+    socket.write(`${JSON.stringify(reply)}\n`);
   }
 
   private reply(socket: Socket, requestId: string, output: HookOutput): void {

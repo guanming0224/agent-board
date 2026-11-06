@@ -200,6 +200,36 @@ describe('buildClaudeArgs', () => {
       buildClaudeArgs({ permissionMode: 'default', model: null, name: 'n', readOnly: false }),
     ).not.toContain('--disallowedTools');
   });
+
+  it('派工工具：--mcp-config 與 --allowedTools 只在給了 mcp 時才帶，後面一定接 --name', () => {
+    const args = buildClaudeArgs({
+      newSessionId: 'u',
+      permissionMode: 'acceptEdits',
+      model: null,
+      name: 'n',
+      mcp: { configPath: '/d/mcp/s.json', allowedTools: ['mcp__agent-board__list_members', 'x'] },
+    });
+    expect(args).toEqual([
+      '--session-id',
+      'u',
+      '--permission-mode',
+      'acceptEdits',
+      '--mcp-config',
+      '/d/mcp/s.json',
+      '--allowedTools',
+      'mcp__agent-board__list_members',
+      'x',
+      '--name',
+      'n',
+    ]);
+    // 沒有 --strict-mcp-config：使用者自己的 MCP server 照常載入。
+    expect(args).not.toContain('--strict-mcp-config');
+    for (const mcp of [undefined, null]) {
+      const plain = buildClaudeArgs({ permissionMode: 'default', model: null, name: 'n', mcp });
+      expect(plain).not.toContain('--mcp-config');
+      expect(plain).not.toContain('--allowedTools');
+    }
+  });
 });
 
 describe('SessionStore', () => {
@@ -267,11 +297,12 @@ describe('SessionStore', () => {
     store.upsert(entry('b'));
     store.patch('a', { claudeSessionId: 'new' });
     store.remove('b');
-    store.setHubSettings(['x'], 3);
+    store.setHubSettings(['x'], 3, true);
     const reloaded = new SessionStore(dir);
     expect(reloaded.sessions.map((s) => [s.sessionId, s.claudeSessionId])).toEqual([['a', 'new']]);
     expect(reloaded.dangerRules).toEqual(['x']);
     expect(reloaded.stuckMinutes).toBe(3);
+    expect(reloaded.dispatch).toBe(true);
     expect(readdirSync(dir)).toEqual(['sessions.json']);
   });
 

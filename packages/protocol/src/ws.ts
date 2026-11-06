@@ -5,6 +5,7 @@ import {
   Approval,
   ClaudeSessionId,
   DEFAULT_WAITING_LIMIT,
+  DispatchTool,
   PurgeOptions,
   PurgeResult,
   SessionInspect,
@@ -185,6 +186,17 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     page: TranscriptPage.nullable(),
     error: z.string().nullable(),
   }),
+  /**
+   * session 裡的 Claude 呼叫了派工工具（CONTRACTS §11）。daemon 已用該 session 的密鑰驗過是它本人；
+   * 能不能做（團隊、上限、權限）由 hub 判斷，回 `dispatch.reply`。
+   */
+  z.object({
+    type: z.literal('dispatch.request'),
+    requestId: Id,
+    sessionId: Id,
+    tool: DispatchTool,
+    args: z.record(z.string(), z.unknown()),
+  }),
 ]);
 export type DaemonToHub = z.infer<typeof DaemonToHub>;
 
@@ -195,6 +207,8 @@ export const HubToDaemon = z.discriminatedUnion('type', [
     machineId: Id,
     dangerRules: z.array(z.string()),
     stuckMinutes: z.number().int().positive(),
+    /** `Settings.dispatch`：新開的 claude 要不要掛派工工具。舊版 hub 不送 → 不掛（它也不認得派工請求）。 */
+    dispatch: z.boolean().optional(),
   }),
   z.object({ type: z.literal('session.create'), requestId: Id, sessionId: Id, spec: SessionSpec }),
   z.object({ type: z.literal('session.stop'), sessionId: Id }),
@@ -229,6 +243,13 @@ export const HubToDaemon = z.discriminatedUnion('type', [
     cursor: z.number().int().nonnegative(),
     limit: z.number().int().positive().max(500),
     query: z.string().max(200).nullable(),
+  }),
+  /** 派工工具的結果：`text` 原樣交給 Claude（成功是 JSON 或一句話，失敗是 Claude 看得懂、能照著改的原因）。 */
+  z.object({
+    type: z.literal('dispatch.reply'),
+    requestId: Id,
+    ok: z.boolean(),
+    text: z.string(),
   }),
 ]);
 export type HubToDaemon = z.infer<typeof HubToDaemon>;

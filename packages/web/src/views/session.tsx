@@ -60,6 +60,24 @@ export function ReadOnlyChip({ session }: { session: { readOnly: boolean } }) {
   );
 }
 
+/** 由哪個 session 用派工工具開的（CONTRACTS §11）。找不到那個 session（已刪除）就不顯示。 */
+export function DispatchedByChip({ session }: { session: { dispatchedBy?: string | null } }) {
+  const t = useT();
+  const name = useBoard((s) =>
+    session.dispatchedBy ? s.sessions.find((x) => x.id === session.dispatchedBy)?.name : undefined,
+  );
+  if (!name) return null;
+  return (
+    <span
+      className="chip dispatched-by"
+      title={t('views.dispatchedBy.title', { name })}
+      data-testid="dispatched-by"
+    >
+      {t('views.dispatchedBy', { name })}
+    </span>
+  );
+}
+
 export function Meter({ percent, label }: { percent: number; label: string }) {
   const tone = percent >= 85 ? ' f' : percent >= 60 ? ' w' : '';
   return (

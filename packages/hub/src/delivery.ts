@@ -65,6 +65,11 @@ export class SafeDelivery {
     return this.pending.has(key);
   }
 
+  /** 狀態沒變但可能變得能送了（例如派工成員手上的工作剛回報完，CONTRACTS §11）。 */
+  retry(targetId: string): void {
+    this.deliverNext(targetId);
+  }
+
   /** 由 hub 在 session 每次變動時呼叫。 */
   onSessionChange(prev: Session, next: Session): void {
     if (isGone(next)) {

@@ -49,6 +49,7 @@ const session = (over: Partial<Session> & Pick<Session, 'id' | 'name' | 'machine
   archivedAt: null,
   readOnly: false,
   autoContinue: null,
+  dispatchedBy: null,
   ...over,
 });
 
@@ -1462,6 +1463,23 @@ test.describe('設定', () => {
     // 舊連結 #/settings/autocontinue 也落到這一區。
     await open(page, 'settings/autocontinue');
     await expect(page.locator('#s-autocontinue')).toBeInViewport();
+  });
+
+  test('允許 session 派工：預設開、標耗額度，關掉後存檔只送這個鍵', async ({ page }) => {
+    await open(page, 'settings/sessions');
+    const section = page.locator('#s-dispatch');
+    await expect(section).toContainText('允許 session 派工（MCP 工具）');
+    await expect(section.locator('.chip.cost')).toHaveText('◈ 耗額度');
+    await expect(section).toContainText('最多同時 4 個成員');
+    const toggle = section.getByTestId('dispatch-toggle');
+    await expect(toggle).toBeChecked();
+    await toggle.uncheck();
+    await expect(section.locator('.chip.unsaved')).toHaveText('未存檔');
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    expect(((await calls(page))[0] as { patch: unknown }).patch).toEqual({ dispatch: false });
+    await open(page, 'settings/dispatch');
+    await expect(page.locator('#s-dispatch')).toBeInViewport();
   });
 
   for (const width of [320, 375]) {

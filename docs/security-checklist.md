@@ -10,6 +10,7 @@
 H() { corepack pnpm --filter @agent-board/hub exec vitest run "$@"; }
 D() { corepack pnpm --filter @agent-board/daemon exec vitest run "$@"; }
 W() { corepack pnpm --filter @agent-board/web exec vitest run "$@"; }
+K() { corepack pnpm --filter @agent-board/hook exec vitest run "$@"; }
 E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/security.config.ts "$@"; }
 ```
 
@@ -23,6 +24,17 @@ E() { corepack pnpm --filter @agent-board/web exec playwright test -c e2e/securi
 | 未登入的 WebSocket 升級回 401                   | `H src/test/ws.test.ts`；瀏覽器：`E -g "未登入"`                                                             | 通過 |
 | 第一個管理員只能建立一次（含競爭）              | `H src/test/rest.test.ts -t "setup exactly once"`                                                            | 通過 |
 | 登入限速（帳號、IP、同時猜測）                  | `H src/test/rest.test.ts -t "rate limit"`                                                                    | 通過 |
+
+## 派工工具的密鑰（CONTRACTS §11，2026-11-06）
+
+| 路徑                                                                                             | 檢查方式                                         | 結果                                              |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------ | ------------------------------------------------- |
+| 密鑰檔與 MCP 設定檔 `0600`、資料夾 `0700`；密鑰不在 argv、claude 的環境變數、MCP 設定檔          | `D src/dispatch.test.ts -t "開著派工"`           | 通過                                              |
+| 密鑰不對、冒用別的 session、session 已結束 → `unauthorized`，不轉給 hub；轉給 hub 的訊息不含密鑰 | `D src/dispatch.test.ts -t "密鑰"`               | 通過                                              |
+| MCP server 的 stdout（Claude 看得到）不含密鑰                                                    | `K src/mcp.test.ts -t "tools/call"`              | 通過                                              |
+| 別台機器拿這台的 session id 呼叫、已封存的呼叫者 → `caller_inactive`；只能指揮自己的成員         | `H src/test/dispatch.test.ts -t "範圍"`          | 通過                                              |
+| daemon 送來的 `dispatch.*` 事件不收                                                              | `H src/test/dispatch.test.ts -t "只有 hub 能寫"` | 通過                                              |
+| 同一使用者身分的程序讀密鑰檔                                                                     | **設計上擋不住**（同機器 token）                 | 未通過（接受的風險：密鑰防的是 session 之間誤用） |
 
 ## CSRF 與 WebSocket 跨站
 

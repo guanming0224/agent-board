@@ -197,6 +197,14 @@ const migrations: string[] = [
    */ `
   ALTER TABLE sessions ADD COLUMN auto_continue TEXT;
   `,
+  /*
+   * 8：session 派工（MCP 工具，GM 2026-11-06，CONTRACTS §11）。dispatched_by 是用 spawn_member 開它的 session
+   * （不設外鍵：呼叫者刪掉後留著舊 id 無害，卡片找不到名字就不顯示）；dispatch_work 是 hub 寫的 JSON：
+   * 這個成員手上還沒回報結果的那份工作（誰給的），回合結束送出結果就清掉，hub 重啟照樣會送。舊資料都是 null。
+   */ `
+  ALTER TABLE sessions ADD COLUMN dispatched_by TEXT;
+  ALTER TABLE sessions ADD COLUMN dispatch_work TEXT;
+  `,
 ];
 
 export function migrate(db: Db): void {

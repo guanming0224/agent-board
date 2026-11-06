@@ -55,6 +55,11 @@ export interface ClaudeArgsInput {
   name: string;
   /** 唯讀 session：拿掉改檔工具（SessionSpec.readOnly）。 */
   readOnly?: boolean;
+  /**
+   * 派工工具（CONTRACTS §11）：`--mcp-config` 設定檔路徑與要事先允許的工具全名。設定關著就不給，
+   * 完全不帶這兩個參數。不用 `--strict-mcp-config`：使用者自己的 MCP server 照常載入。
+   */
+  mcp?: { configPath: string; allowedTools: readonly string[] } | null;
 }
 
 export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
@@ -72,6 +77,12 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
   // （另一個選項），參數才不會被吞掉。只擋這些工具，Bash 仍然寫得了檔案（CONTRACTS 團隊事件）。
   if (input.readOnly) args.push('--disallowedTools', ...READ_ONLY_DISALLOWED_TOOLS);
   if (input.model) args.push('--model', input.model);
+  // 兩個都是可變長度參數：一個值一個 argv，最後一定接 --name，才不會吞到別的參數。
+  // `--allowedTools` 只列這四個派工工具，不放寬任何其他工具（docs/claude-code-notes.md）。
+  if (input.mcp) {
+    args.push('--mcp-config', input.mcp.configPath);
+    if (input.mcp.allowedTools.length > 0) args.push('--allowedTools', ...input.mcp.allowedTools);
+  }
   args.push('--name', input.name);
   return args;
 }

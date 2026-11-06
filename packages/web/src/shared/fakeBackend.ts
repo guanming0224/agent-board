@@ -72,6 +72,7 @@ const session = (
   archivedAt: null,
   readOnly: false,
   autoContinue: null,
+  dispatchedBy: null,
   ...over,
 });
 
@@ -373,6 +374,7 @@ const defaultSettings: Settings = {
   },
   notifications: { enabled: true, quietHours: null, coalesce: true, waitingLimit: 3 },
   autoContinue: false,
+  dispatch: true,
 };
 
 /** 測試可以改掉 demoReply，模擬隊長回了無法解析的內容。 */

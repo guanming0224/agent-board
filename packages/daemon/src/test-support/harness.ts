@@ -94,6 +94,8 @@ export class Harness {
   readonly daemons: Daemon[] = [];
   readonly installHookCalls: string[] = [];
   extraEnv: Record<string, string> = {};
+  /** 派工 MCP server 的路徑（DaemonConfig.mcpServer）；null＝找不到，不掛。 */
+  mcpServer: string | null = null;
   installHooks: DaemonDeps['installHooks'] = async (cwd) => {
     this.installHookCalls.push(cwd);
   };
@@ -114,6 +116,7 @@ export class Harness {
         hookBin: this.hookBin,
         machineName: 'test-machine',
         claudeConfigDir: this.claudeDir,
+        mcpServer: this.mcpServer,
       },
       createStatusTracker: this.trackers.create,
       installHooks: (cwd) => this.installHooks(cwd),

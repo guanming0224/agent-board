@@ -6,6 +6,7 @@ import {
   DEFAULT_WAITING_LIMIT,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
+  DispatchWork,
   Settings,
   TaskAuto,
   type AuditEntry,
@@ -40,6 +41,7 @@ const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
     waitingLimit: DEFAULT_WAITING_LIMIT,
   },
   autoContinue: false,
+  dispatch: true,
 });
 
 interface UserRow {
@@ -86,6 +88,8 @@ interface SessionRow {
   archived_at: string | null;
   read_only: number;
   auto_continue: string | null;
+  dispatched_by: string | null;
+  dispatch_work: string | null;
   pending_spec: string | null;
   pre_offline_status: SessionStatus | null;
 }
@@ -181,6 +185,7 @@ const toSession = (r: SessionRow): Session => ({
   archivedAt: r.archived_at,
   readOnly: r.read_only === 1,
   autoContinue: parseAutoContinue(r.auto_continue),
+  dispatchedBy: r.dispatched_by,
 });
 
 const toTeam = (r: TeamRow): Team => ({
@@ -468,12 +473,12 @@ export class Store {
            permission_mode, model, account_profile, status, status_detail, claude_session_id,
            last_lines, last_output_at, status_since, context_tokens, created_at, ended_at, archived,
            archived_at, pending_spec, context_window, repo_root, repo_common_dir, read_only,
-           auto_continue)
+           auto_continue, dispatched_by)
          VALUES (@id, @machineId, @projectId, @name, @cwd, @branch, @worktreePath,
            @permissionMode, @model, @accountProfile, @status, @statusDetail, @claudeSessionId,
            @lastLines, @lastOutputAt, @statusSince, @contextTokens, @createdAt, @endedAt, @archived,
            @archivedAt, @pendingSpec, @contextWindow, @repoRoot, @repoCommonDir, @readOnly,
-           @autoContinue)`,
+           @autoContinue, @dispatchedBy)`,
       )
       .run({
         ...session,
@@ -640,6 +645,33 @@ export class Store {
 
   setPreOfflineStatus(id: string, status: SessionStatus | null): void {
     this.db.prepare('UPDATE sessions SET pre_offline_status = ? WHERE id = ?').run(status, id);
+  }
+
+  /** 派工成員手上還沒回報結果的工作（CONTRACTS §11）；hub 自己寫的 JSON，讀不懂就當沒有。 */
+  dispatchWork(id: string): DispatchWork | null {
+    const row = this.db.prepare('SELECT dispatch_work FROM sessions WHERE id = ?').get(id) as
+      { dispatch_work: string | null } | undefined;
+    if (!row?.dispatch_work) return null;
+    try {
+      const parsed = DispatchWork.safeParse(JSON.parse(row.dispatch_work));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setDispatchWork(id: string, work: DispatchWork | null): void {
+    this.db
+      .prepare('UPDATE sessions SET dispatch_work = ? WHERE id = ?')
+      .run(work ? JSON.stringify(work) : null, id);
+  }
+
+  /** 由 callerId 用 spawn_member 開的 session（含已結束、已封存的；呼叫端自己篩）。 */
+  listDispatchedBy(callerId: string): Session[] {
+    const rows = this.db
+      .prepare('SELECT * FROM sessions WHERE dispatched_by = ? ORDER BY created_at, rowid')
+      .all(callerId) as SessionRow[];
+    return rows.map(toSession);
   }
 
   /** 回傳 false 表示 id 已存在（daemon 重送）。 */

@@ -16,6 +16,8 @@ export class FakeHub {
   upgradeAttempts = 0;
   dangerRules = ['rm -rf /', 'git push --force'];
   stuckMinutes = 7;
+  /** hub.welcome 的 dispatch（派工工具）；undefined＝舊版 hub，不送這個欄位。 */
+  dispatch: boolean | undefined = undefined;
   private wss!: WebSocketServer;
   private socket: WebSocket | null = null;
   private waiters: { predicate: Predicate; resolve: (m: DaemonToHub) => void }[] = [];
@@ -60,6 +62,7 @@ export class FakeHub {
           machineId: 'machine-1',
           dangerRules: this.dangerRules,
           stuckMinutes: this.stuckMinutes,
+          ...(this.dispatch === undefined ? {} : { dispatch: this.dispatch }),
         } satisfies HubToDaemon),
       );
     }

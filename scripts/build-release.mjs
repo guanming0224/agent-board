@@ -47,7 +47,7 @@ const installedVersion = (pkg, dep) => {
   }
 };
 
-/** 打包 hub、daemon、hook；回傳 metafile，檢查 notices 時要知道打包進去哪些套件。 */
+/** 打包 hub、daemon、hook、派工 MCP server；回傳 metafile，檢查 notices 時要知道打包進去哪些套件。 */
 async function bundleAll() {
   const metafiles = {};
   for (const [name, options] of Object.entries(bundleOptions(root, stage))) {
@@ -61,6 +61,9 @@ async function bundleAll() {
   for (const banned of ['zod', 'require("@agent-board']) {
     if (code.includes(banned)) throw new Error(`hook 打包結果不該含有 ${banned}`);
   }
+  // 派工 MCP server 也只能有 node 內建模組（claude 每開一個 session 就啟動一次）。
+  const mcp = readFileSync(bundleOptions(root, stage).mcp.outfile, 'utf8');
+  if (mcp.includes('zod')) throw new Error('派工 MCP server 打包結果不該含有 zod');
   return { metafiles, hookBytes: statSync(hook).size };
 }
 

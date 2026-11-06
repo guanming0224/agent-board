@@ -168,8 +168,36 @@ export const Session = z.object({
    * 沒排過是 null。見 `AutoContinue`。
    */
   autoContinue: AutoContinue.nullable().default(null),
+  /**
+   * 由哪個 session 用派工工具（MCP `spawn_member`）開的；使用者自己開的是 null（GM 2026-11-06，schema v8
+   * `sessions.dispatched_by`）。只有 hub 寫，卡片顯示「派工自 …」，也用來算同一個呼叫者的成員上限。
+   */
+  dispatchedBy: Id.nullable().default(null),
 });
 export type Session = z.infer<typeof Session>;
+
+// ── session 派工（MCP 工具，GM 2026-11-06，CONTRACTS §11） ──────────────
+
+/** Claude Code 裡看到的 MCP server 名稱：工具全名是 `mcp__agent-board__<tool>`。 */
+export const DISPATCH_MCP_SERVER = 'agent-board';
+/** 派工工具。只有這四個，hub 依呼叫者的團隊判斷能不能做。 */
+export const DispatchTool = z.enum(['list_members', 'spawn_member', 'send_task', 'get_result']);
+export type DispatchTool = z.infer<typeof DispatchTool>;
+/** 同一個呼叫者同時活著（沒封存、沒結束）的派工成員上限。 */
+export const DISPATCH_SPAWN_LIMIT = 4;
+/** `spawn_member` 可開的角色：隊長只能是呼叫者自己。 */
+export const DISPATCH_ROLES = ['worker', 'researcher', 'reviewer'] as const;
+/**
+ * 成員手上還沒回報結果的一份工作（hub 內部，存在 `sessions.dispatch_work`）：spawn 的第一個指令或 send_task 送達時寫，
+ * 成員下一次回合結束（Stop）就把結果送回 `from` 並清掉，所以一份工作只回報一次。
+ */
+export const DispatchWork = z.object({
+  from: Id,
+  workId: Id,
+  kind: z.enum(['spawn', 'send']),
+  at: IsoTime,
+});
+export type DispatchWork = z.infer<typeof DispatchWork>;
 
 // ── 封存、刪除、看舊資料（CONTRACTS §9） ─────────────────────────
 
@@ -515,6 +543,13 @@ export const Settings = z.object({
    * 會花額度，預設關（和任務自動執行同一個原則）。
    */
   autoContinue: z.boolean().default(false),
+  /**
+   * 允許 session 派工（MCP 工具，GM 2026-11-06）：開著時 daemon 新開的 claude 會帶 `--mcp-config` 掛上
+   * `agent-board` 工具，讓畫布上的 Claude 自己開成員、送工作、收結果。工具本身不花額度（要 Claude 決定呼叫），
+   * 但開成員會開新的 session，所以設定頁標 ◈，每個呼叫者最多 `DISPATCH_SPAWN_LIMIT` 個。預設開；
+   * 關掉後新開或接續的 session 不掛工具，已掛著的呼叫一律回「已關閉」。
+   */
+  dispatch: z.boolean().default(true),
 });
 export type Settings = z.infer<typeof Settings>;
 

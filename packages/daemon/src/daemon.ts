@@ -12,6 +12,7 @@ import {
   type DaemonToHub,
   type HookRequest,
   type HubToDaemon,
+  type McpRequest,
   type MachineCapabilities,
   type SessionRuntime,
   type SessionSpec,
@@ -24,6 +25,13 @@ import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { HookServer, type HookOutput } from './hookServer';
 import { HubClient } from './hubClient';
 import { errorMessage, log } from './log';
+import {
+  clearMcpDir,
+  DISPATCH_TOOL_NAMES,
+  removeMcpFiles,
+  secretMatches,
+  writeMcpFiles,
+} from './mcpFiles';
 import { probeCapabilities, ResourceMonitor, type ResourceMonitorOptions } from './resources';
 import { buildClaudeArgs, ManagedSession } from './session';
 import { claudeConfigFor, findTranscriptFiles, inspectSession, purgeSession } from './sessionFiles';
@@ -45,6 +53,8 @@ const USAGE_WINDOW_MS = 30 * 24 * 60 * 60_000;
 /** 結束的 session 還留著畫面給人看，超過就丟最舊的。 */
 const MAX_ENDED_SESSIONS = 20;
 const MAX_EVENT_TEXT = 8_000;
+/** 派工工具等 hub 回答的上限；超過就告訴 Claude 稍後再試。 */
+const DISPATCH_REPLY_TIMEOUT_MS = 30_000;
 /** 不能讓 claude 及其子程序讀到的環境變數。 */
 const SECRET_ENV = [
   'AGENT_BOARD_MACHINE_TOKEN',
@@ -79,6 +89,7 @@ export interface DaemonDeps {
   idleResizeMs?: number;
   heartbeatMs?: number;
   approvalWaitMs?: number;
+  dispatchReplyTimeoutMs?: number;
   authRetryMs?: number;
   revokedGraceMs?: number;
 }
@@ -205,6 +216,14 @@ export class Daemon {
   private usageReportedOnConnect = false;
   private stopping = false;
   private revokedTimer: NodeJS.Timeout | null = null;
+  /** `Settings.dispatch`（hub.welcome 下發）：新開的 PTY 要不要掛派工工具。 */
+  private dispatchEnabled: boolean;
+  /** 每個活著的 session 這次 PTY 的派工密鑰（只在記憶體，檔案另存 0600）。 */
+  private readonly mcpSecrets = new Map<string, string>();
+  private readonly dispatchRequests = new Map<
+    string,
+    { resolve: (reply: { ok: boolean; text: string }) => void; timer: NodeJS.Timeout }
+  >();
 
   constructor(private readonly deps: DaemonDeps) {
     const { config } = deps;
@@ -213,6 +232,7 @@ export class Daemon {
     // hub 還沒連上時也要擋危險指令：用上次下發的規則，再不然用預設值。
     this.dangerRules = this.store.dangerRules ?? DEFAULT_DANGER_RULES;
     this.stuckMinutes = this.store.stuckMinutes ?? DEFAULT_STUCK_MINUTES;
+    this.dispatchEnabled = this.store.dispatch;
     this.hub = new HubClient({
       url: config.hubUrl,
       token: config.token,
@@ -245,8 +265,10 @@ export class Daemon {
       send: (message) => this.send(message),
       ...deps.resources,
     });
-    this.hookServer = new HookServer(config.dataDir, (request, signal) =>
-      this.handleHook(request, signal),
+    this.hookServer = new HookServer(
+      config.dataDir,
+      (request, signal) => this.handleHook(request, signal),
+      (request) => this.handleMcp(request),
     );
   }
 
@@ -255,6 +277,8 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
+    // 上次留下的派工設定與密鑰都作廢：記憶體裡的密鑰已經不在，每個 PTY 會拿到新的。
+    clearMcpDir(this.deps.config.dataDir);
     await this.hookServer.start();
     this.capabilities =
       this.deps.capabilities ??
@@ -277,6 +301,9 @@ export class Daemon {
     this.approvals.dispose();
     await Promise.all([...this.sessions.values()].map((s) => s.detachAndKill()));
     this.sessions.clear();
+    this.mcpSecrets.clear();
+    this.settleDispatchRequests('hub_unreachable: Agent Board daemon is shutting down.');
+    clearMcpDir(this.deps.config.dataDir);
     this.hub.stop();
     await this.hookServer.close();
   }
@@ -321,6 +348,9 @@ export class Daemon {
     // hub 重連後會重新訂閱（CONTRACTS §6.1），這裡回到沒人看的狀態。
     this.resources.stop();
     for (const session of this.sessions.values()) session.unsubscribe();
+    this.settleDispatchRequests(
+      'hub_unreachable: Agent Board lost its connection to the hub. Try again in a minute.',
+    );
   }
 
   private handleHubMessage(message: HubToDaemon): void {
@@ -328,7 +358,7 @@ export class Daemon {
       case 'hub.welcome':
         this.clearRevokedTimer();
         // 設定變更時 hub 會重送 welcome；用量每條連線只需要補報一次。
-        this.applyHubSettings(message.dangerRules, message.stuckMinutes);
+        this.applyHubSettings(message.dangerRules, message.stuckMinutes, message.dispatch === true);
         for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
         if (!this.usageReportedOnConnect) {
           this.usageReportedOnConnect = true;
@@ -383,6 +413,14 @@ export class Daemon {
       case 'session.transcript':
         void this.handleSessionFiles(message);
         return;
+      case 'dispatch.reply': {
+        const pending = this.dispatchRequests.get(message.requestId);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        this.dispatchRequests.delete(message.requestId);
+        pending.resolve({ ok: message.ok, text: message.text });
+        return;
+      }
       default:
         message satisfies never;
     }
@@ -512,6 +550,7 @@ export class Daemon {
     session?.dispose();
     this.sessions.delete(sessionId);
     this.sessionDirs.delete(sessionId);
+    this.dropMcp(sessionId);
     this.approvals.cancelSession(sessionId);
     if (this.store.sessions.some((s) => s.sessionId === sessionId)) this.store.remove(sessionId);
     this.store.removeEnded(sessionId);
@@ -526,10 +565,12 @@ export class Daemon {
     fn(session);
   }
 
-  private applyHubSettings(dangerRules: string[], stuckMinutes: number): void {
+  private applyHubSettings(dangerRules: string[], stuckMinutes: number, dispatch: boolean): void {
     this.dangerRules = dangerRules;
     this.stuckMinutes = stuckMinutes;
-    this.store.setHubSettings(dangerRules, stuckMinutes);
+    // 只影響之後開的 PTY；已經掛著的工具呼叫時由 hub 回「已關閉」。
+    this.dispatchEnabled = dispatch;
+    this.store.setHubSettings(dangerRules, stuckMinutes, dispatch);
     for (const session of this.sessions.values()) session.setStuckMinutes(stuckMinutes);
   }
 
@@ -684,21 +725,43 @@ export class Daemon {
     this.store.removeEnded(sessionId);
     if (spec.accountProfile) this.accountProfiles.add(spec.accountProfile);
 
-    const session = new ManagedSession({
+    const args = buildClaudeArgs({
+      ...how,
+      permissionMode: spec.permissionMode,
+      model: spec.model,
+      name: spec.name,
+      readOnly: spec.readOnly,
+      mcp: this.prepareMcp(sessionId),
+    });
+    const repo = await repoInfo(entry.cwd);
+    let session: ManagedSession;
+    try {
+      session = this.newManagedSession(entry, args, repo);
+    } catch (error) {
+      this.dropMcp(sessionId);
+      throw error;
+    }
+    this.sessions.set(sessionId, session);
+    // 實際的工作資料夾（worktree session 是 worktree 裡的 cwd）；daemon 重啟接回的也在這裡登記。
+    this.sessionDirs.set(sessionId, await realDir(entry.cwd));
+    return session;
+  }
+
+  private newManagedSession(
+    entry: PersistedSession,
+    args: string[],
+    repo: Awaited<ReturnType<typeof repoInfo>>,
+  ): ManagedSession {
+    const { spec, sessionId } = entry;
+    return new ManagedSession({
       id: sessionId,
       bin: this.deps.config.claudeBin,
-      args: buildClaudeArgs({
-        ...how,
-        permissionMode: spec.permissionMode,
-        model: spec.model,
-        name: spec.name,
-        readOnly: spec.readOnly,
-      }),
+      args,
       env: this.sessionEnv(sessionId, spec),
       cwd: entry.cwd,
       branch: entry.branch,
       worktreePath: entry.worktreePath,
-      repo: await repoInfo(entry.cwd),
+      repo,
       model: spec.model,
       claudeSessionId: entry.claudeSessionId,
       pendingFirstPrompt: entry.pendingFirstPrompt,
@@ -723,14 +786,12 @@ export class Daemon {
       onFirstPromptSent: () => this.store.patch(sessionId, { pendingFirstPrompt: null }),
       onExit: (exitCode) => this.handleSessionExit(sessionId, exitCode),
     });
-    this.sessions.set(sessionId, session);
-    // 實際的工作資料夾（worktree session 是 worktree 裡的 cwd）；daemon 重啟接回的也在這裡登記。
-    this.sessionDirs.set(sessionId, await realDir(entry.cwd));
-    return session;
   }
 
   private handleSessionExit(sessionId: string, exitCode: number): void {
     this.approvals.cancelSession(sessionId);
+    // 結束的 session 的派工密鑰立刻作廢（CONTRACTS §11）。
+    this.dropMcp(sessionId);
     // 先記結果再移出接回清單，中間崩潰也不會兩邊都沒有。
     const session = this.sessions.get(sessionId);
     if (session) this.recordEnded(session.runtime());
@@ -757,6 +818,82 @@ export class Daemon {
       session.dispose();
       this.sessions.delete(session.id);
       this.sessionDirs.delete(session.id);
+    }
+  }
+
+  // ── 派工工具（CONTRACTS §11）────────────────────────────
+
+  /** 設定開著、找得到 MCP server 才掛；每次開 PTY 換新密鑰。寫檔失敗就不掛，session 照常開。 */
+  private prepareMcp(
+    sessionId: string,
+  ): { configPath: string; allowedTools: readonly string[] } | null {
+    this.dropMcp(sessionId);
+    const server = this.deps.config.mcpServer;
+    if (!this.dispatchEnabled || !server) return null;
+    try {
+      const launch = writeMcpFiles(
+        this.deps.config.dataDir,
+        sessionId,
+        { command: process.execPath, args: [server] },
+        this.hookServer.path,
+      );
+      this.mcpSecrets.set(sessionId, launch.secret);
+      return { configPath: launch.configPath, allowedTools: DISPATCH_TOOL_NAMES };
+    } catch (error) {
+      log.warn(`無法寫入派工設定，這個 session 不掛派工工具：${errorMessage(error)}`);
+      return null;
+    }
+  }
+
+  private dropMcp(sessionId: string): void {
+    this.mcpSecrets.delete(sessionId);
+    try {
+      removeMcpFiles(this.deps.config.dataDir, sessionId);
+    } catch (error) {
+      log.warn(`無法移除派工設定檔：${errorMessage(error)}`);
+    }
+  }
+
+  /** MCP server 轉來的工具呼叫：比對密鑰（只認這次 PTY 的、session 還活著），再交給 hub 判斷。 */
+  private async handleMcp(request: McpRequest): Promise<{ ok: boolean; text: string }> {
+    const expected = this.mcpSecrets.get(request.sessionId);
+    const alive = this.sessions.get(request.sessionId)?.isAlive === true;
+    if (!expected || !alive || !secretMatches(expected, request.secret)) {
+      log.warn(`拒絕派工請求：session ${request.sessionId} 的密鑰不符或已結束`);
+      return {
+        ok: false,
+        text: 'unauthorized: This session is not allowed to use Agent Board tools.',
+      };
+    }
+    if (!this.hub.connected) {
+      return {
+        ok: false,
+        text: 'hub_unreachable: Agent Board is not connected to its hub right now. Try again in a minute.',
+      };
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.dispatchRequests.delete(requestId);
+        resolve({ ok: false, text: 'timeout: Agent Board hub did not answer in time. Try again.' });
+      }, this.deps.dispatchReplyTimeoutMs ?? DISPATCH_REPLY_TIMEOUT_MS);
+      timer.unref();
+      this.dispatchRequests.set(requestId, { resolve, timer });
+      this.send({
+        type: 'dispatch.request',
+        requestId,
+        sessionId: request.sessionId,
+        tool: request.tool,
+        args: request.args,
+      });
+    });
+  }
+
+  private settleDispatchRequests(text: string): void {
+    for (const [requestId, pending] of this.dispatchRequests) {
+      clearTimeout(pending.timer);
+      this.dispatchRequests.delete(requestId);
+      pending.resolve({ ok: false, text });
     }
   }
 

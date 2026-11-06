@@ -1332,6 +1332,25 @@ test.describe('等你的數量與上限（GM 2026-11-06）', () => {
     await expect(page.getByTestId('auto-continue-s-docs')).toHaveCount(0);
   });
 
+  test('派工開的成員：卡片寫「派工自 <呼叫者>」（CONTRACTS §11）', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await expect(card(page, 's-docs').getByTestId('dispatched-by')).toHaveCount(0);
+    await patchStore(
+      page,
+      `useBoard.getState().backend.patchSession('s-docs', { dispatchedBy: 's-auth' });`,
+    );
+    const chip = card(page, 's-docs').getByTestId('dispatched-by');
+    await expect(chip).toHaveText('派工自 Fix login');
+    await expect(chip).toHaveAttribute('title', /結果會自動送回 Fix login/);
+    // 呼叫者不在了（例如已刪除）：不顯示。
+    await patchStore(
+      page,
+      `useBoard.getState().backend.patchSession('s-docs', { dispatchedBy: 'gone' });`,
+    );
+    await expect(card(page, 's-docs').getByTestId('dispatched-by')).toHaveCount(0);
+  });
+
   for (const width of [320, 375]) {
     for (const route of ['canvas', 'queue', 'inbox']) {
       test(`${width}px ${route}：數量與橫幅不撐出水平捲軸`, async ({ page }) => {

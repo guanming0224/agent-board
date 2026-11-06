@@ -67,6 +67,15 @@ export type AuditQuery = z.infer<typeof AuditQuery>;
 export const ApiError = z.object({ code: z.string(), message: z.string() });
 export type ApiError = z.infer<typeof ApiError>;
 
+/**
+ * 修改設定的 body：只改有帶的鍵。`Settings` 頂層有預設值的欄位（autoContinue、dispatch）在這裡拿掉預設，
+ * 否則 zod 的 partial 會把沒帶的鍵補成預設值，存別的設定時就悄悄改掉它們（例如把關掉的派工又打開）。
+ */
+export const SettingsPatch = Settings.extend({
+  autoContinue: z.boolean(),
+  dispatch: z.boolean(),
+}).partial();
+
 export const routes = {
   // 登入與首次引導
   authStatus: route({
@@ -477,7 +486,7 @@ export const routes = {
     method: 'PATCH',
     path: '/api/settings',
     auth: 'owner',
-    body: Settings.partial(),
+    body: SettingsPatch,
     response: Settings,
   }),
 

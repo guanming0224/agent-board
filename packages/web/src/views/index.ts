@@ -13,6 +13,7 @@ export {
   Meter,
   ModeChip,
   ReadOnlyChip,
+  DispatchedByChip,
   useClock,
   useNow,
 } from './session';
