@@ -1,6 +1,8 @@
 // 交接規則引擎（DISPATCH §6、§8-2）：送給目標 session 的內容只有一句摘要＋改過的檔案＋分支，絕不貼完整對話。
 // 規則存在資料庫；等待中的交接與迴圈鏈只在記憶體，hub 重啟會遺失（audit 留有 handoff.fired）。
+// 實際送字交給 delivery.ts（任務自動執行共用同一份佇列，同一個目標一次只送一則）。
 import type { HandoffRule, Session, SessionEvent } from '@agent-board/protocol';
+import { isGone, SafeDelivery, type DeliveryItem } from './delivery';
 import type { Store } from './store';
 
 const SUMMARY_MAX_CHARS = 240;
@@ -9,8 +11,6 @@ const MAX_LISTED_FILES = 20;
 /** 第二道防迴圈：鏈被使用者輸入重設時，單條規則也不能無限觸發。 */
 const RULE_MAX_FIRES = 10;
 const RULE_WINDOW_MS = 10 * 60 * 1000;
-/** 送出後目標一直沒離開 waiting_input（輸入被吃掉）就不再等它，下一筆才有機會送。 */
-const ACK_TIMEOUT_MS = 60 * 1000;
 
 const ANSI = /\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|.)/g;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
@@ -30,15 +30,14 @@ export function oneSentence(text: string): string {
     : sentence;
 }
 
-/**
- * 只有這三項。開頭固定是 `[Handoff]`：內容來自另一個模型的輸出，
- * 不能讓它以 `/` 或 `!` 開頭被 TUI 當成指令。
- */
-export function handoffMessage(input: {
+export interface ReportInput {
   summary: string;
   files: readonly string[];
   branch: string | null;
-}): string {
+}
+
+/** 摘要、改過的檔案、分支三段；交接與送審共用。 */
+export function reportParts(input: ReportInput): [string, string, string] {
   const listed = input.files.slice(0, MAX_LISTED_FILES).map(cleanLine);
   const more = input.files.length - listed.length;
   // 只看得到 Write、Edit、MultiEdit、NotebookEdit：空清單不能讀起來像沒改動。
@@ -47,10 +46,51 @@ export function handoffMessage(input: {
       ? 'none (edits made through shell commands are not tracked)'
       : listed.join(', ');
   return [
-    `[Handoff] Summary: ${input.summary || 'none reported'}`,
+    `Summary: ${input.summary || 'none reported'}`,
     `Detected file edits: ${files}${more > 0 ? ` (+${more} more)` : ''}`,
     `Branch: ${input.branch ? cleanLine(input.branch) : 'unknown'}`,
-  ].join(' | ');
+  ];
+}
+
+/**
+ * 只有這三項。開頭固定是 `[Handoff]`：內容來自另一個模型的輸出，
+ * 不能讓它以 `/` 或 `!` 開頭被 TUI 當成指令。
+ */
+export function handoffMessage(input: ReportInput): string {
+  const [summary, ...rest] = reportParts(input);
+  return [`[Handoff] ${summary}`, ...rest].join(' | ');
+}
+
+export interface SessionReport {
+  /** 最後一則回覆。 */
+  reply: string | null;
+  /** 分界之後改過的檔案（依第一次出現的順序）。 */
+  files: string[];
+  /** 最後一筆 daemon 事件的時間：hub 寫分界事件時接在它後面（各台機器的時鐘不一定和 hub 相同）。 */
+  lastDaemonAt: string | null;
+}
+
+/** 從事件取得最後一則回覆、以及分界事件之後改過的檔案。hub 重啟後一樣查得到。 */
+export function sessionReport(
+  store: Pick<Store, 'listEvents'>,
+  sessionId: string,
+  isBoundary: (event: SessionEvent) => boolean,
+): SessionReport {
+  let reply: string | null = null;
+  let lastDaemonAt: string | null = null;
+  let collecting = true;
+  const files: string[] = [];
+  for (const event of store.listEvents(sessionId).reverse()) {
+    if (isBoundary(event)) collecting = false;
+    if (event.type === 'file.changed' || event.type === 'hook') lastDaemonAt ??= event.at;
+    if (event.type === 'file.changed' && collecting) {
+      const path = event.payload.path;
+      if (typeof path === 'string' && !files.includes(path)) files.push(path);
+    }
+    const text = event.payload.last_assistant_message;
+    if (reply === null && event.type === 'hook' && typeof text === 'string') reply = text;
+  }
+  return { reply, files: files.reverse(), lastDaemonAt };
 }
 
 /** `*`、`**`、`?`；比對路徑結尾，所以 `src/**` 和 `*.sql` 對絕對路徑也有效。空字串表示任何檔案。 */
@@ -113,18 +153,24 @@ export interface HandoffDeps {
   guarded(label: string, fn: () => void): void;
   /** 雙向交接到了輪數上限：走一般的推播通知使用者，迴圈停下等他決定。 */
   notifyRoundLimit(sessionId: string, maxRounds: number): void;
+  /**
+   * 共用的送字佇列（hub 和任務自動執行共用一份）。給了就由 hub 負責轉送 session 變動、心跳與關閉；
+   * 沒給（單元測試）就自己建一份、自己轉送。
+   */
+  delivery?: SafeDelivery;
 }
 
 export class HandoffEngine {
-  /** key 是規則 id：同一條規則還沒送出又觸發，新的蓋舊的。 */
-  private readonly pending = new Map<string, Pending>();
   private readonly chains = new Map<string, string[]>();
   private readonly fires = new Map<string, number[]>();
-  private readonly awaitingAck = new Map<string, number>();
   private readonly stopped = new Set<string>();
-  private readonly timers = new Set<NodeJS.Timeout>();
+  private readonly delivery: SafeDelivery;
+  private readonly ownsDelivery: boolean;
 
-  constructor(private readonly deps: HandoffDeps) {}
+  constructor(private readonly deps: HandoffDeps) {
+    this.ownsDelivery = deps.delivery === undefined;
+    this.delivery = deps.delivery ?? new SafeDelivery(deps);
+  }
 
   /** on_file 在回合結束時判斷：改到一半的檔案不該觸發，摘要也要等這時才有。 */
   onEvent(event: SessionEvent): void {
@@ -146,11 +192,7 @@ export class HandoffEngine {
 
   /** 由 hub 在 session 每次變動時呼叫；`entered` 表示這是要通知使用者的新狀態。 */
   onSessionChange(prev: Session, next: Session, entered: boolean): void {
-    if (prev.status !== next.status) {
-      if (prev.status === 'waiting_input') this.awaitingAck.delete(next.id);
-      if (next.status === 'waiting_input') this.deliverNext(next.id);
-      if (isGone(next)) this.dropPendingTo(next.id);
-    }
+    if (this.ownsDelivery) this.delivery.onSessionChange(prev, next);
     const stoppedByUser = this.stopped.has(next.id);
     if (next.endedAt !== null) this.stopped.delete(next.id);
     // 沒開起來的 session 沒有成果可交接；使用者自己按停止既不是完成也不是失敗。
@@ -173,18 +215,11 @@ export class HandoffEngine {
 
   /** 心跳時呼叫：機器重連、確認逾時之後，沒有狀態變化也要繼續送。 */
   flush(): void {
-    const now = this.deps.now().getTime();
-    for (const [sessionId, at] of this.awaitingAck) {
-      if (now - at > ACK_TIMEOUT_MS) this.awaitingAck.delete(sessionId);
-    }
-    const targets = new Set([...this.pending.values()].map((p) => p.rule.action.toSessionId));
-    for (const target of targets) this.deliverNext(target);
+    if (this.ownsDelivery) this.delivery.flush();
   }
 
   close(): void {
-    for (const timer of this.timers) clearTimeout(timer);
-    this.timers.clear();
-    this.pending.clear();
+    if (this.ownsDelivery) this.delivery.close();
   }
 
   private rulesFrom(sessionId: string): HandoffRule[] {
@@ -195,23 +230,9 @@ export class HandoffEngine {
       .filter((rule) => rule.enabled && rule.fromSessionId === sessionId);
   }
 
-  /** 從事件取得最後一則回覆、以及上次交接之後改過的檔案。hub 重啟後一樣查得到。 */
-  private report(sessionId: string) {
-    let reply: string | null = null;
-    let lastDaemonAt: string | null = null;
-    let collecting = true;
-    const files: string[] = [];
-    for (const event of this.deps.store.listEvents(sessionId).reverse()) {
-      if (event.type === 'handoff.fired') collecting = false;
-      if (event.type === 'file.changed' || event.type === 'hook') lastDaemonAt ??= event.at;
-      if (event.type === 'file.changed' && collecting) {
-        const path = event.payload.path;
-        if (typeof path === 'string' && !files.includes(path)) files.push(path);
-      }
-      const text = event.payload.last_assistant_message;
-      if (reply === null && event.type === 'hook' && typeof text === 'string') reply = text;
-    }
-    return { reply, files: files.reverse(), lastDaemonAt };
+  /** 上次交接之後改過的檔案。 */
+  private report(sessionId: string): SessionReport {
+    return sessionReport(this.deps.store, sessionId, (event) => event.type === 'handoff.fired');
   }
 
   private fire(
@@ -280,8 +301,27 @@ export class HandoffEngine {
       { ...detail, summary: summaryText },
       boundaryAt ?? undefined,
     );
-    this.pending.set(rule.id, { rule, message, summary: summaryText, chain, rounds });
-    this.deliverNext(targetId);
+    this.delivery.enqueue(this.item({ rule, message, summary: summaryText, chain, rounds }));
+  }
+
+  /** key 是規則 id：同一條規則還沒送出又觸發，新的蓋舊的。 */
+  private item(pending: Pending): DeliveryItem {
+    const { rule } = pending;
+    const targetId = rule.action.toSessionId;
+    return {
+      key: `rule:${rule.id}`,
+      targetId,
+      message: pending.message,
+      // 排隊期間規則可能被關掉或改了目標（例如全隊暫停），這些不送。
+      check: () => {
+        const current = this.deps.store.getRule(rule.id);
+        return current?.enabled && current.action.toSessionId === targetId ? null : 'rule_disabled';
+      },
+      dropped: (reason) =>
+        this.dropped(pending, reason === 'target_ended' ? 'target_ended' : 'rule_disabled'),
+      aborted: () => this.aborted(pending),
+      delivered: () => this.delivered(pending),
+    };
   }
 
   private blockReason(
@@ -299,56 +339,6 @@ export class HandoffEngine {
     const recent = (this.fires.get(rule.id) ?? []).filter((at) => now - at < RULE_WINDOW_MS);
     if (recent.length >= RULE_MAX_FIRES) return 'rate_limit';
     this.fires.set(rule.id, [...recent, now]);
-    return null;
-  }
-
-  private dropPendingTo(targetId: string): void {
-    for (const [ruleId, pending] of this.pending) {
-      if (pending.rule.action.toSessionId !== targetId) continue;
-      this.pending.delete(ruleId);
-      this.dropped(pending, 'target_ended');
-    }
-  }
-
-  /**
-   * 只在目標等輸入時才送：其他狀態下畫面可能是權限對話框，Enter 會直接選到「允許」。
-   * 文字和 Enter 分開送（黏在一起 TUI 會當成貼上），送 Enter 前再確認一次狀態。
-   */
-  private deliverNext(targetId: string): void {
-    const { deps } = this;
-    const target = deps.store.getSession(targetId);
-    if (!target || isGone(target)) {
-      this.dropPendingTo(targetId);
-      return;
-    }
-    if (
-      target.status !== 'waiting_input' ||
-      this.awaitingAck.has(targetId) ||
-      !deps.isReachable(targetId)
-    ) {
-      return;
-    }
-    const next = this.takeNext(targetId);
-    if (!next) return;
-    this.awaitingAck.set(targetId, deps.now().getTime());
-    deps.sendInput(targetId, next.message);
-    const timer = setTimeout(() => {
-      this.timers.delete(timer);
-      deps.guarded('handoff enter', () => this.pressEnter(targetId, next));
-    }, deps.enterDelayMs);
-    timer.unref();
-    this.timers.add(timer);
-  }
-
-  /** 排隊期間規則可能被關掉或改了目標（例如全隊暫停），這些不送。 */
-  private takeNext(targetId: string): Pending | null {
-    for (const [ruleId, pending] of this.pending) {
-      if (pending.rule.action.toSessionId !== targetId) continue;
-      this.pending.delete(ruleId);
-      const rule = this.deps.store.getRule(ruleId);
-      if (rule?.enabled && rule.action.toSessionId === targetId) return pending;
-      this.dropped(pending, 'rule_disabled');
-    }
     return null;
   }
 
@@ -371,29 +361,27 @@ export class HandoffEngine {
     });
   }
 
-  private pressEnter(targetId: string, pending: Pending): void {
-    const { store, audit, addEvent, isReachable, sendInput } = this.deps;
-    const { rule, message, chain } = pending;
-    const detail = {
+  private detail(pending: Pending) {
+    const { rule } = pending;
+    return {
       ruleId: rule.id,
       fromSessionId: rule.fromSessionId,
-      toSessionId: targetId,
+      toSessionId: rule.action.toSessionId,
       summary: pending.summary,
       ...pending.rounds,
     };
-    const current = store.getSession(targetId);
-    if (current?.status !== 'waiting_input' || !isReachable(targetId)) {
-      this.awaitingAck.delete(targetId);
-      audit(rule.fromSessionId, 'handoff.enter_aborted', JSON.stringify(detail));
-      addEvent(rule.fromSessionId, 'handoff.blocked', { ...detail, reason: 'target_busy' });
-      return;
-    }
-    this.chains.set(targetId, chain);
-    sendInput(targetId, '\r');
-    audit(targetId, 'terminal.input', message);
-    addEvent(targetId, 'handoff.delivered', detail);
+  }
+
+  private aborted(pending: Pending): void {
+    const detail = this.detail(pending);
+    const { fromSessionId } = pending.rule;
+    this.deps.audit(fromSessionId, 'handoff.enter_aborted', JSON.stringify(detail));
+    this.deps.addEvent(fromSessionId, 'handoff.blocked', { ...detail, reason: 'target_busy' });
+  }
+
+  private delivered(pending: Pending): void {
+    const targetId = pending.rule.action.toSessionId;
+    this.chains.set(targetId, pending.chain);
+    this.deps.addEvent(targetId, 'handoff.delivered', this.detail(pending));
   }
 }
-
-const isGone = (session: Session): boolean =>
-  session.endedAt !== null || session.status === 'done' || session.archived;

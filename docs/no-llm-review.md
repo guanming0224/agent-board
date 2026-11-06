@@ -6,8 +6,9 @@
 - **審查的版本：** `97f4425`（main）加上本次新增的檢查腳本
 - **結論：** 通過。hub、daemon、hook、web 與隨發布檔散布的第三方套件都沒有呼叫任何 LLM 服務。
   唯一用到 Claude 的方式是 daemon 在 PTY 裡開使用者自己登入的 `claude` CLI（互動模式），
-  送進去的字只有四種來源：使用者在網頁打的、使用者建立 session 時填的第一個指令、
-  使用者按「請隊長拆解」或「/clear」送出的固定文字、使用者自己設定並啟用的交接規則。
+  送進去的字只有五種來源：使用者在網頁打的、使用者建立 session 時填的第一個指令、
+  使用者按「請隊長拆解」或「/clear」送出的固定文字、使用者自己設定並啟用的交接規則、
+  使用者打開的「任務自動執行」送的固定格式任務提示（2026-11-06 補）。
   daemon 不會自己產生 prompt。
 
 ## 重跑
@@ -122,19 +123,20 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
 PTY 只有兩個寫入點：`ManagedSession.write`（`packages/daemon/src/session.ts:295`）與
 `sendFirstPrompt`（`session.ts:376-377`）。往上追：
 
-| 來源                      | 觸發者                                                            | 位置                                                                                                                                                                                                                                  |
-| ------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 網頁終端機按鍵            | 使用者打字                                                        | `packages/web/src/terminal/controller.ts:169` → hub `hub.ts:515-519`（先寫操作紀錄）→ daemon `daemon.ts:327-328`                                                                                                                      |
-| 卡片指令框                | 使用者按送出                                                      | `packages/web/src/canvas/CommandInput.tsx:30`                                                                                                                                                                                         |
-| 收件匣、審核頁回覆        | 使用者按送出                                                      | `packages/web/src/flows/InboxPage.tsx:250`、`ReviewPage.tsx:300`                                                                                                                                                                      |
-| 完成提示的 `/clear`       | 使用者按按鈕                                                      | `packages/web/src/canvas/DoneHint.tsx:75`                                                                                                                                                                                             |
-| 請隊長拆解（DISPATCH §6） | 使用者按「請隊長拆解」                                            | `packages/web/src/team/TaskBoard.tsx:213`（按鈕 `:240`），固定提示在 `team/decompose.ts:13`，送進**已存在**的隊長 session                                                                                                             |
-| 第一個指令                | 使用者建立 session 時填（可從自己的範本帶入）                     | `packages/web/src/flows/NewSessionPage.tsx:329` → hub `hub.ts:731-732`（寫操作紀錄）→ daemon `daemon.ts:415`，`SessionStart` 後送一次（`session.ts:372-379`），送出就清掉，重啟不會再送                                               |
-| 交接規則                  | 使用者在團隊裡建立並啟用的規則（`on_done`／`on_file`／`on_fail`） | `packages/hub/src/handoff.ts:157-163` 只取 `enabled` 的規則；`:279`、`:316` 送出，`:317` 寫操作紀錄。內容只有 `[Handoff]` 開頭的一句摘要、檔案路徑、分支名（`handoff.ts:37-54`），取自來源 session 的最後回覆，不是另外呼叫模型產生的 |
-| 終端機訊號                | 使用者按 Esc／Ctrl+C／停止                                        | `daemon.ts:335-339`                                                                                                                                                                                                                   |
+| 來源                          | 觸發者                                                                                                                                                   | 位置                                                                                                                                                                                                                                                                                                                                                                        |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 網頁終端機按鍵                | 使用者打字                                                                                                                                               | `packages/web/src/terminal/controller.ts:169` → hub `hub.ts:515-519`（先寫操作紀錄）→ daemon `daemon.ts:327-328`                                                                                                                                                                                                                                                            |
+| 卡片指令框                    | 使用者按送出                                                                                                                                             | `packages/web/src/canvas/CommandInput.tsx:30`                                                                                                                                                                                                                                                                                                                               |
+| 收件匣、審核頁回覆            | 使用者按送出                                                                                                                                             | `packages/web/src/flows/InboxPage.tsx:250`、`ReviewPage.tsx:300`                                                                                                                                                                                                                                                                                                            |
+| 完成提示的 `/clear`           | 使用者按按鈕                                                                                                                                             | `packages/web/src/canvas/DoneHint.tsx:75`                                                                                                                                                                                                                                                                                                                                   |
+| 請隊長拆解（DISPATCH §6）     | 使用者按「請隊長拆解」                                                                                                                                   | `packages/web/src/team/TaskBoard.tsx:265`（按鈕 `:292`），固定提示在 `team/decompose.ts` 的 `decomposePrompt`，送進**已存在**的隊長 session。提示多要求每項標上成員縮寫（`role`），回覆在前端依縮寫指派負責人，不另外送任何字                                                                                                                                               |
+| 第一個指令                    | 使用者建立 session 時填（可從自己的範本帶入）                                                                                                            | `packages/web/src/flows/NewSessionPage.tsx:329` → hub `hub.ts:731-732`（寫操作紀錄）→ daemon `daemon.ts:415`，`SessionStart` 後送一次（`session.ts:372-379`），送出就清掉，重啟不會再送                                                                                                                                                                                     |
+| 交接規則                      | 使用者在團隊裡建立並啟用的規則（`on_done`／`on_file`／`on_fail`／`on_marker`）                                                                           | `packages/hub/src/handoff.ts` 的 `rulesFrom` 只取 `enabled` 的規則；排進共用的送字佇列 `packages/hub/src/delivery.ts`（`SafeDelivery`，`:113` 送文字、`:141` 送 Enter、`:142` 寫操作紀錄）。內容只有 `[Handoff]` 開頭的一句摘要、檔案路徑、分支名（`handoff.ts` 的 `handoffMessage`／`reportParts`），取自來源 session 的最後回覆，不是另外呼叫模型產生的                   |
+| 任務自動執行（GM 2026-11-06） | 使用者在任務板打開團隊的「任務自動執行」（`teams.task_auto`，預設關，開關寫 audit `team.task_auto`；全隊暫停／停止會關掉），之後移到進行中／待審查的任務 | `packages/hub/src/tasks.ts` 的 `TaskEngine`：開關關著什麼都不送；同一條 `SafeDelivery` 佇列送出。內容是固定格式的一行：`[Task #n]` 任務標題＋團隊目標＋「完成時回覆 `[完成 #n]`」、`[Review #n]` 任務標題＋負責人回覆裡的一句＋檔案路徑＋分支、或審查退回原因的一句（`taskPrompt`／`reviewPrompt`／`rejectPrompt`）。下一步只由回覆裡的固定標記（純子字串）決定，不呼叫模型 |
+| 終端機訊號                    | 使用者按 Esc／Ctrl+C／停止                                                                                                                               | `daemon.ts:335-339`                                                                                                                                                                                                                                                                                                                                                         |
 
 全部 `type: 'terminal.input'` 的產生點只有 `hubBackend.ts:282-284`、`controller.ts:169`（網頁，
-使用者動作）與 `hub.ts:162`（只給交接引擎用）。
+使用者動作）與 `hub.ts:278`（只給共用的送字佇列 `delivery.ts` 用，也就是交接規則與任務自動執行）。
 
 **daemon 不會自己送 prompt。** daemon 只在收到 hub 的 `terminal.input`／`terminal.signal` 時寫
 PTY，以及送使用者給的第一個指令。daemon 會自己做的事：重啟時用 `--resume` 接回原本的 session
@@ -152,6 +154,7 @@ Claude Code 決定，不在中控台範圍。
 - hub 或 daemon 在使用者沒有動作、也沒有啟用規則的情況下送字進 PTY（例如自動回答對話框、
   自動 `/clear`、自動 `/compact`、定時「繼續」）。
 - 交接規則預設啟用，或內容改成帶完整對話。
+- 任務自動執行預設開啟、開關關著也送，或任務提示改成帶完整對話。
 - hook 改用 `type: 'prompt'`／`type: 'agent'`，或回傳 `additionalContext` 往對話塞字。
 - 給 `claude` 的環境加上 `ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL` 等，讓模型流量經過中控台。
 - 網頁 CSP 放寬 `connect-src`，或加入連外的分析、遙測。

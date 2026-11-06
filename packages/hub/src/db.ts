@@ -172,6 +172,25 @@ const migrations: string[] = [
   ALTER TABLE teams ADD COLUMN phase TEXT;
   ALTER TABLE team_members ADD COLUMN kind TEXT;
   `,
+  /*
+   * 6：任務自動執行（GM 2026-11-06）。teams.task_auto 是開關（舊團隊一律關）。
+   * tasks.number 是團隊內的短編號，舊任務依建立順序補上（teams.task_seq 記發到哪，刪掉的不重發）；
+   * reject_count、needs_user、reviewer_session_id、auto（最後一步，JSON）讓 hub 重啟後還看得到進度。
+   * reviewer_session_id 不設外鍵：session 刪掉時留著舊 id 無害（送審前會重新確認是不是團隊的審查）。
+   */ `
+  ALTER TABLE teams ADD COLUMN task_auto INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE teams ADD COLUMN task_seq INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN number INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN reject_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN needs_user INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN reviewer_session_id TEXT;
+  ALTER TABLE tasks ADD COLUMN auto TEXT;
+  UPDATE tasks SET number = (
+    SELECT COUNT(*) FROM tasks AS earlier
+    WHERE earlier.team_id = tasks.team_id AND earlier.rowid <= tasks.rowid
+  );
+  UPDATE teams SET task_seq = (SELECT COUNT(*) FROM tasks WHERE tasks.team_id = teams.id);
+  `,
 ];
 
 export function migrate(db: Db): void {

@@ -326,9 +326,13 @@ function TeamControls({ team, members }: { team: Team; members: Session[] }) {
   const enabledRules = rules.filter((r) => r.teamId === team.id && r.enabled);
   const live = members.filter(isLive);
 
-  // 兩者都先關規則：不然中斷或結束本身又會觸發交接。
-  const disableRules = () =>
-    Promise.all(enabledRules.map((r) => backend.updateHandoffRule(r.id, { enabled: false })));
+  // 兩者都先關規則與任務自動執行：不然中斷或結束本身又會觸發交接、送下一個任務。
+  const tasksWereAuto = team.taskAuto === true;
+  const disableRules = async () => {
+    if (tasksWereAuto) await backend.updateTeam(team.id, { taskAuto: false });
+    await Promise.all(enabledRules.map((r) => backend.updateHandoffRule(r.id, { enabled: false })));
+  };
+  const withTasks = (text: string) => (tasksWereAuto ? `${text} ${t('team.paused.tasks')}` : text);
 
   const pause = () =>
     run(async () => {
@@ -338,7 +342,7 @@ function TeamControls({ team, members }: { team: Team; members: Session[] }) {
         backend.terminal.send({ type: 'terminal.signal', sessionId: s.id, signal: 'escape' });
       }
       await refreshTeams(backend);
-      return t('team.paused', { n: targets.length, rules: enabledRules.length });
+      return withTasks(t('team.paused', { n: targets.length, rules: enabledRules.length }));
     });
 
   const stop = () =>
@@ -348,7 +352,7 @@ function TeamControls({ team, members }: { team: Team; members: Session[] }) {
       await refreshTeams(backend);
       const failed = results.filter((r) => r.status === 'rejected').length;
       if (failed > 0) throw new Error(t('team.stopPartial', { failed, n: live.length }));
-      return t('team.stopped', { n: live.length });
+      return withTasks(t('team.stopped', { n: live.length }));
     });
 
   return (

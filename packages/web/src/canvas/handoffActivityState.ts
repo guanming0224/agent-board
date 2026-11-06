@@ -54,6 +54,9 @@ const KIND_OF: Record<string, HandoffKind> = {
   'handoff.delivered': 'delivered',
   'handoff.blocked': 'blocked',
   'handoff.dropped': 'dropped',
+  // 任務自動執行的送審（負責人 → 審查）與退回（審查 → 負責人）也走同一條線；
+  // 直接送給負責人的新任務沒有來源成員，不畫。
+  'task.delivered': 'delivered',
 };
 
 /** 送出（排入或送達）比擋下重要。 */

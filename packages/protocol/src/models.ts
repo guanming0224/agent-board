@@ -267,6 +267,11 @@ export const Team = z.object({
   contextMd: z.string(),
   /** 研究團隊目前的階段；程式開發團隊沒有（舊資料也沒有）。 */
   phase: ResearchPhase.optional(),
+  /**
+   * 任務自動執行（GM 2026-11-06，schema v6）：開著時 hub 會把進行中的任務送給負責人、把待審查的送給審查，
+   * 會花成員的額度，所以預設關（舊資料也是關）。hub 回傳時一定帶；建立、修改時可以不帶。
+   */
+  taskAuto: z.boolean().optional(),
 });
 export type Team = z.infer<typeof Team>;
 
@@ -279,12 +284,52 @@ export const TeamMember = z.object({
 });
 export type TeamMember = z.infer<typeof TeamMember>;
 
+/** 審查退回幾次就停下等使用者（GM 2026-11-06）。 */
+export const TASK_REJECT_LIMIT = 3;
+
+/**
+ * 任務自動執行最後做到哪一步，任務卡顯示用。
+ * queued／review_queued：等負責人／審查有空（`waiting_input`）才送；sent／review_sent：已送出、等回覆；
+ * reported：負責人回報完成、團隊沒有審查（等使用者審）；passed：審查通過；
+ * limit：退回到上限，停下等使用者；dropped：沒送出（原因在 note）。
+ */
+export const TaskAutoState = z.enum([
+  'queued',
+  'sent',
+  'reported',
+  'review_queued',
+  'review_sent',
+  'passed',
+  'limit',
+  'dropped',
+]);
+export type TaskAutoState = z.infer<typeof TaskAutoState>;
+
+export const TaskAuto = z.object({
+  state: TaskAutoState,
+  /** 這一步對象的 session（負責人或審查）。 */
+  sessionId: Id.nullable(),
+  /** reported／review_*：負責人的一句摘要；limit：退回原因；dropped：原因代碼。 */
+  note: z.string().optional(),
+  at: IsoTime,
+});
+export type TaskAuto = z.infer<typeof TaskAuto>;
+
 export const Task = z.object({
   id: Id,
   teamId: Id,
   title: z.string().min(1),
   ownerSessionId: Id.nullable(),
   column: TaskColumn,
+  /** 團隊內的短編號（#n），任務提示與完成標記用。建立時決定、不重複使用。 */
+  number: z.number().int().positive(),
+  /** 審查退回的次數；使用者移動卡片不會歸零。 */
+  rejectCount: z.number().int().nonnegative(),
+  /** 退回到上限，自動流程停下等使用者決定；使用者移動卡片或換負責人就清掉。 */
+  needsUser: z.boolean(),
+  /** 最近一次送審的審查 session；同一個任務再送審時沿用。 */
+  reviewerSessionId: Id.nullable(),
+  auto: TaskAuto.nullable(),
 });
 export type Task = z.infer<typeof Task>;
 

@@ -379,6 +379,8 @@ export interface FakeBackendControls {
   demoReply: string | null;
   /** 模擬 daemon 回報的狀態變化。 */
   setSessionStatus(id: string, status: Session['status']): void;
+  /** 模擬 hub 的任務自動執行改了任務（最後一步、退回次數…）。假後端自己不送字、不移欄。 */
+  patchTask(id: string, patch: Partial<Task>): void;
   addSessionEvent(sessionId: string, type: string, payload: Record<string, unknown>): void;
   /**
    * 模擬 hub 的交接事件（畫布的交接動畫）。沒給 reason 是交接成功：handoff.fired（排入）
@@ -399,11 +401,11 @@ export interface FakeBackendControls {
   ): void;
 }
 
-/** 假隊長的回覆，請隊長拆解在 demo 模式下也能走完。 */
+/** 假隊長的回覆，請隊長拆解在 demo 模式下也能走完。帶 role 的照縮寫指派，最後一項沒標。 */
 const DEMO_DECOMPOSE_REPLY = `Here is the breakdown:
 
 \`\`\`json
-[{"title":"Map the login redirect paths"},{"title":"Write regression tests"},{"title":"Fix the redirect"}]
+[{"title":"Map the login redirect paths","role":"BD"},{"title":"Write regression tests","role":"LD"},{"title":"Fix the redirect"}]
 \`\`\``;
 
 const DEMO_DECOMPOSE_DELAY_MS = 300;
@@ -431,6 +433,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       doneCriteria: 'All auth tests pass and the redirect works on mobile.',
       color: 'teal',
       contextMd: '# Team notes\n\nKeep the session cookie format unchanged.\n',
+      taskAuto: false,
     },
   ];
   const members: TeamMember[] = [
@@ -444,6 +447,11 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       title: 'Reproduce the redirect loop',
       ownerSessionId: 's-auth',
       column: 'doing',
+      number: 1,
+      rejectCount: 0,
+      needsUser: false,
+      reviewerSessionId: null,
+      auto: null,
     },
     {
       id: 'task-2',
@@ -451,8 +459,15 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       title: 'Check mobile Safari',
       ownerSessionId: null,
       column: 'todo',
+      number: 2,
+      rejectCount: 0,
+      needsUser: false,
+      reviewerSessionId: null,
+      auto: null,
     },
   ];
+  /** 假的團隊任務編號（demo 只有一個團隊，從 2 接著發）。 */
+  let taskSeq = tasks.length;
   const rules: HandoffRule[] = [
     {
       id: 'rule-1',
@@ -792,6 +807,9 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       }, DEMO_DECOMPOSE_DELAY_MS);
     },
     demoReply: DEMO_DECOMPOSE_REPLY as string | null,
+    patchTask(id, patch) {
+      Object.assign(findIn(tasks, id, 'task'), patch);
+    },
     setSessionStatus(id, status) {
       find(id).status = status;
       publish();
@@ -909,7 +927,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
 
     listTeams: async () => teams.map((x) => ({ ...x })),
     async createTeam(input) {
-      const team = { ...input, id: crypto.randomUUID() };
+      const team = { ...input, taskAuto: input.taskAuto ?? false, id: crypto.randomUUID() };
       teams.push(team);
       return team;
     },
@@ -937,16 +955,30 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     },
     listTasks: async (teamId) => tasks.filter((x) => x.teamId === teamId).map((x) => ({ ...x })),
     async createTask(teamId, input) {
-      const task: Task = { ...input, id: crypto.randomUUID(), teamId, column: 'todo' };
+      taskSeq += 1;
+      const task: Task = {
+        ...input,
+        id: crypto.randomUUID(),
+        teamId,
+        column: 'todo',
+        number: taskSeq,
+        rejectCount: 0,
+        needsUser: false,
+        reviewerSessionId: null,
+        auto: null,
+      };
       tasks.push(task);
       return task;
     },
     async updateTask(id, patch) {
       const task = findIn(tasks, id, 'task');
       const next = { ...task, ...patch };
-      // 和 hub 相同的規則（rest.ts tasksUpdate）。
+      // 和 hub 相同的規則（hub.ts updateTask）：移欄或換負責人就清掉「等你決定」與最後一步。
       if (next.column !== 'todo' && next.ownerSessionId === null) {
         throw new Error('Assign the task before moving it');
+      }
+      if (next.column !== task.column || next.ownerSessionId !== task.ownerSessionId) {
+        Object.assign(next, { needsUser: false, auto: null });
       }
       return Object.assign(task, next);
     },

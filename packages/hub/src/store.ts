@@ -5,6 +5,7 @@ import {
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   Settings,
+  TaskAuto,
   type AuditEntry,
   type HandoffRule,
   type Layout,
@@ -88,6 +89,7 @@ interface TeamRow {
   color: string;
   context_md: string;
   phase: Team['phase'] | null;
+  task_auto: number;
 }
 
 interface TaskRow {
@@ -96,6 +98,11 @@ interface TaskRow {
   title: string;
   owner_session_id: string | null;
   column: Task['column'];
+  number: number;
+  reject_count: number;
+  needs_user: number;
+  reviewer_session_id: string | null;
+  auto: string | null;
 }
 
 interface RuleRow {
@@ -163,7 +170,19 @@ const toTeam = (r: TeamRow): Team => ({
   color: r.color,
   contextMd: r.context_md,
   ...(r.phase ? { phase: r.phase } : {}),
+  taskAuto: r.task_auto === 1,
 });
+
+/** auto 是 hub 自己寫的 JSON；讀不懂（理論上不會）就當沒有，不能讓整個任務板讀不出來。 */
+function parseTaskAuto(text: string | null): TaskAuto | null {
+  if (text === null) return null;
+  try {
+    const parsed = TaskAuto.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
 
 const toTask = (r: TaskRow): Task => ({
   id: r.id,
@@ -171,6 +190,11 @@ const toTask = (r: TaskRow): Task => ({
   title: r.title,
   ownerSessionId: r.owner_session_id,
   column: r.column,
+  number: r.number,
+  rejectCount: r.reject_count,
+  needsUser: r.needs_user === 1,
+  reviewerSessionId: r.reviewer_session_id,
+  auto: parseTaskAuto(r.auto),
 });
 
 const toRule = (r: RuleRow): HandoffRule => ({
@@ -760,12 +784,12 @@ export class Store {
   upsertTeam(t: Team): void {
     this.db
       .prepare(
-        `INSERT INTO teams (id, name, goal, done_criteria, color, context_md, phase)
-         VALUES (@id, @name, @goal, @doneCriteria, @color, @contextMd, @phase)
+        `INSERT INTO teams (id, name, goal, done_criteria, color, context_md, phase, task_auto)
+         VALUES (@id, @name, @goal, @doneCriteria, @color, @contextMd, @phase, @taskAuto)
          ON CONFLICT (id) DO UPDATE SET name = @name, goal = @goal, done_criteria = @doneCriteria,
-           color = @color, context_md = @contextMd, phase = @phase`,
+           color = @color, context_md = @contextMd, phase = @phase, task_auto = @taskAuto`,
       )
-      .run({ ...t, phase: t.phase ?? null });
+      .run({ ...t, phase: t.phase ?? null, taskAuto: t.taskAuto ? 1 : 0 });
   }
 
   deleteTeam(id: string): boolean {
@@ -815,15 +839,35 @@ export class Store {
     return row ? toTask(row) : null;
   }
 
+  /** 取用團隊的下一個任務編號：刪掉的編號不再使用，免得舊的完成標記對到新任務。 */
+  takeTaskNumber(teamId: string): number {
+    const row = this.db
+      .prepare(
+        `UPDATE teams SET task_seq = MAX(task_seq,
+           (SELECT COALESCE(MAX(number), 0) FROM tasks WHERE team_id = @teamId)) + 1
+         WHERE id = @teamId RETURNING task_seq AS n`,
+      )
+      .get({ teamId }) as { n: number } | undefined;
+    if (!row) throw new Error(`unknown team ${teamId}`);
+    return row.n;
+  }
+
   upsertTask(t: Task): void {
     this.db
       .prepare(
-        `INSERT INTO tasks (id, team_id, title, owner_session_id, "column")
-         VALUES (@id, @teamId, @title, @ownerSessionId, @column)
+        `INSERT INTO tasks (id, team_id, title, owner_session_id, "column", number, reject_count,
+           needs_user, reviewer_session_id, auto)
+         VALUES (@id, @teamId, @title, @ownerSessionId, @column, @number, @rejectCount,
+           @needsUser, @reviewerSessionId, @auto)
          ON CONFLICT (id) DO UPDATE SET title = @title, owner_session_id = @ownerSessionId,
-           "column" = @column`,
+           "column" = @column, reject_count = @rejectCount, needs_user = @needsUser,
+           reviewer_session_id = @reviewerSessionId, auto = @auto`,
       )
-      .run(t);
+      .run({
+        ...t,
+        needsUser: t.needsUser ? 1 : 0,
+        auto: t.auto === null ? null : JSON.stringify(t.auto),
+      });
   }
 
   deleteTask(id: string): boolean {
