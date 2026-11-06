@@ -23,6 +23,8 @@ const PersistedState = z.object({
   /** 上次 hub.welcome 下發的值，hub 連不上時危險指令比對仍照這份。 */
   dangerRules: z.array(z.string()).nullable(),
   stuckMinutes: z.number().int().positive().nullable(),
+  /** 上次 hub.welcome 的 `dispatch`：daemon 重啟、hub 還沒連上時接回的 session 要不要掛派工工具。 */
+  dispatch: z.boolean().default(false),
   sessions: z.array(PersistedSession),
   /** 已結束但結果還沒送到 hub 的 session。hello 只列活著的，hub 只能靠這個知道結果。 */
   endedRuntimes: z.array(SessionRuntime).default([]),
@@ -35,6 +37,7 @@ export class SessionStore {
     version: 1,
     dangerRules: null,
     stuckMinutes: null,
+    dispatch: false,
     sessions: [],
     endedRuntimes: [],
   };
@@ -85,9 +88,14 @@ export class SessionStore {
     return this.state.stuckMinutes;
   }
 
-  setHubSettings(dangerRules: string[], stuckMinutes: number): void {
+  get dispatch(): boolean {
+    return this.state.dispatch;
+  }
+
+  setHubSettings(dangerRules: string[], stuckMinutes: number, dispatch: boolean): void {
     this.state.dangerRules = dangerRules;
     this.state.stuckMinutes = stuckMinutes;
+    this.state.dispatch = dispatch;
     this.save();
   }
 

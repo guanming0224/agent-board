@@ -19,6 +19,21 @@ function useBundledHook(): void {
   if (existsSync(bundled)) process.env.AGENT_BOARD_HOOK_BIN = bundled;
 }
 
+/**
+ * 派工 MCP server（CONTRACTS §11）：發布檔裡和 daemon 打包在一起（dist/agent-board-mcp.mjs）；
+ * 開發時直接用 hook 套件的原始碼（node 原生 type stripping，同 agent-board-hook）。
+ */
+function useBundledMcpServer(): void {
+  if (process.env.AGENT_BOARD_MCP_SERVER) return;
+  for (const candidate of ['./agent-board-mcp.mjs', '../../hook/src/mcp.ts']) {
+    const path = fileURLToPath(new URL(candidate, import.meta.url));
+    if (existsSync(path)) {
+      process.env.AGENT_BOARD_MCP_SERVER = path;
+      return;
+    }
+  }
+}
+
 async function pair(argv: string[]): Promise<void> {
   const { hub, code } = parsePairArgs(argv);
   const { machineId, path } = await pairMachine({
@@ -45,6 +60,7 @@ async function main(): Promise<void> {
     );
   }
   useBundledHook();
+  useBundledMcpServer();
   const config = loadConfig();
   // 讀完就清掉，git hook、nvidia-smi 等所有子程序才不會繼承到 token。
   delete process.env.AGENT_BOARD_MACHINE_TOKEN;

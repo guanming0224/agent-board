@@ -267,11 +267,12 @@ describe('SessionStore', () => {
     store.upsert(entry('b'));
     store.patch('a', { claudeSessionId: 'new' });
     store.remove('b');
-    store.setHubSettings(['x'], 3);
+    store.setHubSettings(['x'], 3, true);
     const reloaded = new SessionStore(dir);
     expect(reloaded.sessions.map((s) => [s.sessionId, s.claudeSessionId])).toEqual([['a', 'new']]);
     expect(reloaded.dangerRules).toEqual(['x']);
     expect(reloaded.stuckMinutes).toBe(3);
+    expect(reloaded.dispatch).toBe(true);
     expect(readdirSync(dir)).toEqual(['sessions.json']);
   });
 

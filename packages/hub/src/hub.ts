@@ -39,6 +39,7 @@ import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from '.
 import { AutoContinueEngine } from './autoContinue';
 import { conflict, HttpError, notFound } from './errors';
 import { SafeDelivery } from './delivery';
+import { DispatchEngine } from './dispatch';
 import { HandoffEngine } from './handoff';
 import {
   attentionPayload,
@@ -264,6 +265,8 @@ export class Hub {
   private readonly handoff: HandoffEngine;
   private readonly tasks: TaskEngine;
   private readonly autoContinue: AutoContinueEngine;
+  /** session 派工（MCP 工具，CONTRACTS §11）。 */
+  private readonly dispatch: DispatchEngine;
   /** 合併通知（Settings.notifications.coalesce）：哪時候送；送什麼在 flushSummary 決定。 */
   private readonly coalescer: NotifyCoalescer;
   /** 同時等你的上限：每次跨過只通知一次，回到上限以內才重設。 */
@@ -356,6 +359,16 @@ export class Hub {
       inputReady: (sessionId) => this.inputReady.get(sessionId) === true,
       sent: (session) => this.notifyAutoContinued(session),
       guarded: (label, fn) => this.guarded(label, fn),
+    });
+    this.dispatch = new DispatchEngine({
+      store: deps.store,
+      now: deps.now,
+      delivery: this.delivery,
+      audit: (sessionId, action, detail) => this.audit(null, sessionId, action, detail),
+      addEvent: (sessionId, type, payload, at) => this.addEvent(sessionId, type, payload, at),
+      enabled: () => this.store.getSettings().dispatch,
+      createSession: (input, dispatchedBy) => this.createSessionAs(input, null, dispatchedBy),
+      machineOnline: (machineId) => this.daemonFor(machineId) !== null,
     });
     this.coalescer = new NotifyCoalescer({
       now: () => deps.now().getTime(),
@@ -488,13 +501,17 @@ export class Hub {
         return;
       }
       case 'session.event':
-        // handoff.*、task.* 只能由 hub 自己寫（引擎讀它當分界，畫布拿它畫動畫），daemon 送來的不收。
-        if (msg.event.type.startsWith('handoff.') || msg.event.type.startsWith('task.')) return;
+        // handoff.*、task.*、dispatch.* 只能由 hub 自己寫（引擎讀它當分界，畫布拿它畫動畫），daemon 送來的不收。
+        if (/^(handoff|task|dispatch)\./.test(msg.event.type)) return;
         if (this.ownsSession(conn, msg.event.sessionId) && this.store.insertEvent(msg.event)) {
           this.broadcast({ type: 'session.event', event: msg.event });
           this.guarded('handoff', () => this.handoff.onEvent(msg.event));
           this.guarded('tasks', () => this.tasks.onEvent(msg.event));
+          this.guarded('dispatch', () => this.dispatch.onEvent(msg.event));
         }
+        return;
+      case 'dispatch.request':
+        this.onDispatchRequest(conn, msg);
         return;
       case 'terminal.output':
         if (this.ownsSession(conn, msg.sessionId)) {
@@ -534,6 +551,28 @@ export class Hub {
         this.onDaemonReply(conn, msg);
         return;
     }
+  }
+
+  /**
+   * 派工工具（CONTRACTS §11）：daemon 已用 session 的密鑰確認是它本人；這裡再確認 session 在這台機器上，
+   * 能做什麼由 DispatchEngine 依團隊判斷。結果原樣回給 daemon，再交給 Claude。
+   */
+  private onDispatchRequest(
+    conn: DaemonConn,
+    msg: Extract<DaemonToHub, { type: 'dispatch.request' }>,
+  ): void {
+    let reply: { ok: boolean; text: string };
+    if (!this.store.getSession(msg.sessionId) || !this.ownsSession(conn, msg.sessionId)) {
+      reply = { ok: false, text: 'caller_inactive: This session is not known to Agent Board.' };
+    } else {
+      try {
+        reply = this.dispatch.handle(msg.sessionId, msg.tool, msg.args);
+      } catch (error) {
+        this.log.error({ err: error, tool: msg.tool }, 'dispatch failed');
+        reply = { ok: false, text: 'internal_error: Agent Board could not complete this request.' };
+      }
+    }
+    this.send(conn.ws, { type: 'dispatch.reply', requestId: msg.requestId, ...reply });
   }
 
   /** daemon 只能碰自己機器上的 session；別台機器的 id 視同不存在。 */
@@ -613,6 +652,7 @@ export class Hub {
       machineId,
       dangerRules: settings.dangerRules,
       stuckMinutes: settings.stuckMinutes,
+      dispatch: settings.dispatch,
     };
   }
 
@@ -748,6 +788,8 @@ export class Hub {
         }
         // 使用者打了任何字：這次限流的自動接續取消（不能把我們的字接在他的字後面）。
         this.guarded('auto continue', () => this.autoContinue.onUserInput(msg.sessionId));
+        // 在終端機裡按 Esc／Ctrl+C 中斷回合：派工成員手上的工作不會有 Stop，清掉（CONTRACTS §11）。
+        if (msg.data === '\x1b' || msg.data === '\x03') this.interrupted(session);
         this.toSessionDaemon(msg.sessionId, msg);
         return;
       case 'terminal.resize': {
@@ -771,11 +813,18 @@ export class Hub {
       case 'terminal.signal':
         client.inputs.get(msg.sessionId)?.clear();
         if (msg.signal === 'terminate') this.handoff.onUserStop(msg.sessionId);
+        else this.interrupted(session);
         this.guarded('auto continue', () => this.autoContinue.onUserInput(msg.sessionId));
         this.audit(client.userId, msg.sessionId, 'terminal.signal', msg.signal);
         this.toSessionDaemon(msg.sessionId, msg);
         return;
     }
+  }
+
+  /** 只有回合進行中（會被中斷）才算；等輸入時按 Esc 只是關選單。 */
+  private interrupted(session: Session): void {
+    if (!['running', 'stuck', 'waiting_permission'].includes(session.status)) return;
+    this.guarded('dispatch', () => this.dispatch.onInterrupt(session.id));
   }
 
   private auditInput(client: ClientConn, sessionId: string, data: string): void {
@@ -937,6 +986,15 @@ export class Hub {
 
   // ── Session 生命週期 ─────────────────────────────────
   createSession(input: SessionSpec & { machineId: string }, user: User): Session {
+    return this.createSessionAs(input, user.id, null);
+  }
+
+  /** userId 為 null：派工工具開的（系統動作，dispatchedBy 是呼叫者）。 */
+  private createSessionAs(
+    input: SessionSpec & { machineId: string },
+    userId: string | null,
+    dispatchedBy: string | null,
+  ): Session {
     const { machineId, ...spec } = input;
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     if (!this.daemonFor(machineId)) throw conflict('machine_offline', 'Machine is offline');
@@ -969,6 +1027,7 @@ export class Hub {
       archivedAt: null,
       readOnly: spec.readOnly,
       autoContinue: null,
+      dispatchedBy,
     };
     const blocked = this.queueReason(session);
     if (blocked !== undefined) {
@@ -978,7 +1037,7 @@ export class Hub {
     this.store.db.transaction(() => {
       this.store.insertSession(session, spec);
       this.audit(
-        user.id,
+        userId,
         session.id,
         'session.create',
         JSON.stringify({
@@ -989,11 +1048,12 @@ export class Hub {
           model: spec.model,
           useWorktree: spec.useWorktree,
           readOnly: spec.readOnly,
+          ...(dispatchedBy ? { dispatchedBy } : {}),
         }),
       );
       // firstPrompt 也是送入終端機的輸入。
       if (spec.firstPrompt !== null) {
-        this.audit(user.id, session.id, 'terminal.input', spec.firstPrompt);
+        this.audit(userId, session.id, 'terminal.input', spec.firstPrompt);
       }
     })();
     this.broadcast({ type: 'session.updated', session });
@@ -1355,6 +1415,7 @@ export class Hub {
     this.guarded('delivery', () => this.delivery.onSessionChange(prev, next));
     this.guarded('handoff', () => this.handoff.onSessionChange(prev, next, mayNotify && entered));
     this.guarded('auto continue', () => this.autoContinue.onSessionChange(prev, next));
+    this.guarded('dispatch', () => this.dispatch.onSessionChange(prev, next));
     if (next.endedAt !== null || next.archived) {
       this.roundLimits.delete(next.id);
       this.inputReady.delete(next.id);
@@ -1844,6 +1905,7 @@ export class Hub {
   onSettingsChanged(prev: Settings, next: Settings): void {
     const changed =
       prev.stuckMinutes !== next.stuckMinutes ||
+      prev.dispatch !== next.dispatch ||
       JSON.stringify(prev.dangerRules) !== JSON.stringify(next.dangerRules);
     if (changed) {
       for (const conn of this.daemons.values()) {

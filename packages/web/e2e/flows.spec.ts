@@ -49,6 +49,7 @@ const session = (over: Partial<Session> & Pick<Session, 'id' | 'name' | 'machine
   archivedAt: null,
   readOnly: false,
   autoContinue: null,
+  dispatchedBy: null,
   ...over,
 });
 

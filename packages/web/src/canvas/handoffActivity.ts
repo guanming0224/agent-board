@@ -46,7 +46,8 @@ export function useHandoffEvents(backend: BoardBackend) {
     if (!backend.watchEvents) return;
     const { record } = useHandoffActivity.getState();
     return backend.watchEvents((event) => {
-      if (event.type.startsWith('handoff.')) record(event);
+      // 派工（CONTRACTS §11）的送出與結果也畫在同一條線上。
+      if (event.type.startsWith('handoff.') || event.type.startsWith('dispatch.')) record(event);
     });
   }, [backend]);
 }

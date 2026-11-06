@@ -418,7 +418,14 @@ describe('listening address', () => {
 });
 
 /** 退回 v6 的樣子：拿掉 v7 加的欄位（額度恢復後自動接續）。 */
+/** 退回 v7 的樣子：拿掉 v8 加的欄位（session 派工）。 */
+const dropV8 = (db: ReturnType<typeof openDatabase>) => {
+  db.exec('ALTER TABLE sessions DROP COLUMN dispatched_by');
+  db.exec('ALTER TABLE sessions DROP COLUMN dispatch_work');
+};
+
 const dropV7 = (db: ReturnType<typeof openDatabase>) => {
+  dropV8(db);
   db.exec('ALTER TABLE sessions DROP COLUMN auto_continue');
 };
 
@@ -609,8 +616,7 @@ describe('database', () => {
     `);
     first.close();
     const db = openDatabase(path);
-    expect(SCHEMA_VERSION).toBe(7);
-    expect(db.pragma('user_version', { simple: true })).toBe(7);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     const store = new Store(db, '127.0.0.1');
     const old = store.getSession('s1')!;
     expect(old.autoContinue).toBeNull();
@@ -629,6 +635,37 @@ describe('database', () => {
     // 壞掉的 JSON 當成沒排過，不讓 session 讀不出來。
     again.prepare("UPDATE sessions SET auto_continue = '{oops' WHERE id = 's1'").run();
     expect(new Store(again, '127.0.0.1').getSession('s1')?.autoContinue).toBeNull();
+    again.close();
+  });
+
+  it('v8 adds session dispatch columns: old sessions were not dispatched and owe no result', async () => {
+    hub = await startHub();
+    const path = join(hub.dir, 'v7.db');
+    const first = openDatabase(path);
+    dropV8(first);
+    first.pragma('user_version = 7');
+    first.exec(`
+      INSERT INTO machines (id, name, os, token_hash, capabilities) VALUES ('m', 'm', 'darwin', 'h', '{}');
+      INSERT INTO sessions (id, machine_id, name, cwd, permission_mode, status, status_since, created_at)
+        VALUES ('s1', 'm', 'a', '/r', 'default', 'waiting_input', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    `);
+    first.close();
+    const db = openDatabase(path);
+    expect(SCHEMA_VERSION).toBe(8);
+    expect(db.pragma('user_version', { simple: true })).toBe(8);
+    const store = new Store(db, '127.0.0.1');
+    const old = store.getSession('s1')!;
+    expect(old.dispatchedBy).toBeNull();
+    expect(Session.parse(old)).toEqual(old);
+    expect(store.dispatchWork('s1')).toBeNull();
+    const work = { from: 'caller', workId: 'w1', kind: 'send' as const, at: '2026-01-01T00:00:00.000Z' };
+    store.setDispatchWork('s1', work);
+    db.close();
+    const again = openDatabase(path);
+    expect(new Store(again, '127.0.0.1').dispatchWork('s1')).toEqual(work);
+    // 壞掉的 JSON 當成沒有工作，不讓 session 讀不出來。
+    again.prepare("UPDATE sessions SET dispatch_work = '{oops' WHERE id = 's1'").run();
+    expect(new Store(again, '127.0.0.1').dispatchWork('s1')).toBeNull();
     again.close();
   });
 

@@ -57,6 +57,14 @@ const KIND_OF: Record<string, HandoffKind> = {
   // 任務自動執行的送審（負責人 → 審查）與退回（審查 → 負責人）也走同一條線；
   // 直接送給負責人的新任務沒有來源成員，不畫。
   'task.delivered': 'delivered',
+  // session 派工（CONTRACTS §11）：spawn／delivered 記在成員、send 記在呼叫者；
+  // 結果 result 記在成員（成員 → 呼叫者排入）、result_delivered 記在呼叫者。
+  'dispatch.spawn': 'delivered',
+  'dispatch.send': 'fired',
+  'dispatch.delivered': 'delivered',
+  'dispatch.result': 'fired',
+  'dispatch.result_delivered': 'delivered',
+  'dispatch.blocked': 'blocked',
 };
 
 /** 送出（排入或送達）比擋下重要。 */

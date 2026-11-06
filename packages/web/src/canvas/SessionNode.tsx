@@ -25,6 +25,7 @@ import {
   Lamp,
   ModeChip,
   ReadOnlyChip,
+  DispatchedByChip,
   useViewsUi,
 } from '../views';
 import { CardMenu, MenuButton, RenameInput } from './CardMenu';
@@ -144,6 +145,7 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
         <Callsign session={session} />
         <ModeChip mode={session.permissionMode} />
         <ReadOnlyChip session={session} />
+        <DispatchedByChip session={session} />
         <AutoContinueNote session={session} />
       </div>
     </>

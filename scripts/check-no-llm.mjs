@@ -72,6 +72,8 @@ const CALL_SITES = new Set([
   'packages/daemon/src/hookServer.ts node-network',
   // hook：只連 daemon 的本機 socket
   'packages/hook/src/cli.ts node-network',
+  // 派工 MCP server：只連 daemon 的本機 socket，把 Claude 的工具呼叫原樣轉過去（2026-11-06 審查）
+  'packages/hook/src/mcp.ts node-network',
   // hub：推播、交接規則、IP 判斷
   'packages/hub/src/push.ts web-push',
   'packages/hub/src/hub.ts terminal-input',
@@ -104,6 +106,10 @@ const CLAUDE_FLAGS = new Set([
   '--disallowedTools',
   '--model',
   '--name',
+  // 派工工具（2026-11-06 審查）：掛 daemon 產生的 MCP 設定檔（本機 MCP server，只連 daemon 的 socket），
+  // 並事先允許那四個工具；不加 --strict-mcp-config，也不放寬其他工具。仍是互動模式。
+  '--mcp-config',
+  '--allowedTools',
   '--version',
 ]);
 

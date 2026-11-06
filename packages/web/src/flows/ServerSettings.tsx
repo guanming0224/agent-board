@@ -2,6 +2,7 @@
 // 草稿放在設定頁這一層，切換分類不會不見；選單用 dirtyCategories 標出哪些分類還沒存。
 import { useEffect, useState } from 'react';
 import {
+  DISPATCH_SPAWN_LIMIT,
   NOTIFY_MAX_WINDOW_MS,
   NOTIFY_PERMISSION_WINDOW_MS,
   NOTIFY_WINDOW_MS,
@@ -505,6 +506,32 @@ export function AutoContinueSection({ form }: { form: ServerSettingsForm }) {
           <span className="chip cost">◈ {t('flows.autoContinue.cost')}</span>
         </label>
         <p className="hint">{t('flows.autoContinue.hint')}</p>
+      </div>
+    </Section>
+  );
+}
+
+/**
+ * 允許 session 派工（MCP 工具，CONTRACTS §11）：預設開。工具本身不花額度，但開成員會開新的 session，所以標 ◈。
+ * 關掉後新開或接續的 session 不掛工具。
+ */
+export function DispatchSection({ form }: { form: ServerSettingsForm }) {
+  const t = useT();
+  const { draft, patch } = form;
+  return (
+    <Section id="dispatch" title={t('flows.settings.dispatch')} dirty={form.isDirty('dispatch')}>
+      <div className="field">
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="dispatch-toggle"
+            checked={draft.dispatch}
+            onChange={(e) => patch({ dispatch: e.target.checked })}
+          />
+          {t('flows.dispatch.label')}
+          <span className="chip cost">◈ {t('flows.autoContinue.cost')}</span>
+        </label>
+        <p className="hint">{t('flows.dispatch.hint', { limit: DISPATCH_SPAWN_LIMIT })}</p>
       </div>
     </Section>
   );

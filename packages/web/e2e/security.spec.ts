@@ -49,6 +49,7 @@ const session = (over: Partial<Session>): Session => ({
   archivedAt: null,
   readOnly: false,
   autoContinue: null,
+  dispatchedBy: null,
   ...over,
 });
 

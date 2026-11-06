@@ -13,6 +13,11 @@ export interface DaemonConfig {
   machineName: string;
   /** 預設帳號的 CLAUDE_CONFIG_DIR，用量統計會讀。 */
   claudeConfigDir: string;
+  /**
+   * 派工 MCP server 程式（CONTRACTS §11），用 daemon 自己的 node 跑。null：找不到，不掛派工工具。
+   * 環境變數 AGENT_BOARD_MCP_SERVER 優先；入口程式會補上隨附的那支。
+   */
+  mcpServer?: string | null;
 }
 
 /** 接受 http(s) 或 ws(s)；沒寫路徑就補上 /ws/daemon。 */
@@ -60,5 +65,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     hookBin: env.AGENT_BOARD_HOOK_BIN || HOOK_COMMAND,
     machineName: env.AGENT_BOARD_MACHINE_NAME || hostname(),
     claudeConfigDir: env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
+    mcpServer: env.AGENT_BOARD_MCP_SERVER || null,
   };
 }

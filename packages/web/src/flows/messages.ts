@@ -208,6 +208,10 @@ export const zhTW: Record<string, string> = {
   'flows.autoContinue.cost': '耗額度',
   'flows.autoContinue.hint':
     'session 因額度用完停下、而且畫面上寫了重置時間時，在重置後 1 分鐘送一行固定的「[Auto] … Continue where you left off.」（只在它等你輸入、沒有對話框時送，同一次只送一次）。期間你打了任何字、它自己動起來或設定關掉就取消；不知道重置時間就不送，留給你處理。會花額度，預設關。',
+  'flows.settings.dispatch': '允許 session 派工（MCP 工具）',
+  'flows.dispatch.label': '允許 session 派工（MCP 工具）',
+  'flows.dispatch.hint':
+    '開著時，新開或接續的 session 會掛上 Agent Board 的 MCP 工具：裡面的 Claude 可以自己在同一個專案開成員（寫檔的各自 worktree、研究與審查唯讀）、送工作給成員，成員做完一回合後結果（一句摘要、改過的檔案、分支）會自動送回給它。工具本身不花額度，但開成員就是開新的 session；每個 session 最多同時 {limit} 個成員，權限不會比它寬。關掉後新開的 session 不掛工具，已經掛著的呼叫一律被拒絕。預設開。',
   'flows.settings.language': '語言',
   'flows.settings.unsaved': '未存檔',
   'flows.settings.unsavedCount': '{n} 項未存檔',
@@ -840,6 +844,10 @@ export const en: Record<string, string> = {
   'flows.autoContinue.cost': 'Uses quota',
   'flows.autoContinue.hint':
     'When a session stops at the usage limit and the screen shows the reset time, one fixed line ("[Auto] … Continue where you left off.") is sent a minute after the reset — only while it is waiting for input with no dialog open, and only once per stop. Typing anything, the session moving on by itself, or turning this off cancels it. Without a known reset time nothing is sent. Uses quota; off by default.',
+  'flows.settings.dispatch': 'Allow sessions to dispatch work (MCP tools)',
+  'flows.dispatch.label': 'Allow sessions to dispatch work (MCP tools)',
+  'flows.dispatch.hint':
+    'When on, new and resumed sessions get the Agent Board MCP tools: the Claude inside can start members in the same project (writers get their own worktree; researchers and reviewers are read-only), send them work, and get each result (one-sentence summary, edited files, branch) typed back automatically when the member finishes its turn. The tools themselves use no quota, but starting a member starts a new session. Each session can have at most {limit} live members, never with wider permissions than its own. When off, new sessions get no tools and calls from sessions that already have them are refused. On by default.',
   'flows.settings.language': 'Language',
   'flows.settings.unsaved': 'Unsaved',
   'flows.settings.unsavedCount': '{n} unsaved',
