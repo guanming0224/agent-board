@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HandoffRule, routes, Task, type RouteName } from '@agent-board/protocol';
+import { HandoffRule, routes, Session, Task, type RouteName } from '@agent-board/protocol';
 import { assertBindableHost, loadEnvConfig, UnsafeBindError } from '../config';
 import { openDatabase, SCHEMA_VERSION } from '../db';
 import { createHub } from '../server';
@@ -417,8 +417,14 @@ describe('listening address', () => {
   });
 });
 
-/** 退回 v5 的樣子：拿掉 v6 加的欄位（任務自動執行）。 */
+/** 退回 v6 的樣子：拿掉 v7 加的欄位（額度恢復後自動接續）。 */
+const dropV7 = (db: ReturnType<typeof openDatabase>) => {
+  db.exec('ALTER TABLE sessions DROP COLUMN auto_continue');
+};
+
+/** 退回 v5 的樣子：拿掉 v6、v7 加的欄位（任務自動執行）。 */
 const dropV6 = (db: ReturnType<typeof openDatabase>) => {
+  dropV7(db);
   for (const column of ['task_auto', 'task_seq'])
     db.exec(`ALTER TABLE teams DROP COLUMN ${column}`);
   for (const column of ['number', 'reject_count', 'needs_user', 'reviewer_session_id', 'auto']) {
@@ -560,8 +566,7 @@ describe('database', () => {
     `);
     first.close();
     const db = openDatabase(path);
-    expect(SCHEMA_VERSION).toBe(6);
-    expect(db.pragma('user_version', { simple: true })).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     const store = new Store(db, '127.0.0.1');
     expect(store.getTeam('t')?.taskAuto).toBe(false);
     expect(store.getTeam('u')).toMatchObject({ phase: 'writing', taskAuto: false });
@@ -589,6 +594,42 @@ describe('database', () => {
     store.deleteTask('c');
     expect(store.takeTaskNumber('t')).toBe(4);
     db.close();
+  });
+
+  it('v7 adds sessions.auto_continue: old sessions load with nothing scheduled, a schedule survives a reopen', async () => {
+    hub = await startHub();
+    const path = join(hub.dir, 'v6.db');
+    const first = openDatabase(path);
+    dropV7(first);
+    first.pragma('user_version = 6');
+    first.exec(`
+      INSERT INTO machines (id, name, os, token_hash, capabilities) VALUES ('m', 'm', 'darwin', 'h', '{}');
+      INSERT INTO sessions (id, machine_id, name, cwd, permission_mode, status, status_since, created_at)
+        VALUES ('s1', 'm', 'a', '/r', 'default', 'rate_limited', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    `);
+    first.close();
+    const db = openDatabase(path);
+    expect(SCHEMA_VERSION).toBe(7);
+    expect(db.pragma('user_version', { simple: true })).toBe(7);
+    const store = new Store(db, '127.0.0.1');
+    const old = store.getSession('s1')!;
+    expect(old.autoContinue).toBeNull();
+    expect(Session.parse(old)).toEqual(old);
+    const scheduled = {
+      state: 'scheduled' as const,
+      at: '2026-01-01T15:01:00.000Z',
+      resetAt: '2026-01-01T15:00:00.000Z',
+      limitSince: '2026-01-01T00:00:00.000Z',
+      reason: null,
+    };
+    store.updateSession({ ...old, autoContinue: scheduled });
+    db.close();
+    const again = openDatabase(path);
+    expect(new Store(again, '127.0.0.1').getSession('s1')?.autoContinue).toEqual(scheduled);
+    // 壞掉的 JSON 當成沒排過，不讓 session 讀不出來。
+    again.prepare("UPDATE sessions SET auto_continue = '{oops' WHERE id = 's1'").run();
+    expect(new Store(again, '127.0.0.1').getSession('s1')?.autoContinue).toBeNull();
+    again.close();
   });
 
   it('refuses a database from a newer version', async () => {
@@ -827,7 +868,13 @@ describe('CRUD', () => {
     const initial = (await hub.api('GET', '/api/settings', { cookie })).body;
     expect(initial.publicOrigin).toBeNull();
     expect(initial.dangerRules).toContain('git push --force');
-    expect(initial.notifications).toEqual({ enabled: true, quietHours: null });
+    expect(initial.notifications).toEqual({
+      enabled: true,
+      quietHours: null,
+      coalesce: true,
+      waitingLimit: 3,
+    });
+    expect(initial.autoContinue).toBe(false);
     const updated = await hub.api('PATCH', '/api/settings', {
       cookie,
       body: { stuckMinutes: 5, publicOrigin: 'https://x.example/path' },
@@ -840,6 +887,22 @@ describe('CRUD', () => {
       body: { notifications: { enabled: true, quietHours: { start: '25:00', end: '07:00' } } },
     });
     expect(quiet.status).toBe(400);
+    for (const waitingLimit of [0, 21, 2.5]) {
+      const bad = await hub.api('PATCH', '/api/settings', {
+        cookie,
+        body: { notifications: { enabled: true, quietHours: null, waitingLimit } },
+      });
+      expect(bad.status, String(waitingLimit)).toBe(400);
+    }
+    const limits = await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: {
+        notifications: { enabled: true, quietHours: null, coalesce: false, waitingLimit: 20 },
+        autoContinue: true,
+      },
+    });
+    expect(limits.body.notifications).toMatchObject({ coalesce: false, waitingLimit: 20 });
+    expect(limits.body.autoContinue).toBe(true);
     const scheme = await hub.api('PATCH', '/api/settings', {
       cookie,
       body: { publicOrigin: 'javascript:alert(1)' },

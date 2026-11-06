@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig, normalizeHubUrl } from './config';
 import { listDirectory, makeDirectory } from './fsList';
 import { parseNvidiaSmi, ResourceMonitor } from './resources';
-import { buildClaudeArgs, screenFingerprint, withoutPromptBox } from './session';
+import { buildClaudeArgs, inputBoxVisible, screenFingerprint, withoutPromptBox } from './session';
 import { SessionStore, type PersistedSession } from './store';
 import { makeTempDir, waitUntil } from './test-support/harness';
 import { summarizeUsage } from './usage';
@@ -89,6 +89,39 @@ describe('withoutPromptBox', () => {
 
   it('一般程式輸出原樣回傳', () => {
     expect(withoutPromptBox(['a', 'b'])).toEqual(['a', 'b']);
+  });
+});
+
+describe('inputBoxVisible（自動接續只在平常的輸入框出現時送）', () => {
+  const box = ['────────────── real ─', '❯ ', '──────', '  ⏵⏵ manual mode on'];
+
+  it('輸入框在最下面', () => {
+    expect(inputBoxVisible(['⏺ You have hit your limit', '', ...box, '', ''])).toBe(true);
+    expect(inputBoxVisible(['⏺ x', '───', '❯'])).toBe(true);
+  });
+
+  it('對話框（權限、額度選單）蓋住時不算', () => {
+    expect(
+      inputBoxVisible([
+        'What do you want to do?',
+        '',
+        '❯ 1. Wait here, then continue automatically at 3pm',
+        '  2. Upgrade your plan',
+        'Enter to confirm · Esc to cancel',
+      ]),
+    ).toBe(false);
+    // 選項上面剛好是一條橫線也不算。
+    expect(
+      inputBoxVisible(['────────', '❯ 1. Stop and wait for limit to reset', '  2. Upgrade']),
+    ).toBe(false);
+  });
+
+  it('輸入框離底下太遠（舊畫面）或沒有橫線都不算', () => {
+    expect(inputBoxVisible([...box, ...Array.from({ length: 10 }, (_, i) => `output ${i}`)])).toBe(
+      false,
+    );
+    expect(inputBoxVisible(['some text', '❯ '])).toBe(false);
+    expect(inputBoxVisible([])).toBe(false);
   });
 });
 

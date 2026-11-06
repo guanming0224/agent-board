@@ -7,10 +7,13 @@ import {
   DaemonToHub,
   needsAttention,
   QUEUE_DETAIL_RATE_LIMITED,
+  WaitingThreshold,
+  waitingSessions,
   AbsolutePath,
   ClaudeSessionId,
   SessionSpec,
   type Approval,
+  type AutoContinue,
   type DirEntry,
   type PurgeOptions,
   type PurgeResult,
@@ -31,7 +34,9 @@ import {
   type User,
 } from '@agent-board/protocol';
 import type { z } from 'zod';
+import { buildSummary, DEFAULT_WINDOWS, NotifyCoalescer, type SummaryItem } from './attention';
 import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from './audit';
+import { AutoContinueEngine } from './autoContinue';
 import { conflict, HttpError, notFound } from './errors';
 import { SafeDelivery } from './delivery';
 import { HandoffEngine } from './handoff';
@@ -66,6 +71,10 @@ export interface Timing {
   deleteLockMaxMs: number;
   /** 送進 TUI 的文字和 Enter 之間的間隔，太短會被當成貼上。 */
   handoffEnterDelayMs: number;
+  /** 合併通知的等待時間（protocol NOTIFY_*；測試縮短）。 */
+  notifyWindowMs: number;
+  notifyPermissionWindowMs: number;
+  notifyMaxWindowMs: number;
 }
 
 export const DEFAULT_TIMING: Timing = {
@@ -82,6 +91,9 @@ export const DEFAULT_TIMING: Timing = {
   sessionFilesTimeoutMs: 20_000,
   deleteLockMaxMs: 5 * 60_000,
   handoffEnterDelayMs: 100,
+  notifyWindowMs: DEFAULT_WINDOWS.normalMs,
+  notifyPermissionWindowMs: DEFAULT_WINDOWS.urgentMs,
+  notifyMaxWindowMs: DEFAULT_WINDOWS.maxMs,
 };
 
 export const CLOSE_REVOKED = 4401;
@@ -177,6 +189,14 @@ type AccountKey = Pick<Session, 'machineId' | 'accountProfile'>;
 const sameAccount = (a: AccountKey, b: AccountKey): boolean =>
   a.machineId === b.machineId && (a.accountProfile || null) === (b.accountProfile || null);
 
+/** approval 對應的狀態（危險指令命中時 session 常常還是 running）。 */
+const APPROVAL_STATUS: Record<Approval['kind'], SessionStatus> = {
+  permission: 'waiting_permission',
+  danger: 'waiting_permission',
+  plan: 'plan_review',
+  question: 'waiting_input',
+};
+
 /** 重置時間到了之後多等一下再開，時鐘差一點就開會馬上又撞到限流。 */
 const RATE_LIMIT_RESET_GRACE_MS = 60_000;
 
@@ -243,6 +263,23 @@ export class Hub {
   private readonly delivery: SafeDelivery;
   private readonly handoff: HandoffEngine;
   private readonly tasks: TaskEngine;
+  private readonly autoContinue: AutoContinueEngine;
+  /** 合併通知（Settings.notifications.coalesce）：哪時候送；送什麼在 flushSummary 決定。 */
+  private readonly coalescer: NotifyCoalescer;
+  /** 同時等你的上限：每次跨過只通知一次，回到上限以內才重設。 */
+  private readonly waiting = new WaitingThreshold();
+  /** 合併通知等待期間跨過了上限：值是上限。 */
+  private overloadPending: number | null = null;
+  /** 等待期間自動接續的 session（合併通知裡寫「已自動接續」）。 */
+  private autoContinued: { sessionId: string; name: string }[] = [];
+  /** 自動流程停下等使用者決定的 session（合併通知送出時再確認還成不成立）。 */
+  private readonly roundLimits = new Map<string, number>();
+  private readonly taskLimits = new Map<
+    string,
+    { taskId: string; number: number; limit: number }
+  >();
+  /** daemon 最後一次回報：畫面最下面是平常的輸入框（SessionRuntime.inputReady）。不落地。 */
+  private readonly inputReady = new Map<string, boolean>();
   private heartbeat: NodeJS.Timeout | null = null;
   /** 限流帳號的重置時間到時重新排隊（§8-5）。 */
   private resetTimer: NodeJS.Timeout | null = null;
@@ -285,7 +322,10 @@ export class Hub {
       addEvent: (sessionId, type, payload, at) => this.addEvent(sessionId, type, payload, at),
       notifyRoundLimit: (sessionId, maxRounds) => {
         const session = this.store.getSession(sessionId);
-        if (session) this.notifyAttention(session, { reason: 'handoff_round_limit', maxRounds });
+        if (session) {
+          this.roundLimits.set(sessionId, maxRounds);
+          this.notifyAttention(session, { reason: 'handoff_round_limit', maxRounds });
+        }
       },
     });
     this.tasks = new TaskEngine({
@@ -297,6 +337,7 @@ export class Hub {
       notifyLimit: (sessionId, task, limit) => {
         const session = this.store.getSession(sessionId);
         if (session) {
+          this.taskLimits.set(sessionId, { taskId: task.id, number: task.number, limit });
           this.notifyAttention(session, {
             reason: 'task_reject_limit',
             maxRounds: limit,
@@ -305,10 +346,32 @@ export class Hub {
         }
       },
     });
+    this.autoContinue = new AutoContinueEngine({
+      store: deps.store,
+      now: deps.now,
+      delivery: this.delivery,
+      save: (session, autoContinue) => this.saveAutoContinue(session.id, autoContinue),
+      audit: (sessionId, action, detail) => this.audit(null, sessionId, action, detail),
+      addEvent: (sessionId, type, payload) => this.addEvent(sessionId, type, payload),
+      inputReady: (sessionId) => this.inputReady.get(sessionId) === true,
+      sent: (session) => this.notifyAutoContinued(session),
+      guarded: (label, fn) => this.guarded(label, fn),
+    });
+    this.coalescer = new NotifyCoalescer({
+      now: () => deps.now().getTime(),
+      windows: {
+        normalMs: deps.timing.notifyWindowMs,
+        urgentMs: deps.timing.notifyPermissionWindowMs,
+        maxMs: deps.timing.notifyMaxWindowMs,
+      },
+      flush: (triggered) => this.guarded('notify summary', () => this.flushSummary(triggered)),
+    });
     // 送字佇列在記憶體，上次關機時排隊的已經不在：標成沒送出，不自動重送。
     this.tasks.restore();
     // 上次關機時的連線都不在了：機器與 session 先視為離線，等 daemon 回來對帳。
     for (const machine of this.store.listMachines()) this.markMachineOffline(machine.id);
+    // 排好的自動接續存在資料庫：照樣計時（到時候 session 還沒回來就等它回來）。
+    this.autoContinue.restore();
     this.heartbeat = setInterval(
       () => this.guarded('heartbeat', () => this.tick()),
       deps.timing.heartbeatMs,
@@ -620,8 +683,13 @@ export class Hub {
       type: 'board.state',
       machines: this.store.listMachines(),
       sessions: this.store.listSessions(false),
-      approvals: [...this.approvals.values()].map((a) => a.approval),
+      approvals: this.approvalList(),
+      waitingLimit: this.store.getSettings().notifications.waitingLimit,
     };
+  }
+
+  private approvalList(): Approval[] {
+    return [...this.approvals.values()].map((a) => a.approval);
   }
 
   private onClientRaw(client: ClientConn, raw: string, isBinary: boolean): void {
@@ -674,7 +742,12 @@ export class Hub {
       case 'terminal.input':
         // 先寫 audit 再轉送：寫失敗就不送進終端機（例外由外層回 error）。
         this.auditInput(client, msg.sessionId, msg.data);
-        if (/[\r\n]/.test(msg.data)) this.handoff.onUserInput(msg.sessionId);
+        if (/[\r\n]/.test(msg.data)) {
+          this.handoff.onUserInput(msg.sessionId);
+          this.roundLimits.delete(msg.sessionId);
+        }
+        // 使用者打了任何字：這次限流的自動接續取消（不能把我們的字接在他的字後面）。
+        this.guarded('auto continue', () => this.autoContinue.onUserInput(msg.sessionId));
         this.toSessionDaemon(msg.sessionId, msg);
         return;
       case 'terminal.resize': {
@@ -698,6 +771,7 @@ export class Hub {
       case 'terminal.signal':
         client.inputs.get(msg.sessionId)?.clear();
         if (msg.signal === 'terminate') this.handoff.onUserStop(msg.sessionId);
+        this.guarded('auto continue', () => this.autoContinue.onUserInput(msg.sessionId));
         this.audit(client.userId, msg.sessionId, 'terminal.signal', msg.signal);
         this.toSessionDaemon(msg.sessionId, msg);
         return;
@@ -769,6 +843,7 @@ export class Hub {
       toolName: approval.toolName,
     });
     this.broadcast({ type: 'approval.requested', approval });
+    this.checkWaiting(true);
   }
 
   private resolveCachedApproval(
@@ -783,6 +858,7 @@ export class Hub {
     this.audit(null, sessionId, 'approval.resolved', JSON.stringify({ approvalId, by }));
     this.addEvent(sessionId, 'approval.resolved', { approvalId, by });
     this.broadcast({ type: 'approval.resolved', approvalId, sessionId, by });
+    this.checkWaiting(true);
   }
 
   private reconcileApprovals(conn: DaemonConn, pending: Approval[]): void {
@@ -856,6 +932,7 @@ export class Hub {
       sessionId: msg.sessionId,
       by: 'web',
     });
+    this.checkWaiting(true);
   }
 
   // ── Session 生命週期 ─────────────────────────────────
@@ -891,6 +968,7 @@ export class Hub {
       archived: false,
       archivedAt: null,
       readOnly: spec.readOnly,
+      autoContinue: null,
     };
     const blocked = this.queueReason(session);
     if (blocked !== undefined) {
@@ -1194,6 +1272,7 @@ export class Hub {
   private applyRuntime(runtime: SessionRuntime): void {
     const prev = this.store.getSession(runtime.id);
     if (!prev || prev.status === 'queued') return;
+    this.inputReady.set(runtime.id, runtime.inputReady === true);
     const wasOffline = prev.status === 'offline';
     const preOffline = wasOffline ? this.store.preOfflineStatus(runtime.id) : null;
     const exitedCleanly = runtime.status === 'done' && runtime.endedAt !== null;
@@ -1275,6 +1354,18 @@ export class Hub {
     }
     this.guarded('delivery', () => this.delivery.onSessionChange(prev, next));
     this.guarded('handoff', () => this.handoff.onSessionChange(prev, next, mayNotify && entered));
+    this.guarded('auto continue', () => this.autoContinue.onSessionChange(prev, next));
+    if (next.endedAt !== null || next.archived) {
+      this.roundLimits.delete(next.id);
+      this.inputReady.delete(next.id);
+    }
+    if (
+      prev.status !== next.status ||
+      prev.statusDetail !== next.statusDetail ||
+      prev.archived !== next.archived
+    ) {
+      this.checkWaiting(mayNotify);
+    }
     // 離開限流（例如重置後繼續工作）也可能放出同帳號排隊中的 session（§8-5）；
     // 進入限流或重置時間變了，要重排計時器。
     const limitChanged =
@@ -1760,20 +1851,138 @@ export class Hub {
       }
     }
     this.drainQueue();
+    // 改成不合併：手上這批馬上送，不丟。
+    if (prev.notifications.coalesce && !next.notifications.coalesce) this.coalescer.flushNow();
+    if (prev.notifications.waitingLimit !== next.notifications.waitingLimit) {
+      this.broadcast({ type: 'board.waitingLimit', waitingLimit: next.notifications.waitingLimit });
+      this.checkWaiting(true);
+    }
+    this.guarded('auto continue', () =>
+      this.autoContinue.onSettingsChanged(prev.autoContinue, next.autoContinue),
+    );
+  }
+
+  private saveAutoContinue(sessionId: string, autoContinue: AutoContinue | null): void {
+    const current = this.store.getSession(sessionId);
+    if (current) this.updateFields(current, { autoContinue });
   }
 
   // ── 推播 ─────────────────────────────────────────────
-  /** 狀態需要人（等你回覆等）時推播；`extra` 是同一條路的其他原因，例如雙向交接到了輪數上限。 */
+  /** 推播開著、不在勿擾時段。 */
+  private pushAllowed(settings: Settings): boolean {
+    return (
+      settings.notifications.enabled &&
+      !inQuietHours(settings.notifications.quietHours, this.deps.now())
+    );
+  }
+
+  /**
+   * 狀態需要人（等你回覆等）時推播；`extra` 是同一條路的其他原因，例如雙向交接到了輪數上限。
+   * 合併通知開著時只記下來，等一小段時間後送一則總表（flushSummary）；關著就照舊每個事件一則。
+   */
   private notifyAttention(session: Session, extra?: AttentionReason): void {
     // 封存的不推播（§9.1）：停止中的 session 可能還會回報一次狀態。
     if (session.archived) return;
     const settings = this.store.getSettings();
-    if (!settings.notifications.enabled) return;
-    if (inQuietHours(settings.notifications.quietHours, this.deps.now())) return;
+    if (!this.pushAllowed(settings)) return;
+    if (settings.notifications.coalesce) {
+      this.coalescer.add(session.id, session.status === 'waiting_permission' && !extra);
+      return;
+    }
+    this.sendPush(attentionPayload(session, extra));
+  }
+
+  /** 自動接續送出了：合併通知裡寫「BD1 已自動接續」；不合併時單獨一則。 */
+  private notifyAutoContinued(session: Session): void {
+    if (session.archived) return;
+    const settings = this.store.getSettings();
+    if (!this.pushAllowed(settings)) return;
+    if (settings.notifications.coalesce) {
+      this.autoContinued = [
+        ...this.autoContinued.filter((a) => a.sessionId !== session.id),
+        { sessionId: session.id, name: session.name },
+      ];
+      this.coalescer.add(session.id, false);
+      return;
+    }
+    this.sendPush(attentionPayload(session, { reason: 'auto_continued' }));
+  }
+
+  /**
+   * 「等你」的數量跨過上限時通知一次（protocol WaitingThreshold）。`notify` 為 false（機器重連帶回原本的狀態）
+   * 時只更新計數、不推播。合併通知開著時併進下一則總表（標題改成超過上限）。
+   */
+  private checkWaiting(notify: boolean): void {
+    const settings = this.store.getSettings();
+    const limit = settings.notifications.waitingLimit;
+    const count = waitingSessions(this.store.listSessions(false), this.approvalList()).length;
+    const crossed = this.waiting.update(count, limit);
+    if (!crossed || !notify || !this.pushAllowed(settings)) return;
+    if (settings.notifications.coalesce) {
+      this.overloadPending = limit;
+      this.coalescer.add(null, false);
+      return;
+    }
+    this.sendPush(JSON.stringify({ kind: 'overload', count, limit, at: this.nowIso() }));
+  }
+
+  /** 合併通知的時間到了：列出現在所有在等你的（等待期間已處理掉的不列），什麼都不剩就不送。 */
+  private flushSummary(triggered: string[]): void {
+    const autoContinued = this.autoContinued;
+    const overLimit = this.overloadPending;
+    this.autoContinued = [];
+    this.overloadPending = null;
+    const settings = this.store.getSettings();
+    if (!this.pushAllowed(settings)) return;
+    const items = this.summaryItems();
+    const stillOver = overLimit !== null && items.length > settings.notifications.waitingLimit;
+    const payload = buildSummary(
+      items,
+      triggered,
+      autoContinued,
+      this.nowIso(),
+      stillOver ? overLimit : undefined,
+    );
+    if (payload) this.sendPush(JSON.stringify(payload));
+  }
+
+  /** 現在在等你的：收件匣的範圍（protocol waitingSessions），加上自動流程停下等你決定、還沒處理的。 */
+  private summaryItems(): SummaryItem[] {
+    const approvals = this.approvalList();
+    const sessions = this.store.listSessions(false);
+    const waiting = new Set(waitingSessions(sessions, approvals).map((s) => s.id));
+    const items: SummaryItem[] = [];
+    for (const session of sessions) {
+      const taskLimit = this.taskLimits.get(session.id);
+      const task = taskLimit ? this.store.getTask(taskLimit.taskId) : null;
+      if (taskLimit && !task?.needsUser) this.taskLimits.delete(session.id);
+      const roundLimit = this.roundLimits.get(session.id);
+      const flagged = Boolean(task?.needsUser) || roundLimit !== undefined;
+      if (!waiting.has(session.id) && !(flagged && session.endedAt === null)) continue;
+      const approval = approvals.find((a) => a.sessionId === session.id);
+      const status: SessionStatus =
+        approval && !needsAttention(session.status)
+          ? APPROVAL_STATUS[approval.kind]
+          : session.status;
+      const item: SummaryItem = { sessionId: session.id, name: session.name, status };
+      if (task?.needsUser && taskLimit) {
+        item.reason = 'task_reject_limit';
+        item.maxRounds = taskLimit.limit;
+        item.task = taskLimit.number;
+      } else if (roundLimit !== undefined) {
+        item.reason = 'handoff_round_limit';
+        item.maxRounds = roundLimit;
+      }
+      items.push(item);
+    }
+    return items;
+  }
+
+  private sendPush(payload: string): void {
+    const settings = this.store.getSettings();
     const subject = settings.publicOrigin?.startsWith('https:')
       ? settings.publicOrigin
       : 'mailto:agent-board@localhost';
-    const payload = attentionPayload(session, extra);
     for (const subscription of this.store.listPushSubscriptions()) {
       const job = this.deliverPush(subscription, payload, subject).catch((error: unknown) => {
         this.log.warn({ err: error }, 'push delivery failed');
@@ -1882,6 +2091,8 @@ export class Hub {
     }
     this.store.pruneExpired(now);
     this.delivery.flush();
+    // 時鐘可能跳過（睡眠、改時間）：心跳時也看一次排定的自動接續到了沒。
+    this.autoContinue.tick();
   }
 
   async close(): Promise<void> {
@@ -1899,6 +2110,8 @@ export class Hub {
     if (this.heartbeat) clearInterval(this.heartbeat);
     if (this.resetTimer) clearTimeout(this.resetTimer);
     this.relay.close();
+    this.coalescer.close();
+    this.autoContinue.close();
     this.delivery.close();
     for (const pending of this.pendingCreates.values()) clearTimeout(pending.timer);
     this.pendingCreates.clear();

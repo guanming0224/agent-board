@@ -22,6 +22,7 @@ import {
   startHub,
   until,
   type TestHub,
+  perEventPush,
 } from './helpers';
 
 let hub: TestHub;
@@ -638,6 +639,7 @@ describe('two-way handoff (maxRounds)', () => {
 
   it('goes back and forth until the round limit, then blocks and notifies the person', async () => {
     const t = await board();
+    await perEventPush(hub, t.cookie);
     await hub.api('POST', '/api/push/subscriptions', {
       cookie: t.cookie,
       body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },

@@ -105,6 +105,27 @@ export type Machine = z.infer<typeof Machine>;
 export const Project = z.object({ id: Id, name: z.string().min(1), color: z.string() });
 export type Project = z.infer<typeof Project>;
 
+/**
+ * 一次限流的自動接續。`limitSince` 是進入那次限流的時間（`statusSince`），同一次限流只排一次。
+ * scheduled：等 `at`（重置時間＋60 秒）到；sent：已送出；cancelled：沒送（`reason` 是原因代碼）。
+ */
+export const AutoContinueState = z.enum(['scheduled', 'sent', 'cancelled']);
+export const AutoContinue = z.object({
+  state: AutoContinueState,
+  /** 預定送出的時間。 */
+  at: IsoTime,
+  /** 從限流訊息讀出的重置時間。 */
+  resetAt: IsoTime,
+  limitSince: IsoTime,
+  /** cancelled 的原因：user_input、resumed、setting_off、ended 等。 */
+  reason: z.string().nullable().default(null),
+});
+export type AutoContinue = z.infer<typeof AutoContinue>;
+
+/** 自動接續送進 session 的固定一行（不經過模型、不帶任何對話內容）。 */
+export const AUTO_CONTINUE_PROMPT =
+  '[Auto] The usage limit has reset. Continue where you left off.';
+
 export const Session = z.object({
   id: Id,
   machineId: Id,
@@ -142,6 +163,11 @@ export const Session = z.object({
   archivedAt: IsoTime.nullable().default(null),
   /** 建立時指定的唯讀（`SessionSpec.readOnly`）：改檔工具被拿掉。Bash 仍可寫檔。 */
   readOnly: z.boolean().default(false),
+  /**
+   * 額度恢復後自動接續（GM 2026-11-06，`Settings.autoContinue`）：只有 hub 寫，schema v7 `sessions.auto_continue`。
+   * 沒排過是 null。見 `AutoContinue`。
+   */
+  autoContinue: AutoContinue.nullable().default(null),
 });
 export type Session = z.infer<typeof Session>;
 
@@ -457,6 +483,10 @@ export const UsageSummary = z.object({
 });
 export type UsageSummary = z.infer<typeof UsageSummary>;
 
+export const WAITING_LIMIT_MIN = 1;
+export const WAITING_LIMIT_MAX = 20;
+export const DEFAULT_WAITING_LIMIT = 3;
+
 /** Lead 增補的 `settings` 鍵值表內容（§3 沒有列，但 §5.3-7、§7、§8 都需要）。 */
 export const Settings = z.object({
   listenAddress: z.string(),
@@ -467,9 +497,32 @@ export const Settings = z.object({
   notifications: z.object({
     enabled: z.boolean(),
     quietHours: z.object({ start: z.string(), end: z.string() }).nullable(),
+    /**
+     * 合併通知（GM 2026-11-06）：等一小段時間（`NOTIFY_WINDOW_MS`，權限請求 `NOTIFY_PERMISSION_WINDOW_MS`，
+     * 最多 `NOTIFY_MAX_WINDOW_MS`），再送一則列出所有在等你的。關掉＝每個事件各自推播（舊行為）。舊設定沒有這個鍵，預設開。
+     */
+    coalesce: z.boolean().default(true),
+    /** 同時等你的上限：超過時頁面顯示橫幅、推播一次（每次超過一次）。 */
+    waitingLimit: z
+      .number()
+      .int()
+      .min(WAITING_LIMIT_MIN)
+      .max(WAITING_LIMIT_MAX)
+      .default(DEFAULT_WAITING_LIMIT),
   }),
+  /**
+   * 額度恢復後自動接續（GM 2026-11-06）：session 因額度停下、知道重置時間時，到時候送 `AUTO_CONTINUE_PROMPT`。
+   * 會花額度，預設關（和任務自動執行同一個原則）。
+   */
+  autoContinue: z.boolean().default(false),
 });
 export type Settings = z.infer<typeof Settings>;
+
+/** 合併通知的等待時間：第一個事件後等 15 秒，期間有新事件就從新事件再算，但從第一個事件起最多 60 秒。 */
+export const NOTIFY_WINDOW_MS = 15_000;
+/** 權限請求最急：批次裡有權限請求時，最晚在它發生後 5 秒送出。 */
+export const NOTIFY_PERMISSION_WINDOW_MS = 5_000;
+export const NOTIFY_MAX_WINDOW_MS = 60_000;
 
 /** 預設危險指令清單（§7）。比對方式見 CONTRACTS.md §4.3。 */
 export const DEFAULT_DANGER_RULES = ['rm -rf /', 'rm -r /', 'git push --force', 'git reset --hard'];

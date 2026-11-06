@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { HookEventName, HookPayload, SessionStatus } from '@agent-board/protocol';
+import {
+  IDLE_START_DETAIL,
+  type HookEventName,
+  type HookPayload,
+  type SessionStatus,
+} from '@agent-board/protocol';
 import { createStatusTracker } from './index';
 import type { StatusChange, StatusTracker } from './index';
 
@@ -232,7 +237,23 @@ describe('createStatusTracker', () => {
         from: 'starting',
         to: 'waiting_input',
         reason: `hook:SessionStart:${source}`,
+        // 剛開好、閒著：不算在等你（protocol attention.ts）。
+        detail: IDLE_START_DETAIL,
       });
+    });
+
+    it('剛開好之後做完一回合，detail 就不是閒著了', () => {
+      tracker.onHook('SessionStart', payload('SessionStart', { source: 'resume' }));
+      tracker.onHook('UserPromptSubmit', payload('UserPromptSubmit'));
+      tracker.onHook('Stop', payload('Stop'));
+      expect(last()).toMatchObject({ to: 'waiting_input', detail: null });
+    });
+
+    it('閒著時 idle_prompt 不改 detail（還是沒有新東西）', () => {
+      tracker.onHook('SessionStart', payload('SessionStart', { source: 'startup' }));
+      tracker.onHook('Notification', notification('idle_prompt'));
+      expect(changes).toHaveLength(1);
+      expect(last()?.detail).toBe(IDLE_START_DETAIL);
     });
 
     it.each(['clear', 'compact', 'fork', 'future_source'])(

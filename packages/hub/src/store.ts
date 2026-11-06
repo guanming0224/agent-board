@@ -2,6 +2,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   AUDIT_SYSTEM_USER,
+  AutoContinue,
+  DEFAULT_WAITING_LIMIT,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   Settings,
@@ -31,7 +33,13 @@ const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   stuckMinutes: DEFAULT_STUCK_MINUTES,
   dangerRules: [...DEFAULT_DANGER_RULES],
   quotaGuards: { denyReadPaths: [], maxConcurrentSessions: null, queueWhenRateLimited: true },
-  notifications: { enabled: true, quietHours: null },
+  notifications: {
+    enabled: true,
+    quietHours: null,
+    coalesce: true,
+    waitingLimit: DEFAULT_WAITING_LIMIT,
+  },
+  autoContinue: false,
 });
 
 interface UserRow {
@@ -77,6 +85,7 @@ interface SessionRow {
   archived: number;
   archived_at: string | null;
   read_only: number;
+  auto_continue: string | null;
   pending_spec: string | null;
   pre_offline_status: SessionStatus | null;
 }
@@ -134,6 +143,17 @@ const toMachine = (r: MachineRow): Machine => ({
   capabilities: JSON.parse(r.capabilities) as Machine['capabilities'],
 });
 
+/** hub 自己寫的 JSON；讀不懂就當沒排過（不送），不能讓整個 session 讀不出來。 */
+function parseAutoContinue(text: string | null): AutoContinue | null {
+  if (text === null) return null;
+  try {
+    const parsed = AutoContinue.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 const toSession = (r: SessionRow): Session => ({
   id: r.id,
   machineId: r.machine_id,
@@ -160,6 +180,7 @@ const toSession = (r: SessionRow): Session => ({
   archived: r.archived === 1,
   archivedAt: r.archived_at,
   readOnly: r.read_only === 1,
+  autoContinue: parseAutoContinue(r.auto_continue),
 });
 
 const toTeam = (r: TeamRow): Team => ({
@@ -446,14 +467,17 @@ export class Store {
         `INSERT INTO sessions (id, machine_id, project_id, name, cwd, branch, worktree_path,
            permission_mode, model, account_profile, status, status_detail, claude_session_id,
            last_lines, last_output_at, status_since, context_tokens, created_at, ended_at, archived,
-           archived_at, pending_spec, context_window, repo_root, repo_common_dir, read_only)
+           archived_at, pending_spec, context_window, repo_root, repo_common_dir, read_only,
+           auto_continue)
          VALUES (@id, @machineId, @projectId, @name, @cwd, @branch, @worktreePath,
            @permissionMode, @model, @accountProfile, @status, @statusDetail, @claudeSessionId,
            @lastLines, @lastOutputAt, @statusSince, @contextTokens, @createdAt, @endedAt, @archived,
-           @archivedAt, @pendingSpec, @contextWindow, @repoRoot, @repoCommonDir, @readOnly)`,
+           @archivedAt, @pendingSpec, @contextWindow, @repoRoot, @repoCommonDir, @readOnly,
+           @autoContinue)`,
       )
       .run({
         ...session,
+        autoContinue: session.autoContinue ? JSON.stringify(session.autoContinue) : null,
         lastLines: JSON.stringify(session.lastLines),
         archived: session.archived ? 1 : 0,
         readOnly: session.readOnly ? 1 : 0,
@@ -470,7 +494,7 @@ export class Store {
            last_output_at = @lastOutputAt, status_since = @statusSince,
            context_tokens = @contextTokens, ended_at = @endedAt, archived = @archived,
            archived_at = @archivedAt, context_window = @contextWindow, repo_root = @repoRoot,
-           repo_common_dir = @repoCommonDir
+           repo_common_dir = @repoCommonDir, auto_continue = @autoContinue
          WHERE id = @id`,
       )
       .run({
@@ -493,6 +517,7 @@ export class Store {
         contextWindow: session.contextWindow,
         repoRoot: session.repoRoot,
         repoCommonDir: session.repoCommonDir,
+        autoContinue: session.autoContinue ? JSON.stringify(session.autoContinue) : null,
       });
   }
 

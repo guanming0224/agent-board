@@ -17,6 +17,7 @@ import type { TerminalViewProps } from '../shared/terminal-contract';
 import { TerminalView } from '../terminal';
 import {
   Age,
+  AutoContinueNote,
   Callsign,
   ContextUsage,
   dangerApproval,
@@ -143,6 +144,7 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
         <Callsign session={session} />
         <ModeChip mode={session.permissionMode} />
         <ReadOnlyChip session={session} />
+        <AutoContinueNote session={session} />
       </div>
     </>
   );

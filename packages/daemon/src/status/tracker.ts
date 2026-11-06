@@ -1,5 +1,10 @@
 // session 狀態機，規則見 CONTRACTS.md §5。判斷不出來就維持原狀，不誤報。
-import type { HookEventName, HookPayload, SessionStatus } from '@agent-board/protocol';
+import {
+  IDLE_START_DETAIL,
+  type HookEventName,
+  type HookPayload,
+  type SessionStatus,
+} from '@agent-board/protocol';
 import { createLineSplitter, matchesUsageLimit } from './rate-limit';
 import type { CreateStatusTracker, StatusChange } from './types';
 
@@ -211,8 +216,9 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
       case 'SessionStart': {
         // clear、compact、fork 發生在對話中途，不代表閒置。
         const source = stringField(payload, 'source');
+        // detail 標成「剛開好、閒著」：沒有新回覆，不算在等你（protocol attention.ts）。
         if (status === 'starting' && (source === 'startup' || source === 'resume')) {
-          transition('waiting_input', `${reason}:${source}`, null);
+          transition('waiting_input', `${reason}:${source}`, IDLE_START_DETAIL);
         }
         break;
       }

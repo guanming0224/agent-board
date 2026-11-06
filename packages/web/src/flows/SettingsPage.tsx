@@ -12,6 +12,7 @@ import { AuditSection } from './AuditSection';
 import { MachinesSection, UsersSection } from './MachinesUsersSettings';
 import { PasswordSection } from './PasswordSection';
 import {
+  AutoContinueSection,
   NotifySection,
   QuotaSection,
   SaveBar,
@@ -234,6 +235,7 @@ export function SettingsPage() {
                   server((f) => (
                     <>
                       <QuotaSection form={f} />
+                      <AutoContinueSection form={f} />
                       <StuckSection form={f} />
                     </>
                   ))}

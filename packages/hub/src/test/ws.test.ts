@@ -17,6 +17,7 @@ import {
   startHub,
   until,
   type TestHub,
+  perEventPush,
 } from './helpers';
 
 let hub: TestHub;
@@ -1255,6 +1256,7 @@ describe('daemon reconnect behaviours', () => {
     }
     await hub.api('PATCH', `/api/sessions/${done.id}`, { cookie, body: { markDone: true } });
     await hub.api('PATCH', `/api/sessions/${archived.id}`, { cookie, body: { archived: true } });
+    await perEventPush(hub, cookie);
     await hub.api('POST', '/api/push/subscriptions', {
       cookie,
       body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
@@ -1297,6 +1299,7 @@ describe('daemon reconnect behaviours', () => {
     const real = await newSession(cookie, machineId);
     daemon.send({ type: 'session.runtime', session: runtime(real.id) });
     await until(() => hub.running.store.getSession(real.id)?.status === 'running', 'running');
+    await perEventPush(hub, cookie);
     await hub.api('POST', '/api/push/subscriptions', {
       cookie,
       body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
@@ -1330,6 +1333,7 @@ describe('daemon reconnect behaviours', () => {
   describe('outcome sent after hello for a session that ended during the disconnect', () => {
     const lostSession = async () => {
       const { cookie, daemon, token, session } = await startedSession();
+      await perEventPush(hub, cookie);
       await hub.api('POST', '/api/push/subscriptions', {
         cookie,
         body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
@@ -1487,6 +1491,7 @@ describe('PTY exit 0', () => {
       cookie,
       body: { quotaGuards: { denyReadPaths: [], maxConcurrentSessions: 1 } },
     });
+    await perEventPush(hub, cookie);
     await hub.api('POST', '/api/push/subscriptions', {
       cookie,
       body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
@@ -3119,11 +3124,13 @@ describe('audit of terminal input', () => {
 });
 
 describe('push notifications', () => {
-  const subscribe = (cookie: string, endpoint = 'https://push.example/abc') =>
-    hub.api('POST', '/api/push/subscriptions', {
+  const subscribe = async (cookie: string, endpoint = 'https://push.example/abc') => {
+    await perEventPush(hub, cookie);
+    return hub.api('POST', '/api/push/subscriptions', {
       cookie,
       body: { endpoint, keys: { p256dh: 'p', auth: 'a' } },
     });
+  };
   const to = (daemon: Peer, sessionId: string, status: string) =>
     daemon.send({
       type: 'session.runtime',
@@ -3175,7 +3182,7 @@ describe('push notifications', () => {
 
     await hub.api('PATCH', '/api/settings', {
       cookie,
-      body: { notifications: { enabled: false, quietHours: null } },
+      body: { notifications: { enabled: false, quietHours: null, coalesce: false } },
     });
     to(daemon, session.id, 'waiting_input');
     await settled(session.id, 'waiting_input');
@@ -3183,7 +3190,13 @@ describe('push notifications', () => {
 
     await hub.api('PATCH', '/api/settings', {
       cookie,
-      body: { notifications: { enabled: true, quietHours: { start: '22:00', end: '07:00' } } },
+      body: {
+        notifications: {
+          enabled: true,
+          quietHours: { start: '22:00', end: '07:00' },
+          coalesce: false,
+        },
+      },
     });
     to(daemon, session.id, 'running');
     await settled(session.id, 'running');

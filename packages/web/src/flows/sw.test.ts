@@ -140,6 +140,116 @@ describe('sw.js push', () => {
     );
   });
 
+  describe('coalesced summary (hub attention.ts)', () => {
+    const summary = {
+      kind: 'summary',
+      count: 3,
+      items: [
+        { sessionId: 'a', name: 'BD1', status: 'waiting_permission' },
+        {
+          sessionId: 'b',
+          name: 'RV',
+          status: 'waiting_input',
+          reason: 'task_reject_limit',
+          maxRounds: 3,
+          task: 3,
+        },
+        {
+          sessionId: 'c',
+          name: 'EX',
+          status: 'waiting_input',
+          reason: 'handoff_round_limit',
+          maxRounds: 3,
+        },
+      ],
+      more: 0,
+      autoContinued: [],
+      at: '2026-11-06T10:00:00.000Z',
+    };
+
+    it('one notification listing everything, with one tag so a newer summary replaces the older', async () => {
+      const zh = loadWorker('zh-TW');
+      await zh.dispatch('push', pushEvent(summary));
+      expect(zh.shown).toEqual([
+        {
+          title: '3 個 session 在等你',
+          options: expect.objectContaining({
+            body: 'BD1 問權限、RV 退回 #3、EX 來回到上限',
+            tag: 'agent-board-summary',
+            renotify: true,
+            data: { url: `${ORIGIN}/#/inbox` },
+          }),
+        },
+      ]);
+      const en = loadWorker('en');
+      await en.dispatch('push', pushEvent({ ...summary, more: 2 }));
+      expect(en.shown[0]).toMatchObject({
+        title: '3 sessions waiting on you',
+        options: {
+          body: 'BD1 needs approval, RV sent back #3, EX hit the round limit, 2 more',
+          tag: 'agent-board-summary',
+        },
+      });
+    });
+
+    it('truncates with 還有 N 個, says when over the limit, and lists auto-continued sessions', async () => {
+      const zh = loadWorker('zh-TW');
+      await zh.dispatch(
+        'push',
+        pushEvent({
+          ...summary,
+          count: 8,
+          more: 5,
+          overLimit: 3,
+          autoContinued: [{ sessionId: 'd', name: 'BD2' }],
+        }),
+      );
+      expect(zh.shown[0]).toMatchObject({
+        title: '8 個 session 在等你（超過上限 3）',
+        options: { body: 'BD1 問權限、RV 退回 #3、EX 來回到上限、還有 5 個、BD2 已自動接續' },
+      });
+    });
+
+    it('only one waiting: tapping opens that inbox item; only auto-continued: a plain notice', async () => {
+      const zh = loadWorker('zh-TW');
+      await zh.dispatch(
+        'push',
+        pushEvent({ ...summary, count: 1, items: [summary.items[0]], more: 0 }),
+      );
+      expect(zh.shown[0]!.options.data).toEqual({ url: `${ORIGIN}/#/inbox/a` });
+      await zh.dispatch(
+        'push',
+        pushEvent({
+          ...summary,
+          count: 0,
+          items: [],
+          autoContinued: [{ sessionId: 'd', name: 'BD2' }],
+        }),
+      );
+      expect(zh.shown[1]).toMatchObject({
+        title: 'Agent Board',
+        options: { body: 'BD2 已自動接續', data: { url: `${ORIGIN}/#/inbox` } },
+      });
+    });
+
+    it('overload push (coalescing off) and the single auto-continued push', async () => {
+      const zh = loadWorker('zh-TW');
+      await zh.dispatch('push', pushEvent({ kind: 'overload', count: 5, limit: 3 }));
+      expect(zh.shown[0]).toMatchObject({
+        title: '等你的 session 超過上限',
+        options: { body: '現在有 5 個在等你（上限 3）', tag: 'agent-board-overload' },
+      });
+      await zh.dispatch(
+        'push',
+        pushEvent({ sessionId: 's9', name: 'BD1', status: 'running', reason: 'auto_continued' }),
+      );
+      expect(zh.shown[1]).toMatchObject({
+        title: 'BD1',
+        options: { body: '額度恢復，已自動接續', tag: 'auto-s9' },
+      });
+    });
+  });
+
   it('still notifies when the payload is missing or malformed', async () => {
     const worker = loadWorker('en');
     await worker.dispatch('push', pushEvent(undefined));

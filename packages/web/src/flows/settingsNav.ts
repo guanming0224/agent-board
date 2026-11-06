@@ -31,6 +31,7 @@ export const SECTION_CATEGORY: Readonly<Record<string, Category>> = {
   notify: 'notify',
   templates: 'sessions',
   quota: 'sessions',
+  autocontinue: 'sessions',
   stuck: 'sessions',
   security: 'security',
   machines: 'machines',
@@ -43,6 +44,7 @@ export const SECTION_CATEGORY: Readonly<Record<string, Category>> = {
 export const KEY_CATEGORY: Record<keyof Settings, Category> = {
   notifications: 'notify',
   quotaGuards: 'sessions',
+  autoContinue: 'sessions',
   stuckMinutes: 'sessions',
   listenAddress: 'security',
   publicOrigin: 'security',
