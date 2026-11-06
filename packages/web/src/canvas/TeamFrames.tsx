@@ -9,7 +9,14 @@ import { canvasTeams, teamRect } from './teams';
  * 團隊框是成員位置算出來的，不當 xyflow 節點：拖曳時框一直變大小，
  * 節點的 ResizeObserver 會在同一輪又改版面，觸發 ResizeObserver loop 錯誤。
  */
-export function TeamFrames({ rects }: { rects: ReadonlyMap<string, Rect> }) {
+export function TeamFrames({
+  rects,
+  onTidy,
+}: {
+  rects: ReadonlyMap<string, Rect>;
+  /** 標籤旁的「整理團隊」。 */
+  onTidy?: (teamId: string) => void;
+}) {
   const t = useT();
   const allTeams = useTeams((s) => s.teams);
   const members = useTeams((s) => s.members);
@@ -30,7 +37,22 @@ export function TeamFrames({ rects }: { rects: ReadonlyMap<string, Rect> }) {
               ['--team' as string]: teamColorVar(team.color),
             }}
           >
-            <span>{t('canvas.team.label', { name: team.name })}</span>
+            <span>
+              {t('canvas.team.label', { name: team.name })}
+              {onTidy && (
+                // 框本身不吃滑鼠（拖曳畫布要穿過去），只有按鈕吃；nopan／nodrag 讓 xyflow 不把按下當成拖曳。
+                <button
+                  type="button"
+                  className="team-tidy nopan nodrag"
+                  data-testid={`tidy-team-${team.id}`}
+                  aria-label={t('canvas.tidy.teamAria', { name: team.name })}
+                  title={t('canvas.tidy.teamAria', { name: team.name })}
+                  onClick={() => onTidy(team.id)}
+                >
+                  {t('canvas.tidy.team')}
+                </button>
+              )}
+            </span>
           </div>
         );
       })}

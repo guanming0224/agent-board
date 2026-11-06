@@ -62,7 +62,7 @@ export function teamForHandoff(
   return teamOf(source) ?? teamOf(target);
 }
 
-const TEAM_PADDING = 32;
+export const TEAM_PADDING = 32;
 
 /** 框住所有成員；成員不足兩位就不畫框。 */
 export function teamRect(team: CanvasTeam, rects: ReadonlyMap<string, Rect>): Rect | null {

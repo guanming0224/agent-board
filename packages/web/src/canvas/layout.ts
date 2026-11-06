@@ -2,6 +2,8 @@ import type { Layout, Session } from '@agent-board/protocol';
 import type { BoardBackend } from '../shared/backend';
 
 export const WORKSPACE = 'default';
+/** 「上一次擺設」：每次一鍵整理前的全部位置，存在 hub 的另一個 workspace，重新載入、換裝置都還在。 */
+export const PREVIOUS_WORKSPACE = `${WORKSPACE}.previous`;
 
 /**
  * 卡片外框。摘要條與 xterm 共用同一個外框（STYLE.md 邏輯 4），大小要讓 xterm 有約 80 欄，
@@ -12,8 +14,8 @@ export const CARD_W = 680;
 export const CARD_H = 640;
 export const STRIP_W = 320;
 /** 左右留得下交接線的小字，上下留得下團隊框。 */
-const GAP_X = 140;
-const GAP_Y = 72;
+export const GAP_X = 140;
+export const GAP_Y = 72;
 const COLUMNS = 3;
 
 export interface Rect {
@@ -28,7 +30,7 @@ export function fitCardZoom(rect: Rect, viewportW: number, viewportH: number): n
   return Math.min(viewportW / (rect.w + 40), viewportH / (rect.h + 40));
 }
 
-const overlaps = (a: Rect, b: Rect) =>
+export const overlaps = (a: Rect, b: Rect) =>
   a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
 /** 新卡放進第一個沒被占用的格子。 */
@@ -65,18 +67,42 @@ export function reconcileRects(
 // 真 hub 有資料時這份副本不會被讀到。
 const cacheKey = `agent-board.layouts.${WORKSPACE}`;
 
-function readCache(): Layout[] {
+// 副本裡兩個 workspace 都有，讀的時候分開。
+function readCache(workspace: string): Layout[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(cacheKey) ?? '[]');
-    return Array.isArray(parsed) ? (parsed as Layout[]) : [];
+    return Array.isArray(parsed)
+      ? (parsed as Layout[]).filter((l) => (l.workspace ?? WORKSPACE) === workspace)
+      : [];
   } catch {
     return [];
   }
 }
 
-export async function loadLayouts(backend: BoardBackend): Promise<Layout[]> {
-  const remote = await backend.getLayouts(WORKSPACE);
-  return remote.length > 0 ? remote : readCache();
+/**
+ * 讀一個 workspace 的版面。fakeBackend 不分 workspace，一律回全部，所以這裡再篩一次；
+ * 真 hub 本來就只回那個 workspace。
+ */
+async function loadWorkspace(backend: BoardBackend, workspace: string): Promise<Layout[]> {
+  const remote = (await backend.getLayouts(workspace)).filter((l) => l.workspace === workspace);
+  return remote.length > 0 ? remote : readCache(workspace);
+}
+
+export const loadLayouts = (backend: BoardBackend) => loadWorkspace(backend, WORKSPACE);
+export const loadPreviousLayouts = (backend: BoardBackend) =>
+  loadWorkspace(backend, PREVIOUS_WORKSPACE);
+
+/**
+ * 畫布要存的全部列：目前位置，加上有快照時的「上一次擺設」。兩個一起送：hub 的 PUT 對 body 裡出現的
+ * 每個 workspace 整批取代、在同一個交易裡；fakeBackend 整份取代，一起送才不會把快照洗掉。
+ */
+export function layoutRows(
+  rects: Iterable<[string, Rect]>,
+  previous: Iterable<[string, Rect]> | null,
+): Layout[] {
+  const rows = (workspace: string, from: Iterable<[string, Rect]>) =>
+    [...from].map(([sessionId, r]) => ({ workspace, sessionId, x: r.x, y: r.y, w: r.w, h: r.h }));
+  return [...rows(WORKSPACE, rects), ...(previous ? rows(PREVIOUS_WORKSPACE, previous) : [])];
 }
 
 export function saveLayouts(backend: BoardBackend, layouts: Layout[]): Promise<void> {

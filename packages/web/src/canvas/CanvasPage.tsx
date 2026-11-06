@@ -48,12 +48,14 @@ import {
   CARD_H,
   CARD_W,
   fitCardZoom,
+  layoutRows,
   loadLayouts,
+  loadPreviousLayouts,
   reconcileRects,
   saveLayouts,
-  WORKSPACE,
   type Rect,
 } from './layout';
+import { TidyPanel, TidyToast, useTidy, type TidyState } from './tidy';
 import { SessionNode, TERMINAL_ZOOM, type SessionNodeType } from './SessionNode';
 import { TeamFrames } from './TeamFrames';
 import { groupHandoffs, teamForHandoff } from './teams';
@@ -150,7 +152,16 @@ function ZoomVariable({ host }: { host: React.RefObject<HTMLDivElement | null> }
   return null;
 }
 
-function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] }) {
+function Flow({
+  sessions,
+  layouts,
+  previous,
+}: {
+  sessions: Session[];
+  layouts: Layout[];
+  /** 「上一次擺設」（一鍵整理前的位置）。 */
+  previous: Layout[];
+}) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
   const rules = useTeams((s) => s.rules);
@@ -184,18 +195,34 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
   const placeAt = useRef(new Map<string, Rect>());
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flushSave = useCallback(() => {
-    saveTimer.current = null;
-    const next: Layout[] = cardsRef.current.map((n) => ({
-      workspace: WORKSPACE,
-      sessionId: n.id,
-      ...rectOf(n),
-    }));
-    saveLayouts(backend, next).then(
-      () => setSaveError(null),
-      (e: unknown) => setSaveError(errorText(e)),
-    );
-  }, [backend]);
+  /** 「上一次擺設」與整理動畫的目標位置：存檔時用，動畫中途存才不會存到半路的位置。 */
+  const tidyState = useRef<TidyState>({
+    previous:
+      previous.length > 0
+        ? new Map(previous.map((l) => [l.sessionId, { x: l.x, y: l.y, w: l.w, h: l.h }]))
+        : null,
+    target: null,
+  });
+  /** 立刻存：目前位置（rects 沒給就用畫面上的）＋上一次擺設，一次送出。 */
+  const saveNow = useCallback(
+    (rects?: ReadonlyMap<string, Rect>) => {
+      if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      const { previous: snap, target } = tidyState.current;
+      const current =
+        rects ??
+        new Map(cardsRef.current.map((n) => [n.id, target?.get(n.id) ?? rectOf(n)] as const));
+      // 快照裡被刪掉（不是封存）的 session，hub 存不進去（外鍵），整批會失敗：只送還在的。
+      const known = new Set(useBoard.getState().sessions.map((s) => s.id));
+      const snapRows = snap ? [...snap].filter(([id]) => known.has(id)) : null;
+      saveLayouts(backend, layoutRows(current, snapRows)).then(
+        () => setSaveError(null),
+        (e: unknown) => setSaveError(errorText(e)),
+      );
+    },
+    [backend],
+  );
+  const flushSave = useCallback(() => saveNow(), [saveNow]);
 
   const scheduleSave = useCallback(() => {
     if (saveTimer.current !== null) clearTimeout(saveTimer.current);
@@ -233,12 +260,32 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
     [flushSave],
   );
 
+  const fitAfterTidy = useCallback(
+    (ids: string[] | null) =>
+      void flow.fitView({
+        ...FIT_OPTIONS,
+        ...(ids ? { nodes: ids.map((id) => ({ id })) } : {}),
+        duration: motion(),
+      }),
+    [flow],
+  );
+  const tidy = useTidy({
+    sessions,
+    cardsRef,
+    setCards,
+    tidyState,
+    saveNow,
+    rectOf,
+    fit: fitAfterTidy,
+  });
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      // 拖了卡就不能再「復原」上一次整理（上一次擺設還在，工具列可以換回去）。
+      if (changes.some((c) => c.type === 'position' && c.dragging)) tidy.dragged();
       setCards((prev) => applyNodeChanges(changes, prev as Node[]) as SessionNodeType[]);
       if (changes.some((c) => c.type === 'position' && !c.dragging)) scheduleSave();
     },
-    [scheduleSave],
+    [scheduleSave, tidy],
   );
 
   // ── 快速建立：雙擊空白處，或頁首／空畫布的「新增 session」（畫面中央） ──
@@ -486,7 +533,7 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
         deleteKeyCode={selectedIds.length > 0 ? null : DELETE_KEYS}
       >
         <ZoomVariable host={host} />
-        <TeamFrames rects={rects} />
+        <TeamFrames rects={rects} onTidy={tidy.tidyTeam} />
         <Background
           variant={BackgroundVariant.Dots}
           color="var(--canvas-dot)"
@@ -504,6 +551,8 @@ function Flow({ sessions, layouts }: { sessions: Session[]; layouts: Layout[] })
           position="bottom-right"
         />
         <ZoomPanel />
+        <TidyPanel tidy={tidy} empty={sessions.length === 0} />
+        <TidyToast tidy={tidy} />
         <ArchiveSelection ids={selectedIds} />
         <ArchiveToast />
         {selectedHandoff && (
@@ -564,7 +613,7 @@ function useLayouts() {
   const backend = useBoard((s) => s.backend);
   const [state, setState] = useState<
     | { status: 'loading' }
-    | { status: 'ready'; layouts: Layout[] }
+    | { status: 'ready'; layouts: Layout[]; previous: Layout[] }
     | { status: 'error'; detail: string }
   >({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
@@ -572,8 +621,9 @@ function useLayouts() {
   useEffect(() => {
     let alive = true;
     setState({ status: 'loading' });
-    loadLayouts(backend).then(
-      (layouts) => alive && setState({ status: 'ready', layouts }),
+    // 上一次擺設讀不到不算錯：只是沒有「回到上一次擺設」可按。
+    Promise.all([loadLayouts(backend), loadPreviousLayouts(backend).catch(() => [])]).then(
+      ([layouts, previous]) => alive && setState({ status: 'ready', layouts, previous }),
       (e: unknown) => alive && setState({ status: 'error', detail: errorText(e) }),
     );
     return () => {
@@ -605,7 +655,7 @@ export function CanvasPage() {
   } else {
     body = (
       <ReactFlowProvider>
-        <Flow sessions={sessions} layouts={layouts.layouts} />
+        <Flow sessions={sessions} layouts={layouts.layouts} previous={layouts.previous} />
       </ReactFlowProvider>
     );
   }

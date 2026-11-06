@@ -213,7 +213,10 @@ input.cmd:disabled {
   left: calc(12px / var(--z));
   transform: translateY(-50%) scale(calc(1 / var(--z)));
   transform-origin: 0 50%;
-  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 0 8px;
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -596,4 +599,62 @@ input.cmd:disabled {
 .canvas .archive-toast .alert button {
   min-height: 28px;
   margin-left: auto;
+}
+
+/* 一鍵整理：團隊框標籤旁的「整理團隊」、右上角工具列、整理後的「已整理・復原」。 */
+.team .team-tidy {
+  pointer-events: auto;
+  min-height: 22px;
+  margin: 2px 0;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+@media (pointer: coarse) {
+  .team .team-tidy {
+    min-height: 32px;
+  }
+}
+/* 頁首的 .top（views.css）和 xyflow 面板位置的 .top 撞名：這裡把面板的定位與底色改回來。 */
+.canvas .react-flow__panel.tidy-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 5;
+  border-bottom: 0;
+  background: none;
+  backdrop-filter: none;
+  display: flex;
+  width: fit-content;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: calc(100% - 32px);
+  margin: 16px 16px 0 0;
+}
+.canvas .tidy-panel button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  background: var(--surface);
+}
+.canvas .tidy-toast.raised {
+  margin-bottom: 72px;
+}
+@media (max-width: 640px) {
+  .canvas .tidy-panel {
+    margin: 8px 8px 0 0;
+    max-width: calc(100% - 16px);
+  }
+  .canvas .tidy-panel button {
+    min-height: 36px;
+  }
+  /* 讓開右下角的縮放列。 */
+  .canvas .tidy-toast {
+    margin-bottom: 56px;
+  }
+  .canvas .tidy-toast.raised {
+    margin-bottom: 112px;
+  }
 }

@@ -113,6 +113,15 @@ registerMessages('zh-TW', {
   'canvas.archive.dismiss': '知道了',
   'canvas.archive.undoDeleting': '沒復原：這個 session 正在刪除，稍後再試。',
   'canvas.archive.selected': '封存選取的 {n} 個',
+  'canvas.tidy.toolbar': '整理',
+  'canvas.tidy.canvas': '整理畫布',
+  'canvas.tidy.canvasHint': '依團隊、專案重新排列所有卡片，團隊框不再重疊',
+  'canvas.tidy.team': '整理團隊',
+  'canvas.tidy.teamAria': '整理團隊「{name}」',
+  'canvas.tidy.previous': '回到上一次擺設',
+  'canvas.tidy.previousHint': '換回整理前的位置；再按一次換回來',
+  'canvas.tidy.done': '已整理',
+  'canvas.tidy.undo': '復原',
 });
 
 registerMessages('en', {
@@ -240,4 +249,14 @@ registerMessages('en', {
   'canvas.archive.dismiss': 'Dismiss',
   'canvas.archive.undoDeleting': 'Not restored: this session is being deleted. Try again shortly.',
   'canvas.archive.selected': 'Archive {n} selected',
+  'canvas.tidy.toolbar': 'Tidy',
+  'canvas.tidy.canvas': 'Tidy canvas',
+  'canvas.tidy.canvasHint':
+    'Rearrange every card by team and project so team frames stop overlapping',
+  'canvas.tidy.team': 'Tidy team',
+  'canvas.tidy.teamAria': 'Tidy team "{name}"',
+  'canvas.tidy.previous': 'Previous layout',
+  'canvas.tidy.previousHint': 'Swap back to the layout before tidying; press again to swap back',
+  'canvas.tidy.done': 'Tidied',
+  'canvas.tidy.undo': 'Undo',
 });

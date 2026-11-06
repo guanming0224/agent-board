@@ -1350,3 +1350,201 @@ test.describe('等你的數量與上限（GM 2026-11-06）', () => {
     }
   }
 });
+
+test.describe('一鍵整理', () => {
+  const STEP_X = 680 + 140;
+  const STEP_Y = 640 + 72;
+  const IDS = ['s-auth', 's-tests', 's-etl', 's-ml', 's-docs', 's-web'];
+  type Box = { x: number; y: number };
+
+  async function positions(page: Page): Promise<Record<string, Box>> {
+    const out: Record<string, Box> = {};
+    for (const id of IDS) {
+      const transform = await position(page, id);
+      const m = transform.match(/translate\((-?[\d.]+)px, ?(-?[\d.]+)px\)/);
+      out[id] = { x: Number(m?.[1]), y: Number(m?.[2]) };
+    }
+    return out;
+  }
+
+  const overlapPairs = (p: Record<string, Box>) => {
+    const ids = Object.keys(p);
+    return ids.flatMap((a, i) =>
+      ids
+        .slice(i + 1)
+        .filter((b) => Math.abs(p[a]!.x - p[b]!.x) < 680 && Math.abs(p[a]!.y - p[b]!.y) < 640)
+        .map((b) => `${a}×${b}`),
+    );
+  };
+
+  const saveCount = (page: Page) =>
+    page.evaluate(() => (window as never as { __saves: number }).__saves);
+
+  /** 先開一次畫布、把版面副本換成指定的擺設，再重新載入。 */
+  async function openWith(page: Page, layout: Record<string, Box>) {
+    await page.goto('/#/canvas');
+    await expect(card(page, 's-auth')).toBeVisible();
+    await page.evaluate((layout) => {
+      localStorage.setItem(
+        'agent-board.layouts.default',
+        JSON.stringify(
+          Object.entries(layout).map(([sessionId, p]) => ({
+            workspace: 'default',
+            sessionId,
+            x: p.x,
+            y: p.y,
+            w: 680,
+            h: 640,
+          })),
+        ),
+      );
+    }, layout);
+    await page.reload();
+    await expect(card(page, 's-auth')).toBeVisible();
+    await expect.poll(() => positions(page)).toEqual(layout);
+  }
+
+  // 團隊（s-tests 隊長、s-auth 成員）拉得很開，s-etl 疊在 s-tests 上。
+  const MESSY: Record<string, Box> = {
+    's-tests': { x: 0, y: 0 },
+    's-auth': { x: 4 * STEP_X, y: 3 * STEP_Y },
+    's-etl': { x: 100, y: 100 },
+    's-ml': { x: 2 * STEP_X, y: 2 * STEP_Y },
+    's-docs': { x: STEP_X, y: 0 },
+    's-web': { x: -2 * STEP_X, y: STEP_Y },
+  };
+
+  test('整理畫布：不重疊、團隊相鄰；重新載入後可回到上一次擺設，再按一次換回來', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openWith(page, MESSY);
+    await expect(page.getByRole('button', { name: '回到上一次擺設' })).toHaveCount(0);
+    expect(overlapPairs(MESSY)).toEqual(['s-tests×s-etl']);
+
+    await page.getByRole('button', { name: '整理畫布' }).click();
+    await expect(page.getByTestId('tidy-toast')).toContainText('已整理');
+    await expect.poll(async () => overlapPairs(await positions(page))).toEqual([]);
+    // 動畫結束後才比位置
+    await page.waitForTimeout(500);
+    const tidied = await positions(page);
+    expect(overlapPairs(tidied)).toEqual([]);
+    // 隊長在上一列、成員正下方
+    expect(tidied['s-auth']!.x).toBe(tidied['s-tests']!.x);
+    expect(tidied['s-auth']!.y).toBe(tidied['s-tests']!.y + STEP_Y);
+    await shot(page, 'tidy-canvas');
+
+    // 一次存好：目前位置＋上一次擺設
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem('agent-board.layouts.default')))
+      .toContain('default.previous');
+
+    await page.reload();
+    await expect(card(page, 's-auth')).toBeVisible();
+    await expect.poll(() => positions(page)).toEqual(tidied);
+    const previous = page.getByRole('button', { name: '回到上一次擺設' });
+    await previous.click();
+    await expect.poll(() => positions(page)).toEqual(MESSY);
+    await previous.click();
+    await expect.poll(() => positions(page)).toEqual(tidied);
+    // 換回來也存了：重新載入還是整理後的，而且還能再換
+    await page.waitForTimeout(200);
+    await page.reload();
+    await expect.poll(() => positions(page)).toEqual(tidied);
+    await page.getByRole('button', { name: '回到上一次擺設' }).click();
+    await expect.poll(() => positions(page)).toEqual(MESSY);
+  });
+
+  test('整理團隊：只動團隊與被壓到的卡；存一次；「復原」還原；拖曳後就不能復原', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const before: Record<string, Box> = {
+      's-tests': { x: 0, y: 0 },
+      's-auth': { x: 3 * STEP_X, y: 2 * STEP_Y },
+      // 擋在隊長正下方：整理後成員要放這裡
+      's-docs': { x: 0, y: STEP_Y },
+      's-etl': { x: 3 * STEP_X, y: 0 },
+      's-ml': { x: 6 * STEP_X, y: 0 },
+      's-web': { x: 6 * STEP_X, y: 2 * STEP_Y },
+    };
+    await openWith(page, before);
+    await patchStore(
+      page,
+      `const b = useBoard.getState().backend;
+       const save = b.saveLayouts.bind(b);
+       window.__saves = 0;
+       b.saveLayouts = async (l) => { window.__saves += 1; return save(l); };`,
+    );
+
+    await page.getByTestId('tidy-team-team-demo-auth').click();
+    await expect.poll(() => positions(page).then((p) => p['s-auth'])).toEqual({ x: 0, y: STEP_Y });
+    const after = await positions(page);
+    expect(after['s-tests']).toEqual({ x: 0, y: 0 });
+    expect(after['s-docs']).not.toEqual(before['s-docs']);
+    for (const id of ['s-etl', 's-ml', 's-web']) expect(after[id]).toEqual(before[id]);
+    expect(overlapPairs(after)).toEqual([]);
+    // 存一次，不是每張卡各存一次
+    await expect.poll(() => saveCount(page)).toBe(1);
+    // 鏡頭移到團隊：兩位成員都在畫面裡
+    await expect(card(page, 's-tests')).toBeInViewport();
+    await expect(card(page, 's-auth')).toBeInViewport();
+
+    const toast = page.getByTestId('tidy-toast');
+    await toast.getByRole('button', { name: '復原' }).click();
+    await expect(toast).toHaveCount(0);
+    await expect.poll(() => positions(page)).toEqual(before);
+    await expect.poll(() => saveCount(page)).toBe(2);
+
+    // 再整理一次，拖了卡就沒有「復原」，但工具列還是可以回到上一次擺設
+    await page.getByTestId('tidy-team-team-demo-auth').click();
+    await expect(toast).toBeVisible();
+    await page.getByRole('button', { name: '全部顯示' }).click();
+    await expect(card(page, 's-etl')).toBeInViewport({ ratio: 1 });
+    const box = (await card(page, 's-etl').boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + 12);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 40, box.y + 50, { steps: 6 });
+    await page.mouse.up();
+    await expect(toast).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '回到上一次擺設' })).toBeVisible();
+  });
+
+  test('「已整理」10 秒後消失', async ({ page }) => {
+    await page.clock.install();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await page.getByRole('button', { name: '整理畫布' }).click();
+    await expect(page.getByTestId('tidy-toast')).toBeVisible();
+    await page.clock.runFor(9_000);
+    await expect(page.getByTestId('tidy-toast')).toBeVisible();
+    await page.clock.runFor(1_500);
+    await expect(page.getByTestId('tidy-toast')).toHaveCount(0);
+  });
+
+  for (const width of [320, 375]) {
+    test(`手機 ${width}px：整理按鈕在畫面內、按得到`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 700 });
+      await page.goto('/#/canvas');
+      await expect(card(page, 's-auth')).toBeVisible();
+      const tidy = page.getByRole('button', { name: '整理畫布' });
+      const box = (await tidy.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+      expect(box.height).toBeGreaterThanOrEqual(32);
+      await tidy.click();
+      const toast = page.getByTestId('tidy-toast');
+      await expect(toast.getByRole('button', { name: '復原' })).toBeVisible();
+      const t = (await toast.boundingBox())!;
+      expect(t.x).toBeGreaterThanOrEqual(0);
+      expect(t.x + t.width).toBeLessThanOrEqual(width);
+      // 不被右下角的縮放列擋住
+      const zoom = (await page.locator('.zoom').boundingBox())!;
+      expect(t.y + t.height).toBeLessThanOrEqual(zoom.y);
+      await shot(page, `tidy-phone-${width}`);
+      await page.getByRole('button', { name: '回到上一次擺設' }).click();
+      await expect(toast).toHaveCount(0);
+    });
+  }
+});
