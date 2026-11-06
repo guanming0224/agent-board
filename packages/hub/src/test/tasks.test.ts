@@ -186,14 +186,14 @@ describe('task markers and prompts', () => {
     const task = { number: 4, title: '/clear the\r\nredirect' };
     const prompt = taskPrompt(task, { goal: 'Fix login.\nKeep cookies.' });
     expect(prompt).toBe(
-      '[Task #4] /clear the redirect | Team goal: Fix login. Keep cookies. | When this task is finished, reply with [完成 #4] and a one-sentence summary.',
+      '[Task #4] /clear the redirect | Team goal: Fix login. Keep cookies. | When this task is finished, reply with [完成 #4] and a one-sentence summary. Do not write that marker before then.',
     );
     expect(prompt).not.toMatch(/[\r\n]/);
     expect(rejectPrompt(task, 'Missing a test.')).toBe(
-      '[Task #4] Sent back by review: Missing a test. | Task: /clear the redirect | When this task is finished, reply with [完成 #4] and a one-sentence summary.',
+      '[Task #4] Sent back by review: Missing a test. | Task: /clear the redirect | When this task is finished, reply with [完成 #4] and a one-sentence summary. Do not write that marker before then.',
     );
     expect(reviewPrompt(task, { summary: 'Fixed it.', files: ['/r/a.ts'], branch: 'ab/x' })).toBe(
-      '[Review #4] Task: /clear the redirect | Summary: Fixed it. | Detected file edits: /r/a.ts | Branch: ab/x | Reply with [通過 #4] or [退回 #4] followed by the reason.',
+      '[Review #4] Task: /clear the redirect | Summary: Fixed it. | Detected file edits: /r/a.ts | Branch: ab/x | Reply with [通過 #4] or [退回 #4] followed by the reason. Do not write either marker before you decide.',
     );
     expect(taskPrompt({ number: 1, title: 'x' }, { goal: '' })).toContain('Team goal: none');
   });
@@ -242,7 +242,7 @@ describe('task automation (full loop)', () => {
     await setStatus(t.daemon, t.bd, 'waiting_input');
     await until(() => inputsTo(t.daemon, t.bd).length === 2, 'task text and enter');
     expect(inputsTo(t.daemon, t.bd)).toEqual([
-      `[Task #1] Fix the redirect | Team goal: ${GOAL} | When this task is finished, reply with [完成 #1] and a one-sentence summary.`,
+      `[Task #1] Fix the redirect | Team goal: ${GOAL} | When this task is finished, reply with [完成 #1] and a one-sentence summary. Do not write that marker before then.`,
       '\r',
     ]);
     await until(() => taskNow(task.id).auto?.state === 'sent', 'sent');
@@ -259,7 +259,7 @@ describe('task automation (full loop)', () => {
     stop(t.daemon, t.bd, 'Work is complete. [完成 #1] Fixed the redirect loop. More details.');
     await until(() => textsTo(t.daemon, t.rv).length === 1, 'review sent');
     expect(textsTo(t.daemon, t.rv)[0]).toBe(
-      '[Review #1] Task: Fix the redirect | Summary: Fixed the redirect loop. | Detected file edits: /r/login.ts | Branch: ab/BD1 | Reply with [通過 #1] or [退回 #1] followed by the reason.',
+      '[Review #1] Task: Fix the redirect | Summary: Fixed the redirect loop. | Detected file edits: /r/login.ts | Branch: ab/BD1 | Reply with [通過 #1] or [退回 #1] followed by the reason. Do not write either marker before you decide.',
     );
     await until(() => taskNow(task.id).auto?.state === 'review_sent', 'review sent state');
     saved = taskNow(task.id);
@@ -274,7 +274,7 @@ describe('task automation (full loop)', () => {
     );
     await until(() => textsTo(t.daemon, t.bd).length === 2, 'reject sent to owner');
     expect(textsTo(t.daemon, t.bd)[1]).toBe(
-      '[Task #1] Sent back by review: Missing a test for mobile Safari. | Task: Fix the redirect | When this task is finished, reply with [完成 #1] and a one-sentence summary.',
+      '[Task #1] Sent back by review: Missing a test for mobile Safari. | Task: Fix the redirect | When this task is finished, reply with [完成 #1] and a one-sentence summary. Do not write that marker before then.',
     );
     await until(() => taskNow(task.id).auto?.state === 'sent', 'reject delivered');
     expect(taskNow(task.id)).toMatchObject({ column: 'doing', rejectCount: 1, needsUser: false });

@@ -42,7 +42,7 @@ export const passMarker = (n: number) => `[通過 #${n}]`;
 export const rejectMarker = (n: number) => `[退回 #${n}]`;
 
 const finishLine = (n: number) =>
-  `When this task is finished, reply with ${doneMarker(n)} and a one-sentence summary.`;
+  `When this task is finished, reply with ${doneMarker(n)} and a one-sentence summary. Do not write that marker before then.`;
 
 /**
  * 回覆裡找任務標記，純子字串比對：`[完成 #3]`（也接受 `[完成#3]`）；
@@ -98,7 +98,7 @@ export function reviewPrompt(
   return [
     `[Review #${n}] Task: ${clip(task.title, TITLE_MAX_CHARS)}`,
     ...reportParts(report),
-    `Reply with ${passMarker(n)} or ${rejectMarker(n)} followed by the reason.`,
+    `Reply with ${passMarker(n)} or ${rejectMarker(n)} followed by the reason. Do not write either marker before you decide.`,
   ].join(' | ');
 }
 
