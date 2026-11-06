@@ -642,6 +642,9 @@ input.cmd:disabled {
 .canvas .tidy-toast.raised {
   margin-bottom: 72px;
 }
+.canvas .zoom .summary-toggle[aria-pressed='false'] {
+  border-color: var(--accent, currentColor);
+}
 @media (max-width: 640px) {
   .canvas .tidy-panel {
     margin: 8px 8px 0 0;

@@ -199,6 +199,7 @@ export function SessionNode({
   });
   const expanded = useViewsUi((s) => s.expandedIds.includes(data.sessionId));
   const toggleExpanded = useViewsUi((s) => s.toggleExpanded);
+  const summaryWhenZoomedOut = useViewsUi((s) => s.summaryWhenZoomedOut);
   const focused = useViewsUi((s) => s.focusId === data.sessionId);
   // 剛收到交接：外框一圈淡藍光，看得出是誰收到（動畫在 canvas.css）。
   const receiving = useHandoffActivity((s) => isReceiving(s.activities, data.sessionId));
@@ -213,7 +214,8 @@ export function SessionNode({
   if (!session) return null;
 
   // 失聯的機器沒有串流可接，維持凍結的最後畫面（規則四）。
-  const isTerminal = session.status !== 'offline' && (zoomedIn || expanded);
+  const isTerminal =
+    session.status !== 'offline' && (zoomedIn || expanded || !summaryWhenZoomedOut);
   // 摘要條填滿外框的倍率。實際倍率在 CSS 依畫布縮放（--z）封頂，見 canvas.css 的 .strip。
   const fill = w / STRIP_W;
   // 外框留在原地，只移動鏡頭；停在 xterm 門檻以下，其他卡維持摘要條。

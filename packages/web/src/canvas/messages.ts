@@ -120,6 +120,10 @@ registerMessages('zh-TW', {
   'canvas.tidy.teamAria': '整理團隊「{name}」',
   'canvas.tidy.previous': '回到上一次擺設',
   'canvas.tidy.previousHint': '換回整理前的位置；再按一次換回來',
+  'canvas.summaryMode.on': '摘要模式：開',
+  'canvas.summaryMode.off': '摘要模式：關',
+  'canvas.summaryMode.hint':
+    '縮小畫布時要不要換成摘要條。開：縮小時卡片換成摘要條（省資源、好掃視）。關：不管縮多小都顯示即時終端機。只記在這台瀏覽器。',
   'canvas.tidy.done': '已整理',
   'canvas.tidy.undo': '復原',
 });
@@ -257,6 +261,10 @@ registerMessages('en', {
   'canvas.tidy.teamAria': 'Tidy team "{name}"',
   'canvas.tidy.previous': 'Previous layout',
   'canvas.tidy.previousHint': 'Swap back to the layout before tidying; press again to swap back',
+  'canvas.summaryMode.on': 'Summary mode: on',
+  'canvas.summaryMode.off': 'Summary mode: off',
+  'canvas.summaryMode.hint':
+    'On: cards switch to the summary strip when zoomed out (lighter, easy to scan). Off: always show the live terminal at any zoom. Remembered in this browser only.',
   'canvas.tidy.done': 'Tidied',
   'canvas.tidy.undo': 'Undo',
 });

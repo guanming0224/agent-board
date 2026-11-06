@@ -22,9 +22,30 @@ interface ViewsUi {
   /** 畫布開著時，由畫布登記「在畫面中央打開快速建立」；頁首的「新增 session」優先用它。 */
   openQuickCreate: (() => void) | null;
   setOpenQuickCreate: (open: (() => void) | null) => void;
+  /** 畫布縮小（低於 xterm 門檻）時要不要換成摘要條。關掉就每張卡都一直是 xterm（GM 2026-11-06）。 */
+  summaryWhenZoomedOut: boolean;
+  setSummaryWhenZoomedOut: (on: boolean) => void;
 }
 
 const NARROW = '(max-width: 860px)';
+/** 每台瀏覽器自己記；讀不到（私密視窗、封鎖儲存）就用預設的「開」。 */
+const SUMMARY_KEY = 'agent-board.canvas.summary-when-zoomed-out';
+
+function readSummaryPref(): boolean {
+  try {
+    return localStorage.getItem(SUMMARY_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+function saveSummaryPref(on: boolean): void {
+  try {
+    localStorage.setItem(SUMMARY_KEY, on ? 'on' : 'off');
+  } catch {
+    // 存不了就只在這次有效
+  }
+}
 
 export const useViewsUi = create<ViewsUi>((set, get) => ({
   sideOpen: typeof matchMedia === 'undefined' ? true : !matchMedia(NARROW).matches,
@@ -50,4 +71,9 @@ export const useViewsUi = create<ViewsUi>((set, get) => ({
   setCanvasReturn: (canvasReturn) => set({ canvasReturn }),
   openQuickCreate: null,
   setOpenQuickCreate: (openQuickCreate) => set({ openQuickCreate }),
+  summaryWhenZoomedOut: readSummaryPref(),
+  setSummaryWhenZoomedOut: (summaryWhenZoomedOut) => {
+    saveSummaryPref(summaryWhenZoomedOut);
+    set({ summaryWhenZoomedOut });
+  },
 }));

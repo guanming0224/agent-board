@@ -1548,3 +1548,28 @@ test.describe('一鍵整理', () => {
     });
   }
 });
+
+test('縮小時用摘要的開關：關掉後縮小也是終端機，重新載入還記得', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openCanvas(page);
+  expect(await zoomLevel(page)).toBeLessThan(90);
+  const toggle = page.getByRole('button', { name: /^摘要模式/ });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('[data-mode="terminal"]')).toHaveCount(0);
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle).toHaveText('摘要模式：關');
+  await expect(card(page, 's-auth')).toHaveAttribute('data-mode', 'terminal');
+  await expect(card(page, 's-tests')).toHaveAttribute('data-mode', 'terminal');
+
+  await page.reload();
+  await expect(card(page, 's-auth')).toHaveAttribute('data-mode', 'terminal');
+  await expect(page.getByRole('button', { name: /^摘要模式/ })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+
+  await page.getByRole('button', { name: /^摘要模式/ }).click();
+  await expect(card(page, 's-auth')).toHaveAttribute('data-mode', 'summary');
+});

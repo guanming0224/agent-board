@@ -112,6 +112,8 @@ function ZoomPanel() {
   const t = useT();
   const zoom = useStore((s) => s.transform[2]);
   const { zoomIn, zoomOut, fitView } = useReactFlow();
+  const summary = useViewsUi((s) => s.summaryWhenZoomedOut);
+  const setSummary = useViewsUi((s) => s.setSummaryWhenZoomedOut);
   return (
     <Panel
       position="bottom-right"
@@ -138,6 +140,16 @@ function ZoomPanel() {
       </button>
       <button onClick={() => void fitView({ ...FIT_OPTIONS, duration: motion() })}>
         {t('canvas.zoom.fit')}
+      </button>
+      {/* 縮小時要不要換成摘要條（GM 2026-11-06）；只記在這台瀏覽器。 */}
+      <button
+        type="button"
+        className="summary-toggle"
+        aria-pressed={summary}
+        title={t('canvas.summaryMode.hint')}
+        onClick={() => setSummary(!summary)}
+      >
+        {t(summary ? 'canvas.summaryMode.on' : 'canvas.summaryMode.off')}
       </button>
     </Panel>
   );
