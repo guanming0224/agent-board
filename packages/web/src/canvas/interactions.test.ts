@@ -325,11 +325,4 @@ describe('畫哪些線', () => {
     expect(hosts.has('m->lead')).toBe(false);
     expect(links.find((l) => l.kind === 'team')!.offset).toBe(0);
   });
-
-  it('兩個方向都有線：標籤一上一下，不疊在一起', () => {
-    const links = buildLinks({ ...base, handoffs: [handoff('w1', 'lead'), handoff('lead', 'w1')] });
-    const side = (id: string) => links.find((l) => l.id === id)!.side;
-    expect([side('lead->w1'), side('w1->lead')]).toEqual([-1, 1]);
-    expect(side('dispatch:lead->m')).toBe(0);
-  });
 });

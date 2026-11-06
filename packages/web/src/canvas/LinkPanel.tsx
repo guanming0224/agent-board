@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Panel } from '@xyflow/react';
 import { useT } from '../shared/i18n';
 import { useLinkFilters } from './handoffActivity';
@@ -17,16 +17,35 @@ const LEGEND = ['handoff', 'dispatch', 'team', 'traffic', 'flow', 'flash'] as co
 
 /**
  * 畫布左上的「線」：四個開關（交接／派工／任務／關係線，每台瀏覽器自己記）＋線型圖例。
- * 寬螢幕開關一直看得到，按「線」打開圖例；手機收成一顆按鈕，按了才出現開關和圖例，不擋卡片。
+ * 寬螢幕開關一直看得到，按「線」打開圖例；手機收成一顆按鈕，按了才出現開關和圖例。
+ * 一開始收著，點別的地方或按 Esc 就收起，不擋卡片。
  */
 export function LinkPanel() {
   const t = useT();
   const filters = useLinkFilters((s) => s.filters);
   const toggle = useLinkFilters((s) => s.toggle);
   const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  // 圖例會蓋到左上的團隊框與卡片：點別的地方或按 Esc 就收起。
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!(e.target instanceof Node) || !root.current?.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
   const on = FILTER_KEYS.filter((k) => filters[k]).length;
   return (
     <Panel
+      ref={root}
       position="top-left"
       className={`link-panel${open ? ' open' : ''}`}
       data-testid="link-panel"

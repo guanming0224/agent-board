@@ -45,6 +45,7 @@ import { HandoffEdge, type LinkEdgeType } from './HandoffEdge';
 import { useHandoffActivity, useHandoffEvents, useLinkFilters } from './handoffActivity';
 import { activityKey, type Channel } from './handoffActivityState';
 import { buildLinks, COUNT_MS, trafficHosts } from './interactions';
+import { placeLabels, textWidth } from './labelPlacement';
 import { LinkPanel } from './LinkPanel';
 import { motion } from './motion';
 import {
@@ -72,6 +73,11 @@ const edgeTypes = { handoff: HandoffEdge };
 /** 「全部顯示」不跨過 xterm 門檻，總覽一定是摘要條。 */
 const FIT_OPTIONS = { padding: 0.06, maxZoom: TERMINAL_ZOOM - 0.05, minZoom: 0.05 };
 const SAVE_DEBOUNCE_MS = 400;
+/** 拖線把手在卡片上緣往下 28px（canvas.css .ab-handle）：線從這裡出發。 */
+const HANDLE_Y = 28;
+/** 線上標籤的大概大小（螢幕 px）：規則線寫觸發條件（textWidth 估），其他線只有次數徽章。 */
+const LABEL_BADGE_W = 28;
+const LABEL_H = 22;
 const DELETE_KEYS = ['Backspace', 'Delete'];
 /** 快速建立小卡的寬度（flows.css .quick-create）＋邊距，用來把小卡留在畫面裡。 */
 const QUICK_W = 392;
@@ -393,6 +399,8 @@ function Flow({
   }, [selectedKey]);
 
   const liveIds = useMemo(() => new Set(cards.map((n) => n.id)), [cards]);
+  // 標籤避開卡片要用螢幕上的大小換算；縮放取到 0.05，拖曳縮放時不每格重算。
+  const zoom = useStore((s) => Math.round(s.transform[2] * 20) / 20);
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
   // 派工的關係只看 dispatchedBy：其他欄位（狀態、最後幾行）變了不重算線。
   const dispatchSig = sessions.map((s) => `${s.id}<${s.dispatchedBy ?? ''}`).join('|');
@@ -424,6 +432,43 @@ function Flow({
       traffic,
     });
     const hosts = trafficHosts(links);
+    // 標籤位置：規則線（一直有字）先放，再放有往來的線的次數徽章；都避開卡片與彼此。
+    const z = zoom || 1;
+    const labeled = links
+      .filter(
+        (l) =>
+          l.kind === 'handoff' ||
+          (traffic.has(activityKey(l.source, l.target)) &&
+            hosts.get(activityKey(l.source, l.target)) === l.id),
+      )
+      .sort((a, b) => Number(b.kind === 'handoff') - Number(a.kind === 'handoff'));
+    const spots = placeLabels(
+      labeled.flatMap((l) => {
+        const from = rects.get(l.source);
+        const to = rects.get(l.target);
+        if (!from || !to) return [];
+        const key = activityKey(l.source, l.target);
+        const badge = traffic.has(key) && hosts.get(key) === l.id ? LABEL_BADGE_W : 0;
+        const rule = l.handoff
+          ? textWidth(
+              l.handoff.triggers.map((x) => t(`canvas.handoff.${x}`)).join('、') +
+                (l.handoff.enabled ? '' : t('canvas.handoff.off')),
+            )
+          : 0;
+        const wide = Math.max(rule + badge, LABEL_BADGE_W);
+        return [
+          {
+            id: l.id,
+            source: { x: from.x + from.w, y: from.y + HANDLE_Y + l.offset },
+            target: { x: to.x, y: to.y + HANDLE_Y + l.offset },
+            w: wide / z,
+            h: LABEL_H / z,
+          },
+        ];
+      }),
+      [...rects.values()],
+      6 / z,
+    );
     return links.map((link): LinkEdgeType => ({
       id: link.id,
       type: 'handoff',
@@ -438,13 +483,13 @@ function Flow({
         enabled: link.handoff?.enabled ?? true,
         offset: link.offset,
         host: hosts.get(activityKey(link.source, link.target)) === link.id,
-        side: link.side,
+        label: spots.get(link.id),
       },
       // 隊長 → 成員是編制，不是流程：不畫箭頭。
       markerEnd:
         link.kind === 'team' ? undefined : { type: MarkerType.ArrowClosed, color: 'var(--muted)' },
     }));
-  }, [handoffs, members, liveIds, selectedEdges, trafficSig, dispatchSig, filters]);
+  }, [handoffs, members, liveIds, selectedEdges, trafficSig, dispatchSig, filters, rects, zoom, t]);
 
   // Esc 關掉點線打開的小視窗（取消選取線）。
   useEffect(() => {

@@ -8,6 +8,7 @@ import {
   describeTalk,
   firstLine,
   isReceiving,
+  LINGER_MS,
   nextChangeAt,
   parseHandoffEvent,
   phaseAt,
@@ -150,10 +151,11 @@ describe('交接事件 → 動畫狀態', () => {
     expect(parseHandoffEvent(fired('a', 'a'))).toBeNull();
   });
 
-  it('階段：播放 → 一分鐘內說過話 → 消失；擋下的播放比較短', () => {
+  it('階段：播放 → 標籤多留幾秒 → 一分鐘內說過話（收成徽章）→ 消失；擋下的播放比較短', () => {
     expect(phaseAt({ kind: 'fired', receivedAt: 0 }, ACTIVE_MS.fired - 1)).toBe('active');
-    expect(phaseAt({ kind: 'fired', receivedAt: 0 }, ACTIVE_MS.fired)).toBe('recent');
-    expect(phaseAt({ kind: 'blocked', receivedAt: 0 }, ACTIVE_MS.blocked)).toBe('recent');
+    expect(phaseAt({ kind: 'fired', receivedAt: 0 }, ACTIVE_MS.fired)).toBe('linger');
+    expect(phaseAt({ kind: 'fired', receivedAt: 0 }, ACTIVE_MS.fired + LINGER_MS)).toBe('recent');
+    expect(phaseAt({ kind: 'blocked', receivedAt: 0 }, ACTIVE_MS.blocked)).toBe('linger');
     expect(ACTIVE_MS.blocked).toBeLessThan(ACTIVE_MS.fired);
     expect(phaseAt({ kind: 'fired', receivedAt: 0 }, RECENT_MS)).toBeNull();
   });
@@ -162,7 +164,9 @@ describe('交接事件 → 動畫狀態', () => {
     const map = recordHandoff(empty, fired(), 1000);
     expect(map.get('a->b')).toMatchObject({ phase: 'active', seq: 1, receivedAt: 1000 });
     expect(advance(map, 1001)).toBe(map);
-    const recent = advance(map, 1000 + ACTIVE_MS.fired);
+    const linger = advance(map, 1000 + ACTIVE_MS.fired);
+    expect(linger.get('a->b')?.phase).toBe('linger');
+    const recent = advance(linger, 1000 + ACTIVE_MS.fired + LINGER_MS);
     expect(recent.get('a->b')?.phase).toBe('recent');
     expect(advance(recent, 1000 + RECENT_MS).size).toBe(0);
   });
@@ -224,7 +228,9 @@ describe('交接事件 → 動畫狀態', () => {
     let map = recordHandoff(empty, fired(), 0);
     map = recordHandoff(map, blocked('loop', 'c', 'd'), 100);
     expect(nextChangeAt(map)).toBe(100 + ACTIVE_MS.blocked);
-    expect(nextChangeAt(advance(map, ACTIVE_MS.fired + 1))).toBe(RECENT_MS);
+    const later = advance(map, ACTIVE_MS.fired + 1);
+    expect(nextChangeAt(later)).toBe(100 + ACTIVE_MS.blocked + LINGER_MS);
+    expect(nextChangeAt(advance(later, ACTIVE_MS.fired + LINGER_MS + 101))).toBe(RECENT_MS);
   });
 
   it('摘要只取第一行、太長截斷', () => {

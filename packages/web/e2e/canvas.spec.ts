@@ -1882,3 +1882,100 @@ test.describe('狀態一眼看得出來（GM 2026-11-06）', () => {
     await shot(page, 'status-zoomed-out');
   });
 });
+
+test.describe('線上標籤不擋卡片（審查回饋 2026-11-06）', () => {
+  const event = (page: Page, at: string, type: string, payload: object) =>
+    patchStore(
+      page,
+      `useBoard.getState().backend.addSessionEvent(${JSON.stringify(at)}, ${JSON.stringify(type)}, ${JSON.stringify(payload)});`,
+    );
+
+  test('播完再過幾秒，完整標籤收成次數徽章；滑過線或聚焦徽章再展開', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await event(page, 's-etl', 'dispatch.send', {
+      fromSessionId: 's-etl',
+      toSessionId: 's-docs',
+      workId: 'w1',
+      summary: 'Rewrite the README.',
+    });
+    const label = page.getByTestId('handoff-label-s-etl-s-docs');
+    await expect(label).toHaveAttribute('data-expanded', 'true');
+    await expect(label).toContainText(/已排入 \d\d:\d\d/);
+    await expect(label).toContainText('Rewrite the README.');
+    // 動畫 4 秒＋多留 3 秒後收起。
+    await expect(label).not.toHaveAttribute('data-expanded', { timeout: 10_000 });
+    await expect(label).toHaveAttribute('data-phase', 'recent');
+    await expect(label).not.toContainText('已排入');
+    await expect(label).not.toContainText('Rewrite');
+    const badge = page.getByTestId('pair-count-s-etl-s-docs');
+    await expect(badge).toHaveText('1');
+    // 鍵盤聚焦徽章：展開。
+    await badge.focus();
+    await expect(label).toHaveAttribute('data-expanded', 'true');
+    await expect(label).toContainText(/已排入 \d\d:\d\d/);
+    await badge.blur();
+    await expect(label).not.toHaveAttribute('data-expanded');
+    // 點徽章仍然打開紀錄。
+    await badge.click();
+    await expect(page.getByTestId('pair-popover-s-etl-s-docs')).toBeVisible();
+  });
+
+  test('相鄰卡片之間的往來：次數徽章與交接條件不壓在任何卡片上', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await patchStore(
+      page,
+      `useBoard.getState().backend.patchSession('s-docs', { dispatchedBy: 's-tests' });`,
+    );
+    const pairs: [string, string, string, object][] = [
+      ['s-tests', 'dispatch.send', 's-docs', { workId: 'w1', summary: 'A' }],
+      ['s-docs', 'dispatch.result', 's-tests', { workId: 'w0', summary: 'B' }],
+      ['s-ml', 'dispatch.result', 's-etl', { workId: 'w2', summary: 'C' }],
+      ['s-auth', 'task.dispatched', 's-etl', { taskId: 't', kind: 'review' }],
+    ];
+    for (const [from, type, to, extra] of pairs) {
+      const at = type === 'task.dispatched' ? to : from;
+      await event(page, at, type, { fromSessionId: from, toSessionId: to, ...extra });
+    }
+    // 收成徽章後量。
+    await expect(page.locator('.edge-label[data-expanded]')).toHaveCount(0, { timeout: 10_000 });
+    const cards = await page
+      .locator('.react-flow__node')
+      .evaluateAll((els) => els.map((el) => el.getBoundingClientRect().toJSON() as DOMRect));
+    const labels = page.locator('.edge-count, [data-testid^="handoff-s-"]');
+    await expect(labels).toHaveCount(5);
+    const boxes = await labels.evaluateAll((els) =>
+      els.map((el) => el.getBoundingClientRect().toJSON() as DOMRect),
+    );
+    const hit = (a: DOMRect, b: DOMRect) =>
+      a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    for (const box of boxes) {
+      for (const c of cards) expect(hit(box, c), JSON.stringify({ box, c })).toBe(false);
+    }
+    // 標籤彼此也不重疊。
+    for (let i = 0; i < boxes.length; i += 1) {
+      for (let j = i + 1; j < boxes.length; j += 1) expect(hit(boxes[i]!, boxes[j]!)).toBe(false);
+    }
+    await shot(page, 'labels-in-gaps');
+  });
+
+  test('「線」的圖例一開始收著；點別的地方或按 Esc 收起', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    const toggle = page.getByTestId('link-panel').getByRole('button', { name: /^線/ });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('.link-legend')).toHaveCount(0);
+    await toggle.click();
+    await expect(page.locator('.link-legend')).toBeVisible();
+    // 點開關不會收起。
+    await page.getByTestId('link-filter-task').click();
+    await expect(page.locator('.link-legend')).toBeVisible();
+    await page.getByTestId('link-filter-task').click();
+    await page.mouse.click(720, 860);
+    await expect(page.locator('.link-legend')).toHaveCount(0);
+    await toggle.click();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.link-legend')).toHaveCount(0);
+  });
+});

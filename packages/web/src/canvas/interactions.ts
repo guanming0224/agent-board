@@ -199,11 +199,6 @@ export interface Link {
   offset: number;
   /** 交接規則線才有。 */
   handoff?: Handoff;
-  /**
-   * 兩個方向都有線時，兩條線的中點幾乎在同一個地方（把手一左一右），標籤分在上方（-1）與下方（1）；
-   * 只有一個方向是 0。
-   */
-  side: -1 | 0 | 1;
 }
 
 /** 同方向的線之間錯開多少。把手在卡片邊上，錯開 14px 仍在邊上。 */
@@ -233,10 +228,10 @@ const pairOf = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
  */
 export function buildLinks(input: LinkInput): Link[] {
   const { live, filters } = input;
-  const links: Omit<Link, 'offset' | 'side'>[] = [];
+  const links: Omit<Link, 'offset'>[] = [];
   const connected = new Set<string>();
   const directed = new Set<string>();
-  const add = (link: Omit<Link, 'offset' | 'side'>) => {
+  const add = (link: Omit<Link, 'offset'>) => {
     if (!live.has(link.source) || !live.has(link.target) || link.source === link.target) return;
     links.push(link);
     directed.add(activityKey(link.source, link.target));
@@ -282,7 +277,7 @@ export function buildLinks(input: LinkInput): Link[] {
   }
 
   // 同方向的線依種類排好，置中錯開。
-  const groups = new Map<string, Omit<Link, 'offset' | 'side'>[]>();
+  const groups = new Map<string, Omit<Link, 'offset'>[]>();
   for (const link of links) {
     const key = activityKey(link.source, link.target);
     groups.set(key, [...(groups.get(key) ?? []), link]);
@@ -290,11 +285,7 @@ export function buildLinks(input: LinkInput): Link[] {
   return [...groups.values()].flatMap((group) =>
     group
       .sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind])
-      .map((link, i) => {
-        const reverse = directed.has(activityKey(link.target, link.source));
-        const side: Link['side'] = !reverse ? 0 : link.source < link.target ? -1 : 1;
-        return { ...link, offset: (i - (group.length - 1) / 2) * PARALLEL_GAP, side };
-      }),
+      .map((link, i) => ({ ...link, offset: (i - (group.length - 1) / 2) * PARALLEL_GAP })),
   );
 }
 

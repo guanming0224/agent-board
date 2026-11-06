@@ -9,8 +9,11 @@ export type HandoffKind = 'fired' | 'delivered' | 'blocked' | 'dropped' | 'verdi
 /** 事件屬於哪一類往來：畫布的篩選開關用（交接／派工／任務）。 */
 export type Channel = 'handoff' | 'dispatch' | 'task';
 export const CHANNELS: readonly Channel[] = ['handoff', 'dispatch', 'task'];
-/** active：正在播動畫；recent：一分鐘內說過話，線維持淡淡的標記。 */
-export type HandoffPhase = 'active' | 'recent';
+/**
+ * active：正在播動畫；linger：播完後幾秒，完整標籤還留著讓人看完；
+ * recent：一分鐘內說過話，標籤收成線上的次數徽章（滑過或聚焦才展開）。
+ */
+export type HandoffPhase = 'active' | 'linger' | 'recent';
 
 /** 同一波（動畫還在播時陸續收到的）事件數。同一對 session 可能有好幾條規則。 */
 export interface HandoffCounts {
@@ -58,6 +61,8 @@ export const ACTIVE_MS: Record<HandoffKind, number> = {
   dropped: 1800,
   verdict: 2500,
 };
+/** 動畫播完後，完整標籤再留幾秒。 */
+export const LINGER_MS = 3000;
 /** 從收到起算，線維持「剛說過話」的時間。 */
 export const RECENT_MS = 60_000;
 
@@ -253,6 +258,7 @@ export function phaseAt(
 ): HandoffPhase | null {
   const elapsed = now - activity.receivedAt;
   if (elapsed < ACTIVE_MS[activity.kind]) return 'active';
+  if (elapsed < ACTIVE_MS[activity.kind] + LINGER_MS) return 'linger';
   if (elapsed < RECENT_MS) return 'recent';
   return null;
 }
@@ -277,7 +283,9 @@ export function nextChangeAt(map: ActivityMap): number | null {
     const at =
       activity.phase === 'active'
         ? activity.receivedAt + ACTIVE_MS[activity.kind]
-        : activity.receivedAt + RECENT_MS;
+        : activity.phase === 'linger'
+          ? activity.receivedAt + ACTIVE_MS[activity.kind] + LINGER_MS
+          : activity.receivedAt + RECENT_MS;
     if (soonest === null || at < soonest) soonest = at;
   }
   return soonest;

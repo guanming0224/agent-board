@@ -1,12 +1,5 @@
 import { useMemo, useState } from 'react';
-import {
-  BaseEdge,
-  EdgeLabelRenderer,
-  getBezierPath,
-  useStoreApi,
-  type Edge,
-  type EdgeProps,
-} from '@xyflow/react';
+import { BaseEdge, EdgeLabelRenderer, useStoreApi, type Edge, type EdgeProps } from '@xyflow/react';
 import { useMaskText } from '../security';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
@@ -26,6 +19,7 @@ import {
   type Interaction,
   type LinkKind,
 } from './interactions';
+import { edgeCurve, type LabelSpot } from './labelPlacement';
 
 export type LinkEdgeType = Edge<
   {
@@ -37,8 +31,8 @@ export type LinkEdgeType = Edge<
     offset: number;
     /** 這條線負責畫 source → target 的往來動畫與次數（同方向只有一條線負責）。 */
     host: boolean;
-    /** 兩個方向都有線時，標籤分在中點上方（-1）與下方（1），不疊在一起。 */
-    side: -1 | 0 | 1;
+    /** 標籤在線上的位置（CanvasPage 統一算，避開卡片與其他標籤）；沒有就放中點。 */
+    label?: LabelSpot;
   },
   'handoff'
 >;
@@ -172,11 +166,20 @@ export function HandoffEdge(props: EdgeProps<LinkEdgeType>) {
   const [hover, setHover] = useState(false);
   const [focused, setFocused] = useState(false);
   const offset = props.data?.offset ?? 0;
-  const [path, labelX, labelY] = getBezierPath({
-    ...props,
-    sourceY: props.sourceY + offset,
-    targetY: props.targetY + offset,
-  });
+  const curve = edgeCurve(
+    { x: props.sourceX, y: props.sourceY + offset },
+    { x: props.targetX, y: props.targetY + offset },
+  );
+  const path = curve.d;
+  const spot = props.data?.label ?? { t: 0.5, dx: 0, dy: 0 };
+  const mid = curve.at(spot.t);
+  const labelX = mid.x + spot.dx;
+  const labelY = mid.y + spot.dy;
+  // 完整標籤（做了什麼、結果、時間、摘要）只在播放中與播完幾秒內出現；之後收成次數徽章，
+  // 滑過線或徽章、用鍵盤聚焦、點開紀錄時再展開。
+  const expanded =
+    activity !== undefined &&
+    (activity.phase !== 'recent' || hover || focused || props.selected === true);
   const talk = activity ? ` talk-${activity.kind} talk-${activity.phase}` : '';
   const recent = kind === 'traffic' && !activity ? ' quiet' : '';
   // 點線打開紀錄時，說明框的內容已經在紀錄裡，不重複疊一層。
@@ -207,18 +210,15 @@ export function HandoffEdge(props: EdgeProps<LinkEdgeType>) {
         {!props.data?.enabled && <span className="edge-off">{t('canvas.handoff.off')}</span>}
       </>
     );
-  } else if (kind === 'traffic') {
+  } else if (kind === 'traffic' && expanded) {
     base = (
       <span>
         {activity && activity.channel !== 'handoff' ? t(activity.what) : t('canvas.talk.temp')}
       </span>
     );
   }
-  const hasLabel = base !== null || activity !== undefined || count > 0 || props.selected === true;
-  const side = props.data?.side ?? 0;
-  // 縮放後再移動：上方的標籤底邊對齊中點、下方的頂邊對齊中點（各留 4px）。
-  const shift =
-    side < 0 ? ' translate(0, calc(-50% - 4px))' : side > 0 ? ' translate(0, calc(50% + 4px))' : '';
+  const limit = activity?.reason === 'round_limit';
+  const hasLabel = base !== null || expanded || count > 0 || limit || props.selected === true;
 
   return (
     <>
@@ -255,6 +255,7 @@ export function HandoffEdge(props: EdgeProps<LinkEdgeType>) {
             data-phase={activity?.phase}
             data-channel={activity?.channel}
             data-selected={props.selected === true || undefined}
+            data-expanded={expanded || undefined}
             data-testid={labelId}
             tabIndex={activity ? 0 : undefined}
             aria-describedby={showTip ? tipId : undefined}
@@ -263,19 +264,19 @@ export function HandoffEdge(props: EdgeProps<LinkEdgeType>) {
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             style={{
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px) scale(calc(1 / var(--z, 1)))${shift}`,
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px) scale(calc(1 / var(--z, 1)))`,
             }}
           >
             {base}
-            {activity && kind !== 'handoff' && kind !== 'traffic' && (
+            {expanded && activity && kind !== 'handoff' && kind !== 'traffic' && (
               <span className="edge-talk-what">{t(activity.what)}</span>
             )}
-            {activity && (
+            {expanded && activity && (
               <span className="edge-talk-at">
                 {t(`canvas.talk.${activity.kind}`, { time: clock(activity.receivedAt, locale) })}
               </span>
             )}
-            {activity?.phase === 'active' && shortSum && (
+            {expanded && shortSum && (
               <span
                 className="edge-talk-sum"
                 data-testid={`talk-sum-${activity.from}-${activity.to}`}
@@ -283,7 +284,7 @@ export function HandoffEdge(props: EdgeProps<LinkEdgeType>) {
                 {shortSum}
               </span>
             )}
-            {activity && roundLabel(activity, t) && (
+            {expanded && activity && roundLabel(activity, t) && (
               <span
                 className="edge-talk-round"
                 data-testid={`handoff-round-${activity.from}-${activity.to}`}
