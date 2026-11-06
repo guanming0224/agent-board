@@ -287,6 +287,9 @@ describe('SessionStore', () => {
     );
     const loaded = new SessionStore(old);
     expect(loaded.endedRuntimes).toEqual([]);
+    // 舊檔沒有 dispatch：和 hub 預設一樣當開，升級後第一次接回的 session 才會掛上派工工具。
+    expect(loaded.dispatch).toBe(true);
+    expect(new SessionStore(temp()).dispatch).toBe(true);
     expect(readdirSync(old).some((name) => name.includes('corrupt'))).toBe(false);
   });
 

@@ -23,8 +23,12 @@ const PersistedState = z.object({
   /** 上次 hub.welcome 下發的值，hub 連不上時危險指令比對仍照這份。 */
   dangerRules: z.array(z.string()).nullable(),
   stuckMinutes: z.number().int().positive().nullable(),
-  /** 上次 hub.welcome 的 `dispatch`：daemon 重啟、hub 還沒連上時接回的 session 要不要掛派工工具。 */
-  dispatch: z.boolean().default(false),
+  /**
+   * 上次 hub.welcome 的 `dispatch`：daemon 重啟、hub 還沒連上時接回的 session 要不要掛派工工具。
+   * 預設和 hub 的 Settings.dispatch 一樣是開：舊版 daemon 的檔案沒有這個欄位，預設關的話升級後
+   * 第一次接回的 session 全都不會掛上（2026-11-06 上架時遇到）。
+   */
+  dispatch: z.boolean().default(true),
   sessions: z.array(PersistedSession),
   /** 已結束但結果還沒送到 hub 的 session。hello 只列活著的，hub 只能靠這個知道結果。 */
   endedRuntimes: z.array(SessionRuntime).default([]),
@@ -37,7 +41,7 @@ export class SessionStore {
     version: 1,
     dangerRules: null,
     stuckMinutes: null,
-    dispatch: false,
+    dispatch: true,
     sessions: [],
     endedRuntimes: [],
   };
