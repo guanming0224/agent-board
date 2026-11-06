@@ -154,13 +154,16 @@ test.describe('遮蔽模式：畫面', () => {
     );
     await expect(page.getByTestId('mask-chip')).toHaveText(/遮蔽中/);
     await expect(page.locator('pre.command').first()).toContainText('curl');
-    // 確認三張卡都真的畫出來了，下面的「不含金鑰」才有意義。
-    await expect(page.locator('.diff')).toContainText('TOKEN=');
-    await expect(page.locator('.question')).toContainText('Use ');
-    await expect(page.locator('body')).not.toContainText(BODY);
     // 命中危險指令：第一次按會顯示指令全文，那裡也要打碼。
     await page.getByRole('button', { name: '允許一次' }).first().click();
     await expect(page.locator('.armed pre.command')).toContainText('curl');
+    await expect(page.locator('body')).not.toContainText(BODY);
+    // 審核中心一次只展開一項：逐項選，確認三張卡都真的畫出來了，「不含金鑰」才有意義。
+    await page.getByTestId('review-row-a2').click();
+    await expect(page.locator('.diff')).toContainText('TOKEN=');
+    await expect(page.locator('body')).not.toContainText(BODY);
+    await page.getByTestId('review-row-a3').click();
+    await expect(page.locator('.question')).toContainText('Use ');
     await expect(page.locator('body')).not.toContainText(BODY);
   });
 
@@ -169,7 +172,7 @@ test.describe('遮蔽模式：畫面', () => {
     const sessions = [session({ status: 'waiting_permission' })];
     const approvals = [approval({ toolInput: { command: `use ${KEY}` } })];
     await seed(page, 'queue', sessions, approvals);
-    await expect(page.locator('.queue-item .tool')).toContainText('use');
+    await expect(page.locator('.triage-row .triage-context')).toContainText('use');
     await expect(page.locator('body')).not.toContainText(BODY);
     await seed(page, 'inbox', sessions, approvals);
     await expect(page.getByTestId('mask-chip')).toHaveText(/遮蔽中/);

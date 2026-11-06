@@ -89,6 +89,7 @@ const CALL_SITES = new Set([
   'packages/web/src/team/TaskBoard.tsx send-prompt',
   'packages/web/src/flows/InboxPage.tsx send-prompt',
   'packages/web/src/flows/ReviewPage.tsx send-prompt',
+  'packages/web/src/flows/QueueBoard.tsx send-prompt',
   // 會進發布檔的安裝程式：npm ci、launchctl／systemctl／schtasks、等 hub 起來
   'scripts/installer.mjs child-process',
   'scripts/installer.mjs fetch',

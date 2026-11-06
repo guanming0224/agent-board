@@ -141,6 +141,9 @@ async function open(page: Page, route: string, seed: Seed = {}) {
   }, `#/${route}`);
 }
 
+/** 審核中心一次只展開一項：從左邊（手機是上面）的清單選。 */
+const pick = (page: Page, key: string) => page.getByTestId(`review-row-${key}`).click();
+
 const calls = (page: Page) =>
   page.evaluate(() => (window as unknown as { __calls: Record<string, unknown>[] }).__calls);
 
@@ -371,6 +374,7 @@ test.describe('審核中心', () => {
     await expect(
       page.getByTestId('review-none').getByRole('button', { name: '允許並記住' }),
     ).toBeDisabled();
+    await pick(page, 'some');
     await page.getByTestId('review-some').getByRole('button', { name: '允許並記住' }).click();
     await expect(page.getByTestId('review-some')).toHaveCount(0);
     expect(await calls(page)).toEqual([
@@ -418,13 +422,14 @@ test.describe('審核中心', () => {
     const card = page.getByTestId('review-p1');
     await expect(card.locator('.command')).toContainText('2. Backfill');
     await expect(card.locator('.lamp')).toContainText('▣');
-    await expect(page.getByTestId('review-p2').locator('.command')).toHaveText('Plan from message');
     await card.getByRole('button', { name: '要求修改' }).click();
     await expect(card.locator('.msg')).toHaveText('要填修改意見才能送出');
     expect(await calls(page)).toEqual([]);
     await card.getByLabel('修改意見（必填）').fill('先備份');
     await card.getByRole('button', { name: '要求修改' }).click();
     await expect(card).toHaveCount(0);
+    // 處理完自動選下一項（不跳回最上面）。
+    await expect(page.getByTestId('review-p2').locator('.command')).toHaveText('Plan from message');
     await page.getByTestId('review-p2').getByRole('button', { name: '批准計畫' }).click();
     await expect(page.getByTestId('review-p2')).toHaveCount(0);
     expect(await calls(page)).toEqual([
@@ -493,6 +498,7 @@ test.describe('審核中心', () => {
     await expect(card.getByRole('button', { name: '拒絕' })).toBeDisabled();
     await expect(card.getByLabel('拒絕原因（必填）')).toHaveCount(0);
     // 一般權限請求 member 照常能決定。
+    await pick(page, 'old');
     const normal = page.getByTestId('review-old');
     await normal.getByRole('button', { name: '允許一次' }).click();
     await expect(normal).toHaveCount(0);
@@ -534,6 +540,7 @@ test.describe('審核中心', () => {
     await expect(card).toBeInViewport();
     await expect(card).toHaveClass(/targeted/);
 
+    await pick(page, 'a6');
     const other = page.getByTestId('review-a6').getByLabel('拒絕原因（必填）');
     await other.focus();
     await setBoard(page, { machines: [{ ...rigA }] });
@@ -545,7 +552,8 @@ test.describe('審核中心', () => {
     const first = page.getByTestId('review-a0');
     await expect(first).toBeFocused();
     await expect(first).toBeInViewport();
-    await expect(card).not.toHaveClass(/targeted/);
+    await expect(first).toHaveClass(/targeted/);
+    await expect(card).toHaveCount(0);
 
     await page.evaluate(() => {
       location.hash = '#/review/nope';
@@ -578,6 +586,7 @@ test.describe('審核中心', () => {
     const lost = page.getByTestId('review-lost');
     await expect(lost.getByRole('button', { name: '允許一次' })).toBeDisabled();
     await expect(lost).toContainText('看不出這是哪個 session');
+    await pick(page, 'off');
     const off = page.getByTestId('review-off');
     await expect(off.getByRole('button', { name: '允許一次' })).toBeDisabled();
     await expect(off).toContainText('連不到 rig-off，恢復後會自動接回');
@@ -2305,13 +2314,16 @@ test.describe('語系與版面', () => {
     test.use({ locale: 'en-US' });
     test('審核卡用 STYLE.md §6 的詞', async ({ page }) => {
       await open(page, 'review', rich());
+      await pick(page, 'a1');
       const card = page.getByTestId('review-a1');
       await expect(card.getByRole('button', { name: 'Allow once' })).toBeVisible();
       await expect(card.getByRole('button', { name: 'Always allow' })).toBeVisible();
       await expect(card.getByRole('button', { name: 'Deny' })).toBeVisible();
+      await pick(page, 'a3');
       const plan = page.getByTestId('review-a3');
       await expect(plan.getByRole('button', { name: 'Approve plan' })).toBeVisible();
       await expect(plan.getByRole('button', { name: 'Request changes' })).toBeVisible();
+      await pick(page, 'a2');
       await expect(page.getByTestId('review-a2').locator('.chip.bypass')).toHaveText(
         'Bypass permissions',
       );

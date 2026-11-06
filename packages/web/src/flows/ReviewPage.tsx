@@ -1,5 +1,5 @@
 // 審核中心：按「允許」之前先確認呼號（STYLE.md 邏輯 2、6）。
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
@@ -33,8 +33,19 @@ import {
   type Loaded,
   type Note,
 } from './common';
+import { terminalHash } from '../canvas/terminalRoute';
+import { DecisionHistory } from './DecisionHistory';
+import { StatusBadge } from './StatusBadge';
 import { summarizeTool } from './toolView';
-import { isFault, workItems, type WorkItem } from './workItems';
+import {
+  contextLine,
+  groupReview,
+  keepSelection,
+  reviewGroupOf,
+  reviewItems,
+  type ReviewGroup,
+} from './triage';
+import { workItems, type WorkItem } from './workItems';
 
 interface CardContext {
   machines: Machine[];
@@ -112,7 +123,7 @@ function PermissionActions({
   };
 
   return (
-    <>
+    <div className="decision-bar">
       <div className="acts">
         <button
           type="button"
@@ -132,9 +143,6 @@ function PermissionActions({
             {t('flows.review.allowRemember')}
           </button>
         )}
-        <button type="button" disabled={disabled} onClick={deny}>
-          {t('flows.review.deny')}
-        </button>
         {!twoStep.armed && <Msg note={decide.note} />}
       </div>
       {twoStep.armed && (
@@ -144,19 +152,24 @@ function PermissionActions({
         </div>
       )}
       {!danger && !canRemember && <p className="hint">{t('flows.review.noSuggestions')}</p>}
-      {canDecide && (
-        <RequiredField
-          label={t('flows.review.denyReason')}
-          value={reason}
-          invalid={invalid}
-          inputRef={reasonRef}
-          onChange={(value) => {
-            setReason(value);
-            setInvalid(false);
-          }}
-        />
-      )}
-    </>
+      <div className="deny-row">
+        {canDecide && (
+          <RequiredField
+            label={t('flows.review.denyReason')}
+            value={reason}
+            invalid={invalid}
+            inputRef={reasonRef}
+            onChange={(value) => {
+              setReason(value);
+              setInvalid(false);
+            }}
+          />
+        )}
+        <button type="button" disabled={disabled} onClick={deny}>
+          {t('flows.review.deny')}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -182,7 +195,7 @@ function PlanActions({
     void decide.decide({ behavior: 'deny', reason: text });
   };
   return (
-    <>
+    <div className="decision-bar">
       <div className="acts">
         <button
           type="button"
@@ -192,22 +205,24 @@ function PlanActions({
         >
           {t('flows.review.approvePlan')}
         </button>
+        <Msg note={decide.note} />
+      </div>
+      <div className="deny-row">
+        <RequiredField
+          label={t('flows.review.changesComment')}
+          value={comment}
+          invalid={invalid}
+          inputRef={commentRef}
+          onChange={(value) => {
+            setComment(value);
+            setInvalid(false);
+          }}
+        />
         <button type="button" disabled={disabled} onClick={requestChanges}>
           {t('flows.review.requestChanges')}
         </button>
-        <Msg note={decide.note} />
       </div>
-      <RequiredField
-        label={t('flows.review.changesComment')}
-        value={comment}
-        invalid={invalid}
-        inputRef={commentRef}
-        onChange={(value) => {
-          setComment(value);
-          setInvalid(false);
-        }}
-      />
-    </>
+    </div>
   );
 }
 
@@ -237,7 +252,7 @@ function QuestionActions({
     void decide.decide(answerDecision(text));
   };
   return (
-    <>
+    <div className="decision-bar">
       {questions.map((q) => (
         <div key={q.question} className="question">
           <p className="body-text">{mask(q.question)}</p>
@@ -277,7 +292,7 @@ function QuestionActions({
         </button>
         <Msg note={decide.note} />
       </div>
-    </>
+    </div>
   );
 }
 
@@ -302,7 +317,7 @@ function ReplyActions({ session, disabled }: { session: Session; disabled: boole
     setNote({ text: t('flows.review.sent') });
   };
   return (
-    <>
+    <div className="decision-bar">
       <RequiredField
         label={t('flows.review.answer')}
         value={text}
@@ -319,18 +334,65 @@ function ReplyActions({ session, disabled }: { session: Session; disabled: boole
         </button>
         <Msg note={note} />
       </div>
-    </>
+    </div>
   );
+}
+
+/** 很長的計畫或輸出：先收合，按鈕展開全文（文字一直都在 DOM 裡，只是限制高度）。 */
+function Collapsible({ text, children }: { text: string; children: ReactNode }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const long = text.split('\n').length > COLLAPSE_LINES || text.length > COLLAPSE_CHARS;
+  if (!long) return <>{children}</>;
+  return (
+    <div className={`collapsible${open ? ' open' : ''}`}>
+      {children}
+      <button
+        type="button"
+        className="link-button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? t('flows.review.collapse') : t('flows.review.expand')}
+      </button>
+    </div>
+  );
+}
+
+const COLLAPSE_LINES = 14;
+const COLLAPSE_CHARS = 1400;
+
+/** 為什麼要你決定：一句白話。 */
+function WhyLine({ item }: { item: WorkItem }) {
+  const t = useT();
+  const kind = reviewGroupOf(item);
+  const mode = item.session?.permissionMode ?? 'default';
+  const text =
+    kind === 'permission'
+      ? t('flows.review.why.permission', { mode })
+      : t(
+          kind === 'danger'
+            ? 'flows.review.why.danger'
+            : kind === 'plan'
+              ? 'flows.review.why.plan'
+              : kind === 'question'
+                ? 'flows.review.why.question'
+                : 'flows.review.why.reply',
+        );
+  return <p className="why">{text}</p>;
 }
 
 function ReviewCard({
   item,
   context,
   targeted,
+  detail = false,
 }: {
   item: WorkItem;
   context: CardContext;
   targeted: boolean;
+  /** 審核中心右側的詳細面板：多顯示原因與 session 最後的輸出。 */
+  detail?: boolean;
 }) {
   const t = useT();
   const mask = useMaskText();
@@ -349,13 +411,19 @@ function ReviewCard({
   const danger = approval?.kind === 'danger';
   const bypass = session?.permissionMode === 'bypassPermissions';
   const gone = machine !== undefined && !machine.online;
+  const plan =
+    approval?.kind === 'plan'
+      ? (planText(approval) ?? approval.message ?? session?.lastLines.join('\n') ?? '')
+      : null;
+  const tail = session?.lastLines.join('\n') ?? '';
 
   return (
     <section
       ref={cardRef}
       tabIndex={-1}
-      className={`card review ${session ? handsClass(session.permissionMode) : ''}${gone ? ' gone' : ''}${targeted ? ' targeted' : ''}`}
+      className={`card review ${session ? handsClass(session.permissionMode) : ''}${gone ? ' gone' : ''}${targeted ? ' targeted' : ''}${detail ? ' detail' : ''}`}
       data-testid={`review-${item.key}`}
+      aria-label={session?.name ?? t('flows.review.unknownSession')}
     >
       {danger && (
         <div className="alert" role="alert">
@@ -384,16 +452,21 @@ function ReviewCard({
         {session && <h2 className="title">{session.name}</h2>}
         <WaitAge since={item.since} now={context.now} />
       </div>
+      {detail && <WhyLine item={item} />}
 
       {approval && approval.kind !== 'question' && approval.kind !== 'plan' && (
         <ToolBody approval={approval} />
       )}
-      {approval?.kind === 'plan' && (
-        <pre className="command plan">
-          {mask(planText(approval) ?? approval.message ?? session?.lastLines.join('\n') ?? '')}
-        </pre>
+      {plan !== null && (
+        <Collapsible text={plan}>
+          <pre className="command plan">{mask(plan)}</pre>
+        </Collapsible>
       )}
-      {!approval && session && <pre className="command">{mask(session.lastLines.join('\n'))}</pre>}
+      {!approval && session && (
+        <Collapsible text={tail}>
+          <pre className="command">{mask(tail)}</pre>
+        </Collapsible>
+      )}
 
       {blocked && <p className="blocked">{blocked}</p>}
 
@@ -415,19 +488,51 @@ function ReviewCard({
       {!approval && session && session.status !== 'waiting_input' && (
         <p className="hint">{t('flows.review.useTerminal')}</p>
       )}
+
+      {detail && approval && session && tail.trim() && (
+        <details className="session-tail">
+          <summary>{t('flows.review.lastOutput')}</summary>
+          <pre className="tail-lines">{mask(tail)}</pre>
+        </details>
+      )}
+      {detail && session && (
+        <div className="detail-links">
+          <a href={terminalHash(session.id)}>{t('flows.triage.openTerminal')}</a>
+        </div>
+      )}
     </section>
   );
 }
 
+const GROUP_LABEL: Record<ReviewGroup, string> = {
+  danger: 'flows.review.group.danger',
+  permission: 'flows.review.group.permission',
+  plan: 'flows.review.group.plan',
+  question: 'flows.review.group.question',
+  reply: 'flows.review.group.reply',
+};
+
+function isTyping(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable || target.closest('input, textarea, select') !== null)
+  );
+}
+
+/** 窄螢幕清單在上、詳細在下：選了之後捲到詳細。 */
+const NARROW = '(max-width: 899px)';
+
 export function ReviewPage() {
   const t = useT();
+  const mask = useMaskText();
   const board = useBoard();
   const projects = useProjects();
   const me = useCurrentUser();
   const target = useTargetSession();
   const now = useNow();
-  // 故障（✕ ⚠）沒有東西可審，留在待處理清單與收件匣。
-  const items = workItems(board).filter((item) => !isFault(item));
+  const items = reviewItems(workItems(board));
+  const groups = groupReview(items);
+  const order = groups.flatMap((g) => g.items.map((item) => item.key));
   const settling = useListSettling(items.map((item) => item.key).join('|'));
   const context: CardContext = {
     machines: board.machines,
@@ -438,15 +543,71 @@ export function ReviewPage() {
   };
 
   // 同一個 session 有多張卡時，指向排最前面的那張。
-  const targetKey = items.find(
-    (item) => (item.approval?.sessionId ?? item.session?.id) === target,
-  )?.key;
+  const targetKey = groups
+    .flatMap((g) => g.items)
+    .find((item) => (item.approval?.sessionId ?? item.session?.id) === target)?.key;
   const loaded = !(projects.loading && !projects.data);
+
+  const [picked, setPicked] = useState<string | null>(null);
+  const previous = useRef(order);
+  // 選中的處理掉之後，選原本位置的下一個（不跳回最上面）。
+  const selected = keepSelection(previous.current, order, picked);
+  useEffect(() => {
+    previous.current = order;
+    if (selected !== picked) setPicked(selected);
+  });
+  // 從畫布或網址指定的 session：選它。
+  useEffect(() => {
+    if (targetKey) setPicked(targetKey);
+  }, [targetKey]);
+
+  const listRef = useRef<HTMLElement>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+  const select = (key: string, focusRow = false) => {
+    setPicked(key);
+    if (focusRow) {
+      listRef.current
+        ?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`)
+        ?.focus({ preventScroll: false });
+    }
+  };
+  const move = (step: 1 | -1) => {
+    if (order.length === 0) return;
+    const at = selected === null ? -1 : order.indexOf(selected);
+    const next = order[Math.max(0, Math.min(order.length - 1, at + step))];
+    if (next) select(next, true);
+  };
+
+  // j／k、↑↓ 換選中的項目；在輸入框裡不搶。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || isTyping(e.target)) return;
+      const inList = listRef.current?.contains(e.target as Node) ?? false;
+      const free = e.target === document.body || e.target === document.documentElement;
+      if (!inList && !free) return;
+      if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        move(1);
+      } else if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        move(-1);
+      }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  });
+
+  const current = items.find((item) => item.key === selected) ?? null;
 
   return (
     <Page>
       <header className="page-head">
         <h1>{t('flows.review.title')}</h1>
+        {items.length > 0 && (
+          <span className="sub" data-testid="review-total">
+            {t('flows.review.total', { n: items.length })}
+          </span>
+        )}
       </header>
       {target && loaded && !targetKey && (
         <p className="blocked target-missing" role="status" data-testid="review-target-missing">
@@ -472,17 +633,65 @@ export function ReviewPage() {
           }
         />
       ) : (
-        <div className="grid2">
-          {items.map((item) => (
-            <ReviewCard
-              key={item.key}
-              item={item}
-              context={context}
-              targeted={item.key === targetKey}
-            />
-          ))}
+        <div className="review-layout">
+          <nav className="review-queue" ref={listRef} aria-label={t('flows.review.listAria')}>
+            {groups.map(({ group, items: rows }) => (
+              <section key={group} data-testid={`review-group-${group}`}>
+                <h2 className="group-title">
+                  {t(GROUP_LABEL[group])}
+                  <span className="count num">{rows.length}</span>
+                </h2>
+                <ul>
+                  {rows.map((item) => (
+                    <li key={item.key}>
+                      <button
+                        type="button"
+                        className="review-row"
+                        data-key={item.key}
+                        data-testid={`review-row-${item.key}`}
+                        aria-current={item.key === selected ? 'true' : undefined}
+                        tabIndex={item.key === selected ? 0 : -1}
+                        onClick={() => {
+                          select(item.key);
+                          if (matchMedia(NARROW).matches) {
+                            detailRef.current?.scrollIntoView({ block: 'start' });
+                          }
+                        }}
+                      >
+                        <span className="row-top">
+                          <StatusBadge kind={reviewGroupOf(item)} />
+                          <span className="row-name">
+                            {item.session?.name ?? t('flows.review.unknownSession')}
+                          </span>
+                          <WaitAge since={item.since} now={now} />
+                        </span>
+                        <span className="row-context">
+                          {mask(
+                            item.session ? contextLine({ ...item, session: item.session }) : '',
+                          )}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+            <p className="keys">{t('flows.review.keys')}</p>
+          </nav>
+          <div className="review-detail" ref={detailRef}>
+            {current && (
+              <ReviewCard
+                key={current.key}
+                item={current}
+                context={context}
+                targeted={current.key === targetKey}
+                detail
+              />
+            )}
+          </div>
         </div>
       )}
+      {loaded && <DecisionHistory me={me} />}
     </Page>
   );
 }
