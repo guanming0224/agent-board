@@ -1607,3 +1607,574 @@
   color: var(--quota);
   margin-left: 6px;
 }
+
+/* ── 狀態徽章（StatusBadge.tsx）。狀態色只從 token 取；之後有新的狀態 token 只改這一段。 ── */
+.flows .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px 1px 6px;
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.flows .badge i {
+  font-style: normal;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.flows .badge.b-you {
+  color: var(--you);
+}
+
+.flows .badge.b-fault {
+  color: var(--fault);
+}
+
+.flows .badge.b-agent {
+  color: var(--agent);
+}
+
+.flows .badge.b-quota {
+  color: var(--quota);
+}
+
+.flows .badge.b-idle {
+  color: var(--idle);
+}
+
+.flows .link-button {
+  min-height: 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font-size: 12.5px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.flows .link-button:hover:not(:disabled) {
+  background: none;
+}
+
+.flows a.button.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.flows a.button.ghost:hover {
+  border-color: var(--border-2);
+  color: var(--fg);
+}
+
+.flows .count {
+  display: inline-flex;
+  justify-content: center;
+  min-width: 22px;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 20px;
+}
+
+/* ── 待處理（QueueBoard.tsx） ── */
+.flows.triage {
+  max-width: 1100px;
+}
+
+.flows .triage-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.flows .triage-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.flows .triage-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.flows .triage-filters select {
+  width: auto;
+  min-width: 0;
+  max-width: 180px;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.flows .triage-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.flows .triage-keys,
+.flows .review-queue .keys {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.flows .triage-keys {
+  margin: 2px 0 18px;
+}
+
+.flows .triage-groups {
+  display: grid;
+  gap: 22px;
+}
+
+.flows .triage-group h2,
+.flows .review-queue .group-title {
+  display: flex;
+  align-items: center;
+  margin: 0 0 8px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.flows .triage-group.g-decide h2 {
+  color: var(--you);
+}
+
+.flows .group-empty {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-control);
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.flows .triage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.flows .triage-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 16px;
+  padding: 10px 14px 10px 18px;
+  cursor: pointer;
+}
+
+.flows .triage-row + .triage-row {
+  border-top: 1px solid var(--border);
+}
+
+.flows .triage-row:hover {
+  background: var(--surface-2);
+}
+
+.flows .triage-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* 放手線：和卡片一樣在左緣，列比較矮所以留一點上下空隙 */
+.flows .triage-row::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+}
+
+.flows .triage-row.is-danger {
+  background: color-mix(in srgb, var(--fault) 7%, transparent);
+}
+
+.flows .row-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.flows .row-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.flows .row-name {
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 650;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.flows a.row-name:hover {
+  text-decoration: underline;
+}
+
+.flows .row-top .age {
+  margin-left: 0;
+}
+
+.flows .row-sign .callsign {
+  font-size: 11.5px;
+}
+
+.flows .row-rule {
+  color: var(--fault);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* 一行摘要：長了就截斷，完整內容在提示框、審核中心與終端機 */
+.flows .triage-context {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.flows .triage-context > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flows .triage-context .mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.flows .triage-row .blocked {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+}
+
+.flows .row-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.flows .row-acts button,
+.flows .row-acts a.button {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.flows .row-acts .msg {
+  flex-basis: 100%;
+  text-align: right;
+  font-size: 12.5px;
+}
+
+.flows .row-panel {
+  grid-column: 1 / -1;
+  min-width: 0;
+  cursor: auto;
+}
+
+.flows .row-panel .field-input {
+  margin-top: 0;
+}
+
+.flows .row-panel .acts {
+  margin-top: 8px;
+}
+
+.flows .row-panel.armed {
+  margin-top: 0;
+}
+
+@media (max-width: 720px) {
+  .flows .triage-row {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px 12px 12px 16px;
+  }
+  .flows .row-acts {
+    justify-content: flex-start;
+  }
+  .flows .row-acts button,
+  .flows .row-acts a.button {
+    min-height: 40px;
+  }
+  .flows .row-acts .msg {
+    text-align: left;
+  }
+  .flows .triage-filters {
+    margin-left: 0;
+  }
+  /* 手機沒有鍵盤，不顯示快捷鍵說明 */
+  .flows .triage-keys,
+  .flows .review-queue .keys {
+    display: none;
+  }
+  .flows .triage-note {
+    margin-bottom: 16px;
+  }
+}
+
+/* ── 審核中心：左邊清單、右邊詳細（窄螢幕上下） ── */
+.flows .review-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.flows .review-queue {
+  position: sticky;
+  top: calc(var(--app-header-height, 0px) + 12px);
+  display: grid;
+  gap: 14px;
+  max-height: calc(100vh - var(--app-header-height, 0px) - 24px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.flows .review-queue section {
+  min-width: 0;
+}
+
+.flows .review-queue ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.flows .review-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+}
+
+.flows .review-row[aria-current='true'] {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.flows .review-row .row-name {
+  font-size: 13.5px;
+}
+
+.flows .review-row .row-context {
+  overflow: hidden;
+  color: var(--muted);
+  font: 12px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flows .review-row .row-context:empty {
+  display: none;
+}
+
+.flows .review-queue .keys {
+  margin: 0;
+  font-size: 12px;
+}
+
+.flows .review-detail {
+  min-width: 0;
+  scroll-margin-top: calc(var(--app-header-height, 0px) + 12px);
+}
+
+.flows .review.detail {
+  padding: 18px 20px 18px 24px;
+}
+
+.flows .review.detail .title {
+  font-size: 18px;
+}
+
+.flows .why {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* 決定列：允許在上一排，拒絕和必填原因綁在同一排 */
+.flows .decision-bar {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.flows .decision-bar > .acts:first-child {
+  margin-top: 0;
+}
+
+.flows .deny-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.flows .deny-row .field-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.flows .deny-row > button {
+  flex-shrink: 0;
+  white-space: normal;
+}
+
+.flows .collapsible:not(.open) > .command {
+  max-height: 240px;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 75%, transparent);
+}
+
+.flows .collapsible.open > .command.plan {
+  max-height: none;
+}
+
+.flows .session-tail {
+  margin-top: 14px;
+  font-size: 13px;
+}
+
+.flows .session-tail summary,
+.flows .history summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.flows .tail-lines {
+  max-height: 200px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--term-bg);
+  color: var(--fg-muted);
+  font: 12px/1.6 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.flows .detail-links {
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.flows .history {
+  margin-top: 24px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.flows .history-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.flows .history-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.flows .history-row + .history-row {
+  border-top: 1px solid var(--border);
+}
+
+.flows .history-row time {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.flows .history-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.flows .history-result.deny {
+  color: var(--fault);
+}
+
+.flows .history-text {
+  flex-basis: 100%;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 899px) {
+  .flows .review-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .flows .review-queue {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+  .flows .review.detail {
+    padding: 14px 14px 14px 18px;
+  }
+}
+
+@media (max-width: 520px) {
+  .flows .deny-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

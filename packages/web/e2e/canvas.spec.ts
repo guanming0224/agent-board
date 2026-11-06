@@ -537,12 +537,13 @@ test('側欄：機器與用量、失聯列、圖例；收合時退訂', async ({
   expect(reopened.on - reopened.off).toBe(1);
 });
 
-test('待處理清單：順序同佇列、危險指令置頂、點一列跳到該卡', async ({ page }) => {
+test('待處理清單：分組排序、危險指令置頂、點名稱跳到該卡', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/#/queue');
   const ids = () =>
-    page.locator('.queue-item').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
-  await expect.poll(ids).toEqual(['queue-s-ml', 'queue-s-auth', 'queue-s-etl']);
+    page.locator('.triage-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+  // 要你決定（等最久的在前）→ 錯誤、卡住、額度（詳細的分組測試在 flows-triage.spec.ts）
+  await expect.poll(ids).toEqual(['queue-s-auth', 'queue-s-etl', 'queue-s-ml', 'queue-s-docs']);
   await expect(page.getByTestId('queue-s-auth')).toContainText('npm test -- auth');
   await expect(page.getByTestId('queue-s-auth')).toContainText(
     'demo-studio / project @ ab/fix-auth',
@@ -560,12 +561,14 @@ test('待處理清單：順序同佇列、危險指令置頂、點一列跳到�
        }],
      });`,
   );
-  await expect.poll(ids).toEqual(['queue-s-tests', 'queue-s-ml', 'queue-s-auth', 'queue-s-etl']);
+  await expect
+    .poll(ids)
+    .toEqual(['queue-s-tests', 'queue-s-auth', 'queue-s-etl', 'queue-s-ml', 'queue-s-docs']);
   await expect(page.getByTestId('queue-s-tests')).toContainText('命中危險指令清單');
   await expect(page.getByTestId('waiting-count')).toHaveText('4');
   await shot(page, 'queue-danger');
 
-  await page.getByTestId('queue-s-etl').click();
+  await page.getByTestId('queue-s-etl').getByRole('link', { name: 'Migrate data' }).click();
   await expect(page).toHaveURL(/#\/canvas/);
   await expect(page.locator('.frame.spot')).toHaveAttribute('data-testid', 'card-s-etl');
   await expect(card(page, 's-etl')).toBeInViewport({ ratio: 0.9 });
