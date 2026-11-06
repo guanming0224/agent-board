@@ -125,9 +125,9 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   return (
     <>
-      {danger && <div className="danger-tag">{t('canvas.danger')}</div>}
+      {/* 標題列就是卡片頂端的狀態帶（canvas.css），所以危險指令的警示放在它下面。 */}
       <div className="head">
-        <Lamp status={session.status} />
+        <Lamp status={session.status} badge />
         {renaming ? (
           <RenameInput session={session} onDone={() => setRenaming(false)} />
         ) : (
@@ -138,6 +138,7 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
           <MenuButton session={session} open={menuOpen} onToggle={() => setMenuOpen((v) => !v)} />
         )}
       </div>
+      {danger && <div className="danger-tag">{t('canvas.danger')}</div>}
       {menuOpen && (
         <CardMenu session={session} onRename={() => setRenaming(true)} onClose={closeMenu} />
       )}
@@ -173,6 +174,8 @@ export const cardClass = (base: string, session: Session) =>
     'hands-host',
     handsClass(session.permissionMode),
     STATUS_VISUAL[session.status].holder === 'you' ? 'you' : '',
+    // 狀態帶與「等你」的光圈用（canvas.css、expanded.css）。
+    `st-${STATUS_VISUAL[session.status].holder}`,
     session.status === 'offline' ? 'gone' : '',
   ]
     .filter(Boolean)
@@ -244,6 +247,7 @@ export function SessionNode({
       data-testid={`card-${session.id}`}
       data-mode={isTerminal ? 'terminal' : 'summary'}
       data-handoff={receiving ? 'in' : undefined}
+      data-holder={STATUS_VISUAL[session.status].holder}
     >
       <Handle
         type="target"

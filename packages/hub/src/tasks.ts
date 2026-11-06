@@ -229,12 +229,27 @@ export class TaskEngine {
       auto: this.auto('passed', reviewerId),
     };
     this.save(next);
-    this.record(reviewerId, 'task.reviewed', next, { verdict: 'pass' });
+    this.record(reviewerId, 'task.reviewed', next, {
+      verdict: 'pass',
+      ...this.verdictPair(task, reviewerId),
+    });
+  }
+
+  /** 判定是審查 → 負責人（畫布畫成這兩張卡之間的往來）；沒有負責人就不帶。 */
+  private verdictPair(task: Task, reviewerId: string) {
+    return task.ownerSessionId
+      ? { fromSessionId: reviewerId, toSessionId: task.ownerSessionId }
+      : {};
   }
 
   private rejected(task: Task, reviewerId: string, reason: string): void {
     const rejectCount = task.rejectCount + 1;
-    const detail = { reason, rejectCount, limit: this.limit };
+    const detail = {
+      reason,
+      rejectCount,
+      limit: this.limit,
+      ...this.verdictPair(task, reviewerId),
+    };
     if (rejectCount >= this.limit) {
       // 到上限：留在待審查，標成要使用者決定，推播通知。
       const next: Task = {

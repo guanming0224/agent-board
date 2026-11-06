@@ -25,6 +25,21 @@
   --quota: #e58be0;
   --idle: #c9d1d9;
 
+  /*
+   * 狀態徽章與卡片狀態帶（GM 2026-11-06，shared/styles/status.css）。
+   * --on-*：實心狀態色塊上的字（深色，對比見 STYLE.md §1 規則一的補充）。
+   * --*-tint：狀態帶的淡底，混在 --surface 上，換主題時跟著 --surface 走。
+   */
+  --on-you: #1c1302;
+  --on-fault: #210605;
+  --on-quota: #22081f;
+  --on-agent: #03111f;
+  --you-tint: color-mix(in srgb, var(--you) 18%, var(--surface));
+  --fault-tint: color-mix(in srgb, var(--fault) 18%, var(--surface));
+  --agent-tint: color-mix(in srgb, var(--agent) 10%, var(--surface));
+  --quota-tint: color-mix(in srgb, var(--quota) 14%, var(--surface));
+  --idle-tint: var(--surface-2);
+
   /* 只在 diff 區塊使用，一定配 + − */
   --diff-add: #46c26a;
   --diff-del: #f0665f;

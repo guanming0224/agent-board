@@ -8,6 +8,7 @@ import {
   describeTalk,
   firstLine,
   isReceiving,
+  LINGER_MS,
   nextChangeAt,
   parseHandoffEvent,
   phaseAt,
@@ -54,6 +55,10 @@ describe('交接事件 → 動畫狀態', () => {
       from: 'a',
       to: 'b',
       kind: 'fired',
+      channel: 'handoff',
+      type: 'handoff.fired',
+      what: 'canvas.link.what.handoff',
+      ref: null,
       reason: null,
       summary: 'Fixed the redirect.',
       round: null,
@@ -82,6 +87,46 @@ describe('交接事件 → 動畫狀態', () => {
     expect(parseHandoffEvent(event('task.dispatched', { toSessionId: 'b' }, 'b'))).toBeNull();
   });
 
+  it('任務：排入（task.dispatched）記在收的那一邊；審查判定記在審查，畫成審查 → 負責人', () => {
+    const queued = event(
+      'task.dispatched',
+      { kind: 'review', fromSessionId: 'a', toSessionId: 'b', taskId: 't1' },
+      'b',
+    );
+    expect(parseHandoffEvent(queued)).toMatchObject({
+      key: 'a->b',
+      kind: 'fired',
+      channel: 'task',
+      what: 'canvas.link.what.task_review',
+      ref: 't1',
+    });
+    // 記錯邊的不採用。
+    expect(
+      parseHandoffEvent(event('task.dispatched', { fromSessionId: 'a', toSessionId: 'b' }, 'a')),
+    ).toBeNull();
+    const pass = event(
+      'task.reviewed',
+      { verdict: 'pass', fromSessionId: 'rv', toSessionId: 'bd', taskId: 't1' },
+      'rv',
+    );
+    const parsedPass = parseHandoffEvent(pass)!;
+    expect(parsedPass).toMatchObject({ key: 'rv->bd', kind: 'verdict', channel: 'task' });
+    // 判定沒有摘要：說明寫判定本身。
+    const activity = recordHandoff(empty, pass, 0).get('rv->bd')!;
+    expect(describeTalk(activity, t, plain)).toBe('審查通過');
+    const reject = event(
+      'task.rejected',
+      { reason: 'Missing a test.', fromSessionId: 'rv', toSessionId: 'bd' },
+      'rv',
+    );
+    expect(parseHandoffEvent(reject)).toMatchObject({
+      what: 'canvas.link.what.reject',
+      summary: 'Missing a test.',
+    });
+    // 舊版 hub 的判定沒有 toSessionId：不畫。
+    expect(parseHandoffEvent(event('task.reviewed', { verdict: 'pass' }, 'rv'))).toBeNull();
+  });
+
   it('來源一定是事件所屬的 session；payload 的 fromSessionId 不一致就不採用', () => {
     expect(
       parseHandoffEvent(event('handoff.fired', { fromSessionId: 'x', toSessionId: 'b' }, 'a')),
@@ -106,10 +151,11 @@ describe('交接事件 → 動畫狀態', () => {
     expect(parseHandoffEvent(fired('a', 'a'))).toBeNull();
   });
 
-  it('階段：播放 → 一分鐘內說過話 → 消失；擋下的播放比較短', () => {
+  it('階段：播放 → 標籤多留幾秒 → 一分鐘內說過話（收成徽章）→ 消失；擋下的播放比較短', () => {
     expect(phaseAt({ kind: 'fired', receivedAt: 0 }, ACTIVE_MS.fired - 1)).toBe('active');
-    expect(phaseAt({ kind: 'fired', receivedAt: 0 }, ACTIVE_MS.fired)).toBe('recent');
-    expect(phaseAt({ kind: 'blocked', receivedAt: 0 }, ACTIVE_MS.blocked)).toBe('recent');
+    expect(phaseAt({ kind: 'fired', receivedAt: 0 }, ACTIVE_MS.fired)).toBe('linger');
+    expect(phaseAt({ kind: 'fired', receivedAt: 0 }, ACTIVE_MS.fired + LINGER_MS)).toBe('recent');
+    expect(phaseAt({ kind: 'blocked', receivedAt: 0 }, ACTIVE_MS.blocked)).toBe('linger');
     expect(ACTIVE_MS.blocked).toBeLessThan(ACTIVE_MS.fired);
     expect(phaseAt({ kind: 'fired', receivedAt: 0 }, RECENT_MS)).toBeNull();
   });
@@ -118,7 +164,9 @@ describe('交接事件 → 動畫狀態', () => {
     const map = recordHandoff(empty, fired(), 1000);
     expect(map.get('a->b')).toMatchObject({ phase: 'active', seq: 1, receivedAt: 1000 });
     expect(advance(map, 1001)).toBe(map);
-    const recent = advance(map, 1000 + ACTIVE_MS.fired);
+    const linger = advance(map, 1000 + ACTIVE_MS.fired);
+    expect(linger.get('a->b')?.phase).toBe('linger');
+    const recent = advance(linger, 1000 + ACTIVE_MS.fired + LINGER_MS);
     expect(recent.get('a->b')?.phase).toBe('recent');
     expect(advance(recent, 1000 + RECENT_MS).size).toBe(0);
   });
@@ -180,7 +228,9 @@ describe('交接事件 → 動畫狀態', () => {
     let map = recordHandoff(empty, fired(), 0);
     map = recordHandoff(map, blocked('loop', 'c', 'd'), 100);
     expect(nextChangeAt(map)).toBe(100 + ACTIVE_MS.blocked);
-    expect(nextChangeAt(advance(map, ACTIVE_MS.fired + 1))).toBe(RECENT_MS);
+    const later = advance(map, ACTIVE_MS.fired + 1);
+    expect(nextChangeAt(later)).toBe(100 + ACTIVE_MS.blocked + LINGER_MS);
+    expect(nextChangeAt(advance(later, ACTIVE_MS.fired + LINGER_MS + 101))).toBe(RECENT_MS);
   });
 
   it('摘要只取第一行、太長截斷', () => {
@@ -245,8 +295,10 @@ describe('session 派工（CONTRACTS §11）也畫在同一條線上', () => {
       [event('dispatch.blocked', { ...go, reason: 'rate_limit' }, 'lead'), 'blocked', 'lead->bd'],
     ];
     for (const [e, kind, key] of cases) {
-      expect(parseHandoffEvent(e), e.type).toMatchObject({ kind, key });
+      expect(parseHandoffEvent(e), e.type).toMatchObject({ kind, key, channel: 'dispatch' });
     }
+    expect(parseHandoffEvent(cases[0]![0])?.what).toBe('canvas.link.what.spawn');
+    expect(parseHandoffEvent(cases[3]![0])?.what).toBe('canvas.link.what.result');
     // 記錯邊的（payload 和事件所屬的 session 對不上）不採用。
     expect(parseHandoffEvent(event('dispatch.result_delivered', back, 'bd'))).toBeNull();
   });

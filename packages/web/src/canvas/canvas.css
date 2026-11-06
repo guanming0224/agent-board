@@ -661,3 +661,77 @@ input.cmd:disabled {
     margin-bottom: 112px;
   }
 }
+
+/*
+ * 卡片頂端的狀態帶（GM 2026-11-06）：標題列整條上狀態的淡底，上緣 4px 狀態色，左邊是實心狀態徽章。
+ * 等你、故障的卡外面多一圈慢慢呼吸的光（減少動態時是靜止的一圈）。光圈畫在 .frame::after，只動 opacity。
+ */
+.strip > .head,
+.termcard > header > .head {
+  align-items: center;
+  border-top: 4px solid var(--st, var(--border-2));
+  background: var(--st-tint, transparent);
+}
+.strip > .head {
+  margin: -12px -12px 0 -16px;
+  padding: 6px 10px 6px 16px;
+}
+.termcard > header > .head {
+  margin: -10px -10px 0 -14px;
+  padding: 5px 10px 5px 14px;
+}
+.strip.st-fault,
+.termcard.st-fault {
+  border: 2px solid var(--fault);
+}
+/* 縮小時（螢幕上的倍率 = --z × --strip-scale 小於 1）狀態徽章與名稱跟著放大，維持看得清楚；有上限，不撐破卡片。 */
+.strip > .head {
+  --head-k: max(1, calc(0.95 / (var(--z, 1) * var(--strip-scale, 1))));
+}
+.strip > .head .lamp {
+  font-size: calc(12px * min(var(--head-k), 3.4));
+}
+.strip > .head .title {
+  font-size: calc(15px * min(var(--head-k), 2.6));
+  line-height: 1.2;
+}
+.strip > .head .age {
+  font-size: calc(12px * min(var(--head-k), 1.8));
+}
+.strip.st-you > .head .age,
+.termcard.st-you .head .age {
+  color: var(--you);
+  font-weight: 600;
+}
+.frame::after {
+  content: '';
+  position: absolute;
+  inset: calc(-5px / var(--z, 1));
+  border: calc(3px / var(--z, 1)) solid var(--you);
+  border-radius: calc(var(--radius-card) + 5px / var(--z, 1));
+  opacity: 0;
+  pointer-events: none;
+}
+.frame[data-holder='fault']::after {
+  border-color: var(--fault);
+}
+.frame[data-holder='you']::after,
+.frame[data-holder='fault']::after {
+  animation: needs-you 2.4s ease-in-out infinite;
+}
+@keyframes needs-you {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.75;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .frame[data-holder='you']::after,
+  .frame[data-holder='fault']::after {
+    animation: none;
+    opacity: 0.5;
+  }
+}

@@ -303,6 +303,45 @@ kbd {
   text-align: center;
   font-weight: 400;
 }
+/* 狀態圖例：分組、和卡片同一套徽章，右邊是目前幾個 */
+.legend-groups {
+  display: grid;
+  gap: 8px;
+}
+.legend-group h4 {
+  margin: 0 0 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--faint);
+}
+.legend-group.g-needsYou h4 {
+  color: var(--you);
+}
+.legend-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.legend-badges li {
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+}
+.legend-badges .lamp.badge {
+  font-size: 11.5px;
+}
+.legend-badges b {
+  width: auto;
+  font-weight: 400;
+}
+.legend-n {
+  min-width: 16px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg);
+  text-align: center;
+}
 .side h3.legend-next {
   margin-top: 12px;
 }

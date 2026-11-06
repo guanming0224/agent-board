@@ -1,13 +1,19 @@
-// 交接動畫的狀態：hub 的 handoff.* 事件 → 哪一條線正在「說話」、剛說過話。不碰 React，方便單元測試。
+// 交接動畫的狀態：hub 的 handoff.*／dispatch.*／task.* 事件 → 哪一條線正在「說話」、剛說過話。不碰 React，方便單元測試。
 import type { SessionEvent } from '@agent-board/protocol';
 
 /**
  * fired：hub 決定交接、排進佇列（還沒打進目標）；delivered：真的送進目標終端機；
- * blocked：擋下；dropped：排隊中被取消。
+ * blocked：擋下；dropped：排隊中被取消；verdict：審查的判定（通過／退回），不是送字。
  */
-export type HandoffKind = 'fired' | 'delivered' | 'blocked' | 'dropped';
-/** active：正在播動畫；recent：一分鐘內說過話，線維持淡淡的標記。 */
-export type HandoffPhase = 'active' | 'recent';
+export type HandoffKind = 'fired' | 'delivered' | 'blocked' | 'dropped' | 'verdict';
+/** 事件屬於哪一類往來：畫布的篩選開關用（交接／派工／任務）。 */
+export type Channel = 'handoff' | 'dispatch' | 'task';
+export const CHANNELS: readonly Channel[] = ['handoff', 'dispatch', 'task'];
+/**
+ * active：正在播動畫；linger：播完後幾秒，完整標籤還留著讓人看完；
+ * recent：一分鐘內說過話，標籤收成線上的次數徽章（滑過或聚焦才展開）。
+ */
+export type HandoffPhase = 'active' | 'linger' | 'recent';
 
 /** 同一波（動畫還在播時陸續收到的）事件數。同一對 session 可能有好幾條規則。 */
 export interface HandoffCounts {
@@ -22,6 +28,14 @@ export interface HandoffActivity {
   key: string;
   from: string;
   to: string;
+  /** 最後一筆事件的類別（交接／派工／任務）。 */
+  channel: Channel;
+  /** 最後一筆事件的 hub 事件名稱（例如 dispatch.send），用來挑「做了什麼」的字。 */
+  type: string;
+  /** 「做了什麼」的翻譯 key（canvas.link.what.*）。 */
+  what: string;
+  /** 同一件事的排入與送達用來對上的 id（workId／taskId／ruleId）；沒有是 null。 */
+  ref: string | null;
   /** 這一波要顯示的結果：送出的優先，後來的擋下不會蓋掉它。 */
   kind: HandoffKind;
   /** 擋下或取消的原因（hub 的 reason）；成功是 null。 */
@@ -45,30 +59,68 @@ export const ACTIVE_MS: Record<HandoffKind, number> = {
   delivered: 4000,
   blocked: 1800,
   dropped: 1800,
+  verdict: 2500,
 };
+/** 動畫播完後，完整標籤再留幾秒。 */
+export const LINGER_MS = 3000;
 /** 從收到起算，線維持「剛說過話」的時間。 */
 export const RECENT_MS = 60_000;
 
-const KIND_OF: Record<string, HandoffKind> = {
-  'handoff.fired': 'fired',
-  'handoff.delivered': 'delivered',
-  'handoff.blocked': 'blocked',
-  'handoff.dropped': 'dropped',
-  // 任務自動執行的送審（負責人 → 審查）與退回（審查 → 負責人）也走同一條線；
-  // 直接送給負責人的新任務沒有來源成員，不畫。
-  'task.delivered': 'delivered',
+interface EventSpec {
+  kind: HandoffKind;
+  channel: Channel;
+  /** 事件記在哪一邊（hub 決定，比 payload 可信）：from＝來源、to＝目標。 */
+  at: 'from' | 'to';
+}
+
+/**
+ * 認得的事件。記在哪一邊照 hub：交接的 fired／blocked／dropped 記在來源、delivered 記在目標；
+ * 任務的 dispatched（排入）與 delivered 都記在收的那一邊；審查判定記在審查（來源）。
+ * 直接送給負責人的新任務沒有來源成員，不畫。
+ */
+const EVENT_SPEC: Record<string, EventSpec> = {
+  'handoff.fired': { kind: 'fired', channel: 'handoff', at: 'from' },
+  'handoff.delivered': { kind: 'delivered', channel: 'handoff', at: 'to' },
+  'handoff.blocked': { kind: 'blocked', channel: 'handoff', at: 'from' },
+  'handoff.dropped': { kind: 'dropped', channel: 'handoff', at: 'from' },
+  'task.dispatched': { kind: 'fired', channel: 'task', at: 'to' },
+  'task.delivered': { kind: 'delivered', channel: 'task', at: 'to' },
+  'task.reviewed': { kind: 'verdict', channel: 'task', at: 'from' },
+  'task.rejected': { kind: 'verdict', channel: 'task', at: 'from' },
   // session 派工（CONTRACTS §11）：spawn／delivered 記在成員、send 記在呼叫者；
   // 結果 result 記在成員（成員 → 呼叫者排入）、result_delivered 記在呼叫者。
-  'dispatch.spawn': 'delivered',
-  'dispatch.send': 'fired',
-  'dispatch.delivered': 'delivered',
-  'dispatch.result': 'fired',
-  'dispatch.result_delivered': 'delivered',
-  'dispatch.blocked': 'blocked',
+  'dispatch.spawn': { kind: 'delivered', channel: 'dispatch', at: 'to' },
+  'dispatch.send': { kind: 'fired', channel: 'dispatch', at: 'from' },
+  'dispatch.delivered': { kind: 'delivered', channel: 'dispatch', at: 'to' },
+  'dispatch.result': { kind: 'fired', channel: 'dispatch', at: 'from' },
+  'dispatch.result_delivered': { kind: 'delivered', channel: 'dispatch', at: 'to' },
+  'dispatch.blocked': { kind: 'blocked', channel: 'dispatch', at: 'from' },
 };
 
-/** 送出（排入或送達）比擋下重要。 */
-const RANK: Record<HandoffKind, number> = { blocked: 0, dropped: 0, fired: 1, delivered: 2 };
+/** 「做了什麼」：派工分成開成員、派工、回報結果；任務分成新任務、送審、退回、判定。 */
+function whatOf(type: string, payload: Record<string, unknown>): string {
+  if (type.startsWith('handoff.')) return 'canvas.link.what.handoff';
+  if (type === 'dispatch.spawn') return 'canvas.link.what.spawn';
+  if (type === 'dispatch.result' || type === 'dispatch.result_delivered') {
+    return 'canvas.link.what.result';
+  }
+  if (type.startsWith('dispatch.')) return 'canvas.link.what.dispatch';
+  if (type === 'task.reviewed') return 'canvas.link.what.pass';
+  if (type === 'task.rejected') return 'canvas.link.what.reject';
+  const kind = payload.kind;
+  return kind === 'review' || kind === 'reject'
+    ? `canvas.link.what.task_${kind}`
+    : 'canvas.link.what.task';
+}
+
+/** 送出（排入或送達）比擋下重要；判定和排入同級。 */
+const RANK: Record<HandoffKind, number> = {
+  blocked: 0,
+  dropped: 0,
+  fired: 1,
+  verdict: 1,
+  delivered: 2,
+};
 
 export const activityKey = (from: string, to: string) => `${from}->${to}`;
 
@@ -78,9 +130,20 @@ const text = (value: unknown): string | null =>
 const count = (value: unknown): number | null =>
   typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
 
-type Parsed = Pick<
+export type Parsed = Pick<
   HandoffActivity,
-  'key' | 'from' | 'to' | 'kind' | 'reason' | 'summary' | 'round' | 'maxRounds'
+  | 'key'
+  | 'from'
+  | 'to'
+  | 'kind'
+  | 'channel'
+  | 'type'
+  | 'what'
+  | 'ref'
+  | 'reason'
+  | 'summary'
+  | 'round'
+  | 'maxRounds'
 >;
 
 /**
@@ -91,13 +154,14 @@ type Parsed = Pick<
 export function parseHandoffEvent(
   event: Pick<SessionEvent, 'type' | 'payload' | 'sessionId'>,
 ): Parsed | null {
-  const kind = KIND_OF[event.type];
-  if (!kind) return null;
+  const spec = EVENT_SPEC[event.type];
+  if (!spec) return null;
+  const { kind, channel } = spec;
   const claimedFrom = text(event.payload.fromSessionId);
   const claimedTo = text(event.payload.toSessionId);
   let from: string | null;
   let to: string | null;
-  if (kind === 'delivered') {
+  if (spec.at === 'to') {
     if (claimedTo !== event.sessionId) return null;
     from = claimedFrom;
     to = event.sessionId;
@@ -112,8 +176,18 @@ export function parseHandoffEvent(
     from,
     to,
     kind,
+    channel,
+    type: event.type,
+    what: whatOf(event.type, event.payload),
+    ref:
+      text(event.payload.workId) ??
+      text(event.payload.taskId) ??
+      text(event.payload.ruleId) ??
+      null,
     reason: kind === 'blocked' || kind === 'dropped' ? text(event.payload.reason) : null,
-    summary: text(event.payload.summary),
+    // 退回的判定沒有摘要，原因就是要講的那句。
+    summary:
+      text(event.payload.summary) ?? (kind === 'verdict' ? text(event.payload.reason) : null),
     round: count(event.payload.round),
     maxRounds: count(event.payload.maxRounds),
   };
@@ -122,7 +196,8 @@ export function parseHandoffEvent(
 export type ActivityMap = ReadonlyMap<string, HandoffActivity>;
 
 const counted = (counts: HandoffCounts, kind: HandoffKind): HandoffCounts => {
-  const key = kind === 'dropped' ? 'blocked' : kind;
+  // 判定算一則送出（審查把結果交回負責人）。
+  const key = kind === 'dropped' ? 'blocked' : kind === 'verdict' ? 'fired' : kind;
   return { ...counts, [key]: counts[key] + 1 };
 };
 
@@ -169,6 +244,10 @@ export function recordHandoff(
   return next;
 }
 
+/** 有東西交過去（流動動畫）：排入、送達、判定。擋下與取消只閃一下。 */
+export const isSent = (kind: HandoffKind) =>
+  kind === 'fired' || kind === 'delivered' || kind === 'verdict';
+
 /** 這一波送出幾則（排入和送達是同一則的兩個階段，取大的）。 */
 export const sentCount = (counts: HandoffCounts) => Math.max(counts.fired, counts.delivered);
 
@@ -179,6 +258,7 @@ export function phaseAt(
 ): HandoffPhase | null {
   const elapsed = now - activity.receivedAt;
   if (elapsed < ACTIVE_MS[activity.kind]) return 'active';
+  if (elapsed < ACTIVE_MS[activity.kind] + LINGER_MS) return 'linger';
   if (elapsed < RECENT_MS) return 'recent';
   return null;
 }
@@ -203,7 +283,9 @@ export function nextChangeAt(map: ActivityMap): number | null {
     const at =
       activity.phase === 'active'
         ? activity.receivedAt + ACTIVE_MS[activity.kind]
-        : activity.receivedAt + RECENT_MS;
+        : activity.phase === 'linger'
+          ? activity.receivedAt + ACTIVE_MS[activity.kind] + LINGER_MS
+          : activity.receivedAt + RECENT_MS;
     if (soonest === null || at < soonest) soonest = at;
   }
   return soonest;
@@ -246,15 +328,18 @@ type Translate = (key: string, vars?: Record<string, string | number>) => string
  */
 export function describeTalk(
   activity: Pick<HandoffActivity, 'kind' | 'reason' | 'summary' | 'counts'> &
-    Partial<Pick<HandoffActivity, 'maxRounds'>>,
+    Partial<Pick<HandoffActivity, 'maxRounds' | 'what'>>,
   t: Translate,
   mask: (text: string) => string,
 ): string {
   let text: string;
-  if (activity.kind === 'fired' || activity.kind === 'delivered') {
+  if (isSent(activity.kind)) {
     text =
       firstLine(activity.summary === null ? null : mask(activity.summary)) ??
-      t('canvas.talk.noSummary');
+      // 判定（審查通過）本身就是內容，沒有摘要時寫判定。
+      (activity.kind === 'verdict' && activity.what
+        ? t(activity.what)
+        : t('canvas.talk.noSummary'));
   } else {
     const key = `canvas.talk.${activity.kind}.${activity.reason ?? ''}`;
     const reason = t(key, { max: activity.maxRounds ?? '?' });
