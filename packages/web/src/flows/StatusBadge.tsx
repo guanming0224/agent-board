@@ -1,5 +1,5 @@
-// 待處理與審核中心清單列上的狀態徽章。符號、顏色、文字都集中在這裡，
-// 之後狀態 token 改了（畫布那邊可能加新的狀態色）只要對齊這一個元件與 flows.css 的 .badge。
+// 待處理與審核中心清單列上的狀態徽章。符號與文字集中在這裡；樣式和畫布卡片、側欄圖例共用
+// shared/styles/status.css 的 .lamp.badge.l-<holder>（GM 2026-11-06 統一狀態樣式）。
 import type { SessionStatus } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { STATUS_VISUAL, type BallHolder } from '../shared/status';
@@ -33,7 +33,7 @@ export function StatusBadge({ kind }: { kind: BadgeKind }) {
         return { glyph: v.glyph, holder: v.holder, label: t(v.labelKey) };
       })();
   return (
-    <span className={`badge b-${visual.holder}`} data-kind={kind}>
+    <span className={`lamp badge l-${visual.holder}`} data-kind={kind}>
       <i aria-hidden="true">{visual.glyph}</i>
       {visual.label}
     </span>

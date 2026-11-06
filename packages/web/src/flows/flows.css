@@ -1608,45 +1608,9 @@
   margin-left: 6px;
 }
 
-/* ── 狀態徽章（StatusBadge.tsx）。狀態色只從 token 取；之後有新的狀態 token 只改這一段。 ── */
-.flows .badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 8px 1px 6px;
-  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, currentColor 10%, transparent);
+/* 狀態徽章（StatusBadge.tsx）用共用的 .lamp.badge（shared/styles/status.css），這裡只調字級。 */
+.flows .lamp.badge {
   font-size: 12px;
-  font-weight: 650;
-  line-height: 1.5;
-  white-space: nowrap;
-}
-
-.flows .badge i {
-  font-style: normal;
-  font-size: 12px;
-  line-height: 1;
-}
-
-.flows .badge.b-you {
-  color: var(--you);
-}
-
-.flows .badge.b-fault {
-  color: var(--fault);
-}
-
-.flows .badge.b-agent {
-  color: var(--agent);
-}
-
-.flows .badge.b-quota {
-  color: var(--quota);
-}
-
-.flows .badge.b-idle {
-  color: var(--idle);
 }
 
 .flows .link-button {
