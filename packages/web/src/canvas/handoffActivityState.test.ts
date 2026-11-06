@@ -231,3 +231,23 @@ describe('交接事件 → 動畫狀態', () => {
     expect(parseHandoffEvent(bad)).toMatchObject({ round: null });
   });
 });
+
+describe('session 派工（CONTRACTS §11）也畫在同一條線上', () => {
+  it('send／result 是排入、spawn／delivered／result_delivered 是送達，記在哪一邊和交接相同', () => {
+    const go = { fromSessionId: 'lead', toSessionId: 'bd', summary: 'Go.' };
+    const back = { fromSessionId: 'bd', toSessionId: 'lead', summary: 'Done.' };
+    const cases: [SessionEvent, string, string][] = [
+      [event('dispatch.spawn', go, 'bd'), 'delivered', 'lead->bd'],
+      [event('dispatch.send', go, 'lead'), 'fired', 'lead->bd'],
+      [event('dispatch.delivered', go, 'bd'), 'delivered', 'lead->bd'],
+      [event('dispatch.result', back, 'bd'), 'fired', 'bd->lead'],
+      [event('dispatch.result_delivered', back, 'lead'), 'delivered', 'bd->lead'],
+      [event('dispatch.blocked', { ...go, reason: 'rate_limit' }, 'lead'), 'blocked', 'lead->bd'],
+    ];
+    for (const [e, kind, key] of cases) {
+      expect(parseHandoffEvent(e), e.type).toMatchObject({ kind, key });
+    }
+    // 記錯邊的（payload 和事件所屬的 session 對不上）不採用。
+    expect(parseHandoffEvent(event('dispatch.result_delivered', back, 'bd'))).toBeNull();
+  });
+});

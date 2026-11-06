@@ -288,15 +288,18 @@ export class DispatchEngine {
 
   // ── spawn_member ────────────────────────────────────
 
-  /** 呼叫者當隊長的團隊；沒有就它所在的第一個團隊；都沒有就開一個以它命名、它當隊長的團隊。 */
-  private teamFor(caller: Session): { team: Team; created: boolean } {
-    const { store } = this.deps;
+  /** 呼叫者當隊長的團隊；沒有就它所在的第一個團隊；都沒有是 null（開成員時再開新團隊）。 */
+  private teamOf(caller: Session): Team | null {
     const teams = this.teamsOf(caller.id);
     const led = teams.find(({ members }) =>
       members.some((m) => m.sessionId === caller.id && m.role === 'lead'),
     );
-    const found = led ?? teams[0];
-    if (found) return { team: found.team, created: false };
+    return (led ?? teams[0])?.team ?? null;
+  }
+
+  /** 以呼叫者命名、它當隊長的新團隊。 */
+  private createTeam(caller: Session): Team {
+    const { store } = this.deps;
     const team: Team = {
       id: randomUUID(),
       name: caller.name,
@@ -308,7 +311,7 @@ export class DispatchEngine {
     };
     store.upsertTeam(team);
     store.upsertTeamMember({ teamId: team.id, sessionId: caller.id, role: 'lead' });
-    return { team, created: true };
+    return team;
   }
 
   private spawn(caller: Session, raw: Record<string, unknown>): DispatchReply {
@@ -368,8 +371,11 @@ export class DispatchEngine {
         `${caller.cwd} is not a git repository (or Agent Board has not detected it yet), so a member cannot get its own worktree. Use role researcher or reviewer, or set useWorktree: false if nobody else edits files here.`,
       );
     }
-    const { team, created } = this.teamFor(caller);
-    const members = store.listTeamMembers(team.id);
+    // 先檢查完才動資料庫：被擋下時不留下空的團隊。
+    const existing = this.teamOf(caller);
+    const members: TeamMember[] = existing
+      ? store.listTeamMembers(existing.id)
+      : [{ teamId: '', sessionId: caller.id, role: 'lead' }];
     if (!readOnly && !useWorktree) {
       const clash = this.writerClash(caller, members);
       if (clash.length > 0) {
@@ -381,8 +387,10 @@ export class DispatchEngine {
     }
     const wanted = args.name ? cleanLine(args.name) : '';
     const taken = new Set(store.listSessions().map((s) => s.name.toLowerCase()));
-    const name = memberName(team.name, args.role, wanted || undefined, taken);
+    const name = memberName(existing?.name ?? caller.name, args.role, wanted || undefined, taken);
     const message = workMessage(caller.name, prompt);
+    const created = existing === null;
+    const team = existing ?? this.createTeam(caller);
     let member: Session;
     try {
       member = this.deps.createSession(
@@ -402,6 +410,8 @@ export class DispatchEngine {
         caller.id,
       );
     } catch (error) {
+      // 開不起來（機器剛斷線、資料夾正在刪除…）：剛開的團隊收掉。
+      if (created) store.deleteTeam(team.id);
       if (error instanceof HttpError) return fail(error.code, error.message);
       throw error;
     }

@@ -529,6 +529,14 @@ describe('派工：開成員、送工作、結果自動送回', () => {
     const b = await board({ permissionMode: 'acceptEdits' }, null);
     const noGit = await ask(b, 'spawn_member', { role: 'worker', prompt: 'x' });
     expect(noGit.text).toMatch(/^worktree_unavailable:/);
+    const clashFirst = await ask(b, 'spawn_member', {
+      role: 'worker',
+      prompt: 'x',
+      useWorktree: false,
+    });
+    expect(clashFirst.text).toMatch(/^worktree_required: Same folder as Lead/);
+    // 被擋下的不留下空的團隊。
+    expect(hub.running.store.listTeams()).toEqual([]);
     // 研究、審查照樣可以（唯讀，共用資料夾）。
     await spawnMember(b, { role: 'reviewer', prompt: 'Review it.' });
     const clash = await ask(b, 'spawn_member', { role: 'worker', prompt: 'x', useWorktree: false });

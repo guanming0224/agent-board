@@ -312,7 +312,7 @@ export class Hub {
         const machineId = this.store.sessionMachineId(sessionId);
         return machineId !== null && this.daemonFor(machineId) !== null;
       },
-      // hub 唯一自己送字進 PTY 的地方（交接規則與任務自動執行，docs/no-llm-review.md）。
+      // hub 唯一自己送字進 PTY 的地方（交接規則、任務自動執行、自動接續、session 派工，docs/no-llm-review.md）。
       // 直接送給 daemon，不經過使用者輸入那條路：不算使用者輸入，不會重設交接鏈。
       sendInput: (sessionId: string, data: string) =>
         this.toSessionDaemon(sessionId, { type: 'terminal.input', sessionId, data }),
