@@ -144,8 +144,12 @@ function StatusLegend() {
               const v = STATUS_VISUAL[status];
               const n = counts.get(status) ?? 0;
               return (
-                <li key={status} className={`l-${v.holder}`} data-testid={`legend-${status}`}>
-                  <span className={`lamp badge l-${v.holder}`}>
+                <li
+                  key={status}
+                  className={`l-${v.holder} s-${status}`}
+                  data-testid={`legend-${status}`}
+                >
+                  <span className={`lamp badge l-${v.holder} s-${status}`}>
                     <b aria-hidden="true">{v.glyph}</b>
                     {t(v.labelKey)}
                   </span>

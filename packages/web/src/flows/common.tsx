@@ -67,7 +67,7 @@ export function Lamp({ status }: { status: SessionStatus }) {
   const t = useT();
   const visual = STATUS_VISUAL[status];
   return (
-    <span className={`lamp l-${visual.holder}`}>
+    <span className={`lamp l-${visual.holder} s-${status}`}>
       <i aria-hidden="true">{visual.glyph}</i>
       {t(visual.labelKey)}
     </span>

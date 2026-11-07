@@ -38,7 +38,7 @@ export function Lamp({ status, badge = false }: { status: Session['status']; bad
   const t = useT();
   const v = STATUS_VISUAL[status];
   return (
-    <span className={`lamp l-${v.holder}${badge ? ' badge' : ''}`} data-status={status}>
+    <span className={`lamp l-${v.holder} s-${status}${badge ? ' badge' : ''}`} data-status={status}>
       <i aria-hidden="true">{v.glyph}</i>
       {t(v.labelKey)}
     </span>

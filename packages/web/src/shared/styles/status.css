@@ -6,6 +6,7 @@
  * - agent（--agent）：淡底＋描邊，安靜；
  * - 結束或不在場（--idle）：灰。
  * 卡片的狀態帶用 .st-<holder>：設定 --st（狀態色）與 --st-tint（淡底），元件自己決定怎麼畫。
+ * 2026-11-08 起顏色改成每個狀態一色（.s-<status> 設 --sc），holder 只決定外觀（實心／描邊／淡）。
  */
 .lamp.badge {
   align-items: center;
@@ -24,47 +25,109 @@
   line-height: 1;
 }
 .lamp.badge.l-you {
-  background: var(--you);
-  color: var(--on-you);
+  background: var(--sc, var(--you));
+  color: var(--on-solid);
 }
 .lamp.badge.l-fault {
-  background: var(--fault);
-  color: var(--on-fault);
+  background: var(--sc, var(--fault));
+  color: var(--on-solid);
 }
 .lamp.badge.l-quota {
-  background: var(--quota);
-  color: var(--on-quota);
+  background: var(--sc, var(--quota));
+  color: var(--on-solid);
 }
 .lamp.badge.l-agent {
-  background: var(--agent-tint);
-  border-color: color-mix(in srgb, var(--agent) 55%, transparent);
-  color: var(--agent);
+  background: color-mix(in srgb, var(--sc, var(--agent)) 12%, var(--surface));
+  border-color: color-mix(in srgb, var(--sc, var(--agent)) 55%, transparent);
+  color: var(--sc, var(--agent));
 }
 .lamp.badge.l-idle {
-  background: var(--idle-tint);
-  border-color: var(--border-2);
-  color: var(--idle);
+  background: color-mix(in srgb, var(--sc, var(--idle)) 10%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--sc, var(--idle)) 40%, var(--border-2));
+  color: var(--sc, var(--idle));
 }
 
 .st-you {
-  --st: var(--you);
-  --st-tint: var(--you-tint);
+  --st: var(--sc, var(--you));
+  --st-tint: color-mix(in srgb, var(--st) 18%, var(--surface));
 }
 .st-fault {
-  --st: var(--fault);
-  --st-tint: var(--fault-tint);
+  --st: var(--sc, var(--fault));
+  --st-tint: color-mix(in srgb, var(--st) 18%, var(--surface));
 }
 .st-quota {
-  --st: var(--quota);
-  --st-tint: var(--quota-tint);
+  --st: var(--sc, var(--quota));
+  --st-tint: color-mix(in srgb, var(--st) 14%, var(--surface));
 }
 .st-agent {
-  --st: color-mix(in srgb, var(--agent) 70%, var(--surface));
-  --st-tint: var(--agent-tint);
+  --st: color-mix(in srgb, var(--sc, var(--agent)) 70%, var(--surface));
+  --st-tint: color-mix(in srgb, var(--sc, var(--agent)) 10%, var(--surface));
 }
 .st-idle {
-  --st: var(--border-2);
+  --st: color-mix(in srgb, var(--sc, var(--idle)) 35%, var(--border-2));
   --st-tint: var(--surface);
+}
+
+/*
+ * 每個狀態自己的顏色（GM 2026-11-08）。.s-<status> 放在徽章、狀態燈、卡片上，蓋過上面依 holder 的預設色。
+ */
+.s-waiting_permission {
+  --sc: var(--s-waiting_permission);
+}
+.s-waiting_input {
+  --sc: var(--s-waiting_input);
+}
+.s-plan_review {
+  --sc: var(--s-plan_review);
+}
+.s-error {
+  --sc: var(--s-error);
+}
+.s-stuck {
+  --sc: var(--s-stuck);
+}
+.s-running {
+  --sc: var(--s-running);
+}
+.s-starting {
+  --sc: var(--s-starting);
+}
+.s-queued {
+  --sc: var(--s-queued);
+}
+.s-rate_limited {
+  --sc: var(--s-rate_limited);
+}
+.s-done {
+  --sc: var(--s-done);
+}
+.s-offline {
+  --sc: var(--s-offline);
+}
+/* 不是 session 狀態的徽章（StatusBadge 的危險指令、提問、剛開好） */
+.s-danger {
+  --sc: var(--s-error);
+}
+.s-question {
+  --sc: var(--s-waiting_input);
+}
+.s-fresh {
+  --sc: var(--idle);
+}
+
+/* 不是徽章的狀態燈（航班條、流程列）：字色用狀態色 */
+.lamp.s-waiting_permission:not(.badge),
+.lamp.s-waiting_input:not(.badge),
+.lamp.s-plan_review:not(.badge),
+.lamp.s-error:not(.badge),
+.lamp.s-stuck:not(.badge),
+.lamp.s-running:not(.badge),
+.lamp.s-starting:not(.badge),
+.lamp.s-queued:not(.badge),
+.lamp.s-rate_limited:not(.badge),
+.lamp.s-done:not(.badge),
+.lamp.s-offline:not(.badge) {
+  color: var(--sc);
 }
 
 /* 高對比模式：系統色會蓋掉底色，加框維持膠囊的形狀 */

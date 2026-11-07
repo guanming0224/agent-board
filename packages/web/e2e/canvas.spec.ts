@@ -86,10 +86,12 @@ test('摘要條內容與規格：放手線、晶片、呼號、失聯、等你�
 
   // 狀態徽章：實心膠囊、深色字；工作中是淡底描邊（GM 2026-11-06）。
   await expect(auth.locator('.lamp')).toHaveClass(/\bbadge\b/);
-  await expect(auth.locator('.lamp')).toHaveCSS('background-color', 'rgb(242, 179, 61)');
+  // 每個狀態自己的顏色（GM 2026-11-08）：等你允許是橘色。
+  await expect(auth.locator('.lamp')).toHaveCSS('background-color', 'rgb(255, 154, 60)');
+  // 卡住是棕色（錯誤才是紅）；外框仍是故障共用的紅框。
   await expect(card(page, 's-ml').locator('.lamp')).toHaveCSS(
     'background-color',
-    'rgb(240, 102, 95)',
+    'rgb(212, 163, 115)',
   );
   await expect(card(page, 's-tests').locator('.lamp')).not.toHaveCSS(
     'background-color',
@@ -97,7 +99,7 @@ test('摘要條內容與規格：放手線、晶片、呼號、失聯、等你�
   );
   // 標題列是狀態帶：上緣 4px 狀態色。
   await expect(auth.locator('.strip > .head')).toHaveCSS('border-top-width', '4px');
-  await expect(auth.locator('.strip > .head')).toHaveCSS('border-top-color', 'rgb(242, 179, 61)');
+  await expect(auth.locator('.strip > .head')).toHaveCSS('border-top-color', 'rgb(255, 154, 60)');
 
   // 等你的卡 2px 琥珀框；其他 1px。外框經過 scale，看 computed 的邏輯值。
   await expect(auth.locator('.strip')).toHaveCSS('border-top-width', '2px');
@@ -542,6 +544,15 @@ test('側欄：機器與用量、失聯列、圖例；收合時退訂', async ({
   await expect(sidebar.locator('.g-needsYou .lamp.badge')).toHaveCount(5);
   await expect(page.getByTestId('legend-waiting_permission')).toContainText('等你允許1');
   await expect(page.getByTestId('legend-error').locator('.legend-n')).toHaveCount(0);
+  // 每個狀態顏色都不一樣（GM 2026-11-08）：比對每顆徽章的 底色＋字色＋框色。
+  const looks = await sidebar.locator('.legend-badges .lamp.badge').evaluateAll((els) =>
+    els.map((el) => {
+      const c = getComputedStyle(el);
+      return [c.backgroundColor, c.color, c.borderTopColor].join(' ');
+    }),
+  );
+  expect(looks).toHaveLength(11);
+  expect(new Set(looks).size).toBe(11);
   await expect(sidebar.locator('.hands-sample')).toHaveCount(5);
 
   await page.getByTestId('side-toggle').click();

@@ -20,7 +20,6 @@ import {
 import '@xyflow/react/dist/style.css';
 import type { Layout, Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
-import { STATUS_VISUAL } from '../shared/status';
 import { useBoard } from '../shared/store';
 import { QuickCreate } from '../flows';
 import { CostChip } from '../team/common';
@@ -592,7 +591,7 @@ function Flow({
 
   const minimapColor = (node: Node) => {
     const status = useBoard.getState().sessions.find((s) => s.id === node.id)?.status;
-    return status ? `var(--${STATUS_VISUAL[status].holder})` : 'var(--idle)';
+    return status ? `var(--s-${status})` : 'var(--idle)';
   };
 
   return (

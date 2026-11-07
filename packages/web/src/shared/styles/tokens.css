@@ -40,6 +40,23 @@
   --quota-tint: color-mix(in srgb, var(--quota) 14%, var(--surface));
   --idle-tint: var(--surface-2);
 
+  /*
+   * 每個狀態自己的顏色（GM 2026-11-08：同組狀態要分得出來）。外觀（實心／描邊／淡）仍照「球在誰手上」，
+   * 顏色則每個狀態不同。沒有綠色（綠只給 diff，規則一）。實心的六色上面都放深色字（--on-solid）。用法見 shared/styles/status.css 的 .s-<status>。
+   */
+  --s-waiting_permission: #ff9a3c;
+  --s-waiting_input: #ffe14d;
+  --s-plan_review: #3dd5e0;
+  --s-error: #f0665f;
+  --s-stuck: #d4a373;
+  --s-running: #4aa3ff;
+  --s-starting: #8b8cff;
+  --s-queued: #ff7eb6;
+  --s-rate_limited: #e58be0;
+  --s-done: #f2f5f8;
+  --s-offline: #8b949e;
+  --on-solid: #14100a;
+
   /* 只在 diff 區塊使用，一定配 + − */
   --diff-add: #46c26a;
   --diff-del: #f0665f;

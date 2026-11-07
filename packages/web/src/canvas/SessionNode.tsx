@@ -176,6 +176,8 @@ export const cardClass = (base: string, session: Session) =>
     STATUS_VISUAL[session.status].holder === 'you' ? 'you' : '',
     // 狀態帶與「等你」的光圈用（canvas.css、expanded.css）。
     `st-${STATUS_VISUAL[session.status].holder}`,
+    // 每個狀態自己的顏色（GM 2026-11-08，shared/styles/status.css 的 .s-<status>）。
+    `s-${session.status}`,
     session.status === 'offline' ? 'gone' : '',
   ]
     .filter(Boolean)
