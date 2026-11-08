@@ -897,7 +897,9 @@ test.describe('在畫布上直接新增', () => {
     expect(Math.abs((nbox?.y ?? 0) - spot.y)).toBeLessThan(4);
   });
 
-  test('雙擊卡片不會開快速建立；點空白或 Esc 關掉；頁首按鈕在畫布上原地打開', async ({ page }) => {
+  test('雙擊卡片不會開快速建立；點空白或 Esc 關掉；指令列按鈕在畫布上原地打開', async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openCanvas(page);
     await card(page, 's-auth').locator('.callsign').dblclick();
@@ -909,22 +911,26 @@ test.describe('在畫布上直接新增', () => {
     await page.mouse.click(spot.x, spot.y - 150);
     await expect(page.getByTestId('quick-create')).toHaveCount(0);
 
-    await page.getByRole('banner').getByRole('button', { name: '新增 session' }).click();
+    // 桌面的「新增 session」在畫布底部指令列（P2 §3.3），頁首不再有。
+    await expect(
+      page.getByRole('banner').getByRole('button', { name: '新增 session' }),
+    ).toBeHidden();
+    await page.getByTestId('command-new').click();
     await expect(page.getByTestId('quick-create')).toBeVisible();
     await expect(page).toHaveURL(/#\/canvas/);
     await page.getByTestId('quick-create').getByRole('link', { name: '完整表單' }).click();
     await expect(page).toHaveURL(/#\/new/);
     await expect(page.getByTestId('modal')).toBeVisible();
-    // 收件匣開著時畫布仍在底下：頁首按鈕照樣在畫布上原地打開。
+    // 收件匣開著時畫布仍在底下：指令列按鈕照樣在畫布上原地打開。
     await page.evaluate(() => (location.hash = '#/inbox'));
-    await page.getByRole('banner').getByRole('button', { name: '新增 session' }).click();
+    await page.getByTestId('command-new').click();
     await expect(page.getByTestId('quick-create')).toBeVisible();
     await expect(page).toHaveURL(/#\/inbox$/);
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('quick-create')).toHaveCount(0);
     // Esc 只關最上層：快速建立關掉了，收件匣還在。
     await expect(page.getByTestId('inbox-drawer')).toBeVisible();
-    // 全尺寸終端機頁沒有畫布：頁首按鈕去完整表單。
+    // 全尺寸終端機頁沒有畫布與指令列：頁首保留按鈕，去完整表單。
     await page.evaluate(() => (location.hash = '#/terminal/s-auth'));
     await page.getByRole('banner').getByRole('button', { name: '新增 session' }).click();
     await expect(page).toHaveURL(/#\/new/);
@@ -2908,5 +2914,239 @@ test.describe('疊加面板（P2 §1.6 驗收）', () => {
         })
         .toBe(true);
     }
+  });
+});
+
+test.describe('全部暫停＋底部指令列（P2 §3）', () => {
+  const bar = (page: Page) => page.getByTestId('command-bar');
+  const strip = (page: Page) => page.getByTestId('pause-strip');
+  const lamp = (page: Page, id: string) => card(page, id).locator('.lamp');
+
+  test('指令列：新增 session、群組、全部暫停、全部繼續；沒有 Presets、Memory；沒暫停時「全部繼續」停用', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await expect(bar(page).getByRole('button')).toHaveText([
+      /新增 session/,
+      '群組',
+      /全部暫停/,
+      /全部繼續/,
+    ]);
+    await expect(bar(page)).not.toContainText('Presets');
+    await expect(bar(page)).not.toContainText('Memory');
+    await expect(page.getByTestId('resume-button')).toBeDisabled();
+    await expect(page.getByTestId('pause-button')).toHaveAttribute('aria-pressed', 'false');
+    await expect(strip(page)).toHaveCount(0);
+
+    // 不擋右下的小地圖與縮放列。
+    const barBox = (await bar(page).boundingBox())!;
+    for (const other of [page.locator('.minimap'), page.locator('.canvas .zoom')]) {
+      const box = (await other.boundingBox())!;
+      const overlap =
+        barBox.x < box.x + box.width &&
+        box.x < barBox.x + barBox.width &&
+        barBox.y < box.y + box.height &&
+        box.y < barBox.y + barBox.height;
+      expect(overlap).toBe(false);
+    }
+    await shot(page, 'command-bar');
+
+    // 群組：開右側的團隊清單，再按一次收起來。
+    await page.getByTestId('command-teams').click();
+    await expect(page).toHaveURL(/#\/team$/);
+    await expect(page.getByTestId('team-panel')).toBeVisible();
+    await expect(page.getByTestId('command-teams')).toHaveAttribute('aria-pressed', 'true');
+    await page.getByTestId('command-teams').click();
+    await expect(page.getByTestId('team-panel')).toHaveCount(0);
+
+    // Shift＋新增 session：完整表單。
+    await page.getByTestId('command-new').click({ modifiers: ['Shift'] });
+    await expect(page).toHaveURL(/#\/new/);
+    await expect(page.getByTestId('modal')).toBeVisible();
+  });
+
+  test('做完這輪就停：按一次就暫停；RUN 繼續跑；交接被擋下排隊，繼續後才送達', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await page.getByTestId('pause-button').click();
+    await expect(page.getByTestId('pause-menu')).toBeVisible();
+    await page.getByTestId('pause-finish-turn').click();
+
+    await expect(strip(page)).toContainText('已暫停（做完這輪就停）');
+    await expect(strip(page)).toContainText('沒有排隊中的');
+    await expect(strip(page)).toContainText(/\d\d:\d\d 起・demo/);
+    await expect(page.getByTestId('pause-button')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('pause-button')).toContainText('已暫停：做完這輪就停');
+    await expect(page.getByTestId('pause-msg')).toHaveText('已暫停：做完這輪就停。');
+    await expect(page.getByTestId('resume-button').first()).toBeEnabled();
+    await expect(page.getByTestId('resume-release')).toHaveText('會放出：沒有排隊中的');
+    // 做完這輪就停不送 Esc：RUN 照樣在跑。
+    await expect(lamp(page, 's-tests')).toHaveText('●RUN');
+
+    // 交接觸發了，但目標沒收到：排隊 +1，「全部繼續」旁先講會放出什麼。
+    await patchStore(page, `useBoard.getState().backend.emitHandoff('s-auth', 's-tests');`);
+    await expect(page.getByTestId('pause-held')).toHaveText('排隊：排隊送字 1 則');
+    await expect(page.getByTestId('resume-release')).toHaveText('會放出：排隊送字 1 則');
+    await expect(page.getByTestId('handoff-label-s-auth-s-tests')).not.toHaveAttribute(
+      'data-talk',
+      'delivered',
+    );
+    await shot(page, 'paused-finish-turn');
+
+    // 暫停中 GM 自己在卡片指令框送字：照常送出（不受暫停影響）。
+    await patchStore(
+      page,
+      `const s = useBoard.getState();
+       useBoard.setState({
+         sessions: s.sessions.map((x) => (x.id === 's-auth' ? { ...x, status: 'waiting_input' } : x)),
+         approvals: s.approvals.filter((a) => a.sessionId !== 's-auth'),
+       });`,
+    );
+    const input = card(page, 's-auth').getByRole('textbox');
+    await input.fill('keep going');
+    await input.press('Enter');
+    await expect(card(page, 's-auth').getByRole('status')).toHaveText('已送出');
+
+    // 提示列上的「全部繼續」：放出排隊的交接，提示列消失，「全部繼續」停用。
+    await strip(page).getByTestId('resume-button').click();
+    await expect(page.getByTestId('pause-msg')).toHaveText('已繼續，放出：排隊送字 1 則');
+    await expect(strip(page)).toHaveCount(0);
+    await expect(page.getByTestId('resume-button')).toBeDisabled();
+    await expect(page.getByTestId('pause-button')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByTestId('handoff-label-s-auth-s-tests')).toHaveAttribute(
+      'data-talk',
+      'delivered',
+    );
+  });
+
+  test('立刻中斷：第一次按不執行、第二次才執行；只有 RUN 被中斷，失聯的列出來', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await page.getByTestId('pause-button').click();
+    const option = page.getByTestId('pause-interrupt');
+    await expect(option).toContainText('立刻中斷全部（Esc）');
+    await option.click();
+    // 第一次只上膛：還沒暫停，RUN 還在跑。
+    await expect(option).toContainText('再按一次：中斷 1 個 RUN');
+    await expect(strip(page)).toHaveCount(0);
+    await expect(lamp(page, 's-tests')).toHaveText('●RUN');
+    // 3 秒內沒按就退回，不執行。
+    await page.waitForTimeout(3300);
+    await expect(option).toContainText('立刻中斷全部（Esc）');
+    await expect(strip(page)).toHaveCount(0);
+
+    await option.click();
+    await expect(option).toContainText('再按一次');
+    // 連點（350ms 內）不算第二下，避免手抖。
+    await option.click();
+    await expect(strip(page)).toHaveCount(0);
+    await page.waitForTimeout(400);
+    await option.click();
+    await expect(page.getByTestId('pause-msg')).toHaveText(
+      '已暫停：立刻中斷。 已中斷 1 個；1 個失聯沒送到',
+    );
+    await expect(page.getByTestId('pause-menu')).toHaveCount(0);
+    await expect(strip(page)).toContainText('已暫停（立刻中斷）');
+    await expect(page.getByTestId('pause-interrupt-result')).toHaveText(
+      '已中斷 1 個；1 個失聯沒送到（沒送到的：Nav tweaks）',
+    );
+    await expect(page.getByTestId('pause-button')).toContainText('已暫停：立刻中斷');
+    // RUN 收到 Esc 回到等輸入；PERM、PLAN 不動。
+    await expect(lamp(page, 's-tests')).not.toHaveText('●RUN');
+    await expect(lamp(page, 's-auth')).toHaveText('◆PERM');
+    await expect(lamp(page, 's-etl')).toContainText('PLAN');
+    await shot(page, 'paused-interrupt');
+
+    // 全部繼續不會對被中斷的 session 送「繼續」（Q8）；中斷結果跟著清掉。
+    await page.getByTestId('resume-button').first().click();
+    await expect(strip(page)).toHaveCount(0);
+    await expect(lamp(page, 's-tests')).not.toHaveText('●RUN');
+  });
+
+  test('別的瀏覽器暫停、hub 重啟清掉排隊：提示列照 hub 推來的狀態顯示', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openCanvas(page);
+    await patchStore(
+      page,
+      `useBoard.getState().backend.setPauseState({
+         paused: { mode: 'finish_turn', since: new Date().toISOString(), by: 'u2', byName: 'GML', clearedOnRestart: 2 },
+         held: { deliveries: 0, sessions: 1, sessionsWaiting: 2, autoContinues: 1 },
+       });`,
+    );
+    await expect(strip(page)).toContainText('已暫停（做完這輪就停）');
+    await expect(strip(page)).toContainText('・GML');
+    await expect(page.getByTestId('pause-held')).toHaveText(
+      '排隊：排隊 session 1 個、到期的自動接續 1 個',
+    );
+    await expect(strip(page)).toContainText('另有 2 個 session 在等名額');
+    await expect(page.getByTestId('pause-cleared')).toHaveText(
+      'hub 重啟，2 則排隊已清除（不會送出；按「全部繼續」後這行消失）。',
+    );
+    // 開著右側面板、次畫面時提示列一直都在。
+    await page.evaluate(() => (location.hash = '#/inbox'));
+    await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+    await expect(strip(page)).toBeVisible();
+    await page.evaluate(() => (location.hash = '#/terminal/s-auth'));
+    await expect(strip(page)).toBeVisible();
+  });
+
+  test('英文：指令列與提示列不撐爆', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await openCanvas(page);
+    await page.getByRole('group', { name: '介面語言' }).getByRole('button', { name: 'EN' }).click();
+    await page.getByTestId('pause-button').click();
+    await page.getByTestId('pause-finish-turn').click();
+    await expect(strip(page)).toContainText('Paused (Stop after this turn)');
+    await expect(page.getByTestId('resume-release')).toHaveText('Will release: nothing queued');
+    const width = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(width).toBeLessThanOrEqual(1024);
+    const barBox = (await bar(page).boundingBox())!;
+    expect(barBox.x).toBeGreaterThanOrEqual(0);
+    expect(barBox.x + barBox.width).toBeLessThanOrEqual(1024);
+    await shot(page, 'command-bar-en');
+  });
+
+  test('手機收件匣：暫停狀態列與兩顆大按鈕，可暫停、繼續；立刻中斷同樣按兩次；沒有底部指令列', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#/inbox');
+    const phone = page.getByTestId('phone-pause');
+    await expect(phone).toBeVisible();
+    await expect(page.getByTestId('command-bar')).toBeHidden();
+    const pauseButton = phone.getByTestId('pause-button');
+    const resumeButton = phone.getByTestId('resume-button');
+    for (const button of [pauseButton, resumeButton]) {
+      expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+    }
+    await expect(resumeButton).toBeDisabled();
+
+    await pauseButton.click();
+    const interrupt = phone.getByTestId('pause-interrupt');
+    expect((await interrupt.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+    const menuBox = (await phone.getByTestId('pause-menu').boundingBox())!;
+    expect(menuBox.x).toBeGreaterThanOrEqual(0);
+    expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(390);
+    await interrupt.click();
+    await expect(interrupt).toContainText('再按一次：中斷 1 個 RUN');
+    await expect(phone.getByTestId('pause-strip')).toHaveCount(0);
+    await page.waitForTimeout(400);
+    await interrupt.click();
+    await expect(phone.getByTestId('pause-strip')).toContainText('已暫停（立刻中斷）');
+    await expect(phone.getByTestId('pause-interrupt-result')).toContainText(
+      '（沒送到的：Nav tweaks）',
+    );
+    await expect(phone.getByTestId('resume-release')).toHaveText('會放出：沒有排隊中的');
+    await shot(page, 'phone-paused');
+
+    await resumeButton.click();
+    await expect(phone.getByTestId('pause-strip')).toHaveCount(0);
+    await expect(phone.getByTestId('pause-msg')).toHaveText('已繼續（沒有排隊中的）');
+    await expect(resumeButton).toBeDisabled();
+    const width = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(width).toBeLessThanOrEqual(390);
   });
 });

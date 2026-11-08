@@ -1,6 +1,7 @@
 // 真後端：REST 走 routes 表，其餘走 /ws/client（CONTRACTS.md §6、§7）。登入後才連 WebSocket。
 import { HubToClient, routes, WS_PATHS } from '@agent-board/protocol';
 import type {
+  BoardPauseState,
   ClientToHub,
   ResourceSample,
   SessionEvent,
@@ -193,8 +194,11 @@ class HubConnection implements TerminalStream {
           sessions: message.sessions,
           approvals: message.approvals,
           waitingLimit: message.waitingLimit,
+          pause: message.pause,
         });
         return;
+      case 'board.pause':
+        return this.patch((s) => ({ ...s, pause: message.pause }));
       case 'board.waitingLimit':
         return this.patch((s) => ({ ...s, waitingLimit: message.waitingLimit }));
       case 'terminal.snapshot':
@@ -239,6 +243,11 @@ class HubConnection implements TerminalStream {
       default:
         return;
     }
+  }
+
+  /** REST 回來的暫停狀態先套上（WebSocket 的 board.pause 隨後也會到，內容相同）。 */
+  setPause(pause: BoardPauseState): void {
+    this.patch((s) => ({ ...s, pause }));
   }
 
   private patch(update: (state: BoardSnapshot) => BoardSnapshot): void {
@@ -310,6 +319,16 @@ export function createHubBackend() {
         () => hub.send({ type: 'terminal.input', sessionId, data: '\r' }),
         PROMPT_ENTER_DELAY_MS,
       );
+    },
+    async pauseBoard(mode) {
+      const result = await call('boardPause', { body: { mode } });
+      hub.setPause(result.state);
+      return result;
+    },
+    async resumeBoard() {
+      const result = await call('boardResume');
+      hub.setPause(result.state);
+      return result;
     },
     async decideApproval(approval, decision) {
       const sent = hub.send({

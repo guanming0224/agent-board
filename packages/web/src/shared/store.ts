@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { DEFAULT_WAITING_LIMIT } from '@agent-board/protocol';
+import { DEFAULT_WAITING_LIMIT, NOT_PAUSED } from '@agent-board/protocol';
 import type { BoardBackend, BoardSnapshot } from './backend';
 import { createFakeBackend } from './fakeBackend';
 import { createHubBackend } from './hubBackend';
@@ -23,6 +23,7 @@ export const useBoard = create<BoardState>(() => ({
   sessions: [],
   approvals: [],
   waitingLimit: DEFAULT_WAITING_LIMIT,
+  pause: NOT_PAUSED,
 }));
 
 backend.watchBoard((snapshot) => useBoard.setState(snapshot));

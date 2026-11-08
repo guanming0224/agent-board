@@ -741,3 +741,210 @@ kbd {
     animation: none;
   }
 }
+
+/*
+ * 全部暫停＋底部浮動指令列（P2 §3）。指令列半透明＋模糊，畫布底部置中、不擋右下的小地圖與縮放；
+ * 暫停提示列與按下的暫停鈕都用中性色（白／灰），不用狀態色：暫停不是「球在誰手上」。
+ */
+.command-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 16px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  pointer-events: none;
+}
+.command-dock > * {
+  pointer-events: auto;
+}
+.command-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 6px;
+  border: 1px solid var(--border-2);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+}
+@supports not (backdrop-filter: blur(1px)) {
+  .command-bar {
+    background: var(--surface);
+  }
+}
+.command-bar button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13.5px;
+}
+.command-sep {
+  align-self: stretch;
+  width: 1px;
+  margin: 4px 2px;
+  background: var(--border-2);
+}
+.command-bar .release {
+  padding: 0 6px 0 2px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.command-dock .msg {
+  max-width: min(560px, 100%);
+  padding: 6px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--fg-muted);
+}
+.command-dock .msg.err,
+.phone-pause .msg.err {
+  border-color: var(--fault);
+}
+/* 桌面畫布：右下的縮放列和小地圖（約 340px）會和置中的指令列撞在一起時，指令列往左讓。 */
+@media (max-width: 1240px) {
+  .command-dock {
+    padding-right: 360px;
+  }
+  .command-dock[style] {
+    padding-right: 16px;
+  }
+  /* 窄的時候按鈕會換行：「會放出：…」自己一行，分隔線拿掉。 */
+  .command-sep {
+    display: none;
+  }
+  .command-bar .release {
+    flex-basis: 100%;
+    padding: 0 0 2px;
+    text-align: center;
+  }
+}
+/* 手機沒有底部指令列（收件匣頂部有暫停鈕）；頁首保留「新增 session」。 */
+@media (max-width: 640px) {
+  .command-dock {
+    display: none;
+  }
+}
+@media (min-width: 641px) {
+  .has-command-bar .top .header-new {
+    display: none;
+  }
+}
+
+.pause-menu {
+  position: relative;
+}
+.pause-toggle[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.pause-options {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  z-index: 10;
+  display: grid;
+  gap: 4px;
+  width: min(340px, calc(100vw - 32px));
+  padding: 6px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 50%);
+}
+.pause-menu.phone .pause-options {
+  left: 0;
+  top: calc(100% + 8px);
+  bottom: auto;
+  transform: none;
+}
+.pause-options button {
+  display: grid;
+  gap: 2px;
+  min-height: 44px;
+  height: auto;
+  padding: 8px 12px;
+  text-align: left;
+  white-space: normal;
+}
+.pause-options button[aria-checked='true'] {
+  border-color: var(--accent);
+}
+.pause-options .sub {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.pause-strip {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: 13px;
+}
+.pause-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+}
+.pause-what {
+  font-weight: 650;
+}
+.pause-held,
+.pause-since,
+.pause-sub {
+  color: var(--muted);
+}
+.pause-act {
+  margin-left: auto;
+}
+.pause-act .resume-btn {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+.pause-note {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+}
+
+.phone-pause {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.phone-pause .pause-strip {
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  padding: 10px 12px;
+}
+.phone-pause-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.phone-pause-row .pause-toggle,
+.phone-pause-row .resume-btn {
+  width: 100%;
+  min-height: 56px;
+  white-space: normal;
+}
+.phone-pause-row .pause-options button {
+  min-height: 56px;
+}
+.phone-pause-row .release {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 13px;
+}

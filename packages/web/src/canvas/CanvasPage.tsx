@@ -31,6 +31,7 @@ import {
   ErrorState,
   errorText,
   LoadingState,
+  CommandBar,
   PageShell,
   useBoardLoad,
   useViewsUi,
@@ -916,5 +917,10 @@ export function CanvasPage() {
     );
   }
 
-  return <PageShell>{body}</PageShell>;
+  return (
+    <PageShell>
+      {body}
+      <CommandBar />
+    </PageShell>
+  );
 }

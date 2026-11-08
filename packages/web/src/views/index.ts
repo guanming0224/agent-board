@@ -1,4 +1,5 @@
 export { AppHeader } from './AppHeader';
+export { CommandBar, PauseStrip, PhonePauseControls, usePauseState } from './pause';
 export { PageShell } from './PageShell';
 export { Sidebar } from './Sidebar';
 export { EmptyState, ErrorState, LoadingState, StaleBanner } from './states';

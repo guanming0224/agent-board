@@ -3,6 +3,10 @@ import type {
   Approval,
   ApprovalDecision,
   AuditEntry,
+  BoardHeld,
+  BoardInterruptResult,
+  BoardPauseMode,
+  BoardPauseState,
   HandoffRule,
   Layout,
   Machine,
@@ -36,6 +40,8 @@ export interface BoardSnapshot {
    * 頁首的橫幅每個人都要，所以 hub 跟著 board.state 送。舊版 hub 沒有就是 undefined（用預設 3）。
    */
   waitingLimit?: number;
+  /** 全部暫停的狀態與排隊統計（P2 項目三）。舊版 hub 沒有就是 undefined（＝沒暫停）。 */
+  pause?: BoardPauseState;
 }
 
 export type BoardListener = (snapshot: BoardSnapshot) => void;
@@ -118,6 +124,16 @@ export interface BoardBackend {
   /** 永久刪除已封存且已結束的 session（只有 owner）。回傳每一項清理的結果。 */
   deleteSession(id: string, options: PurgeOptions): Promise<PurgeResult>;
   sendPrompt(sessionId: string, text: string): void;
+
+  /**
+   * 全部暫停（P2 項目三，CONTRACTS §12）。finish_turn 擋自動送字與自動開新 session；interrupt 另外對每個 RUN 送 Esc，
+   * interrupted 是每個 session 的結果（requested／offline／unsupported）。已暫停時再按＝改模式。
+   */
+  pauseBoard(
+    mode: BoardPauseMode,
+  ): Promise<{ state: BoardPauseState; interrupted: BoardInterruptResult[] }>;
+  /** 全部繼續：只解除閘門，不對被中斷的 session 送「繼續」（Q8）。released 是放出的數量。 */
+  resumeBoard(): Promise<{ state: BoardPauseState; released: BoardHeld }>;
   decideApproval(approval: Approval, decision: ApprovalDecision): Promise<void>;
 
   listProjects(): Promise<Project[]>;

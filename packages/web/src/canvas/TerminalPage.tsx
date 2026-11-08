@@ -13,6 +13,7 @@ import { TerminalView } from '../terminal';
 import {
   Age,
   AppHeader,
+  PauseStrip,
   EmptyState,
   ErrorState,
   handsClass,
@@ -291,6 +292,7 @@ export function TerminalPage() {
     <div className={`shell${connected ? '' : ' is-stale'}`}>
       <AppHeader />
       {!connected && <StaleBanner />}
+      <PauseStrip />
       <div className="board xpand">
         <SessionList currentId={sessionId} />
         <main className="main xpand-main">{body}</main>

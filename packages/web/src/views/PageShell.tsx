@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useBoard } from '../shared/store';
 import { AppHeader } from './AppHeader';
+import { PauseStrip } from './pause';
 import { Sidebar } from './Sidebar';
 import { StaleBanner } from './states';
 import { useViewsUi } from './uiStore';
@@ -25,16 +26,17 @@ export function useHeaderHeight() {
   return ref;
 }
 
-/** 頁首、資料過期列、側欄、主區。畫布滿版。 */
+/** 頁首、資料過期列、暫停提示列、側欄、主區。畫布滿版。桌面的「新增 session」在畫布底部指令列（頁首不放）。 */
 export function PageShell({ children }: { children: ReactNode }) {
   const connected = useBoard((s) => s.connected);
   const sideOpen = useViewsUi((s) => s.sideOpen);
   const header = useHeaderHeight();
   return (
-    <div className={`shell${connected ? '' : ' is-stale'}`}>
+    <div className={`shell has-command-bar${connected ? '' : ' is-stale'}`}>
       <div ref={header} className="shell-head">
         <AppHeader />
         {!connected && <StaleBanner />}
+        <PauseStrip />
       </div>
       <div className={`board${sideOpen ? ' side-open' : ''}`}>
         <Sidebar />

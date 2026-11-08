@@ -413,6 +413,76 @@ test('畫布的交接動畫：真的交接時線在動、送達後目標卡有�
   );
 });
 
+test('全部暫停（真 hub）：按暫停→自動交接被擋下、另一個畫面 1 秒內同步、GM 手動輸入照送→全部繼續後才送達', async ({
+  page,
+  context,
+}) => {
+  await page.goto('/#/canvas');
+  await expect(page.getByTestId('command-bar')).toBeVisible();
+  await expect(page.getByTestId('resume-button')).toBeDisabled();
+  // 另一個畫面（同一個帳號的另一個分頁）：只靠 WebSocket 的 board.pause 同步。
+  const other = await context.newPage();
+  await other.goto('/#/canvas');
+  await expect(other.getByTestId('command-bar')).toBeVisible();
+  await expectStatus(page.request, worker.id, 'waiting_input');
+  await expectStatus(page.request, plain.id, 'waiting_input');
+
+  await page.getByTestId('pause-button').click();
+  await page.getByTestId('pause-finish-turn').click();
+  await expect(page.getByTestId('pause-strip')).toContainText('已暫停（做完這輪就停）');
+  await expect(page.getByTestId('pause-strip')).toContainText('・owner');
+  await expect(other.getByTestId('pause-strip')).toContainText('已暫停（做完這輪就停）', {
+    timeout: 1000,
+  });
+  await expect(other.getByTestId('pause-button')).toHaveAttribute('aria-pressed', 'true', {
+    timeout: 1000,
+  });
+  const paused = await auditOf(page, 'board.pause');
+  expect(JSON.parse(paused[0]!.detail)).toMatchObject({ mode: 'finish_turn', interrupted: [] });
+
+  // 暫停中 GM 自己在卡片指令框送字：照常送達（閘門只擋 hub 自己送的字）。
+  // 用不在任何交接規則裡的 plain-two，回合結束不會再觸發別的交接。
+  const all = (await (await page.request.get('/api/sessions')).json()) as Session[];
+  const loose = all.find((x) => x.name === 'plain-two')!;
+  const input = page.getByTestId(`card-${loose.id}`).getByRole('textbox');
+  await input.fill('typed-while-paused');
+  await input.press('Enter');
+  await screenOf(page, loose.id).toContain('GOT typed-while-paused');
+  await expectStatus(page.request, loose.id, 'waiting_input');
+  expect(await auditOf(page, 'board.held')).toHaveLength(0);
+
+  // worker 改了檔、回合結束：worker → plain 的交接觸發了，但 plain 沒收到，排隊 +1。
+  await typeInto(page, worker.id, 'edit-file /tmp/ab-team/paused.ts');
+  await screenOf(page, worker.id).toContain('GOT edit-file /tmp/ab-team/paused.ts');
+  await expect
+    .poll(async () => (await auditOf(page, 'board.held')).length, { timeout: 20_000 })
+    .toBe(1);
+  const held = await auditOf(page, 'board.held');
+  expect(held[0]!.sessionId).toBe(plain.id);
+  expect(JSON.parse(held[0]!.detail)).toMatchObject({ kind: 'handoff' });
+  await expect(page.getByTestId('pause-held')).toHaveText('排隊：排隊送字 1 則');
+  await expect(page.getByTestId('resume-release')).toHaveText('會放出：排隊送字 1 則');
+  await expect(other.getByTestId('pause-held')).toHaveText('排隊：排隊送字 1 則');
+  await page.waitForTimeout(1000);
+  expect(await readScreen(page, plain.id)).not.toContain('paused.ts');
+
+  // 全部繼續：放出排隊的交接，兩個畫面的提示列都消失。
+  await page.getByTestId('command-bar').getByTestId('resume-button').click();
+  await expect(page.getByTestId('pause-msg')).toHaveText('已繼續，放出：排隊送字 1 則');
+  await screenOf(page, plain.id).toContain(
+    'GOT [Handoff] Summary: done: edit-file /tmp/ab-team/paused.ts',
+  );
+  await expect(page.getByTestId('pause-strip')).toHaveCount(0);
+  await expect(other.getByTestId('pause-strip')).toHaveCount(0, { timeout: 1000 });
+  await expect(page.getByTestId('resume-button')).toBeDisabled();
+  const resumed = await auditOf(page, 'board.resume');
+  expect(JSON.parse(resumed[0]!.detail)).toMatchObject({
+    mode: 'finish_turn',
+    released: { deliveries: 1 },
+  });
+  await other.close();
+});
+
 test('全隊停止：規則先關，session 真的結束，不會因結束再觸發交接', async ({ page }) => {
   await page.goto(`/#/team/${teamId}`);
   await page.getByRole('button', { name: '全隊停止' }).click();

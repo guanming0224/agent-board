@@ -689,12 +689,12 @@ input.cmd:disabled {
   border: 1px dashed var(--ring);
   background: var(--accent-bg);
 }
-/* 封存後的「復原」提示 */
+/* 封存後的「復原」提示。桌面讓開底部的浮動指令列（views.css .command-dock）。 */
 .canvas .archive-toast {
   display: grid;
   gap: 8px;
   max-width: min(520px, calc(100% - 32px));
-  margin-bottom: 16px;
+  margin-bottom: 76px;
 }
 .canvas .archive-toast .toast-row {
   display: flex;
@@ -764,7 +764,7 @@ input.cmd:disabled {
   background: var(--surface);
 }
 .canvas .tidy-toast.raised {
-  margin-bottom: 72px;
+  margin-bottom: 132px;
 }
 .canvas .zoom .summary-toggle[aria-pressed='false'] {
   border-color: var(--accent, currentColor);
@@ -776,6 +776,10 @@ input.cmd:disabled {
   }
   .canvas .tidy-panel button {
     min-height: 36px;
+  }
+  /* 手機沒有指令列，回到原本的位置。 */
+  .canvas .archive-toast {
+    margin-bottom: 16px;
   }
   /* 讓開右下角的縮放列。 */
   .canvas .tidy-toast {

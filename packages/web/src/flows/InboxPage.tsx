@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { MaskChip, useMaskText } from '../security';
-import { AutoContinueNote, WaitingBanner } from '../views';
+import { AutoContinueNote, PhonePauseControls, WaitingBanner } from '../views';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import {
@@ -366,6 +366,7 @@ export function InboxPage() {
         <MaskChip />
       </header>
       <WaitingBanner />
+      <PhonePauseControls />
       {projects.error && (
         <ErrorBox
           what={t('flows.error.projects', { error: projects.error })}
