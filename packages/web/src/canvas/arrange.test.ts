@@ -7,7 +7,10 @@ import {
   restoreLayout,
   TEAM_BLOCK_GAP,
   TEAM_CLEAR,
+  TEAM_GAP_SCREEN,
   teamRows,
+  TIDY_FIT_MIN_ZOOM,
+  tidyFitZoom,
   type ArrangeInput,
   type ArrangeSession,
 } from './arrange';
@@ -411,6 +414,54 @@ describe('arrangeCanvas', () => {
         }
       }
     }
+  });
+
+  it('整理後全部顯示：手機與桌面寬度下，團隊之間在畫面上至少 48px（P2 §4.2）', () => {
+    expect(TEAM_GAP_SCREEN).toBe(48);
+    expect(TEAM_BLOCK_GAP * TIDY_FIT_MIN_ZOOM).toBeGreaterThanOrEqual(TEAM_GAP_SCREEN);
+    const gap = (a: Rect, b: Rect) =>
+      Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w), b.y - (a.y + a.h), a.y - (b.y + b.h));
+    const views = [
+      { w: 390, h: 844 },
+      { w: 1440, h: 900 },
+      { w: 2560, h: 1440 },
+    ];
+    let checked = 0;
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const data = randomCanvas(seed);
+      const out = arrangeCanvas(data);
+      const cluster = clusterOf(data);
+      const drawn = frames(data, out);
+      if (drawn.length === 0) continue;
+      // 整理後的全部範圍（含團隊框）。
+      const all = [...out.values(), ...drawn.map((d) => d.rect)];
+      const x = Math.min(...all.map((r) => r.x));
+      const y = Math.min(...all.map((r) => r.y));
+      const bounds = {
+        w: Math.max(...all.map((r) => r.x + r.w)) - x,
+        h: Math.max(...all.map((r) => r.y + r.h)) - y,
+      };
+      const inTeam = new Set(data.members.map((m) => m.sessionId));
+      let min = Infinity;
+      for (const a of drawn) {
+        for (const b of drawn) {
+          if (!cluster.get(a.team.id)!.has(b.team.id)) min = Math.min(min, gap(a.rect, b.rect));
+        }
+        for (const [id, r] of out) if (!inTeam.has(id)) min = Math.min(min, gap(a.rect, r));
+      }
+      if (min === Infinity) continue;
+      for (const view of views) {
+        const zoom = tidyFitZoom(bounds, view.w, view.h, { padding: 0.06, maxZoom: 0.3 });
+        expect(zoom).toBeGreaterThanOrEqual(TIDY_FIT_MIN_ZOOM);
+        expect(min * zoom, `seed ${seed} ${view.w}px`).toBeGreaterThanOrEqual(TEAM_GAP_SCREEN);
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(30);
+    // 手機寬度放不下全部時不會再縮小（交給捲動），桌面放得下時照常剛好放進畫面。
+    expect(tidyFitZoom({ w: 5200, h: 3000 }, 390, 844)).toBe(TIDY_FIT_MIN_ZOOM);
+    expect(tidyFitZoom({ w: 1000, h: 500 }, 1440, 900, { maxZoom: 0.3 })).toBe(0.3);
+    expect(tidyFitZoom({ w: 5200, h: 2000 }, 1440, 900)).toBeCloseTo(1440 / 5200, 5);
   });
 
   it('隨機畫布：卡不重疊、不同群的團隊框不重疊、框裡沒有別群的卡', () => {

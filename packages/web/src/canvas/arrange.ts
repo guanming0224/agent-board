@@ -40,10 +40,32 @@ export const MAX_COLS = 3;
 /** 區塊之間的距離：留得下團隊框標籤和交接線的字。 */
 export const BLOCK_GAP = GAP_X;
 /**
- * 整理畫布時團隊框（群）後面的距離。P2 §4.2 要求團隊之間至少 48px 螢幕像素：
- * 桌面寬度整理後全部顯示的倍率約 0.25（一列最寬 MAX_ROW_W），240 × 0.25 = 60px。
+ * 整理畫布時團隊框（群）後面的距離（畫布 px）。P2 §4.2 要求團隊之間至少 TEAM_GAP_SCREEN 螢幕像素：
+ * 整理後移鏡頭時縮放不低於 TIDY_FIT_MIN_ZOOM（240 × 0.2 = 48），全部放不下就留給捲動（手機尤其如此）。
  */
 export const TEAM_BLOCK_GAP = 240;
+/** 一鍵整理後團隊之間至少要有的螢幕像素（P2 §4.2）。 */
+export const TEAM_GAP_SCREEN = 48;
+/** 整理畫布後「全部顯示」的最小縮放：TEAM_BLOCK_GAP 在畫面上至少 TEAM_GAP_SCREEN。 */
+export const TIDY_FIT_MIN_ZOOM = TEAM_GAP_SCREEN / TEAM_BLOCK_GAP;
+
+/**
+ * 整理後把 bounds 全部放進 viewW × viewH 的縮放（和 xyflow fitView 一樣：先算剛好放得下，再夾在上下限之間）。
+ * padding 是每邊留白占可視寬高的比例。下限至少 TIDY_FIT_MIN_ZOOM。
+ */
+export function tidyFitZoom(
+  bounds: Pick<Rect, 'w' | 'h'>,
+  viewW: number,
+  viewH: number,
+  { padding = 0, minZoom = TIDY_FIT_MIN_ZOOM, maxZoom = Infinity } = {},
+): number {
+  const fit = Math.min(
+    (viewW * (1 - 2 * padding)) / Math.max(1, bounds.w),
+    (viewH * (1 - 2 * padding)) / Math.max(1, bounds.h),
+  );
+  const low = Math.max(minZoom, TIDY_FIT_MIN_ZOOM);
+  return Math.min(Math.max(fit, low), Math.max(low, maxZoom));
+}
 /** 整理畫布時一列區塊最寬多少（約兩個三欄的團隊並排）。 */
 export const MAX_ROW_W = 5200;
 /** 整理團隊時新區塊外面要淨空多少：團隊框的留白＋標籤。 */

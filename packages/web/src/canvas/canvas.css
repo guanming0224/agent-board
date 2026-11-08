@@ -250,7 +250,10 @@ input.cmd:disabled {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-/* 減少透明度，或瀏覽器不支援背景模糊：退回 1px 框＋8% 團隊色底，標籤是實心底。 */
+/*
+ * 減少透明度，或瀏覽器不支援背景模糊：退回原本的 1px 框＋8% 團隊色底（12px 圓角、沒有光暈與陰影），
+ * 標籤是實心底。@media 和 @supports 不能寫成同一個條件，下面兩個區塊的宣告必須完全一樣（改一邊就要改另一邊）。
+ */
 @media (prefers-reduced-transparency: reduce) {
   .team {
     border-radius: calc(12px / var(--z));
@@ -268,10 +271,17 @@ input.cmd:disabled {
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .team {
+    border-radius: calc(12px / var(--z));
     background: color-mix(in srgb, var(--team) 8%, transparent);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
   }
   .team > span {
     background: var(--bg);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
   }
 }
 
@@ -464,7 +474,7 @@ input.cmd:disabled {
 /*
  * 拖線把手：在外框邊上、標題的高度，永遠不會蓋到 xterm。
  * 平常隱藏（P2 §4.2）：滑鼠移入卡片或卡片取得焦點才淡入；拖線中（.canvas[data-connecting]）
- * 所有卡的目標把手都顯示。只用 opacity 隱藏、絕對定位不佔版面：xyflow 放開時的命中判定仍找得到把手。
+ * 出發卡（data-connect-source）以外所有卡的目標把手都顯示。只用 opacity 隱藏、絕對定位不佔版面：xyflow 放開時的命中判定仍找得到把手。
  */
 .canvas .react-flow__handle.ab-handle {
   z-index: 2;
@@ -480,9 +490,13 @@ input.cmd:disabled {
 }
 .canvas .react-flow__node:hover .ab-handle,
 .canvas .react-flow__node:focus-within .ab-handle,
-.canvas[data-connecting] .react-flow__handle.ab-handle.target,
+.canvas[data-connecting] .react-flow__node:not([data-connect-source]) .ab-handle.target,
 .canvas .react-flow__handle.ab-handle.connectingfrom {
   opacity: 1;
+}
+/* 出發的卡自己的目標把手不能放（不能連到自己）：拖線中就算它有 hover／焦點也不顯示。 */
+.canvas[data-connecting] .react-flow__node[data-connect-source] .ab-handle.target {
+  opacity: 0;
 }
 .canvas .react-flow__handle.ab-handle:hover,
 .canvas .react-flow__handle.ab-handle.connectingto {

@@ -2203,6 +2203,9 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     await expect.poll(() => opacity(handleOf(page, 's-auth', 'target'))).toBe('1');
     await expect.poll(() => opacity(handleOf(page, 's-ml', 'target'))).toBe('1');
     expect(await opacity(handleOf(page, 's-ml', 'source'))).toBe('0');
+    // 出發卡自己的目標把手不算可放置（不能連到自己）。
+    expect(await node(page, 's-tests').getAttribute('data-connect-source')).toBe('true');
+    expect(await opacity(handleOf(page, 's-tests', 'target'))).toBe('0');
     await shot(page, 'handles-connecting');
     await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 4 });
     await page.mouse.up();
@@ -2213,6 +2216,7 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     await page.mouse.move(2, 2);
     await expect.poll(() => opacity(handleOf(page, 's-ml', 'target'))).toBe('0');
     await expect.poll(() => opacity(handleOf(page, 's-etl', 'target'))).toBe('0');
+    expect(await page.locator('[data-connect-source]').count()).toBe(0);
   });
 
   test('鍵盤：Tab 到卡片時把手出現；「建立交接線…」可全程用鍵盤完成，Esc 取消', async ({
@@ -2265,6 +2269,38 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     await expect(hint).toHaveCount(0);
     await expect(page.getByTestId('handoff-s-tests-s-etl')).toContainText('完成時交接');
     expect(await rules(page)).toEqual([...before, 's-tests->s-etl:off'].sort());
+
+    // 同方向已經有了：明確說一聲，不重複建立。
+    await menuOf(page, 's-tests').focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Enter');
+    await node(page, 's-etl').focus();
+    await page.keyboard.press('Enter');
+    await expect(hint).toHaveCount(0);
+    await expect(page.getByRole('alert')).toContainText('這條交接線已經有了');
+    expect(await rules(page)).toEqual([...before, 's-tests->s-etl:off'].sort());
+
+    // 選目標中按 Esc 只取消選目標：不再往下傳給其他 Esc 處理（關交接線小視窗、清除聚焦…）。
+    await page.evaluate(() => {
+      const w = window as never as { __esc: number };
+      w.__esc = 0;
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') w.__esc += 1;
+      });
+    });
+    const escSeen = () => page.evaluate(() => (window as never as { __esc: number }).__esc);
+    await menuOf(page, 's-tests').focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Enter');
+    await expect(hint).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(hint).toHaveCount(0);
+    expect(await escSeen()).toBe(0);
+    // 沒有在選目標時，Esc 照常傳下去。
+    await page.keyboard.press('Escape');
+    expect(await escSeen()).toBe(1);
 
     // 兩張都不在團隊：和拖線一樣的錯誤，不建立。
     await menuOf(page, 's-ml').focus();
@@ -2323,6 +2359,10 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openCanvas(page);
     const team = page.locator('.team').first();
+    // 初次「全部顯示」移鏡頭時暫時沒有模糊，停下來後才放回。
+    await expect
+      .poll(() => team.evaluate((el) => getComputedStyle(el).backdropFilter))
+      .toContain('blur');
     const style = await team.evaluate((el) => {
       const cs = getComputedStyle(el);
       const z = Number(getComputedStyle(el.closest('.canvas')!).getPropertyValue('--z'));
@@ -2362,6 +2402,62 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     for (const text of found) {
       expect(text).not.toMatch(/--(you|fault|agent|quota|idle|c-[\w-]+|st)\b/);
     }
+
+    // 再量實際算出來的顏色（含套到框裡按鈕的全域樣式，平常、hover、focus 各一次）：
+    // 不得和任何狀態色變數解析後的顏色相同。
+    const statusColors = await page.evaluate(() => {
+      const names = new Set<string>();
+      const walk = (list: CSSRuleList) => {
+        for (const rule of Array.from(list)) {
+          if (rule instanceof CSSStyleRule) {
+            for (const prop of Array.from(rule.style)) {
+              if (/^--(you|fault|agent|quota|idle|c-[\w-]+)$/.test(prop)) names.add(prop);
+            }
+          }
+          if ('cssRules' in rule) walk((rule as CSSGroupingRule).cssRules);
+        }
+      };
+      for (const sheet of Array.from(document.styleSheets)) walk(sheet.cssRules);
+      const probe = document.createElement('i');
+      document.querySelector('.canvas')!.append(probe);
+      const out: Record<string, string> = {};
+      for (const name of names) {
+        probe.style.color = `var(${name})`;
+        out[name] = getComputedStyle(probe).color;
+      }
+      probe.remove();
+      return out;
+    });
+    expect(Object.keys(statusColors)).toEqual(expect.arrayContaining(['--you', '--c-ask']));
+    const computedColors = () =>
+      page.evaluate(() => {
+        const out: string[] = [];
+        for (const el of Array.from(document.querySelectorAll('.team, .team *'))) {
+          const cs = getComputedStyle(el);
+          out.push(
+            cs.borderTopColor,
+            cs.borderLeftColor,
+            cs.backgroundColor,
+            cs.outlineColor,
+            cs.color,
+            ...[...cs.boxShadow.matchAll(/rgba?\([^)]*\)/g)].map((m) => m[0]),
+          );
+        }
+        return out;
+      });
+    const assertNoStatusColor = async (when: string) => {
+      const used = new Set(await computedColors());
+      for (const [name, color] of Object.entries(statusColors)) {
+        expect(used.has(color), `${when}：${name} ${color}`).toBe(false);
+      }
+    };
+    await assertNoStatusColor('平常');
+    const tidyButton = page.locator('.team .team-tidy').first();
+    await tidyButton.hover();
+    await assertNoStatusColor('hover');
+    await page.mouse.move(2, 2);
+    await tidyButton.focus();
+    await assertNoStatusColor('focus');
     await shot(page, 'team-frame-glass');
   });
 
@@ -2381,6 +2477,21 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     const hash = await page.evaluate(() => location.hash);
     const before = await viewport(page);
     const cardBefore = await position(page, 's-auth');
+
+    // 只點一下（沒有拖動）：畫面沒動，團隊框的模糊不能拿掉再放回（不閃）。
+    await page.evaluate(() => {
+      const el = document.querySelector('.canvas')!;
+      const w = window as never as { __moving: number };
+      w.__moving = 0;
+      new MutationObserver(() => {
+        if (el.hasAttribute('data-moving')) w.__moving += 1;
+      }).observe(el, { attributes: true, attributeFilter: ['data-moving'] });
+    });
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => (window as never as { __moving: number }).__moving)).toBe(0);
+    await expect(page.locator('.canvas')).not.toHaveAttribute('data-moving');
+    expect(await viewport(page)).toBe(before);
 
     await page.mouse.move(x, y);
     await page.mouse.down();
@@ -2410,6 +2521,45 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     await expect(page.getByTestId('link-pick')).toHaveCount(0);
     await expect(page.getByTestId('quick-create')).toHaveCount(0);
   });
+
+  for (const view of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    test(`一鍵整理後團隊之間在畫面上至少 48px（${view.width}px）`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await page.setViewportSize(view);
+      await page.goto('/#/canvas');
+      await expect(card(page, 's-auth')).toBeVisible();
+      await page.getByRole('button', { name: '整理畫布' }).click();
+      await expect(page.getByTestId('tidy-toast')).toBeVisible();
+      await page.waitForTimeout(300);
+      const z = await page
+        .locator('.canvas')
+        .evaluate((el) => Number(getComputedStyle(el).getPropertyValue('--z')));
+      expect(z).toBeGreaterThanOrEqual(0.2 - 1e-6);
+      // 螢幕上：團隊框和框外的卡、和別的團隊框之間的最小距離。
+      const min = await page.evaluate(() => {
+        type R = { x: number; y: number; r: number; b: number };
+        const box = (el: Element): R => {
+          const r = el.getBoundingClientRect();
+          return { x: r.left, y: r.top, r: r.right, b: r.bottom };
+        };
+        const gap = (a: R, b: R) => Math.max(b.x - a.r, a.x - b.r, b.y - a.b, a.y - b.b);
+        const frames = Array.from(document.querySelectorAll('.team')).map(box);
+        const cards = Array.from(document.querySelectorAll('.react-flow__node')).map(box);
+        let out = Infinity;
+        for (const f of frames) {
+          for (const c of cards) if (gap(f, c) > 0) out = Math.min(out, gap(f, c));
+          for (const g of frames) if (g !== f && gap(f, g) > 0) out = Math.min(out, gap(f, g));
+        }
+        return { out, frames: frames.length };
+      });
+      expect(min.frames).toBeGreaterThan(0);
+      expect(min.out).not.toBe(Infinity);
+      expect(min.out).toBeGreaterThanOrEqual(48);
+    });
+  }
 
   test('減少透明度（prefers-reduced-transparency）：沒有背景模糊，退回 1px 框＋8% 底', async ({
     page,
