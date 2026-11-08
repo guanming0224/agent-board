@@ -27,6 +27,11 @@ export interface DeliveryItem {
    * 自動接續另外接受「還在同一次限流、daemon 看到平常的輸入框」（CONTRACTS §3.5）。
    */
   ready?(target: Session): boolean;
+  /**
+   * GM 親手下的（團隊群發，P2 Q6）：全部暫停不擋，照常在對象等輸入時送；也不算「被暫停擋下」的排隊。
+   * 只在等輸入時送、文字和 Enter 分開、送 Enter 前再確認，這些規則一樣適用。
+   */
+  manual?: boolean;
 }
 
 const readyFor = (item: DeliveryItem, target: Session): boolean =>
@@ -62,7 +67,7 @@ export class SafeDelivery {
     // 同一個 key 蓋掉還沒送的舊的：已經記過被擋，不再記一次（audit 的 board.held 筆數＝排隊則數）。
     const existed = this.pending.has(item.key);
     this.pending.set(item.key, item);
-    if (this.isPaused() && !existed) this.deps.held?.(item);
+    if (this.isPaused() && !existed && !item.manual) this.deps.held?.(item);
     this.deliverNext(item.targetId);
     this.deps.changed?.();
   }
@@ -74,14 +79,14 @@ export class SafeDelivery {
     return removed;
   }
 
-  /** 排隊中的 key（暫停時統計各類數量用）。 */
+  /** 排隊中、會被全部暫停擋住的 key（暫停時統計各類數量用；GM 親手下的 manual 不算）。 */
   pendingKeys(): string[] {
-    return [...this.pending.keys()];
+    return [...this.pending].filter(([, item]) => !item.manual).map(([key]) => key);
   }
 
-  /** 剛按下暫停：已在佇列裡的每一則都交給 held 記錄。 */
+  /** 剛按下暫停：已在佇列裡的每一則（GM 親手下的除外）都交給 held 記錄。 */
   noteHeld(): void {
-    for (const item of this.pending.values()) this.deps.held?.(item);
+    for (const item of this.pending.values()) if (!item.manual) this.deps.held?.(item);
   }
 
   private isPaused(): boolean {
@@ -152,11 +157,11 @@ export class SafeDelivery {
       this.dropPendingTo(targetId);
       return;
     }
-    // 暫停中：留在佇列，不送（目標結束的照樣丟掉，上面已處理）。
-    if (this.isPaused()) return;
+    // 暫停中：留在佇列，不送（目標結束的照樣丟掉，上面已處理）；只有 GM 親手下的（manual）照送。
+    const paused = this.isPaused();
     if (this.awaitingAck.has(targetId) || !deps.isReachable(targetId)) return;
     const before = this.pending.size;
-    const next = this.takeNext(target);
+    const next = this.takeNext(target, paused);
     if (this.pending.size !== before) this.deps.changed?.();
     if (!next) return;
     this.awaitingAck.set(targetId, deps.now().getTime());
@@ -170,9 +175,10 @@ export class SafeDelivery {
   }
 
   /** 第一則現在能送的；還不能送的留在佇列裡。 */
-  private takeNext(target: Session): DeliveryItem | null {
+  private takeNext(target: Session, paused: boolean): DeliveryItem | null {
     for (const [key, item] of this.pending) {
       if (item.targetId !== target.id || !readyFor(item, target)) continue;
+      if (paused && !item.manual) continue;
       this.pending.delete(key);
       const reason = item.check();
       if (reason === null) return item;

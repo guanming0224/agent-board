@@ -33,6 +33,11 @@ describe('clampPermissionMode', () => {
       mode: 'plan',
       clamped: false,
     });
+    // 測試預設每步問（Q5）。
+    expect(clampPermissionMode(undefined, 'acceptEdits', 'tester')).toEqual({
+      mode: 'default',
+      clamped: false,
+    });
     // 呼叫者比角色預設嚴：照呼叫者，不算「被改」。
     expect(clampPermissionMode(undefined, 'plan', 'worker')).toEqual({
       mode: 'plan',
@@ -121,6 +126,7 @@ function engineSetup() {
     readOnly: false,
     autoContinue: null,
     dispatchedBy: null,
+    zoneId: 'main',
     ...over,
   });
   store.insertSession(base('caller'), null);
@@ -494,6 +500,34 @@ describe('派工：開成員、送工作、結果自動送回', () => {
     expect(fifth.ok).toBe(false);
     expect(fifth.text).toMatch(/^limit_reached: You already have 4 live members/);
     expect(b.daemon.of('session.create')).toHaveLength(0);
+  });
+
+  it('測試（tester，Q5）：可寫、預設開自己的 worktree、預設權限 default；加入呼叫者的團隊並在同一個工作區', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const zone = await hub.api('POST', '/api/zones', { cookie: b.cookie, body: { name: 'B' } });
+    await hub.api('PATCH', `/api/sessions/${b.caller}`, {
+      cookie: b.cookie,
+      body: { zoneId: zone.body.id },
+    });
+    const {
+      id,
+      spec: s,
+      reply,
+    } = await spawnMember(b, {
+      role: 'tester',
+      prompt: 'Run the tests.',
+    });
+    expect(s).toMatchObject({ readOnly: false, useWorktree: true, permissionMode: 'default' });
+    expect(s.name).toBe('Lead-QA');
+    expect(reply).toMatchObject({ role: 'tester', readOnly: false });
+    const team = hub.running.store.teamsOfSession(id)[0]!;
+    expect(team.zoneId).toBe(zone.body.id);
+    expect(get(id)?.zoneId).toBe(zone.body.id);
+    expect(hub.running.store.listTeamMembers(team.id)).toContainEqual({
+      teamId: team.id,
+      sessionId: id,
+      role: 'tester',
+    });
   });
 
   it('權限：不比呼叫者寬、不給 bypassPermissions；唯讀呼叫者不能開寫入者；派工開的成員不能再開', async () => {

@@ -179,6 +179,7 @@ describe('SafeDelivery 暫停閘門（單元）', () => {
     readOnly: false,
     autoContinue: null,
     dispatchedBy: null,
+    zoneId: 'main',
   };
 
   function setup() {

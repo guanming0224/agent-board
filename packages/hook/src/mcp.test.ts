@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DISPATCH_MCP_SERVER,
+  DISPATCH_ROLES,
   DispatchTool,
   HOOK_ENV,
   MCP_ENV,
@@ -147,9 +148,20 @@ describe('agent-board-mcp', () => {
     server.send({ method: 'notifications/initialized' });
     server.send({ id: 3, method: 'tools/list' });
     const { tools } = (await server.reply(3)).result as {
-      tools: { name: string; inputSchema: { type: string; required?: string[] } }[];
+      tools: {
+        name: string;
+        inputSchema: {
+          type: string;
+          required?: string[];
+          properties?: Record<string, { enum?: string[] }>;
+        };
+      }[];
     };
     expect(tools.map((t) => t.name)).toEqual(DispatchTool.options);
+    // 角色和 hub 收的一樣（P2 加了 tester，Q5）。
+    expect(
+      tools.find((t) => t.name === 'spawn_member')!.inputSchema.properties?.role?.enum,
+    ).toEqual([...DISPATCH_ROLES]);
     expect(tools.find((t) => t.name === 'spawn_member')!.inputSchema.required).toEqual([
       'role',
       'prompt',

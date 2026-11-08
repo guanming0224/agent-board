@@ -14,7 +14,8 @@ import Database from 'better-sqlite3';
 
 export type Db = Database.Database;
 
-const migrations: string[] = [
+/** 每一版的 SQL（只增不改）。匯出給測試做出「真的舊版」資料庫用。 */
+export const MIGRATIONS: readonly string[] = [
   /* 1：初始結構。正式資料庫一開始是空的，這裡不放任何範例資料。 */ `
   CREATE TABLE users (
     id TEXT PRIMARY KEY,
@@ -214,9 +215,56 @@ const migrations: string[] = [
   ALTER TABLE sessions ADD COLUMN dispatched_by TEXT;
   ALTER TABLE sessions ADD COLUMN dispatch_work TEXT;
   `,
+  /*
+   * 9：工作區（P2 項目二，GM 2026-11-08）。程式內叫 zone，和 layouts.workspace（版面組）分開。
+   * 建一個預設工作區「主要」（id 'main'，Q3），既有的團隊、session、便利貼全部歸進去；layouts 不動（座標共用）。
+   * notes.workspace（原本全是 'default'）改名 zone_id 並改存工作區 id。
+   * SQLite 不能用 ALTER TABLE 加「有預設值又有外鍵」的欄位，重建 teams／sessions 又會觸發 ON DELETE CASCADE
+   * 刪掉成員、任務、事件，所以外鍵改用觸發器：寫入不存在的工作區、刪除還有東西的工作區都會被擋（RAISE ABORT）。
+   */ `
+  CREATE TABLE zones (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    position INTEGER NOT NULL
+  );
+  INSERT INTO zones (id, name, created_at, position)
+    VALUES ('main', '主要', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 0);
+  ALTER TABLE teams ADD COLUMN zone_id TEXT NOT NULL DEFAULT 'main';
+  ALTER TABLE sessions ADD COLUMN zone_id TEXT NOT NULL DEFAULT 'main';
+  DROP INDEX notes_workspace;
+  ALTER TABLE notes RENAME COLUMN workspace TO zone_id;
+  UPDATE notes SET zone_id = 'main';
+  CREATE INDEX notes_zone ON notes(zone_id);
+  CREATE INDEX teams_zone ON teams(zone_id);
+  CREATE INDEX sessions_zone ON sessions(zone_id);
+  CREATE TRIGGER teams_zone_insert BEFORE INSERT ON teams
+    WHEN NOT EXISTS (SELECT 1 FROM zones WHERE id = NEW.zone_id)
+    BEGIN SELECT RAISE(ABORT, 'unknown zone'); END;
+  CREATE TRIGGER teams_zone_update BEFORE UPDATE OF zone_id ON teams
+    WHEN NOT EXISTS (SELECT 1 FROM zones WHERE id = NEW.zone_id)
+    BEGIN SELECT RAISE(ABORT, 'unknown zone'); END;
+  CREATE TRIGGER sessions_zone_insert BEFORE INSERT ON sessions
+    WHEN NOT EXISTS (SELECT 1 FROM zones WHERE id = NEW.zone_id)
+    BEGIN SELECT RAISE(ABORT, 'unknown zone'); END;
+  CREATE TRIGGER sessions_zone_update BEFORE UPDATE OF zone_id ON sessions
+    WHEN NOT EXISTS (SELECT 1 FROM zones WHERE id = NEW.zone_id)
+    BEGIN SELECT RAISE(ABORT, 'unknown zone'); END;
+  CREATE TRIGGER notes_zone_insert BEFORE INSERT ON notes
+    WHEN NOT EXISTS (SELECT 1 FROM zones WHERE id = NEW.zone_id)
+    BEGIN SELECT RAISE(ABORT, 'unknown zone'); END;
+  CREATE TRIGGER notes_zone_update BEFORE UPDATE OF zone_id ON notes
+    WHEN NOT EXISTS (SELECT 1 FROM zones WHERE id = NEW.zone_id)
+    BEGIN SELECT RAISE(ABORT, 'unknown zone'); END;
+  CREATE TRIGGER zones_delete BEFORE DELETE ON zones
+    WHEN EXISTS (SELECT 1 FROM teams WHERE zone_id = OLD.id)
+      OR EXISTS (SELECT 1 FROM sessions WHERE zone_id = OLD.id)
+      OR EXISTS (SELECT 1 FROM notes WHERE zone_id = OLD.id)
+    BEGIN SELECT RAISE(ABORT, 'zone not empty'); END;
+  `,
 ];
 
-export const SCHEMA_VERSION = migrations.length;
+export const SCHEMA_VERSION = MIGRATIONS.length;
 
 /**
  * 把資料庫升到 SCHEMA_VERSION。整段包在 BEGIN IMMEDIATE 裡、在交易內才讀 user_version：
@@ -228,7 +276,7 @@ export function migrate(db: Db, path?: string): void {
   db.transaction(() => {
     const current = db.pragma('user_version', { simple: true }) as number;
     if (current > SCHEMA_VERSION) throw new Error(tooNewMessage(path, current));
-    migrations.slice(current).forEach((sql, offset) => {
+    MIGRATIONS.slice(current).forEach((sql, offset) => {
       db.exec(sql);
       db.pragma(`user_version = ${current + offset + 1}`);
     });

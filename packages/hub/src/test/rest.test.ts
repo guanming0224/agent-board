@@ -418,8 +418,24 @@ describe('listening address', () => {
 });
 
 /** 退回 v6 的樣子：拿掉 v7 加的欄位（額度恢復後自動接續）。 */
+/** 退回 v8 的樣子：拿掉 v9 加的工作區（zones 表、觸發器、zone_id 欄，notes.zone_id 改回 workspace）。 */
+const dropV9 = (db: ReturnType<typeof openDatabase>) => {
+  for (const table of ['teams', 'sessions', 'notes']) {
+    db.exec(`DROP TRIGGER ${table}_zone_insert`);
+    db.exec(`DROP TRIGGER ${table}_zone_update`);
+    db.exec(`DROP INDEX ${table}_zone`);
+  }
+  db.exec('DROP TRIGGER zones_delete');
+  db.exec('ALTER TABLE teams DROP COLUMN zone_id');
+  db.exec('ALTER TABLE sessions DROP COLUMN zone_id');
+  db.exec('ALTER TABLE notes RENAME COLUMN zone_id TO workspace');
+  db.exec('CREATE INDEX notes_workspace ON notes(workspace)');
+  db.exec('DROP TABLE zones');
+};
+
 /** 退回 v7 的樣子：拿掉 v8 加的欄位（session 派工）。 */
 const dropV8 = (db: ReturnType<typeof openDatabase>) => {
+  dropV9(db);
   db.exec('ALTER TABLE sessions DROP COLUMN dispatched_by');
   db.exec('ALTER TABLE sessions DROP COLUMN dispatch_work');
 };
@@ -460,6 +476,7 @@ describe('database', () => {
       'tasks',
       'handoff_rules',
       'templates',
+      'zones',
       'audit_log',
       'push_subscriptions',
       'settings',
@@ -469,8 +486,8 @@ describe('database', () => {
     expect(tables.map((t) => t.name).sort()).toEqual([...expected].sort());
     for (const { name } of tables) {
       const { n } = db.prepare(`SELECT count(*) AS n FROM "${name}"`).get() as { n: number };
-      // settings 只有首次啟動產生的 VAPID 金鑰。
-      expect(n, name).toBe(name === 'settings' ? 1 : 0);
+      // settings 只有首次啟動產生的 VAPID 金鑰；zones 只有預設工作區「主要」。
+      expect(n, name).toBe(name === 'settings' || name === 'zones' ? 1 : 0);
     }
   });
 
@@ -545,6 +562,8 @@ describe('database', () => {
       color: 'teal',
       contextMd: '',
       taskAuto: false,
+      // v9 起舊團隊都在預設工作區。
+      zoneId: 'main',
     });
     expect(store.listTeamMembers('t')).toEqual([{ teamId: 't', sessionId: 's1', role: 'worker' }]);
     const rule = store.getRule('r')!;
@@ -651,8 +670,7 @@ describe('database', () => {
     `);
     first.close();
     const db = openDatabase(path);
-    expect(SCHEMA_VERSION).toBe(8);
-    expect(db.pragma('user_version', { simple: true })).toBe(8);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     const store = new Store(db, '127.0.0.1');
     const old = store.getSession('s1')!;
     expect(old.dispatchedBy).toBeNull();
@@ -779,10 +797,19 @@ describe('CRUD', () => {
 
     const note = await hub.api('POST', '/api/notes', {
       cookie,
-      body: { workspace: 'w', x: 1, y: 2, text: 'hi', color: 'y' },
+      body: { zoneId: 'main', x: 1, y: 2, text: 'hi', color: 'y' },
     });
-    expect((await hub.api('GET', '/api/notes?workspace=w', { cookie })).body).toEqual([note.body]);
-    expect((await hub.api('GET', '/api/notes?workspace=other', { cookie })).body).toEqual([]);
+    expect((await hub.api('GET', '/api/notes?zoneId=main', { cookie })).body).toEqual([note.body]);
+    expect((await hub.api('GET', '/api/notes?zoneId=other', { cookie })).body).toEqual([]);
+    // 不存在的工作區：拒收（觸發器之外 REST 先擋，回 400）。
+    expect(
+      (
+        await hub.api('POST', '/api/notes', {
+          cookie,
+          body: { zoneId: 'nope', x: 1, y: 2, text: 'hi', color: 'y' },
+        })
+      ).status,
+    ).toBe(400);
     expect((await hub.api('GET', '/api/notes', { cookie })).status).toBe(400);
 
     const config = {

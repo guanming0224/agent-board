@@ -49,7 +49,11 @@ export const UserRole = z.enum(['owner', 'member']);
 export const HANDOFF_MAX_ROUNDS = 10;
 export const HANDOFF_MARKER_MAX_CHARS = 40;
 export const Locale = z.enum(['zh-TW', 'en']);
-export const TeamRole = z.enum(['lead', 'worker', 'researcher', 'reviewer']);
+/**
+ * 團隊角色：隊長、成員、研究、審查，P2 加「測試」（tester，GM 2026-11-08 Q5）：可寫檔、權限模式預設 default（每步問）、
+ * 可被派任務（同成員）、不當審查、MCP `spawn_member` 可開。
+ */
+export const TeamRole = z.enum(['lead', 'worker', 'researcher', 'reviewer', 'tester']);
 export const TaskColumn = z.enum(['todo', 'doing', 'review', 'done']);
 /** on_marker：回合結束時，最後一則回覆含有指定的標記字串（GM 2026-11-06，寫作要求補實驗用）。 */
 export const HandoffTrigger = z.enum(['on_done', 'on_file', 'on_fail', 'on_marker']);
@@ -103,6 +107,26 @@ export const Machine = z.object({
 export type Machine = z.infer<typeof Machine>;
 
 export const Project = z.object({ id: Id, name: z.string().min(1), color: z.string() });
+
+// ── 工作區（P2 項目二，GM 2026-11-08） ─────────────────────
+/**
+ * 工作區：GM 手動分的一組團隊與單獨 session，畫布一次只顯示一個。全 hub 共用、至少一個。
+ * 程式內一律叫 zone（`zoneId`、`zones` 表），和既有的 `layouts.workspace`（版面組 `'default'`）分開，避免混淆。
+ * 團隊成員所在的工作區跟著團隊（`Team.zoneId`）；不屬於任何團隊的 session 看自己的 `Session.zoneId`。
+ */
+export const ZONE_NAME_MAX = 40;
+export const ZoneName = z.string().trim().min(1).max(ZONE_NAME_MAX);
+export const Zone = z.object({
+  id: Id,
+  name: ZoneName,
+  createdAt: IsoTime,
+  /** 排序值（建立順序，P2 不做拖曳排序）。 */
+  position: z.number().int(),
+});
+export type Zone = z.infer<typeof Zone>;
+/** schema v9 升級時建立的預設工作區（Q3：名稱「主要」）；舊資料全部歸進去。 */
+export const DEFAULT_ZONE_ID = 'main';
+export const DEFAULT_ZONE_NAME = '主要';
 export type Project = z.infer<typeof Project>;
 
 /**
@@ -173,6 +197,11 @@ export const Session = z.object({
    * `sessions.dispatched_by`）。只有 hub 寫，卡片顯示「派工自 …」，也用來算同一個呼叫者的成員上限。
    */
   dispatchedBy: Id.nullable().default(null),
+  /**
+   * 單獨 session 所在的工作區（schema v9 `sessions.zone_id`）。是團隊成員時以團隊的工作區為準，這欄被忽略但保留
+   * （離開團隊時 hub 把它設成團隊所在的工作區）。舊版 hub 不送＝預設工作區。
+   */
+  zoneId: Id.default(DEFAULT_ZONE_ID),
 });
 export type Session = z.infer<typeof Session>;
 
@@ -186,7 +215,7 @@ export type DispatchTool = z.infer<typeof DispatchTool>;
 /** 同一個呼叫者同時活著（沒封存、沒結束）的派工成員上限。 */
 export const DISPATCH_SPAWN_LIMIT = 4;
 /** `spawn_member` 可開的角色：隊長只能是呼叫者自己。 */
-export const DISPATCH_ROLES = ['worker', 'researcher', 'reviewer'] as const;
+export const DISPATCH_ROLES = ['worker', 'researcher', 'reviewer', 'tester'] as const;
 /**
  * 成員手上還沒回報結果的一份工作（hub 內部，存在 `sessions.dispatch_work`）：spawn 的第一個指令或 send_task 送達時寫，
  * 成員下一次回合結束（Stop）就把結果送回 `from` 並清掉，所以一份工作只回報一次。
@@ -304,7 +333,8 @@ export type Layout = z.infer<typeof Layout>;
 
 export const Note = z.object({
   id: Id,
-  workspace: z.string().min(1),
+  /** 便利貼所在的工作區（schema v9 起；原本的 `notes.workspace` 欄改名，舊資料都歸預設工作區）。 */
+  zoneId: Id,
   x: z.number(),
   y: z.number(),
   text: z.string(),
@@ -326,6 +356,8 @@ export const Team = z.object({
    * 會花成員的額度，所以預設關（舊資料也是關）。hub 回傳時一定帶；建立、修改時可以不帶。
    */
   taskAuto: z.boolean().optional(),
+  /** 團隊所在的工作區（schema v9 `teams.zone_id`）；成員跟著團隊。 */
+  zoneId: Id,
 });
 export type Team = z.infer<typeof Team>;
 
@@ -616,6 +648,41 @@ export const BoardInterruptResult = z.object({
   result: z.enum(['requested', 'offline', 'unsupported']),
 });
 export type BoardInterruptResult = z.infer<typeof BoardInterruptResult>;
+
+// ── 群發（P2 項目二：團隊面板底部的指令框） ─────────────────
+/**
+ * 群發給一個對象的結果。sent：已打字並按 Enter（或正在送）；queued：對象不在等輸入（RUN、PERM、PLAN、ERR、QUOTA、QUE、OFF、
+ * 啟動中），等它變回等輸入才送；skipped：對象已結束或封存，沒送；cancelled：GM 取消排隊；
+ * failed：沒送出（reason：target_ended、not_waiting＝打字後狀態變了沒按 Enter、hub_restarted 由前端標）。
+ */
+export const BroadcastState = z.enum(['sent', 'queued', 'skipped', 'cancelled', 'failed']);
+export type BroadcastState = z.infer<typeof BroadcastState>;
+export const BroadcastTarget = z.object({
+  sessionId: Id,
+  name: z.string(),
+  state: BroadcastState,
+  reason: z.string().nullable(),
+  /** 最後一次狀態變化的時間。 */
+  at: IsoTime,
+});
+export type BroadcastTarget = z.infer<typeof BroadcastTarget>;
+/** 一則群發（hub 只放在記憶體：hub 重啟就沒有，排隊中的前端標成「沒送出（hub 重啟）」）。 */
+export const Broadcast = z.object({
+  id: Id,
+  teamId: Id,
+  text: z.string(),
+  /** 有 @ 點名（只送給 targets 裡的人）。 */
+  mentioned: z.boolean(),
+  by: Id.nullable(),
+  byName: z.string().nullable(),
+  at: IsoTime,
+  /** 送出當下全部暫停中（Q6：不擋，只提示）。 */
+  boardPaused: z.boolean(),
+  targets: z.array(BroadcastTarget),
+});
+export type Broadcast = z.infer<typeof Broadcast>;
+/** 群發全文上限（字元）。 */
+export const BROADCAST_TEXT_MAX = 4_000;
 
 /** 合併通知的等待時間：第一個事件後等 15 秒，期間有新事件就從新事件再算，但從第一個事件起最多 60 秒。 */
 export const NOTIFY_WINDOW_MS = 15_000;

@@ -16,8 +16,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { latestBackup, migrate, openDatabase, SCHEMA_VERSION } from '../db';
+import { latestBackup, migrate, MIGRATIONS, openDatabase, SCHEMA_VERSION } from '../db';
 import { runResetPassword } from '../resetPassword';
+import { Store } from '../store';
 
 let dir: string;
 beforeEach(() => {
@@ -32,11 +33,20 @@ afterEach(() => {
 const NOW = () => new Date(2026, 10, 8, 9, 5, 7);
 const STAMP = '20261108-090507';
 
-/** 做一個 v7 的資料庫（拿掉 v8 加的欄位），裡面放一筆資料，確認備份帶得到。 */
+/** 只跑前 version 版的 migration：真的舊版結構（不是從新版倒退）。 */
+function makeAt(path: string, version: number): Database.Database {
+  const db = new Database(path);
+  // 和 hub 開的資料庫一樣用 WAL（之後唯讀資料夾的測試才不會在切模式時就失敗）。
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  for (const sql of MIGRATIONS.slice(0, version)) db.exec(sql);
+  db.pragma(`user_version = ${version}`);
+  return db;
+}
+
+/** 做一個 v7 的資料庫，裡面放一筆資料，確認備份帶得到。 */
 function makeV7(path: string): void {
-  const db = openDatabase(path);
-  db.exec('ALTER TABLE sessions DROP COLUMN dispatched_by');
-  db.exec('ALTER TABLE sessions DROP COLUMN dispatch_work');
+  const db = makeAt(path, 7);
   db.exec(
     `INSERT INTO machines (id, name, os, token_hash, capabilities) VALUES ('m', 'm', 'darwin', 'h', '{}')`,
   );
@@ -48,7 +58,7 @@ const backups = () => readdirSync(dir).filter((name) => name.includes('.bak-'));
 
 describe('backup before schema upgrade', () => {
   it('backs up an older database (0600, opens, still the old version) before migrating, and logs the path', () => {
-    expect(SCHEMA_VERSION).toBe(8);
+    expect(SCHEMA_VERSION).toBe(9);
     const path = join(dir, 'hub.db');
     makeV7(path);
     const lines: string[] = [];
@@ -265,5 +275,120 @@ describe('backup before schema upgrade', () => {
     db.pragma(`user_version = ${SCHEMA_VERSION + 1}`);
     db.close();
     expect(() => openDatabase(path)).toThrow(/newer than this hub.*No backup/);
+  });
+});
+
+// P2 項目二：v8 → v9 工作區。從只跑到 v8 的真實結構開始（不是從新版倒退），放進和正式資料庫同樣多的東西。
+describe('schema v9：工作區', () => {
+  const T = '2026-11-08T00:00:00.000Z';
+
+  function makeV8WithData(path: string): void {
+    const db = makeAt(path, 8);
+    db.exec(`
+      INSERT INTO users (id, name, password_hash, role, locale) VALUES ('u', 'gm', 'h', 'owner', 'zh-TW');
+      INSERT INTO machines (id, name, os, token_hash, capabilities) VALUES ('m', 'm', 'darwin', 'h', '{}');
+    `);
+    const session = db.prepare(
+      `INSERT INTO sessions (id, machine_id, name, cwd, permission_mode, status, status_since, created_at, archived)
+       VALUES (?, 'm', ?, '/r', 'default', 'waiting_input', ?, ?, ?)`,
+    );
+    const layout = db.prepare(
+      `INSERT INTO layouts (id, user_id, workspace, session_id, x, y, w, h) VALUES (?, 'u', 'default', ?, ?, ?, 680, 640)`,
+    );
+    // 13 個 session（最後一個封存），每個有自己的座標。
+    for (let i = 1; i <= 13; i++) {
+      session.run(`s${i}`, `name-${i}`, T, T, i === 13 ? 1 : 0);
+      layout.run(`l${i}`, `s${i}`, i * 820, (i % 3) * 712);
+    }
+    const team = db.prepare(
+      `INSERT INTO teams (id, name, goal, done_criteria, color, context_md) VALUES (?, ?, '', '', 'teal', '')`,
+    );
+    const member = db.prepare(
+      'INSERT INTO team_members (team_id, session_id, role) VALUES (?, ?, ?)',
+    );
+    // 6 個團隊，每隊 2 人（s1–s12），s13 是單獨的。
+    for (let t = 1; t <= 6; t++) {
+      team.run(`t${t}`, `team-${t}`);
+      member.run(`t${t}`, `s${t * 2 - 1}`, 'lead');
+      member.run(`t${t}`, `s${t * 2}`, 'worker');
+    }
+    db.exec(`
+      INSERT INTO notes (id, workspace, x, y, text, color) VALUES ('n1', 'default', 1, 2, 'a', 'y');
+      INSERT INTO notes (id, workspace, x, y, text, color) VALUES ('n2', 'default', 3, 4, 'b', 'y');
+    `);
+    db.close();
+  }
+
+  it('升級前寫 -v8 備份；只有一個工作區「主要」，團隊、session、便利貼都在裡面，座標不變', () => {
+    const path = join(dir, 'hub.db');
+    makeV8WithData(path);
+    const before = new Database(path, { readonly: true });
+    const layoutsBefore = before.prepare('SELECT * FROM layouts ORDER BY id').all();
+    before.close();
+
+    const db = openDatabase(path, { log: () => undefined, now: NOW });
+    expect(db.pragma('user_version', { simple: true })).toBe(9);
+    expect(backups()).toEqual([`hub.db.bak-${STAMP}-v8`]);
+    const store = new Store(db, '127.0.0.1');
+    const zones = store.listZones();
+    expect(zones).toHaveLength(1);
+    expect(zones[0]).toMatchObject({ id: 'main', name: '主要', position: 0 });
+    expect(store.listTeams()).toHaveLength(6);
+    expect(store.listTeams().every((t) => t.zoneId === 'main')).toBe(true);
+    expect(store.listSessions()).toHaveLength(13);
+    expect(store.listSessions().every((s) => s.zoneId === 'main')).toBe(true);
+    expect(
+      store
+        .listNotes('main')
+        .map((n) => n.id)
+        .sort(),
+    ).toEqual(['n1', 'n2']);
+    expect(store.listNotes('main')[0]).toMatchObject({ zoneId: 'main', x: 1, y: 2 });
+    // 成員、版面（座標）原封不動。
+    expect(
+      store
+        .listTeamMembers('t3')
+        .map((m) => m.sessionId)
+        .sort(),
+    ).toEqual(['s5', 's6']);
+    expect(db.prepare('SELECT * FROM layouts ORDER BY id').all()).toEqual(layoutsBefore);
+    db.close();
+
+    // 降級演練：-v8 備份是 v8 hub 讀得了的那一份（tooNewMessage 會指出它）。
+    expect(latestBackup(path, 8)).toBe(join(dir, `hub.db.bak-${STAMP}-v8`));
+    const saved = new Database(join(dir, `hub.db.bak-${STAMP}-v8`), { readonly: true });
+    expect(saved.pragma('user_version', { simple: true })).toBe(8);
+    expect((saved.prepare('SELECT count(*) AS n FROM teams').get() as { n: number }).n).toBe(6);
+    saved.close();
+  });
+
+  it('工作區外鍵（觸發器）：寫入不存在的工作區、刪除還有東西的工作區都被擋', () => {
+    const path = join(dir, 'hub.db');
+    makeV8WithData(path);
+    const db = openDatabase(path, { log: () => undefined, now: NOW });
+    expect(() => db.prepare("UPDATE teams SET zone_id = 'nope' WHERE id = 't1'").run()).toThrow(
+      /unknown zone/,
+    );
+    expect(() => db.prepare("UPDATE sessions SET zone_id = 'nope' WHERE id = 's1'").run()).toThrow(
+      /unknown zone/,
+    );
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO notes (id, zone_id, x, y, text, color) VALUES ('n3', 'nope', 0, 0, '', 'y')",
+        )
+        .run(),
+    ).toThrow(/unknown zone/);
+    expect(() => db.prepare("DELETE FROM zones WHERE id = 'main'").run()).toThrow(/not empty/);
+    const store = new Store(db, '127.0.0.1');
+    const b = store.insertZone({ id: 'b', name: 'B', createdAt: T });
+    expect(b.position).toBe(1);
+    expect(store.zoneContents('b')).toEqual({ teams: 0, sessions: 0 });
+    // 封存的單獨 session 不擋刪除（刪除時搬回 fallback）。
+    store.setSessionZone('s13', 'b');
+    expect(store.zoneContents('b')).toEqual({ teams: 0, sessions: 0 });
+    expect(store.deleteZone('b', 'main')).toBe(true);
+    expect(store.getSession('s13')?.zoneId).toBe('main');
+    db.close();
   });
 });
