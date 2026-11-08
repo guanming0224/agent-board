@@ -13,6 +13,7 @@
   session 裡的 Claude 自己呼叫派工工具（MCP，設定「允許 session 派工」開著時）送給成員的工作與送回的結果（2026-11-06 補）、
   使用者按「帶入進度卡」送出的卡片內容一行、按「請隊長更新 ◈」送出的固定一行（2026-11-08 P3 項目一補）。
   進度卡的 MCP 工具（get_progress／update_progress）只讀寫 hub 的資料，不送任何字進 PTY。
+  全域搜尋（P3 項目三，快速層與 2026-11-09 的深層）只讀資料、回片段，不送任何字進 PTY、不呼叫模型。
   daemon 不會自己產生 prompt。
 
 ## 重跑
@@ -22,7 +23,7 @@ corepack pnpm build:release   # 先打包，檢查才會掃 release/agent-board
 corepack pnpm check:no-llm    # scripts/check-no-llm.mjs
 ```
 
-通過時印出 `通過：沒有 LLM 呼叫；對外連線與終端機輸入共 29 處，都在審查清單內。`（2026-11-08 P3 項目一後重跑；進度卡沒有新增呼叫點，數字與 main 相同）
+通過時印出 `通過：沒有 LLM 呼叫；對外連線與終端機輸入共 29 處，都在審查清單內。`（2026-11-08 P3 項目一後重跑；進度卡沒有新增呼叫點，數字與 main 相同。2026-11-09 P3 ③b 深層搜尋後先跑 `build:release` 再重跑：原始碼 244 檔、第三方套件 134 個、發布檔 25 檔，仍是 29 處——深層搜尋沒有新的連線、行程或送字寫法，`CALL_SITES` 不用改）
 這支腳本做三件事（任何一項不符就結束碼 1）：
 
 1. 在自己的原始碼（`packages/*/src`，不含測試；會進發布檔的 `scripts/installer.mjs`、
@@ -156,6 +157,13 @@ PTY 只有兩個寫入點：`ManagedSession.write`（`packages/daemon/src/sessio
 
 **進度卡（P3 項目一，2026-11-08）不會自己送字。** MCP 工具 `get_progress`／`update_progress` 走派工同一條路（claude → `agent-board-mcp` → daemon socket（密鑰）→ hub `ProgressEngine`），只讀寫 hub 資料庫裡的卡片；寫入不算交接、不算任務完成、不排進 `SafeDelivery`，不觸發任何送字。不用 hook `additionalContext`、不寫檔案進專案資料夾、session 開好後也不自動送卡片內容（`docs/p3-spec.md` §1.3）。設定 `Settings.memory`（預設開）只決定 daemon 掛不掛這兩個工具；卡片的「自動事實」由 hub 從既有資料算，不呼叫模型。
 
+**全域搜尋（P3 項目三）不送任何字。** 快速層（③a）只讀 hub 自己的 SQLite。深層（③b，2026-11-09，`docs/p3-spec.md` §3.6、CONTRACTS §16）只有使用者按 Enter（或「也搜對話與終端機」鈕）時才跑：
+瀏覽器送 `search.deep` → hub（`packages/hub/src/deepSearch.ts`）在**既有的** daemon WebSocket 上送 `search.request`／`search.cancel`（不是新的連線）→
+daemon（`packages/daemon/src/deepSearch.ts`）只做兩件本機的讀取：用 `fs.createReadStream` 逐行讀 `<CLAUDE_CONFIG_DIR>/projects/*/<claudeSessionId>.jsonl`（找檔沿用 `sessionFiles.ts` 的 `findTranscriptFiles`，解析沿用 `transcript.ts` 的 `parseLine`），
+以及讀記憶體裡 headless xterm 的畫面（`ManagedSession.screenLines`，只讀 buffer，不寫 PTY）。比對是 protocol 的子字串規則（`parseSearchTerms`／`makeSnippet`），不是語意搜尋、不呼叫模型；
+結果只回 ≤ 160 字的片段（`search.result`／`search.done`），hub 只轉送給發起的那條瀏覽器連線、不存、不建索引（守 CONTRACTS §2），每次搜尋寫一筆 audit `search.deep`。
+daemon 端不開行程、不對外連線、不送 `terminal.input`；有讀檔總量（300MB）、時間（15 秒）、筆數上限與取消。
+
 全部暫停（P2 項目三，`hub.ts` 的 `pauseBoard`）的「立刻中斷」由 hub 對每個 RUN session 送
 `terminal.signal escape`（只有 Esc，不送任何文字；使用者按下按鈕才送，帶 `onlyIfStatus: 'running'` 讓 daemon 再確認）。
 暫停本身只會讓 `SafeDelivery` 少送，不會多送（按暫停時已打進輸入框、等 Enter 的那一則照樣按完 Enter，字是暫停前就送出的）；
@@ -182,6 +190,7 @@ Claude Code 決定，不在中控台範圍。
 - daemon 給 claude 加 `--strict-mcp-config`、把 `--allowedTools` 放寬到 agent-board 工具（派工 4 個＋進度卡 2 個）以外，或 MCP server 改成連 daemon 以外的地方。
 - 進度卡寫入改成會觸發送字（例如每回合結束自動提醒更新、寫入後自動帶入），或改用 hook `additionalContext`／寫檔案進專案資料夾把卡片塞進對話，或「帶入進度卡」「請隊長更新」改成沒有使用者按就送。
 - 交接規則預設啟用，或內容改成帶完整對話。
+- 全域搜尋改成用模型做語意搜尋或摘要、把對話紀錄或終端機內容存進 hub 或建索引、daemon 搜尋時開行程（例如叫 `claude` 或 `rg`）或往 PTY 送字，或改成打字時就自動對各台 daemon 搜（目前只有按 Enter 才搜）。
 - 套用團隊 Preset 時在全部暫停中仍隨建立送出隊長第一個指令，或第一個指令前的進度卡那一行改成由模型產生。
 - 任務自動執行預設開啟、開關關著也送，或任務提示改成帶完整對話。
 - hook 改用 `type: 'prompt'`／`type: 'agent'`，或回傳 `additionalContext` 往對話塞字。

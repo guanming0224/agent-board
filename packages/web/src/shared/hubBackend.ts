@@ -15,7 +15,14 @@ import type {
   RouteResponse,
   User,
 } from '@agent-board/protocol';
-import type { BoardBackend, BoardListener, BoardSnapshot, TeamChange } from './backend';
+import type {
+  BoardBackend,
+  BoardListener,
+  BoardSnapshot,
+  DeepSearchEvent,
+  DeepSearchHandle,
+  TeamChange,
+} from './backend';
 import type { TerminalServerMessage, TerminalStream } from './terminal-contract';
 
 /** LoginPage 依這三個欄位決定訊息。 */
@@ -101,6 +108,11 @@ class HubConnection implements TerminalStream {
   private eventListeners = new Set<(event: SessionEvent) => void>();
   private teamListeners = new Set<(change: TeamChange) => void>();
   private terminalListeners = new Map<string, Set<(m: TerminalServerMessage) => void>>();
+  /** 進行中的深層搜尋（searchId → 畫面的 listener）。hub 只把結果推給發起的這條連線。 */
+  private searchListeners = new Map<string, (event: DeepSearchEvent) => void>();
+  /** 還沒回 deepDone 的機器。 */
+  private searchWaiting = new Map<string, Set<string>>();
+  private searchSeq = 0;
 
   start(): void {
     this.wanted = true;
@@ -164,6 +176,30 @@ class HubConnection implements TerminalStream {
     };
   }
 
+  /** 深層搜尋（P3 ③b）：送 search.deep；送不出去（沒連上）立刻回 failed。 */
+  deepSearch(
+    request: Parameters<BoardBackend['deepSearch']>[0],
+    listener: (event: DeepSearchEvent) => void,
+  ): DeepSearchHandle {
+    // 不用 crypto.randomUUID：hub 可能是 http（非 secure context）時沒有這個函式。
+    this.searchSeq += 1;
+    const searchId = `ds-${Date.now().toString(36)}-${this.searchSeq}-${Math.random().toString(36).slice(2, 8)}`;
+    this.searchListeners.set(searchId, listener);
+    if (!this.send({ type: 'search.deep', searchId, ...request })) {
+      this.searchListeners.delete(searchId);
+      queueMicrotask(() =>
+        listener({ type: 'search.deepFailed', searchId, error: 'disconnected' }),
+      );
+    }
+    return {
+      searchId,
+      cancel: () => {
+        this.searchWaiting.delete(searchId);
+        if (this.searchListeners.delete(searchId)) this.send({ type: 'search.cancel', searchId });
+      },
+    };
+  }
+
   send(message: ClientToHub): boolean {
     if (this.ws?.readyState !== WebSocket.OPEN) return false;
     this.ws.send(JSON.stringify(message));
@@ -190,6 +226,13 @@ class HubConnection implements TerminalStream {
       if (this.ws !== ws) return;
       this.ws = null;
       this.setConnected(false);
+      // 深層搜尋綁在這條連線上：斷了就不會再有結果（hub 也已取消），告訴畫面。
+      const searches = [...this.searchListeners];
+      this.searchListeners.clear();
+      this.searchWaiting.clear();
+      for (const [searchId, listener] of searches) {
+        listener({ type: 'search.deepFailed', searchId, error: 'disconnected' });
+      }
       if (!this.wanted) return;
       this.retryTimer = setTimeout(() => this.open(), this.retryMs);
       this.retryMs = Math.min(this.retryMs * 2, RECONNECT_MAX_MS);
@@ -274,6 +317,27 @@ class HubConnection implements TerminalStream {
       case 'session.event':
         this.eventListeners.forEach((l) => l(message.event));
         return;
+      case 'search.deepStarted':
+      case 'search.deepResult':
+      case 'search.deepDone': {
+        const listener = this.searchListeners.get(message.searchId);
+        if (!listener) return;
+        // 每台都結束了：這次搜尋完成，之後的 cancel 不必再送。
+        if (message.type === 'search.deepStarted') {
+          this.searchWaiting.set(
+            message.searchId,
+            new Set(message.machines.map((m) => m.machineId)),
+          );
+        } else if (message.type === 'search.deepDone') {
+          this.searchWaiting.get(message.searchId)?.delete(message.machineId);
+        }
+        if (this.searchWaiting.get(message.searchId)?.size === 0) {
+          this.searchWaiting.delete(message.searchId);
+          this.searchListeners.delete(message.searchId);
+        }
+        listener(message);
+        return;
+      }
       case 'error':
         console.warn(`hub: ${message.code}: ${message.message}`);
         return;
@@ -367,6 +431,7 @@ export function createHubBackend() {
     watchEvents: (listener) => hub.watchEvents(listener),
     watchTeamChanges: (listener) => hub.watchTeamChanges(listener),
     watchResources: (listener) => hub.watchResources(listener),
+    deepSearch: (request, listener) => hub.deepSearch(request, listener),
 
     needsSetup: async () => (await call('authStatus')).needsSetup,
     async currentUser() {

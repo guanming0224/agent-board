@@ -15,6 +15,7 @@ export { QuickCreate } from './QuickCreate';
 export { OnboardingPage } from './OnboardingPage';
 export { SessionReviewCards } from './ReviewCards';
 export { SettingsPage } from './SettingsPage';
+export { TranscriptPage } from './TranscriptPage';
 export { Dialog } from './Dialog';
 export { InboxBoard, showOnCanvas, type TeamOption } from './InboxBoard';
 export { triageItems } from './triage';

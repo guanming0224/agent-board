@@ -49,7 +49,7 @@ function toolUseText(block: Record<string, unknown>): { text: string; search: st
   };
 }
 
-interface ParsedEntry {
+export interface ParsedEntry {
   raw: Raw;
   /** 搜尋比對用的全文（截斷前）。 */
   search: string;
@@ -63,7 +63,8 @@ export function entriesOfLine(line: string): Raw[] {
   return parseLine(line).map((p) => p.raw);
 }
 
-function parseLine(line: string): ParsedEntry[] {
+/** 同 entriesOfLine，另帶搜尋比對用的全文（深層搜尋 deepSearch.ts 也用這一份，序號才和對話紀錄檢視一致）。 */
+export function parseLine(line: string): ParsedEntry[] {
   let record: unknown;
   try {
     record = JSON.parse(line);
@@ -119,7 +120,7 @@ export const TRANSCRIPT_DEADLINE_MS = 20_000;
 export const MAX_LINE_CHARS = 8 * 1024 * 1024;
 
 /** 只有這兩種 type 會產生內容；其他行（大量的 progress、summary 等）連 JSON.parse 都省掉。 */
-const mayHaveEntries = (line: string): boolean =>
+export const mayHaveEntries = (line: string): boolean =>
   line.includes('"type":"user"') || line.includes('"type":"assistant"');
 
 export class TranscriptTimeoutError extends Error {

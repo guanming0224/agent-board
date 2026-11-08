@@ -1,5 +1,5 @@
 // 假後端的全域搜尋快速層：照 hub 的 search.ts 做同一件事（同一套比對、片段、遮蔽、分組、排序），
-// demo 與畫面測試不用真 hub 也看得到結果。深層（③b）之後才做。
+// demo 與畫面測試不用真 hub 也看得到結果。深層（③b）在 fakeDeepSearch.ts。
 import {
   makeSnippet,
   parseSearchTerms,
@@ -56,13 +56,11 @@ function relativePath(session: Session, path: string): string {
   return path;
 }
 
-export function fakeSearch(query: SearchQuery, data: FakeSearchData): SearchResults {
-  const terms = parseSearchTerms(query.q);
-  if (terms.length === 0) return { groups: [], partial: false };
-  const match = (text: string | null | undefined) =>
-    text ? makeSnippet(query.mask ? maskSecrets(text) : text, terms) : null;
-  const since = new Date(data.now - SEARCH_SINCE_MS[query.since]).toISOString();
-
+/** 範圍（同 hub 的 searchScope）：工作區（團隊成員跟著團隊）與「含封存」。深層（fakeDeepSearch）也用。 */
+export function fakeScope(
+  query: Pick<SearchQuery, 'scope' | 'zoneId' | 'archived'>,
+  data: Pick<FakeSearchData, 'sessions' | 'teams' | 'members'>,
+): { sessions: Map<string, Session>; teams: Team[] } {
   const memberZone = new Map<string, string>();
   for (const team of [...data.teams].sort((a, b) => a.name.localeCompare(b.name))) {
     for (const m of data.members) {
@@ -78,6 +76,17 @@ export function fakeSearch(query: SearchQuery, data: FakeSearchData): SearchResu
       .map((s) => [s.id, s] as const),
   );
   const teams = data.teams.filter((t) => zoneId === null || t.zoneId === zoneId);
+  return { sessions, teams };
+}
+
+export function fakeSearch(query: SearchQuery, data: FakeSearchData): SearchResults {
+  const terms = parseSearchTerms(query.q);
+  if (terms.length === 0) return { groups: [], partial: false };
+  const match = (text: string | null | undefined) =>
+    text ? makeSnippet(query.mask ? maskSecrets(text) : text, terms) : null;
+  const since = new Date(data.now - SEARCH_SINCE_MS[query.since]).toISOString();
+
+  const { sessions, teams } = fakeScope(query, data);
   const recent = [...data.events]
     .filter((e) => e.at >= since && sessions.has(e.sessionId))
     .sort((a, b) => b.at.localeCompare(a.at));

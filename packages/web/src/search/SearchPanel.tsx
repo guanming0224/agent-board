@@ -1,6 +1,7 @@
 // 全域搜尋視窗（P3 §3.3、§3.4）。桌面是置中次畫面，手機是全螢幕頁 `#/search`（App 依網址決定外框）。
-// 輸入時（停 250ms、至少 2 字）只跑快速層（hub 已有的資料）；按 Enter 搜各台機器的深層（③b）這一版還沒有，
-// 位置與說明先留著、按鈕停用。
+// 輸入時（停 250ms、至少 2 字）只跑快速層（hub 已有的資料）；按 Enter（沒選任何一列時）或「也搜對話與終端機」鈕
+// 才跑深層（③b）：各台機器即時搜對話紀錄與活著的 session 的終端機畫面，結果逐台串流進「對話與終端機」組。
+// 改字、改範圍或再按一次 Enter 會取消上一次深層搜尋（hub 再叫各台 daemon 停止讀檔）。手機不自動跑，要按鈕。
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   parseSearchTerms,
@@ -13,6 +14,7 @@ import {
   type Session,
   type Team,
 } from '@agent-board/protocol';
+import type { DeepSearchHandle } from '../shared/backend';
 import { terminalHash } from '../canvas/terminalRoute';
 import { focusProgressOwner, useProgressUi } from '../progress';
 import { useMaskMode } from '../security';
@@ -21,10 +23,18 @@ import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { refreshTeams, useTeams } from '../team/store';
 import { closeModal, useOverlay } from '../views/overlayStore';
-import { inboxHash, MEMORY_HASH, searchHash, searchQueryOf, teamHash } from '../views/overlay';
+import {
+  inboxHash,
+  MEMORY_HASH,
+  searchHash,
+  searchQueryOf,
+  teamHash,
+  transcriptHash,
+} from '../views/overlay';
 import { formatSpan, Lamp, useNow } from '../views/session';
 import { useViewsUi } from '../views/uiStore';
 import { useCurrentZoneId } from '../zones/store';
+import { reduceDeep, type DeepMachine, type DeepState } from './deep';
 import { useSearchPrefs, type SearchPrefs } from './prefs';
 import './messages';
 import './search.css';
@@ -128,6 +138,14 @@ function go(item: SearchItem, lookup: Lookup): void {
   closeModal();
 }
 
+/** ⌘Enter（或 ⌘點擊）：開該 session 的對話紀錄並捲到命中的那則（深層結果帶 transcriptIndex）。 */
+function openTranscript(item: SearchItem, lookup: Lookup): boolean {
+  const session = lookup.session(item.sessionId);
+  if (!session) return false;
+  location.hash = transcriptHash(session.id, item.transcriptIndex);
+  return true;
+}
+
 function Row({
   item,
   lookup,
@@ -139,7 +157,7 @@ function Row({
   lookup: Lookup;
   selected: boolean;
   id: string;
-  onPick: () => void;
+  onPick: (withMeta: boolean) => void;
 }) {
   const t = useT();
   const now = useNow();
@@ -171,7 +189,7 @@ function Row({
       data-session={item.sessionId}
       data-team={item.teamId}
       onMouseDown={(e) => e.preventDefault()}
-      onClick={onPick}
+      onClick={(e) => onPick(e.metaKey || e.ctrlKey)}
     >
       <span className="search-lamp">
         {session && !teamLike ? (
@@ -189,7 +207,17 @@ function Row({
         )}
       </span>
       <span className="search-snippet">
-        {item.field && <span className="search-field">{t(`search.field.${item.field}`)}</span>}
+        {item.field ? (
+          <span className="search-field">{t(`search.field.${item.field}`)}</span>
+        ) : item.kind === 'transcript' ? (
+          <span className="search-field">
+            {item.transcriptIndex === undefined
+              ? t('search.kind.transcript')
+              : t('search.kind.transcriptAt', { n: item.transcriptIndex + 1 })}
+          </span>
+        ) : item.kind === 'screen' ? (
+          <span className="search-field">{t('search.kind.screen')}</span>
+        ) : null}
         <span className={item.kind === 'file' ? 'mono' : undefined}>
           <Highlight text={item.snippet} ranges={item.matchRanges} />
         </span>
@@ -225,7 +253,7 @@ function Group({
   onToggle: () => void;
   selectedKey: string | null;
   rowKey: (group: SearchGroup, index: number) => string;
-  onPick: (item: SearchItem) => void;
+  onPick: (item: SearchItem, withMeta: boolean) => void;
 }) {
   const t = useT();
   const shown = expanded ? group.items : group.items.slice(0, FIRST_ROWS);
@@ -245,7 +273,7 @@ function Group({
               item={item}
               lookup={lookup}
               selected={key === selectedKey}
-              onPick={() => onPick(item)}
+              onPick={(withMeta) => onPick(item, withMeta)}
             />
           );
         })}
@@ -329,7 +357,9 @@ export function SearchPanel() {
   const [loaded, setLoaded] = useState<Loaded>({ state: 'idle' });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState(-1);
-  const [deepAsked, setDeepAsked] = useState(false);
+  const [deep, setDeep] = useState<DeepState>({ state: 'idle' });
+  const deepHandle = useRef<DeepSearchHandle | null>(null);
+  const machines = useBoard((s) => s.machines);
   const [archived, setArchived] = useState<Session[]>([]);
   const input = useRef<HTMLInputElement>(null);
   const seq = useRef(0);
@@ -370,7 +400,10 @@ export function SearchPanel() {
   useEffect(() => {
     syncUrl(draft);
     setSelected(-1);
-    setDeepAsked(false);
+    // 改字、改範圍或遮蔽模式：上一次深層搜尋取消（hub 叫各台 daemon 停止讀檔），舊結果不再顯示。
+    deepHandle.current?.cancel();
+    deepHandle.current = null;
+    setDeep({ state: 'idle' });
     seq.current += 1;
     if (terms.length === 0) {
       setLoaded({ state: 'idle' });
@@ -391,6 +424,15 @@ export function SearchPanel() {
     return () => clearTimeout(timer);
     // requestKey 已涵蓋 request 的內容（request 每次 render 都是新物件，不能直接放進來）。
   }, [backend, requestKey, terms.length]);
+
+  // 關掉視窗：進行中的深層搜尋取消。
+  useEffect(
+    () => () => {
+      deepHandle.current?.cancel();
+      deepHandle.current = null;
+    },
+    [],
+  );
 
   // 遮蔽模式切換後、新結果回來前，不顯示用舊設定拿到的片段（可能是沒遮的原文）。
   const results =
@@ -426,16 +468,62 @@ export function SearchPanel() {
     };
   }, [known, archived, teams, approvals]);
 
+  // 深層結果：同快速層的排序（等你的與 RUN 在前，其餘依時間新到舊；沒時間的照到達順序排後面）。
+  const deepGroup: SearchGroup | null = useMemo(() => {
+    if (deep.state === 'idle' || deep.state === 'blocked' || deep.items.length === 0) return null;
+    const rank = (item: SearchItem) => {
+      const session = lookup.session(item.sessionId);
+      return session && (lookup.waiting(session.id) || session.status === 'running') ? 0 : 1;
+    };
+    const items = deep.items
+      .map((item, i) => ({ item, i, r: rank(item) }))
+      .sort((a, b) => a.r - b.r || (b.item.at ?? '').localeCompare(a.item.at ?? '') || a.i - b.i)
+      .map((x) => x.item);
+    return { kind: 'transcript', total: items.length, capped: false, items };
+  }, [deep, lookup]);
+
   const rowKey = (group: SearchGroup, i: number) => `search-${group.kind}-${i}`;
   const flat = useMemo(() => {
     const out: { key: string; item: SearchItem }[] = [];
-    for (const group of results?.groups ?? []) {
+    for (const group of [...(results?.groups ?? []), ...(deepGroup ? [deepGroup] : [])]) {
       const shown = expanded.has(group.kind) ? group.items : group.items.slice(0, FIRST_ROWS);
       shown.forEach((item, i) => out.push({ key: rowKey(group, i), item }));
     }
     return out;
-  }, [results, expanded]);
+  }, [results, deepGroup, expanded]);
   const selectedKey = flat[selected]?.key ?? null;
+
+  const maskQueryHit = masking && secretRanges(draft).length > 0;
+  const stale = !connected;
+
+  /** 深層搜尋：取消上一次、送新的。遮蔽模式下查詢字像金鑰就不送（§3.5）。 */
+  const startDeep = () => {
+    if (terms.length === 0) return;
+    deepHandle.current?.cancel();
+    deepHandle.current = null;
+    if (maskQueryHit) {
+      setDeep({ state: 'blocked' });
+      return;
+    }
+    let searchId = '';
+    const handle = backend.deepSearch(request, (event) => {
+      if (event.searchId !== searchId) return;
+      setDeep((prev) => reduceDeep(prev, event));
+    });
+    searchId = handle.searchId;
+    deepHandle.current = handle;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.delete('transcript');
+      return next;
+    });
+    setDeep({ state: 'running', searchId, machines: [], items: [] });
+  };
+
+  const pick = (item: SearchItem, withMeta: boolean) => {
+    if (withMeta && openTranscript(item, lookup)) return;
+    go(item, lookup);
+  };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing) return;
@@ -449,9 +537,10 @@ export function SearchPanel() {
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const picked = flat[selected];
-      if (picked) go(picked.item, lookup);
-      // 沒選任何一列：Enter 是「也搜對話與終端機」（深層，這一版還沒有，只亮出說明）。
-      else if (terms.length > 0) setDeepAsked(true);
+      if (picked) pick(picked.item, e.metaKey || e.ctrlKey);
+      // 沒選任何一列：Enter 是「也搜對話與終端機」（深層）；再按一次會取消上一次、重新搜。
+      // 手機不自動跑（省流量與電），要按鈕。
+      else if (terms.length > 0 && !isPhone()) startDeep();
     } else if (e.key === 'Escape') {
       // 搜尋框裡的 Esc 也關視窗（App 的 Esc 不攔輸入框）。
       e.preventDefault();
@@ -459,9 +548,6 @@ export function SearchPanel() {
       else closeModal();
     }
   };
-
-  const maskQueryHit = masking && secretRanges(draft).length > 0;
-  const stale = !connected;
 
   let body: ReactNode;
   if (terms.length === 0) {
@@ -509,12 +595,119 @@ export function SearchPanel() {
             }
             selectedKey={selectedKey}
             rowKey={rowKey}
-            onPick={(item) => go(item, lookup)}
+            onPick={pick}
           />
         ))}
       </>
     );
   }
+
+  const machineName = (id: string) => machines.find((m) => m.id === id)?.name ?? id;
+  const deepRunning = deep.state === 'running';
+  const deepSection = (
+    <section
+      className="search-group search-deep"
+      data-testid="search-deep"
+      data-state={deep.state}
+      aria-busy={deepRunning}
+    >
+      <h3 id="search-group-transcript">
+        {deepGroup
+          ? t('search.group.transcriptN', { n: deepGroup.total })
+          : t('search.group.transcript')}
+        {deepRunning && <span className="search-deep-busy"> {t('search.deep.running')}</span>}
+      </h3>
+      {(deep.state === 'running' || deep.state === 'finished' || deep.state === 'failed') &&
+        deep.machines.length > 0 && (
+          <ul className="search-deep-machines" role="status" data-testid="search-deep-machines">
+            {deep.machines.map((m) => (
+              <li
+                key={m.machineId}
+                data-testid={`search-deep-machine-${m.machineId}`}
+                data-state={m.state}
+              >
+                {deepMachineText(t, machineName(m.machineId), m)}
+              </li>
+            ))}
+          </ul>
+        )}
+      {deepGroup && (
+        <>
+          <ul
+            role="group"
+            aria-labelledby="search-group-transcript"
+            data-testid="search-group-transcript"
+          >
+            {(expanded.has('transcript')
+              ? deepGroup.items
+              : deepGroup.items.slice(0, FIRST_ROWS)
+            ).map((item, i) => {
+              const key = rowKey(deepGroup, i);
+              return (
+                <Row
+                  key={key}
+                  id={key}
+                  item={item}
+                  lookup={lookup}
+                  selected={key === selectedKey}
+                  onPick={(withMeta) => pick(item, withMeta)}
+                />
+              );
+            })}
+          </ul>
+          {deepGroup.items.length > FIRST_ROWS && (
+            <button
+              type="button"
+              className="search-more"
+              onClick={() =>
+                setExpanded((prev) => {
+                  const next = new Set(prev);
+                  if (next.has('transcript')) next.delete('transcript');
+                  else next.add('transcript');
+                  return next;
+                })
+              }
+            >
+              {expanded.has('transcript')
+                ? t('search.showLess')
+                : t('search.showAll', { n: deepGroup.total })}
+            </button>
+          )}
+        </>
+      )}
+      {deep.state === 'finished' && !deepGroup && (
+        <p className="search-note asked" role="status" data-testid="search-deep-empty">
+          {deep.machines.length === 0 ? t('search.deep.none') : t('search.deep.empty')}
+        </p>
+      )}
+      {deep.state === 'failed' && (
+        <p className="search-note err" role="alert" data-testid="search-deep-failed">
+          {t('search.deep.failed')}
+        </p>
+      )}
+      {deep.state === 'blocked' && (
+        <p className="search-note asked" role="status" data-testid="search-deep-blocked">
+          {t('search.deep.blocked')}
+        </p>
+      )}
+      <div className="search-deep-actions">
+        <button
+          type="button"
+          onClick={startDeep}
+          disabled={terms.length === 0 || stale}
+          aria-describedby="search-deep-note"
+          data-testid="search-deep-button"
+        >
+          {deep.state === 'idle' || deep.state === 'blocked'
+            ? t('search.deep.button')
+            : t('search.deep.again')}
+        </button>
+      </div>
+      <p id="search-deep-note" className="search-note" data-testid="search-deep-note">
+        {t('search.deep.hint')}
+      </p>
+    </section>
+  );
 
   return (
     <div className={stale ? 'search-panel stale' : 'search-panel'} data-testid="search-panel">
@@ -555,25 +748,30 @@ export function SearchPanel() {
       <div className="search-results">
         <div id="search-results" role="listbox" aria-label={t('search.results')}>
           {body}
+          {deepSection}
         </div>
-        <section className="search-group search-deep" data-testid="search-deep">
-          <h3>{t('search.group.transcript')}</h3>
-          <button type="button" disabled aria-describedby="search-deep-note">
-            {t('search.deep.button')}
-          </button>
-          <p
-            id="search-deep-note"
-            className={deepAsked ? 'search-note asked' : 'search-note'}
-            role={deepAsked ? 'status' : undefined}
-            data-testid="search-deep-note"
-          >
-            {t('search.deep.unavailable')}
-          </p>
-        </section>
       </div>
       <p className="search-keys" aria-hidden="true">
         {t('search.keys')}
       </p>
     </div>
   );
+}
+
+/** 一台機器的深層進度（§3.3：搜尋中／完成 N 筆／失聯沒搜到／版本太舊不支援／逾時只搜了部分）。 */
+function deepMachineText(t: ReturnType<typeof useT>, machine: string, m: DeepMachine): string {
+  switch (m.state) {
+    case 'searching':
+      return t('search.deep.searching', { machine });
+    case 'offline':
+      return t('search.deep.offline', { machine });
+    case 'unsupported':
+      return t('search.deep.unsupported', { machine });
+    case 'timeout':
+      return t('search.deep.timeout', { machine, n: m.items, scanned: m.scanned, total: m.total });
+    case 'done':
+      return m.scanned < m.total
+        ? t('search.deep.donePartial', { machine, n: m.items, scanned: m.scanned, total: m.total })
+        : t('search.deep.done', { machine, n: m.items });
+  }
 }

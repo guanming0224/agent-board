@@ -151,11 +151,23 @@ const ROLE_LABEL: Record<TranscriptEntry['role'], string> = {
   tool: 'flows.archive.role.tool',
 };
 
-function Entry({ entry, t }: { entry: TranscriptEntry; t: T }) {
+function Entry({ entry, t, focused }: { entry: TranscriptEntry; t: T; focused?: boolean }) {
   const mask = useMaskText();
   const time = useTime();
+  const ref = useRef<HTMLLIElement>(null);
+  // 從全域搜尋 ⌘Enter 開來的：捲到命中的那則（P3 ③b）。
+  useEffect(() => {
+    if (focused) ref.current?.scrollIntoView({ block: 'center' });
+  }, [focused]);
   return (
-    <li className={`tr tr-${entry.role}`} data-testid="transcript-entry" data-role={entry.role}>
+    <li
+      ref={ref}
+      className={focused ? `tr tr-${entry.role} tr-focus` : `tr tr-${entry.role}`}
+      data-testid="transcript-entry"
+      data-role={entry.role}
+      data-index={entry.index}
+      aria-current={focused ? 'true' : undefined}
+    >
       <div className="tr-meta">
         <span className="tr-role">{t(ROLE_LABEL[entry.role])}</span>
         <span className="num">#{entry.index + 1}</span>
@@ -172,14 +184,23 @@ type TranscriptState =
   | { state: 'error'; detail: string }
   | { state: 'ready'; entries: TranscriptEntry[]; last: TranscriptPage };
 
-function Transcript({
+/** 從第幾則前面開始讀：命中的那則上面留幾則前文。 */
+const FOCUS_CONTEXT = 5;
+
+/**
+ * 對話紀錄（舊資料頁與全域搜尋的 `#/transcript/<id>?at=<n>` 共用）。focusIndex 有給時從那則前面幾則開始讀、
+ * 捲到那則並標出來；有「從頭看」可以回到第 1 則。
+ */
+export function Transcript({
   session,
   machineName,
   online,
+  focusIndex = null,
 }: {
   session: Session;
   machineName: string;
   online: boolean;
+  focusIndex?: number | null;
 }) {
   const t = useT();
   const { backend } = useBoard();
@@ -187,6 +208,10 @@ function Transcript({
   const [query, setQuery] = useState('');
   const [round, setRound] = useState(0);
   const [data, setData] = useState<TranscriptState>({ state: 'loading' });
+  /** 這次清單從篩選後的第幾則開始（沒搜尋時就是序號）。 */
+  const [from, setFrom] = useState(() =>
+    focusIndex === null ? 0 : Math.max(0, focusIndex - FOCUS_CONTEXT),
+  );
   const [more, setMore] = useState<Note | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   /** 換了搜尋字之後，舊搜尋晚回來的「載入更多」不能接到新的清單上。 */
@@ -202,7 +227,11 @@ function Transcript({
     }
     setData({ state: 'loading' });
     backend
-      .sessionTranscript(session.id, { cursor: 0, limit: TRANSCRIPT_PAGE, q: query || undefined })
+      .sessionTranscript(session.id, {
+        cursor: query ? 0 : from,
+        limit: TRANSCRIPT_PAGE,
+        q: query || undefined,
+      })
       .then(
         (page) => {
           if (mine === generation.current) {
@@ -216,7 +245,7 @@ function Transcript({
           );
         },
       );
-  }, [backend, online, query, round, session.id]);
+  }, [backend, online, query, round, session.id, from]);
 
   const loadMore = async () => {
     if (data.state !== 'ready' || data.last.nextCursor === null) return;
@@ -275,7 +304,8 @@ function Transcript({
     );
   } else {
     const count = data.last.matched ?? data.last.total;
-    const left = count - data.entries.length;
+    const start = query ? 0 : from;
+    const left = count - start - data.entries.length;
     body = (
       <>
         <p className="sub" data-testid="transcript-count">
@@ -283,10 +313,23 @@ function Transcript({
             ? t('flows.archive.count', { total: data.last.total })
             : t('flows.archive.matched', { n: data.last.matched, total: data.last.total })}
         </p>
+        {start > 0 && (
+          <div className="acts" data-testid="transcript-from">
+            <span className="sub">{t('flows.archive.from', { n: start + 1 })}</span>
+            <button type="button" onClick={() => setFrom(0)}>
+              {t('flows.archive.fromStart')}
+            </button>
+          </div>
+        )}
         {data.entries.length > 0 && (
           <ol className="transcript">
             {data.entries.map((entry) => (
-              <Entry key={entry.index} entry={entry} t={t} />
+              <Entry
+                key={entry.index}
+                entry={entry}
+                t={t}
+                focused={!query && entry.index === focusIndex}
+              />
             ))}
           </ol>
         )}

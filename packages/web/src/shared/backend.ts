@@ -8,7 +8,9 @@ import type {
   BoardPauseMode,
   BoardPauseState,
   Broadcast,
+  DeepSearchRequest,
   HandoffRule,
+  HubToClient,
   Layout,
   Machine,
   Note,
@@ -41,6 +43,20 @@ import type {
   Zone,
 } from '@agent-board/protocol';
 import type { TerminalStream } from './terminal-contract';
+
+/**
+ * 深層搜尋（P3 ③b）的事件：hub 推來的三種（開始、某台的一批結果、某台結束），
+ * 加上前端自己的 failed（送不出去或搜到一半斷線，整次搜尋結束）。
+ */
+export type DeepSearchEvent =
+  | Extract<HubToClient, { type: 'search.deepStarted' | 'search.deepResult' | 'search.deepDone' }>
+  | { type: 'search.deepFailed'; searchId: string; error: 'disconnected' };
+
+/** 進行中的深層搜尋。cancel 會送 search.cancel（hub 再叫各台 daemon 停止讀檔）。 */
+export interface DeepSearchHandle {
+  readonly searchId: string;
+  cancel(): void;
+}
 
 export interface BoardSnapshot {
   machines: Machine[];
@@ -297,7 +313,15 @@ export interface BoardBackend {
 
   /**
    * 全域搜尋的快速層（P3 §3，`GET /api/search`）：只搜 hub 已有的資料。mask 為 true 時片段在 hub 就遮好。
-   * 深層（各台機器的對話紀錄與終端機，③b）之後才有，會另外加 deepSearch。
    */
   search(query: SearchQuery): Promise<SearchResults>;
+
+  /**
+   * 全域搜尋的深層（P3 ③b，WS `search.deep`）：各台機器即時搜對話紀錄與活著的 session 的終端機畫面，
+   * 結果逐台串流回來（listener）。mask 為 true 時片段在 daemon（與 hub）就遮好。只有按 Enter 才呼叫。
+   */
+  deepSearch(
+    request: Omit<DeepSearchRequest, 'searchId'>,
+    listener: (event: DeepSearchEvent) => void,
+  ): DeepSearchHandle;
 }

@@ -1,5 +1,5 @@
-// 看起來像金鑰的字串。hub（audit 打碼、搜尋片段的伺服器端遮蔽）與 web（遮蔽模式）各放一份完全相同的檔案，
-// packages/web/src/security/mask.test.ts 會比對兩份一致。這是形狀比對，不是安全邊界：
+// 看起來像金鑰的字串。hub（audit 打碼、搜尋片段的伺服器端遮蔽）、daemon（深層搜尋片段的遮蔽）與 web（遮蔽模式）
+// 各放一份完全相同的檔案，packages/web/src/security/mask.test.ts 會比對三份一致。這是形狀比對，不是安全邊界：
 // 沒有固定前綴也沒有 key=value 標籤的密碼認不出來。
 
 /** 固定前綴的金鑰。 */

@@ -61,6 +61,7 @@ import { zoneOfSession } from '../zones/model';
 import type { AuditFilter, BoardBackend, BoardListener, BoardSnapshot } from './backend';
 import type { TerminalServerMessage, TerminalStream } from './terminal-contract';
 import { DECOMPOSE_PROMPT_START } from './decomposePrompt';
+import { fakeDeepSearch } from './fakeDeepSearch';
 import { fakeSearch } from './fakeSearch';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
@@ -126,6 +127,7 @@ export function demoSnapshot(): BoardSnapshot {
         branch: 'ab/fix-auth',
         worktreePath: '/home/demo/.agent-board-wt/fix-auth',
         statusSince: minutesAgo(12),
+        claudeSessionId: DEMO_AUTH_CONVERSATION,
         lastLines: ['Bash  npm test -- auth', 'Do you want to proceed?', '> 1. Yes', '  2. No'],
       }),
       session({
@@ -146,6 +148,7 @@ export function demoSnapshot(): BoardSnapshot {
         status: 'plan_review',
         permissionMode: 'plan',
         statusSince: minutesAgo(4),
+        claudeSessionId: DEMO_ETL_CONVERSATION,
         lastLines: [
           'Plan: 3 steps',
           '1. Add column',
@@ -205,6 +208,57 @@ export function demoSnapshot(): BoardSnapshot {
       },
     ],
   };
+}
+
+/** 深層搜尋（P3 ③b）的 demo 對話：s-auth（demo-studio）與 s-etl（demo-gpu）。 */
+const DEMO_AUTH_CONVERSATION = '5a1e7c2d-3b4f-4a6e-9c8d-1f2e3d4c5b6a';
+const DEMO_ETL_CONVERSATION = '6b2f8d3e-4c5a-4b7f-8d9e-2a3b4c5d6e7f';
+
+/**
+ * 深層搜尋的 demo 對話紀錄：40 則，#13 與 #32 提到「手續費 0.1425」，#20 有金鑰（遮蔽模式測試用）。
+ * 對話紀錄檢視（sessionTranscript）讀的也是這一份，⌘Enter 捲到 transcriptIndex 才對得上。
+ */
+function demoDeepTranscript(name: string): TranscriptEntry[] {
+  const start = Date.now() - 2 * 60 * 60_000;
+  return Array.from({ length: 40 }, (_, index) => {
+    const at = new Date(start + index * 60_000).toISOString();
+    if (index === 12) {
+      return { index, role: 'user', at, text: `${name}：手續費 0.1425 要用哪個設定檔？` };
+    }
+    if (index === 31) {
+      return {
+        index,
+        role: 'assistant',
+        at,
+        text: `已把手續費 0.1425 寫進 config/fees.yaml（${name}）。`,
+      };
+    }
+    if (index === 19) {
+      return {
+        index,
+        role: 'tool',
+        at,
+        text: `→ Bash {"command":"export FEE_TOKEN=${DEMO_SEARCH_KEY}"}`,
+      };
+    }
+    return {
+      index,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      at,
+      text: `${name} step ${index}: refactor and run the tests`,
+    };
+  });
+}
+
+/** 活著的 session 的畫面（demo）：深層搜尋搜這裡（手續費出現在 demo-gpu 的 s-etl）。 */
+function demoScreens(): Map<string, string[]> {
+  return new Map([
+    [
+      's-etl',
+      ['Plan: 3 steps', '1. Add column', '手續費 0.1425 → config/fees.yaml', '3. Drop old column'],
+    ],
+    ['s-auth', ['Bash  npm test -- auth', 'Do you want to proceed?']],
+  ]);
 }
 
 /** s-tests 與已封存的 s-old-resumed 共用的對話 id。 */
@@ -524,7 +578,10 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   state.sessions.push(...demoArchived());
   const transcripts = new Map<string, TranscriptEntry[]>([
     ['0b7c6a52-3f1e-4c2a-9a51-6f2d8e1c4b90', demoTranscript()],
+    [DEMO_AUTH_CONVERSATION, demoDeepTranscript('Fix login')],
+    [DEMO_ETL_CONVERSATION, demoDeepTranscript('Migrate data')],
   ]);
+  const screens = demoScreens();
   const pushEndpoints = new Set<string>();
   const projects: Project[] = [];
   /** 假的「建資料夾」：parent → 建過的名稱。 */
@@ -1726,5 +1783,19 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         role: demoUser.role,
         now: Date.now(),
       }),
+    deepSearch: (request, listener) =>
+      fakeDeepSearch(
+        request,
+        {
+          sessions: state.sessions,
+          teams,
+          members,
+          machines: state.machines,
+          transcripts,
+          screens,
+          now: Date.now(),
+        },
+        listener,
+      ),
   };
 }

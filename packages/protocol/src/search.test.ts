@@ -6,6 +6,11 @@ import {
   parseSearchTerms,
   SEARCH_SNIPPET_MAX,
   SearchQuery,
+  ClientToHub,
+  DaemonToHub,
+  DAEMON_FEATURES,
+  HubToDaemon,
+  SEARCH_DEEP_PER_SESSION,
 } from './index';
 
 describe('parseSearchTerms', () => {
@@ -81,5 +86,69 @@ describe('SearchQuery', () => {
       since: '30d',
     });
     expect(SearchQuery.safeParse({ q: 'x'.repeat(201) }).success).toBe(false);
+  });
+});
+
+describe('深層搜尋的協定（③b）', () => {
+  it('search.deep 帶預設值；scope=zone 沒帶 zoneId 不收', () => {
+    const parsed = ClientToHub.parse({ type: 'search.deep', searchId: 'd1', q: 'risk.py' });
+    expect(parsed).toEqual({
+      type: 'search.deep',
+      searchId: 'd1',
+      q: 'risk.py',
+      scope: 'all',
+      since: '7d',
+      archived: false,
+      mask: false,
+    });
+    expect(
+      ClientToHub.safeParse({ type: 'search.deep', searchId: 'd1', q: 'xx', scope: 'zone' })
+        .success,
+    ).toBe(false);
+    expect(ClientToHub.safeParse({ type: 'search.cancel', searchId: 'd1' }).success).toBe(true);
+  });
+
+  it('search.request 的上限沒帶時用預設；daemon 回 result／done', () => {
+    const request = HubToDaemon.parse({
+      type: 'search.request',
+      searchId: 'd1',
+      terms: ['risk.py'],
+      mask: true,
+      since: '2026-11-01T00:00:00.000Z',
+      sessions: [
+        {
+          sessionId: 's1',
+          claudeSessionId: null,
+          accountProfile: null,
+          lastActivityAt: null,
+        },
+      ],
+      limits: {},
+    });
+    expect(request.type === 'search.request' && request.limits).toEqual({
+      perSession: SEARCH_DEEP_PER_SESSION,
+      perMachine: 100,
+      maxBytes: 300 * 1024 * 1024,
+      deadlineMs: 15_000,
+    });
+    expect(HubToDaemon.safeParse({ ...request, terms: [] }).success, '沒有詞不送').toBe(false);
+    expect(
+      DaemonToHub.safeParse({
+        type: 'search.result',
+        searchId: 'd1',
+        items: [{ kind: 'transcript', snippet: 'x', matchRanges: [[0, 1]], transcriptIndex: 3 }],
+      }).success,
+    ).toBe(true);
+    expect(
+      DaemonToHub.safeParse({
+        type: 'search.done',
+        searchId: 'd1',
+        state: 'offline',
+        scannedSessions: 0,
+        totalSessions: 1,
+      }).success,
+      'daemon 只會回 done／timeout',
+    ).toBe(false);
+    expect(DAEMON_FEATURES.search).toBe('search.v1');
   });
 });

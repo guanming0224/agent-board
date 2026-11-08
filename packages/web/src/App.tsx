@@ -10,6 +10,7 @@ import {
   NewSessionPage,
   OnboardingPage,
   SettingsPage,
+  TranscriptPage,
 } from './flows';
 import { applyAccountLocale } from './flows/locale';
 import { MemoryContent, MemoryDrawer } from './progress';
@@ -99,6 +100,7 @@ function ModalContent({ kind }: { kind: ModalKind }) {
   if (kind === 'settings') return <SettingsPage />;
   if (kind === 'archive') return <ArchivePage />;
   if (kind === 'search') return <SearchPanel />;
+  if (kind === 'transcript') return <TranscriptPage />;
   return <NewSessionPage />;
 }
 
@@ -107,6 +109,7 @@ const MODAL_LABEL: Record<ModalKind, string> = {
   archive: 'flows.archived.title',
   new: 'flows.new.title',
   search: 'search.title',
+  transcript: 'flows.archive.transcript',
 };
 
 /** 手機：上一筆歷史就是 app 裡的畫面就上一頁，否則回收件匣（手機的首頁）。 */

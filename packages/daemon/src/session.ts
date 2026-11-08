@@ -291,6 +291,29 @@ export class ManagedSession {
     return this.claudeSessionId;
   }
 
+  /** 最後一次輸出的時間（深層搜尋依新到舊排）。 */
+  get lastOutput(): string | null {
+    return this.lastOutputAt;
+  }
+
+  /**
+   * 深層搜尋（P3 ③b）用：headless 畫面（含 scrollback，最多 5,000 行）的純文字，一個邏輯行一筆
+   * （自動折行的接回上一行）。只在記憶體讀，不落地；畫面已釋放回 null。
+   */
+  screenLines(): string[] | null {
+    if (this.termDisposed) return null;
+    const buffer = this.term.buffer.active;
+    const lines: string[] = [];
+    for (let y = 0; y < buffer.length; y += 1) {
+      const line = buffer.getLine(y);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    return lines;
+  }
+
   runtime(): SessionRuntime {
     return {
       id: this.id,

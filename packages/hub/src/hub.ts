@@ -5,6 +5,8 @@ import type { WebSocket } from 'ws';
 import {
   ClientToHub,
   DAEMON_FEATURES,
+  SEARCH_DEEP_DEADLINE_MS,
+  SEARCH_DEEP_GRACE_MS,
   isMemoryTool,
   DaemonToHub,
   needsAttention,
@@ -66,6 +68,7 @@ import { parseRateLimitReset } from './rateLimitReset';
 import { TerminalRelay, type RelayClient } from './relay';
 import type { Store, StoredBoardPause } from './store';
 import { TaskEngine } from './tasks';
+import { DeepSearchEngine } from './deepSearch';
 
 export interface Timing {
   heartbeatMs: number;
@@ -90,6 +93,9 @@ export interface Timing {
   notifyWindowMs: number;
   notifyPermissionWindowMs: number;
   notifyMaxWindowMs: number;
+  /** 深層搜尋（P3 ③b）：每台 daemon 的時間上限，以及 hub 多等的寬限（之後當逾時）。測試縮短。 */
+  deepSearchDeadlineMs: number;
+  deepSearchGraceMs: number;
 }
 
 export const DEFAULT_TIMING: Timing = {
@@ -109,6 +115,8 @@ export const DEFAULT_TIMING: Timing = {
   notifyWindowMs: DEFAULT_WINDOWS.normalMs,
   notifyPermissionWindowMs: DEFAULT_WINDOWS.urgentMs,
   notifyMaxWindowMs: DEFAULT_WINDOWS.maxMs,
+  deepSearchDeadlineMs: SEARCH_DEEP_DEADLINE_MS,
+  deepSearchGraceMs: SEARCH_DEEP_GRACE_MS,
 };
 
 export const CLOSE_REVOKED = 4401;
@@ -302,6 +310,8 @@ export class Hub {
   readonly progress: ProgressEngine;
   /** 團隊 Presets（P3 項目二）：只存設定與 audit，不建立、不送字（套用在前端走 runPlan）。 */
   readonly presets: TeamPresets;
+  /** 全域搜尋的深層（P3 ③b）：扇出給各台 daemon、轉送片段、取消、audit。不存內容。 */
+  private readonly deepSearch: DeepSearchEngine<ClientConn>;
   /** 合併通知（Settings.notifications.coalesce）：哪時候送；送什麼在 flushSummary 決定。 */
   private readonly coalescer: NotifyCoalescer;
   /** 同時等你的上限：每次跨過只通知一次，回到上限以內才重設。 */
@@ -447,6 +457,20 @@ export class Hub {
       audit: (userId, sessionId, action, detail) => this.audit(userId, sessionId, action, detail),
       changed: (presets) => this.broadcast({ type: 'preset.list', presets }),
     });
+    this.deepSearch = new DeepSearchEngine<ClientConn>({
+      store: deps.store,
+      daemon: (machineId) => {
+        const conn = this.daemonFor(machineId);
+        return conn
+          ? { features: conn.features, send: (message) => this.send(conn.ws, message) }
+          : null;
+      },
+      sendClient: (client, message) => this.send(client.ws, message),
+      audit: (userId, action, detail) => this.audit(userId, null, action, detail),
+      now: () => deps.now().getTime(),
+      limits: { deadlineMs: deps.timing.deepSearchDeadlineMs },
+      graceMs: deps.timing.deepSearchGraceMs,
+    });
     this.coalescer = new NotifyCoalescer({
       now: () => deps.now().getTime(),
       windows: {
@@ -524,6 +548,8 @@ export class Hub {
 
   private retireDaemon(conn: DaemonConn): void {
     conn.retired = true;
+    // 被取代或撤銷的連線不會再回搜尋結果：進行中的深層搜尋這台標失聯。
+    this.deepSearch.onDaemonGone(conn.machineId);
     if (conn.helloTimer) clearTimeout(conn.helloTimer);
     conn.helloTimer = null;
   }
@@ -630,6 +656,10 @@ export class Hub {
       case 'session.purgeResult':
       case 'session.transcriptResult':
         this.onDaemonReply(conn, msg);
+        return;
+      case 'search.result':
+      case 'search.done':
+        this.deepSearch.onDaemonMessage(conn.machineId, msg);
         return;
     }
   }
@@ -751,6 +781,7 @@ export class Hub {
     conn.helloTimer = null;
     if (conn.retired || this.daemons.get(conn.machineId) !== conn) return;
     this.daemons.delete(conn.machineId);
+    this.deepSearch.onDaemonGone(conn.machineId);
     // 等 daemon 回報 Esc 結果的，斷線就不會有回報了（送了沒送不知道；成員之後 Stop 照常結算）。
     for (const sessionId of this.pauseInterrupts.keys()) {
       if (this.store.sessionMachineId(sessionId) === conn.machineId) {
@@ -860,6 +891,22 @@ export class Hub {
       case 'approval.decide':
         this.decideApproval(client, msg);
         return;
+      case 'search.deep': {
+        // 深層搜尋（P3 ③b）：auth user 即可（同對話紀錄檢視）；結果只推給這條連線。
+        this.deepSearch.start(client, client.userId, {
+          searchId: msg.searchId,
+          q: msg.q,
+          scope: msg.scope,
+          ...(msg.zoneId === undefined ? {} : { zoneId: msg.zoneId }),
+          since: msg.since,
+          archived: msg.archived,
+          mask: msg.mask,
+        });
+        return;
+      }
+      case 'search.cancel':
+        this.deepSearch.cancel(client, msg.searchId);
+        return;
       default:
         break;
     }
@@ -951,6 +998,7 @@ export class Hub {
     this.setWatching(client, false);
     this.clients.delete(client);
     this.relay.removeClient(client);
+    this.deepSearch.onClientGone(client);
     // 還沒按 Enter 就離開的內容還留在 PTY 輸入列，也要留下紀錄。
     for (const [sessionId, buffer] of client.inputs) {
       const partial = buffer.flush();
@@ -2709,6 +2757,7 @@ export class Hub {
     if (this.heartbeat) clearInterval(this.heartbeat);
     if (this.resetTimer) clearTimeout(this.resetTimer);
     this.relay.close();
+    this.deepSearch.dispose();
     this.coalescer.close();
     this.autoContinue.close();
     this.delivery.close();

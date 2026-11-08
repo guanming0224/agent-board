@@ -1,7 +1,7 @@
 // 全域搜尋的快速層（P3 §3，CONTRACTS §16）：只搜 hub SQLite 已有的資料，不碰 daemon、不送任何字。
 // 每種資料是一個「來源」（QuickSearchSource）：進度卡（項目一）也是其中一個來源（progressSource）。
 // 遮蔽模式開著時，整段文字先過 maskSecrets 再比對、擷取片段：金鑰不會被比對到、也不會出現在回應裡（§3.5、D9）。
-// 深層（各台 daemon 搜對話紀錄與終端機畫面，③b）不在這裡。
+// 深層（各台 daemon 搜對話紀錄與終端機畫面，③b）在 deepSearch.ts。
 import {
   parseSearchTerms,
   makeSnippet,
@@ -490,6 +490,23 @@ function sessionZones(store: Store, teams: readonly Team[]): Map<string, string>
   return zones;
 }
 
+/** 範圍：哪些 session（依工作區與「含封存」）與團隊要搜。快速層與深層（deepSearch.ts）共用。 */
+export function searchScope(
+  store: Store,
+  query: Pick<SearchQuery, 'scope' | 'zoneId' | 'archived'>,
+): { sessions: Map<string, Session>; teams: Team[] } {
+  const allTeams = store.listTeams();
+  const zoneId = query.scope === 'zone' ? (query.zoneId ?? null) : null;
+  const memberZone = sessionZones(store, allTeams);
+  const sessions = new Map<string, Session>();
+  for (const s of store.listSessions(query.archived ? undefined : false)) {
+    if (zoneId !== null && (memberZone.get(s.id) ?? s.zoneId) !== zoneId) continue;
+    sessions.set(s.id, s);
+  }
+  const teams = zoneId === null ? allTeams : allTeams.filter((t) => t.zoneId === zoneId);
+  return { sessions, teams };
+}
+
 /** 組內：等你的（ASK／PERM／PLAN／ERR）與 RUN 在前，其餘依時間新到舊（§3.3）。 */
 function rank(item: SearchItem, sessions: ReadonlyMap<string, Session>): number {
   const session = item.sessionId ? sessions.get(item.sessionId) : undefined;
@@ -571,15 +588,7 @@ export class QuickSearch {
     truncatedKinds: Set<SearchGroupKind>,
     timedOut: () => boolean,
   ): SearchResults {
-    const allTeams = this.store.listTeams();
-    const zoneId = query.scope === 'zone' ? (query.zoneId ?? null) : null;
-    const memberZone = sessionZones(this.store, allTeams);
-    const sessions = new Map<string, Session>();
-    for (const s of this.store.listSessions(query.archived ? undefined : false)) {
-      if (zoneId !== null && (memberZone.get(s.id) ?? s.zoneId) !== zoneId) continue;
-      sessions.set(s.id, s);
-    }
-    const teams = zoneId === null ? allTeams : allTeams.filter((t) => t.zoneId === zoneId);
+    const { sessions, teams } = searchScope(this.store, query);
     const mask = query.mask;
     const ctx: SearchContext = {
       terms,

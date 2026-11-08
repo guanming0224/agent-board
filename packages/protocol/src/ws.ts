@@ -29,6 +29,16 @@ import {
   UsageSummary,
 } from './models';
 import { AgentBoardTool, ProgressCard } from './progress';
+import {
+  DeepSearchLimits,
+  DeepSearchMachine,
+  DeepSearchRequest,
+  DeepSearchState,
+  DeepSearchTarget,
+  SEARCH_DEEP_FEATURE,
+  SEARCH_QUERY_MAX,
+  SearchItem,
+} from './search';
 
 export const WS_PATHS = { daemon: '/ws/daemon', client: '/ws/client' } as const;
 
@@ -41,6 +51,11 @@ export const DAEMON_FEATURES = {
    * 舊版 daemon 沒有這個旗標：照舊只掛派工工具（hub 不需要知道每個 session 掛了什麼）。
    */
   memory: 'mcp.memory',
+  /**
+   * 認得 `search.request`／`search.cancel`，會搜本機的對話紀錄與終端機畫面（P3 項目三 ③b 深層搜尋）。
+   * 舊版 daemon 沒有：hub 不送請求，那台機器標「版本太舊不支援」。
+   */
+  search: SEARCH_DEEP_FEATURE,
 } as const;
 
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);
@@ -232,6 +247,19 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     tool: AgentBoardTool,
     args: z.record(z.string(), z.unknown()),
   }),
+  /**
+   * 深層搜尋（P3 ③b）找到的一批片段（邊搜邊回）。kind 只會是 transcript／screen，machineId 由 hub 補；
+   * 遮蔽模式時 daemon 已遮好。hub 只轉給發起的那條連線，不存。
+   */
+  z.object({ type: z.literal('search.result'), searchId: Id, items: z.array(SearchItem) }),
+  /** 這台機器搜完了（或時間、讀檔量到上限）。被取消的不回。 */
+  z.object({
+    type: z.literal('search.done'),
+    searchId: Id,
+    state: z.enum(['done', 'timeout']),
+    scannedSessions: z.number().int().nonnegative(),
+    totalSessions: z.number().int().nonnegative(),
+  }),
 ]);
 export type DaemonToHub = z.infer<typeof DaemonToHub>;
 
@@ -298,6 +326,22 @@ export const HubToDaemon = z.discriminatedUnion('type', [
     ok: z.boolean(),
     text: z.string(),
   }),
+  /**
+   * 深層搜尋（P3 ③b）：只送給 hello `features` 有 `search.v1` 的 daemon。terms 是 hub 用 parseSearchTerms
+   * 拆好的詞（daemon 不再自己拆，比對規則才一致）；since 之前的對話與修改時間在那之前的檔案不讀。
+   * daemon 只讀本機檔案與記憶體裡的畫面，回片段，不送任何字進 session、不對外連線。
+   */
+  z.object({
+    type: z.literal('search.request'),
+    searchId: Id,
+    terms: z.array(z.string().min(1).max(SEARCH_QUERY_MAX)).min(1).max(SEARCH_QUERY_MAX),
+    mask: z.boolean(),
+    since: IsoTime,
+    sessions: z.array(DeepSearchTarget),
+    limits: DeepSearchLimits,
+  }),
+  /** 取消深層搜尋：daemon 停止讀檔，不再回 result／done。 */
+  z.object({ type: z.literal('search.cancel'), searchId: Id }),
 ]);
 export type HubToDaemon = z.infer<typeof HubToDaemon>;
 
@@ -326,6 +370,12 @@ export const ClientToHub = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('resources.watch'), watching: z.boolean() }),
   z.object({ type: z.literal('ping'), at: IsoTime }),
+  /**
+   * 深層搜尋（P3 ③b，按 Enter 才送）：同一個使用者同時只有一個，新的會取消舊的。auth user 即可；
+   * 結果只推給這條連線。舊版 hub 不認得 → 回 error invalid_message（前端當成不支援）。
+   */
+  DeepSearchRequest.safeExtend({ type: z.literal('search.deep') }),
+  z.object({ type: z.literal('search.cancel'), searchId: Id }),
 ]);
 export type ClientToHub = z.infer<typeof ClientToHub>;
 
@@ -383,5 +433,27 @@ export const HubToClient = z.discriminatedUnion('type', [
   z.object({ type: z.literal('resources'), sample: ResourceSample }),
   z.object({ type: z.literal('pong'), at: IsoTime }),
   z.object({ type: z.literal('error'), code: z.string(), message: z.string() }),
+  /** 深層搜尋開始：要搜的機器與各自的 session 數（沒有符合範圍的 session 的機器不列）。只推給發起的連線。 */
+  z.object({
+    type: z.literal('search.deepStarted'),
+    searchId: Id,
+    machines: z.array(DeepSearchMachine),
+  }),
+  /** 某台機器找到的一批片段（items 都帶 machineId）。 */
+  z.object({
+    type: z.literal('search.deepResult'),
+    searchId: Id,
+    machineId: Id,
+    items: z.array(SearchItem),
+  }),
+  /** 某台機器結束：done／offline（失聯沒搜到）／unsupported（版本太舊）／timeout（只搜了一部分）。 */
+  z.object({
+    type: z.literal('search.deepDone'),
+    searchId: Id,
+    machineId: Id,
+    state: DeepSearchState,
+    scannedSessions: z.number().int().nonnegative(),
+    totalSessions: z.number().int().nonnegative(),
+  }),
 ]);
 export type HubToClient = z.infer<typeof HubToClient>;

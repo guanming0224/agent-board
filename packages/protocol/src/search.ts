@@ -1,7 +1,7 @@
-// 全域搜尋（P3 項目三，docs/p3-spec.md §3）。快速層只搜 hub 已有的資料；深層（各台 daemon 即時搜對話紀錄與終端機畫面）
-// 之後才做，這裡先把共用的型別與比對規則定好。比對、片段擷取是純函式：hub 與假後端用同一份，結果才會一樣。
+// 全域搜尋（P3 項目三，docs/p3-spec.md §3）。快速層只搜 hub 已有的資料；深層（③b）由各台 daemon 即時搜對話紀錄
+// 與終端機畫面，結果只回片段（hub 不建索引、不落地）。比對、片段擷取是純函式：hub、daemon 與假後端用同一份，結果才會一樣。
 import { z } from 'zod';
-import { Id, IsoTime } from './models';
+import { ClaudeSessionId, Id, IsoTime } from './models';
 
 /** 查詢字最多幾個字（§3.3）。 */
 export const SEARCH_QUERY_MAX = 200;
@@ -251,3 +251,69 @@ export function makeSnippet(
     .map(([a, b]): SearchRange => [Math.max(a, start) + shift, Math.min(b, end) + shift]);
   return { snippet: head + flat.slice(start, end) + tail, matchRanges };
 }
+
+// ── 深層（③b，§3.6、§3.7）：hub 扇出給各台 daemon，daemon 搜對話紀錄 JSONL 與活著的 session 的終端機畫面 ──
+
+/** 深層：每個 session 最多幾筆、每台機器最多幾筆、每台讀檔總量上限、每台的時間上限（§3.6）。 */
+export const SEARCH_DEEP_PER_SESSION = 3;
+export const SEARCH_DEEP_PER_MACHINE = 100;
+export const SEARCH_DEEP_MAX_BYTES = 300 * 1024 * 1024;
+export const SEARCH_DEEP_DEADLINE_MS = 15_000;
+/** hub 等 daemon 的 `search.done` 比 daemon 自己的 deadline 多等這麼久；再沒回就當逾時並送取消。 */
+export const SEARCH_DEEP_GRACE_MS = 3_000;
+
+/** daemon 支援深層搜尋的功能旗標（`daemon.hello.features`）。沒有的機器標「版本太舊不支援」、不送請求。 */
+export const SEARCH_DEEP_FEATURE = 'search.v1';
+
+/**
+ * 一台機器的深層搜尋結束時的狀態：done 搜完（可能因每台筆數上限提早停，見 scanned／total）；
+ * offline 機器失聯（沒送出或搜到一半斷線）；unsupported 舊版 daemon；timeout 時間或讀檔量到上限，只搜了一部分。
+ */
+export const DeepSearchState = z.enum(['done', 'offline', 'unsupported', 'timeout']);
+export type DeepSearchState = z.infer<typeof DeepSearchState>;
+
+/** 瀏覽器 → hub：`search.deep` 的條件（同快速層，scope=zone 要帶 zoneId）。searchId 由瀏覽器產生。 */
+export const DeepSearchRequest = z
+  .object({
+    searchId: Id,
+    q: z.string().max(SEARCH_QUERY_MAX),
+    scope: SearchScope.default(SEARCH_DEFAULTS.scope),
+    zoneId: Id.optional(),
+    since: SearchSince.default(SEARCH_DEFAULTS.since),
+    archived: z.boolean().default(SEARCH_DEFAULTS.archived),
+    /** 遮蔽模式：片段在 daemon（hub 轉送前再檢查一次）就遮好，金鑰不會傳到裝置上。 */
+    mask: z.boolean().default(false),
+  })
+  .refine((query) => query.scope !== 'zone' || query.zoneId !== undefined, {
+    message: 'scope=zone 要帶 zoneId',
+    path: ['zoneId'],
+  });
+export type DeepSearchRequest = z.infer<typeof DeepSearchRequest>;
+
+/** 深層搜尋開始時，hub 告訴瀏覽器要搜哪幾台機器、各有幾個 session（畫面先列「搜尋中」）。 */
+export const DeepSearchMachine = z.object({
+  machineId: Id,
+  totalSessions: z.number().int().nonnegative(),
+});
+export type DeepSearchMachine = z.infer<typeof DeepSearchMachine>;
+
+/** hub → daemon：要搜的 session（hub 從資料庫帶齊，daemon 不必還記得它）。 */
+export const DeepSearchTarget = z.object({
+  sessionId: Id,
+  /** 對話紀錄是 `<config>/projects/*\/<claudeSessionId>.jsonl`；沒有就只搜畫面。 */
+  claudeSessionId: ClaudeSessionId.nullable(),
+  /** CLAUDE_CONFIG_DIR（絕對路徑）；null 是 daemon 的預設。 */
+  accountProfile: z.string().nullable(),
+  /** 最後活動時間：daemon 依新到舊讀檔。 */
+  lastActivityAt: IsoTime.nullable(),
+});
+export type DeepSearchTarget = z.infer<typeof DeepSearchTarget>;
+
+/** hub → daemon：上限（daemon 照這個停；舊 hub 沒帶的欄位用預設）。 */
+export const DeepSearchLimits = z.object({
+  perSession: z.number().int().positive().default(SEARCH_DEEP_PER_SESSION),
+  perMachine: z.number().int().positive().default(SEARCH_DEEP_PER_MACHINE),
+  maxBytes: z.number().int().positive().default(SEARCH_DEEP_MAX_BYTES),
+  deadlineMs: z.number().int().positive().default(SEARCH_DEEP_DEADLINE_MS),
+});
+export type DeepSearchLimits = z.infer<typeof DeepSearchLimits>;

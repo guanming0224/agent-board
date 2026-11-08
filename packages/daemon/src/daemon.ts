@@ -21,6 +21,7 @@ import {
 import pkg from '../package.json' with { type: 'json' };
 import { ApprovalManager } from './approvals';
 import type { DaemonConfig } from './config';
+import { DeepSearcher } from './deepSearch';
 import { listDirectory, makeDirectory } from './fsList';
 import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { HookServer, type HookOutput } from './hookServer';
@@ -224,6 +225,8 @@ export class Daemon {
   private memoryEnabled: boolean;
   /** 每個活著的 session 這次 PTY 的派工密鑰（只在記憶體，檔案另存 0600）。 */
   private readonly mcpSecrets = new Map<string, string>();
+  /** 全域搜尋的深層（P3 ③b）：只讀本機對話紀錄與畫面，和對話紀錄檢視分開排隊。 */
+  private readonly deepSearch: DeepSearcher;
   private readonly dispatchRequests = new Map<
     string,
     { resolve: (reply: { ok: boolean; text: string }) => void; timer: NodeJS.Timeout }
@@ -270,6 +273,15 @@ export class Daemon {
       send: (message) => this.send(message),
       ...deps.resources,
     });
+    this.deepSearch = new DeepSearcher({
+      configDir: config.claudeConfigDir,
+      screen: (sessionId) => {
+        const session = this.sessions.get(sessionId);
+        // 規格只搜活著的 session 的畫面（結束後留著給人看的那些不算）。
+        return session?.isAlive ? session.screenLines() : null;
+      },
+      send: (message) => this.send(message),
+    });
     this.hookServer = new HookServer(
       config.dataDir,
       (request, signal) => this.handleHook(request, signal),
@@ -309,6 +321,7 @@ export class Daemon {
     this.mcpSecrets.clear();
     this.settleDispatchRequests('hub_unreachable: Agent Board daemon is shutting down.');
     clearMcpDir(this.deps.config.dataDir);
+    this.deepSearch.cancelAll();
     this.hub.stop();
     await this.hookServer.close();
   }
@@ -339,7 +352,7 @@ export class Daemon {
       capabilities: this.capabilities,
       sessions: [...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.runtime()),
       pendingApprovals: this.approvals.pending(),
-      features: [DAEMON_FEATURES.signalGuard, DAEMON_FEATURES.memory],
+      features: [DAEMON_FEATURES.signalGuard, DAEMON_FEATURES.memory, DAEMON_FEATURES.search],
     };
   }
 
@@ -363,6 +376,7 @@ export class Daemon {
     this.usageReportedOnConnect = false;
     // hub 重連後會重新訂閱（CONTRACTS §6.1），這裡回到沒人看的狀態。
     this.resources.stop();
+    this.deepSearch.cancelAll();
     for (const session of this.sessions.values()) session.unsubscribe();
     this.settleDispatchRequests(
       'hub_unreachable: Agent Board lost its connection to the hub. Try again in a minute.',
@@ -449,6 +463,12 @@ export class Daemon {
       case 'session.purge':
       case 'session.transcript':
         void this.handleSessionFiles(message);
+        return;
+      case 'search.request':
+        void this.deepSearch.start(message);
+        return;
+      case 'search.cancel':
+        this.deepSearch.cancel(message.searchId);
         return;
       case 'dispatch.reply': {
         const pending = this.dispatchRequests.get(message.requestId);

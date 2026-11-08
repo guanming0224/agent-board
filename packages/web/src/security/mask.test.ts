@@ -260,10 +260,12 @@ describe('TerminalMaskGate', () => {
 });
 
 describe('secretPatterns', () => {
-  it('hub and web carry the same file', () => {
+  it('hub, daemon and web carry the same file', () => {
     const read = (path: string) =>
       readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8');
     expect(read('./secretPatterns.ts')).toBe(read('../../../hub/src/secretPatterns.ts'));
+    // 深層搜尋（P3 ③b）的片段在 daemon 遮蔽：規則不一致，伺服器端遮蔽就會漏。
+    expect(read('./secretPatterns.ts')).toBe(read('../../../daemon/src/secretPatterns.ts'));
   });
 
   it('ranges are sorted and merged', () => {

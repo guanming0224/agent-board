@@ -453,6 +453,108 @@ test('全域搜尋快速層：檔案改動與次數、停 250ms 才送、遮蔽�
   await page.keyboard.press('Backspace');
 });
 
+test('全域搜尋深層：Enter 搜真 daemon 的對話紀錄與畫面、結果串流回來；遮蔽在 WebSocket 訊息裡；audit search.deep；⌘點擊開對話紀錄（P3 ③b 驗收 5、9、11）', async ({
+  page,
+}) => {
+  const key = 'sk-ant-demo03-deepIntegrationKEY0000';
+  const live = await getSession(page.request, session.id);
+  // 假 claude 不寫對話紀錄：放一份到 daemon 的 CLAUDE_CONFIG_DIR（只碰暫存資料夾）。
+  const projectDir = join(claudeConfigDir, 'projects', '-tmp-e2e-deep');
+  mkdirSync(projectDir, { recursive: true });
+  const now = new Date().toISOString();
+  writeFileSync(
+    join(projectDir, `${live.claudeSessionId}.jsonl`),
+    [
+      { type: 'user', timestamp: now, message: { content: '請把 zqdeep 的手續費改成 0.1425' } },
+      {
+        type: 'assistant',
+        timestamp: now,
+        message: {
+          content: [
+            { type: 'text', text: '好' },
+            { type: 'tool_use', name: 'Bash', input: { command: `export ZQDEEP_TOKEN=${key}` } },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        timestamp: now,
+        message: { content: [{ type: 'text', text: 'zqdeep 改好了' }] },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join('\n') + '\n',
+  );
+  const frames: string[] = [];
+  page.on('websocket', (ws) => {
+    if (ws.url().includes('/ws/client'))
+      ws.on('framereceived', (f) => frames.push(String(f.payload)));
+  });
+  const deepFrames = () => frames.filter((f) => f.includes('"search.deep'));
+
+  await page.goto('/#/search');
+  const input = page.getByTestId('search-input');
+  await input.fill('zqdeep');
+  await expect(page.getByTestId('search-empty')).toBeVisible();
+  // 打字只跑快速層：還沒有任何深層訊息。
+  expect(deepFrames()).toEqual([]);
+  await input.press('Enter');
+  const machine = page.locator('[data-testid^="search-deep-machine-"]');
+  await expect(machine).toContainText('e2e-machine：完成 3 筆', { timeout: 20_000 });
+  const deepRows = page.getByTestId('search-group-transcript').getByTestId('search-row');
+  await expect(deepRows).toHaveCount(3);
+  await expect(deepRows.first()).toContainText('e2e-machine');
+  // 遮蔽關著：原文（和終端機一致，畫面另由 useMaskText 處理）。
+  expect(deepFrames().some((f) => f.includes('search.deepResult') && f.includes(key))).toBe(true);
+
+  // ⌘點擊：開對話紀錄、捲到命中的那則（序號 3）。
+  await deepRows.filter({ hasText: '改好了' }).click({ modifiers: ['ControlOrMeta'] });
+  await expect(page).toHaveURL(new RegExp(`#/transcript/${session.id}\\?at=3$`));
+  const focused = page.locator('[data-testid="transcript-entry"][aria-current="true"]');
+  await expect(focused).toHaveAttribute('data-index', '3');
+  await expect(focused).toContainText('zqdeep 改好了');
+
+  // 遮蔽開著：daemon 回傳前就遮好，WebSocket 訊息裡沒有金鑰（不是只在畫面遮，驗收 9）。
+  // 畫面上的終端機有前一個測試打的 deploy token <金鑰>：畫面緩衝也一起搜。
+  await page.evaluate(() => localStorage.setItem('agent-board.mask-mode', '1'));
+  await page.goto('/#/search');
+  await page.reload();
+  frames.length = 0;
+  await page.getByTestId('search-input').fill('zqdeep token');
+  await expect(page.getByTestId('search-deep')).toHaveAttribute('data-state', 'idle');
+  await page.getByTestId('search-input').press('Enter');
+  await expect(machine).toContainText('完成', { timeout: 20_000 });
+  await expect(deepRows.first()).toContainText('ZQDEEP_TOKEN');
+  expect(deepFrames().some((f) => f.includes('search.deepResult'))).toBe(true);
+  expect(deepFrames().join('\n')).not.toContain('sk-ant');
+  await page.getByTestId('search-input').fill('deploy token');
+  await expect(page.getByTestId('search-deep')).toHaveAttribute('data-state', 'idle');
+  await page.getByTestId('search-input').press('Enter');
+  await expect(machine).toContainText('完成', { timeout: 20_000 });
+  await expect(page.getByTestId('search-group-transcript')).toContainText('終端機畫面');
+  expect(deepFrames().join('\n')).not.toContain('sk-ant');
+  await page.evaluate(() => localStorage.setItem('agent-board.mask-mode', '0'));
+
+  // 查詢字本身是金鑰（遮蔽關著時照送）：audit 裡的查詢字已遮蔽（驗收 11）。
+  await page.reload();
+  await page.getByTestId('search-input').fill(key);
+  await expect(page.getByTestId('search-deep')).toHaveAttribute('data-state', 'idle');
+  await page.getByTestId('search-input').press('Enter');
+  await expect(machine).toContainText('完成', { timeout: 20_000 });
+  const audit = (await (await page.request.get('/api/audit?limit=500')).json()) as {
+    action: string;
+    detail: string;
+  }[];
+  const deep = audit.filter((e) => e.action === 'search.deep');
+  // 四次深層搜尋（zqdeep、zqdeep token、deploy token、金鑰），一次一筆；快速層不寫。
+  expect(deep).toHaveLength(4);
+  expect(audit.filter((e) => e.action.startsWith('search') && e.action !== 'search.deep')).toEqual(
+    [],
+  );
+  for (const entry of deep) expect(entry.detail).not.toContain('sk-ant-demo03-deep');
+  expect(deep.some((e) => e.detail.includes('zqdeep'))).toBe(true);
+});
+
 test('daemon 被殺：卡片失聯；重啟：--resume 接回、畫面還在', async ({ page }) => {
   await page.goto('/#/canvas');
   // 假 claude 不寫對話紀錄；沒有紀錄時 daemon 會改成重新開始，所以放一份讓它走 --resume。

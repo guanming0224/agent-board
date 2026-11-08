@@ -1301,6 +1301,49 @@ describe('其他 hub 指令', () => {
     });
   });
 
+  it('深層搜尋（P3 ③b）：hello 宣告 search.v1；search.request 搜活著的畫面與對話紀錄，邊搜邊回，最後 search.done', async () => {
+    const hello = h.hub.received[0];
+    expect(hello?.type === 'daemon.hello' && hello.features).toContain(DAEMON_FEATURES.search);
+    await h.createAndSubscribe('s1');
+    h.hub.send({ type: 'terminal.input', sessionId: 's1', data: 'flood 3\r' });
+    await h.waitForOutput('s1', 'FLOOD DONE');
+    const id = '0a1b2c3d-aaaa-bbbb-cccc-000011114444';
+    const project = join(h.claudeDir, 'projects', 'p');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(
+      join(project, `${id}.jsonl`),
+      `${JSON.stringify({ type: 'user', message: { content: 'flood line 9 in transcript' } })}\n`,
+    );
+    h.hub.send({
+      type: 'search.request',
+      searchId: 'q1',
+      terms: ['flood line'],
+      mask: false,
+      since: new Date(Date.now() - 3_600_000).toISOString(),
+      sessions: [
+        { sessionId: 's1', claudeSessionId: null, accountProfile: null, lastActivityAt: null },
+        { sessionId: 's9', claudeSessionId: id, accountProfile: null, lastActivityAt: null },
+      ],
+      limits: { perSession: 3, perMachine: 100, maxBytes: 1024 * 1024, deadlineMs: 5_000 },
+    });
+    const done = await h.hub.waitFor('search.done', (m) => m.searchId === 'q1');
+    expect(done).toMatchObject({ state: 'done', scannedSessions: 2, totalSessions: 2 });
+    const items = h.hub.received.flatMap((m) =>
+      m.type === 'search.result' && m.searchId === 'q1' ? m.items : [],
+    );
+    expect(items.filter((i) => i.kind === 'screen' && i.sessionId === 's1')).toHaveLength(1);
+    expect(items.find((i) => i.kind === 'screen')?.snippet).toContain('flood line 2');
+    expect(items.filter((i) => i.kind === 'transcript')).toEqual([
+      {
+        kind: 'transcript',
+        sessionId: 's9',
+        snippet: 'flood line 9 in transcript',
+        matchRanges: [[0, 10]],
+        transcriptIndex: 0,
+      },
+    ]);
+  });
+
   it('session.purge：活著的 session 回 session_active、什麼都不清；結束後才清並忘掉', async () => {
     await h.createAndSubscribe('s1');
     const id = '0a1b2c3d-aaaa-bbbb-cccc-000011113333';

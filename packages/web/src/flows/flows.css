@@ -1525,6 +1525,12 @@
   font-size: 12px;
 }
 
+/* 全域搜尋 ⌘Enter 開來的那則（P3 ③b）：粗外框，不用狀態色 */
+.flows .tr.tr-focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* 刪除確認框 */
 .flows .purge-group {
   display: grid;

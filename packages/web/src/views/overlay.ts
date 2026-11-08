@@ -8,8 +8,11 @@ export type RightPanel =
   /** Memory（進度卡一覽，P3 項目一）。 */
   | { kind: 'memory' };
 
-/** search：全域搜尋（P3 §3）。桌面是置中次畫面，手機是全螢幕頁 `#/search`（網址可帶 `?q=`）。 */
-export type ModalKind = 'settings' | 'archive' | 'new' | 'search';
+/**
+ * search：全域搜尋（P3 §3）。桌面是置中次畫面，手機是全螢幕頁 `#/search`（網址可帶 `?q=`）。
+ * transcript：某個 session 的對話紀錄 `#/transcript/<id>?at=<序號>`（搜尋結果按 ⌘Enter 開，P3 ③b）。
+ */
+export type ModalKind = 'settings' | 'archive' | 'new' | 'search' | 'transcript';
 
 export type RouteView =
   /** 不疊在畫布上的整頁：全尺寸終端機、登入、首次引導（規格 §1.4 不變）。 */
@@ -61,6 +64,10 @@ export function parseHash(hash: string): RouteView {
       return { kind: 'board', right: 'keep', modal: 'new' };
     case 'search':
       return { kind: 'board', right: 'keep', modal: 'search' };
+    case 'transcript':
+      return param
+        ? { kind: 'board', right: 'keep', modal: 'transcript' }
+        : { kind: 'board', right: null, modal: null };
     default:
       return { kind: 'board', right: null, modal: null };
   }
@@ -84,6 +91,24 @@ export function searchQueryOf(hash: string): string {
   } catch {
     return '';
   }
+}
+
+/** 對話紀錄（P3 ③b）；at 是要捲到的那則的序號（`TranscriptEntry.index`）。 */
+export const transcriptHash = (sessionId: string, at?: number | null) =>
+  `#/transcript/${encodeURIComponent(sessionId)}${at === null || at === undefined ? '' : `?at=${at}`}`;
+
+/** `#/transcript/<id>?at=<n>`、`#/transcript/<id>` → { id, at }。 */
+export function transcriptTarget(hash: string): { id: string | null; at: number | null } {
+  const [path = '', query = ''] = hash.replace(/^#\/?/, '').split('?');
+  let id: string | null = null;
+  try {
+    id = decodeURIComponent(path.split('/')[1] ?? '') || null;
+  } catch {
+    id = null;
+  }
+  const raw = new URLSearchParams(query).get('at');
+  const at = raw !== null && /^\d+$/.test(raw) ? Number(raw) : null;
+  return { id, at };
 }
 
 export const teamHash = (teamId?: string | null) =>
