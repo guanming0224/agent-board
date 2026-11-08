@@ -140,8 +140,8 @@ export class ApprovalManager {
   }
 
   /**
-   * 使用者直接在終端機回答時，Claude Code 不會結束卡住的 hook（實測 2.1.316），
-   * 只能從之後的事件推得。工具跑完比對同工具同輸入；輪次結束或下一句話代表前面的請求都結束了。
+   * 使用者直接在終端機回答時，Claude Code 2.1.316 不會結束卡住的 hook，只能從之後的事件推得；
+   * 較新的版本會結束 hook（見 request 的 onAbort），兩條路都記成 terminal。工具跑完比對同工具同輸入；輪次結束或下一句話代表前面的請求都結束了。
    */
   settleAnsweredInTerminal(event: HookEventName, sessionId: string, payload: HookPayload): void {
     const toolDone = event === 'PostToolUse' || event === 'PostToolUseFailure';
@@ -259,7 +259,9 @@ export class ApprovalManager {
       createdAt: now().toISOString(),
     };
     return new Promise((settle) => {
-      const onAbort = () => this.finish(pending, giveUp('hook 已離開'), 'timeout');
+      // hook 連線斷掉＝Claude Code 已經不等這個 hook 了。實測（2026-11-08）使用者在終端機回答
+      // 原生對話框後 0.2 秒內 hook 就被結束，所以記成 terminal，不是 timeout（timeout 只給真的等太久）。
+      const onAbort = () => this.finish(pending, giveUp('hook 已離開'), 'terminal');
       const timer = setTimeout(
         () => this.finish(pending, giveUp('等待逾時'), 'timeout'),
         this.options.waitMs ?? APPROVAL_WAIT_MS,
