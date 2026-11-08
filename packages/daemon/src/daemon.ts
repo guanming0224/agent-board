@@ -9,6 +9,7 @@ import {
   HOOK_COMMAND,
   HOOK_ENV,
   MachineOs,
+  DAEMON_FEATURES,
   type DaemonToHub,
   type HookRequest,
   type HubToDaemon,
@@ -314,6 +315,16 @@ export class Daemon {
     this.hub.send(message);
   }
 
+  /** 帶 onlyIfStatus 的 terminal.signal 回報有沒有送（hub 送了才清派工工作）。 */
+  private signalResult(
+    sessionId: string,
+    signal: Extract<DaemonToHub, { type: 'terminal.signalResult' }>['signal'],
+    sent: boolean,
+    status: Extract<DaemonToHub, { type: 'terminal.signalResult' }>['status'],
+  ): void {
+    this.send({ type: 'terminal.signalResult', sessionId, signal, sent, status });
+  }
+
   private buildHello(): Extract<DaemonToHub, { type: 'daemon.hello' }> {
     if (!this.capabilities) throw new Error('capabilities 尚未就緒');
     return {
@@ -324,6 +335,7 @@ export class Daemon {
       capabilities: this.capabilities,
       sessions: [...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.runtime()),
       pendingApprovals: this.approvals.pending(),
+      features: [DAEMON_FEATURES.signalGuard],
     };
   }
 
@@ -385,13 +397,29 @@ export class Daemon {
           s.resize(message.cols, message.rows),
         );
         return;
-      case 'terminal.signal':
-        this.withSession(message.sessionId, message.type, (s) => {
-          if (message.signal === 'escape') s.write('\x1b');
-          else if (message.signal === 'ctrl_c') s.write('\x03');
-          else s.terminate();
-        });
+      case 'terminal.signal': {
+        const guarded = message.onlyIfStatus !== undefined;
+        const s = this.sessions.get(message.sessionId);
+        if (!s) {
+          log.warn(`${message.type}：找不到 session ${message.sessionId}`);
+          if (guarded) this.signalResult(message.sessionId, message.signal, false, null);
+          return;
+        }
+        // 全部暫停「立刻中斷」：hub 以為在跑，這裡再確認一次（正要轉權限請求時 Esc 會變成拒絕）。
+        const status = s.runtime().status;
+        if (guarded && status !== message.onlyIfStatus) {
+          log.info(
+            `terminal.signal：session ${message.sessionId} 狀態是 ${status}，不是 ${message.onlyIfStatus}，不送`,
+          );
+          this.signalResult(message.sessionId, message.signal, false, status);
+          return;
+        }
+        if (message.signal === 'escape') s.write('\x1b');
+        else if (message.signal === 'ctrl_c') s.write('\x03');
+        else s.terminate();
+        if (guarded) this.signalResult(message.sessionId, message.signal, true, status);
         return;
+      }
       case 'approval.decide':
         if (!this.approvals.decide(message.approvalId, message.sessionId, message.decision)) {
           log.warn(`approval ${message.approvalId} 已不在等待，忽略此決定`);

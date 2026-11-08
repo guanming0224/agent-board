@@ -427,3 +427,21 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 - `dispatch_work` 只在 `Stop` 時結算：成員回合中 API 錯誤（`StopFailure`）不算完成，工作留著，直到下一個 Stop、被中斷、結束或封存。
 - 送字佇列只在記憶體：hub 重啟時還沒送出的 `send_task` 會遺失（audit 有 `dispatch.send`，沒有 `dispatch.delivered`）；已送達的工作（`dispatch_work`）在資料庫，結果照樣送回。
 - 前端團隊資料靠 10 秒輪詢，新團隊與新成員的框最慢 10 秒後出現。
+
+## 12. 全部暫停（P2 項目三，GM 2026-11-08；`docs/p2-spec.md` §3）
+
+本節只有 hub／protocol 部分；前端（底部指令列、暫停提示列、手機收件匣暫停鈕）另一輪做。
+
+- **兩種模式**（`BoardPauseMode`）：`finish_turn` 做完這輪就停——擋所有自動送字與自動開新 session，正在跑的回合跑完；`interrupt` 立刻中斷——同一個閘門，另外對每個 `running`（RUN）的 session 送一次 Esc。`interrupt` 一定包含 `finish_turn` 的閘門（Esc 後回到等輸入，不擋的話交接、任務會立刻再餵它）。
+- **閘門**：所有 hub 自己送的字都經過 `SafeDelivery`（交接、任務自動執行、MCP `send_task` 與結果送回、額度恢復自動接續）。暫停中照收不送，**留在佇列**；每一則被擋下的寫 audit `board.held`（session＝目標，detail：`kind` handoff／task／dispatch／dispatch_result／auto_continue、`key`、訊息前 200 字）；按暫停時已在佇列裡的也各寫一筆；同一個 key 還沒送就被蓋掉重排（例如 `send_task` 取代前一則）不再寫，所以筆數＝排隊則數。字已打進去、Enter 前才按暫停：**照樣按 Enter** 把這一則送完（字已在輸入框，不按會留下殘字，這一則也會被當成沒送出丟掉）；暫停只擋還沒打字的。
+- **自動開新 session**：`drainQueue` 暫停中一個都不開（QUE 維持排隊，statusDetail 不變）；MCP `spawn_member` 回 `board_paused: …`，不開 session，audit `dispatch.blocked`（reason `board_paused`）。**閘門擋不到的一個缺口**：暫停前剛被 `spawn_member` 開、還在 `starting` 的成員，daemon 開好後會自己把派工訊息（`firstPrompt`）送進去；按暫停時把這些 session 列在 `board.pause` 的 `startingDispatched`，讓 GM 知道。`send_task` 照收，回 `state: 'queued'`，detail 說明繼續後才送。
+- **不擋**：GM 自己的操作——`terminal.input`／`terminal.signal`、核准、REST 開新 session（有名額就開，沒名額照常排隊）、接續（Q6）。
+- **立刻中斷**：對 `endedAt === null && status === 'running'` 且機器在線的 session 送 `terminal.signal { signal: 'escape', onlyIfStatus: 'running' }`（daemon 看到的狀態不是 running 就不送，避免 Esc 變成拒絕權限請求），結果 `requested`；PERM／PLAN／ASK／ERR 不動。斷線前在跑（`status === 'offline'`、`pre_offline_status === 'running'`）的列為 `offline`（沒送到：失聯）。daemon hello 的 `features` 沒有 `signal.onlyIfStatus` 的（舊版 daemon，會無條件送 Esc）**不送**，列為 `unsupported`。
+  - 帶 `onlyIfStatus` 的 signal，daemon 一定回 `terminal.signalResult { sessionId, signal, sent, status }`（找不到 session 時 sent false、status null）。hub 只認這次暫停送出、還沒回報的那幾個。`sent: true` 才照使用者按 Esc 的同一條路處理：清派工成員手上的工作（`dispatch.blocked` reason `interrupted`）、取消自動接續、audit `terminal.signal`（user＝按暫停的人）。`sent: false` 什麼都不清（成員之後 Stop 的結果照常送回呼叫者），audit `board.interrupt_skipped`（detail `{ status }`）。回報前 daemon 斷線：不處理（送了沒送不知道；成員之後 Stop 照常結算）。
+- **全部繼續**：只解除閘門，然後 `SafeDelivery.flush()` 與 `drainQueue()` 放出排隊的，之後才廣播 `board.pause`（推的是放出之後的排隊數）；**不**對被中斷的 session 送「繼續」（Q8）。沒暫停時呼叫什麼都不做（不寫 audit）。
+- **存放**：`settings` 表的 `boardPause` 鍵（不是 `Settings` 的欄位：`/api/settings` 讀不到也改不到；不升 schema）。內容 `{ mode, since, by, byName, clearedOnRestart, heldInMemory }`；`heldInMemory` 是記憶體佇列裡被擋下的則數（不含自動接續），暫停中每次變動就寫回。hub 重啟後仍是暫停；記憶體佇列遺失的則數加進 `clearedOnRestart`（audit `board.held_cleared`，reason `hub_restarted`），畫面在提示列交代，按繼續後歸零。自動接續存在 `sessions.auto_continue`，重啟後照樣排回來、照樣被擋。
+- **API**（auth **user**，手機登入的一般帳號也能用）：`GET /api/board/pause` → `BoardPauseState`；`POST /api/board/pause { mode }` → `{ state, interrupted: BoardInterruptResult[] }`（已暫停時再按＝改模式，`since` 不變，interrupt 再送一次 Esc）；`POST /api/board/resume` → `{ state, released: BoardHeld }`（released 是按下時的排隊數）。
+- **`BoardPauseState`**：`{ paused: BoardPause | null, held: { deliveries, sessions, sessionsWaiting, autoContinues } }`。deliveries＝佇列裡的交接／任務／派工；sessions＝繼續後 `drainQueue` 會馬上開的 QUE（帳號沒限流、機器在線，再依同時 session 上限截斷，順序同 `drainQueue`）；sessionsWaiting＝其餘 QUE（等名額、等限流解除、機器離線，繼續後也不會馬上開）；autoContinues＝已到期、等著送的自動接續。「全部繼續」前顯示「會放出：排隊送字 N 則、排隊 session M 個、到期的自動接續 K 個」用 deliveries／sessions／autoContinues。沒暫停時 held 照算。
+- **WebSocket**：`board.state.pause`（舊版 hub 不送＝`NOT_PAUSED`）；暫停、繼續、排隊數變化時（不論有沒有暫停）廣播 `board.pause { pause }`（同一個事件迴圈內的變化合併成一則，沒變不送）。
+- **audit**：`board.pause`（user，detail `{ mode, previous, interrupted, startingDispatched? }`）、`board.resume`（user，detail `{ mode, since, released }`）、`board.held`、`board.held_cleared`，每個 daemon 確認送了 Esc 的 session 一筆 `terminal.signal`，沒送的一筆 `board.interrupt_skipped`。
+- **protocol 權限**：本節的 protocol 變更（`BoardPause*`、`BoardHeld`、`BoardInterruptResult`、3 條 REST、`board.pause`、`board.state.pause`、`terminal.signal.onlyIfStatus`、`terminal.signalResult`、`daemon.hello.features`、`DAEMON_FEATURES`）由實作者修改，**合併前須由 Lead 審查**（§8）。

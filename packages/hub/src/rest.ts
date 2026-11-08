@@ -519,6 +519,10 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
         .header('content-disposition', 'attachment; filename="agent-board-audit.csv"');
       return csv;
     },
+    // 全部暫停：一般使用者也能按（手機登入的帳號），audit 由 hub 寫。
+    boardPauseGet: () => hub.boardPauseState(),
+    boardPause: (ctx) => hub.pauseBoard(ctx.user, ctx.body.mode),
+    boardResume: (ctx) => hub.resumeBoard(ctx.user),
     settingsGet: () => store.getSettings(),
     settingsUpdate: (ctx) => {
       const patch = normalizeSettings(ctx.body);

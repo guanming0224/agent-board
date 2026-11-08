@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import {
   ClientToHub,
+  DAEMON_FEATURES,
   DaemonToHub,
   needsAttention,
   QUEUE_DETAIL_RATE_LIMITED,
@@ -14,6 +15,10 @@ import {
   SessionSpec,
   type Approval,
   type AutoContinue,
+  type BoardHeld,
+  type BoardInterruptResult,
+  type BoardPauseMode,
+  type BoardPauseState,
   type DirEntry,
   type PurgeOptions,
   type PurgeResult,
@@ -30,15 +35,16 @@ import {
   type Settings,
   type Task,
   type Team,
+  type TerminalSignal,
   type UsageSummary,
   type User,
 } from '@agent-board/protocol';
 import type { z } from 'zod';
 import { buildSummary, DEFAULT_WINDOWS, NotifyCoalescer, type SummaryItem } from './attention';
 import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from './audit';
-import { AutoContinueEngine } from './autoContinue';
+import { AutoContinueEngine, isAutoContinueKey } from './autoContinue';
 import { conflict, HttpError, notFound } from './errors';
-import { SafeDelivery } from './delivery';
+import { SafeDelivery, type DeliveryItem } from './delivery';
 import { DispatchEngine } from './dispatch';
 import { HandoffEngine } from './handoff';
 import {
@@ -50,7 +56,7 @@ import {
 } from './push';
 import { parseRateLimitReset } from './rateLimitReset';
 import { TerminalRelay, type RelayClient } from './relay';
-import type { Store } from './store';
+import type { Store, StoredBoardPause } from './store';
 import { TaskEngine } from './tasks';
 
 export interface Timing {
@@ -115,6 +121,8 @@ interface DaemonConn {
   /** 已撤銷或被新連線取代：在 close 事件來之前，它送的東西一律不理。 */
   retired: boolean;
   helloTimer: NodeJS.Timeout | null;
+  /** hello 宣告的協定功能（DAEMON_FEATURES）。hello 前是空的。 */
+  features: Set<string>;
 }
 
 export interface ClientConn extends RelayClient {
@@ -197,6 +205,19 @@ const APPROVAL_STATUS: Record<Approval['kind'], SessionStatus> = {
   plan: 'plan_review',
   question: 'waiting_input',
 };
+
+/** 送字佇列 key 的前綴 → 被暫停擋下時 audit 裡寫的種類（key 由各引擎決定）。 */
+const HELD_KINDS: [prefix: string, kind: string][] = [
+  ['rule:', 'handoff'],
+  ['task:', 'task'],
+  ['dispatch-result:', 'dispatch_result'],
+  ['dispatch:', 'dispatch'],
+  ['auto-continue:', 'auto_continue'],
+];
+const heldKind = (key: string): string =>
+  HELD_KINDS.find(([prefix]) => key.startsWith(prefix))?.[1] ?? 'other';
+/** board.held audit 裡的訊息只留開頭（全文送出時另有 terminal.input）。 */
+const HELD_MESSAGE_MAX = 200;
 
 /** 重置時間到了之後多等一下再開，時鐘差一點就開會馬上又撞到限流。 */
 const RATE_LIMIT_RESET_GRACE_MS = 60_000;
@@ -286,12 +307,21 @@ export class Hub {
   private heartbeat: NodeJS.Timeout | null = null;
   /** 限流帳號的重置時間到時重新排隊（§8-5）。 */
   private resetTimer: NodeJS.Timeout | null = null;
+  /** 全部暫停（P2 項目三）：null＝沒暫停。和資料庫同步，hub 重啟後照樣暫停。 */
+  private pause: StoredBoardPause | null = null;
+  private pauseBroadcastQueued = false;
+  /** 最後一次推給 client 的暫停狀態（沒變就不再推）。 */
+  private lastPauseFrame: string | null = null;
+  /** 「立刻中斷」送出、等 daemon 回報結果的 session → 按暫停的使用者。 */
+  private readonly pauseInterrupts = new Map<string, string>();
   private closed = false;
 
   constructor(private readonly deps: HubDeps) {
     this.store = deps.store;
     this.log = deps.log;
     this.timing = deps.timing;
+    // 暫停狀態要在任何引擎還原（可能排進送字）之前讀出來。
+    this.pause = this.loadPause();
     this.relay = new TerminalRelay<ClientConn>({
       subscribeUpstream: (id) =>
         this.toSessionDaemon(id, { type: 'terminal.subscribe', sessionId: id }),
@@ -318,7 +348,12 @@ export class Hub {
         this.toSessionDaemon(sessionId, { type: 'terminal.input', sessionId, data }),
       guarded: (label: string, fn: () => void) => this.guarded(label, fn),
     };
-    this.delivery = new SafeDelivery(sendDeps);
+    this.delivery = new SafeDelivery({
+      ...sendDeps,
+      paused: () => this.pause !== null,
+      held: (item) => this.auditHeld(item),
+      changed: () => this.pauseCountsChanged(),
+    });
     this.handoff = new HandoffEngine({
       ...sendDeps,
       delivery: this.delivery,
@@ -367,6 +402,7 @@ export class Hub {
       audit: (sessionId, action, detail) => this.audit(null, sessionId, action, detail),
       addEvent: (sessionId, type, payload, at) => this.addEvent(sessionId, type, payload, at),
       enabled: () => this.store.getSettings().dispatch,
+      paused: () => this.pause !== null,
       createSession: (input, dispatchedBy) => this.createSessionAs(input, null, dispatchedBy),
       machineOnline: (machineId) => this.daemonFor(machineId) !== null,
     });
@@ -414,6 +450,7 @@ export class Hub {
       alive: true,
       retired: false,
       helloTimer: null,
+      features: new Set(),
     };
     conn.helloTimer = setTimeout(() => {
       this.log.warn({ machineId: machine.id }, 'daemon did not send hello in time');
@@ -500,6 +537,9 @@ export class Hub {
         if (wasEnded && msg.session.endedAt === null) this.relay.resubscribe([msg.session.id]);
         return;
       }
+      case 'terminal.signalResult':
+        if (this.ownsSession(conn, msg.sessionId)) this.onPauseSignalResult(msg);
+        return;
       case 'session.event':
         // handoff.*、task.*、dispatch.* 只能由 hub 自己寫（引擎讀它當分界，畫布拿它畫動畫），daemon 送來的不收。
         if (/^(handoff|task|dispatch)\./.test(msg.event.type)) return;
@@ -587,7 +627,10 @@ export class Hub {
     if (conn.helloTimer) clearTimeout(conn.helloTimer);
     conn.helloTimer = null;
     conn.helloed = true;
+    conn.features = new Set(msg.features);
     this.store.machineHello(conn.machineId, msg.os, msg.capabilities, this.nowIso());
+    // 機器上線：它的 QUE 變成繼續後會開的（排隊統計）。
+    this.pauseCountsChanged();
     this.send(conn.ws, this.welcomeFor(conn.machineId));
 
     // session：有回報的用真實狀態；還標著活著但沒回報的，就是在斷線期間消失了。
@@ -661,12 +704,19 @@ export class Hub {
     conn.helloTimer = null;
     if (conn.retired || this.daemons.get(conn.machineId) !== conn) return;
     this.daemons.delete(conn.machineId);
+    // 等 daemon 回報 Esc 結果的，斷線就不會有回報了（送了沒送不知道；成員之後 Stop 照常結算）。
+    for (const sessionId of this.pauseInterrupts.keys()) {
+      if (this.store.sessionMachineId(sessionId) === conn.machineId) {
+        this.pauseInterrupts.delete(sessionId);
+      }
+    }
     if (this.closed) return;
     this.markMachineOffline(conn.machineId);
   }
 
   private markMachineOffline(machineId: string): void {
     this.store.setMachineOffline(machineId, this.nowIso());
+    this.pauseCountsChanged();
     for (const [requestId, pending] of this.pendingCreates) {
       if (pending.machineId !== machineId) continue;
       clearTimeout(pending.timer);
@@ -725,6 +775,7 @@ export class Hub {
       sessions: this.store.listSessions(false),
       approvals: this.approvalList(),
       waitingLimit: this.store.getSettings().notifications.waitingLimit,
+      pause: this.boardPauseState(),
     };
   }
 
@@ -812,13 +863,18 @@ export class Hub {
       }
       case 'terminal.signal':
         client.inputs.get(msg.sessionId)?.clear();
-        if (msg.signal === 'terminate') this.handoff.onUserStop(msg.sessionId);
-        else this.interrupted(session);
-        this.guarded('auto continue', () => this.autoContinue.onUserInput(msg.sessionId));
-        this.audit(client.userId, msg.sessionId, 'terminal.signal', msg.signal);
-        this.toSessionDaemon(msg.sessionId, msg);
+        this.signal(client.userId, session, msg.signal);
         return;
     }
+  }
+
+  /** 使用者在終端機按的中斷／結束。 */
+  private signal(userId: string, session: Session, signal: TerminalSignal): void {
+    if (signal === 'terminate') this.handoff.onUserStop(session.id);
+    else this.interrupted(session);
+    this.guarded('auto continue', () => this.autoContinue.onUserInput(session.id));
+    this.audit(userId, session.id, 'terminal.signal', signal);
+    this.toSessionDaemon(session.id, { type: 'terminal.signal', sessionId: session.id, signal });
   }
 
   /** 只有回合進行中（會被中斷）才算；等輸入時按 Esc 只是關選單。 */
@@ -1058,7 +1114,10 @@ export class Hub {
     })();
     this.broadcast({ type: 'session.updated', session });
     if (session.status === 'starting') this.dispatchCreate(session, spec);
-    else this.scheduleResetDrain();
+    else {
+      this.scheduleResetDrain();
+      this.pauseCountsChanged();
+    }
     return session;
   }
 
@@ -1167,12 +1226,13 @@ export class Hub {
   /**
    * 有名額就依序開始；機器離線的先跳過，不擋後面的人。帳號限流的也跳過（別的帳號照開），
    * 排隊原因變了就更新 statusDetail，畫面才說得出現在在等什麼。
+   * 全部暫停中一個都不開（QUE 維持排隊，繼續時再跑一次）。
    */
   private drainQueue(): void {
     if (this.closed) return;
     for (const { session, spec } of this.store.queuedSessions()) {
       const reason = this.queueReason(session);
-      if (reason === undefined && this.daemonFor(session.machineId)) {
+      if (reason === undefined && this.daemonFor(session.machineId) && this.pause === null) {
         const clean = sanitizeSpec(spec);
         // 不合協定的 spec daemon 會整則丟掉，等到逾時；直接標失敗。
         if (clean === null) {
@@ -1412,6 +1472,8 @@ export class Hub {
 
   private afterChange(prev: Session, next: Session, mayNotify: boolean): void {
     this.broadcast({ type: 'session.updated', session: next });
+    // QUE 數、會放出的 QUE 數（名額、限流、機器在線都看狀態）都可能變了；沒變的不會推。
+    if (prev.status !== next.status) this.pauseCountsChanged();
     // 「結果不明」當時沒推播；daemon 補送真正的結果時才算第一次得知，所以就算同樣是 error 也要發。
     const outcomeLearned =
       prev.statusDetail === SESSION_DETAIL_LOST && next.statusDetail !== SESSION_DETAIL_LOST;
@@ -1907,6 +1969,243 @@ export class Hub {
     }
   }
 
+  // ── 全部暫停（P2 項目三） ────────────────────────────
+  /**
+   * 讀出上次的暫停狀態。暫停中 hub 重啟：記憶體裡被擋下的送字已經不在，把則數記進 clearedOnRestart
+   * 讓畫面交代（自動接續存在資料庫，會重新排進來，不算）。
+   */
+  private loadPause(): StoredBoardPause | null {
+    const { pause, invalid } = this.store.getBoardPause();
+    if (invalid) this.log.warn({}, 'stored board pause state is invalid; treating as not paused');
+    if (!pause || pause.heldInMemory === 0) return pause;
+    const next: StoredBoardPause = {
+      ...pause,
+      clearedOnRestart: pause.clearedOnRestart + pause.heldInMemory,
+      heldInMemory: 0,
+    };
+    this.store.setBoardPause(next);
+    this.audit(
+      null,
+      null,
+      'board.held_cleared',
+      JSON.stringify({ reason: 'hub_restarted', count: pause.heldInMemory }),
+    );
+    return next;
+  }
+
+  isPaused(): boolean {
+    return this.pause !== null;
+  }
+
+  /** 記憶體佇列裡的送字（不含自動接續，自動接續存在資料庫）。 */
+  private heldDeliveries(): number {
+    return this.delivery.pendingKeys().filter((key) => !isAutoContinueKey(key)).length;
+  }
+
+  /**
+   * 排隊統計。sessions 只算繼續後 drainQueue 會馬上開的：帳號沒限流、機器在線，再依同時 session 上限截斷
+   * （順序和 drainQueue 一樣）。其餘的 QUE 算在 sessionsWaiting。
+   */
+  private heldCounts(): BoardHeld {
+    const keys = this.delivery.pendingKeys();
+    const autoContinues = keys.filter(isAutoContinueKey).length;
+    const max = this.store.getSettings().quotaGuards.maxConcurrentSessions;
+    let free = max === null ? Infinity : Math.max(0, max - this.store.countActiveSessions());
+    let sessions = 0;
+    let sessionsWaiting = 0;
+    for (const { session } of this.store.queuedSessions()) {
+      const startable =
+        free > 0 &&
+        this.limitedSessions(session).length === 0 &&
+        this.daemonFor(session.machineId) !== null;
+      if (startable) {
+        sessions += 1;
+        free -= 1;
+      } else {
+        sessionsWaiting += 1;
+      }
+    }
+    return { deliveries: keys.length - autoContinues, sessions, sessionsWaiting, autoContinues };
+  }
+
+  boardPauseState(): BoardPauseState {
+    const held = this.heldCounts();
+    if (!this.pause) return { paused: null, held };
+    const { mode, since, by, byName, clearedOnRestart } = this.pause;
+    return { paused: { mode, since, by, byName, clearedOnRestart }, held };
+  }
+
+  /**
+   * 全部暫停。finish_turn：擋自動送字與自動開新 session，正在跑的跑完。interrupt：同上，
+   * 另外對每個 RUN 的 session 送一次 Esc（離線機器上的不送，列為 offline）。已暫停時再按＝改模式
+   * （interrupt 會再送一次 Esc），開始時間不變。GM 自己的手動輸入一律不擋（Q6）。
+   */
+  pauseBoard(
+    user: User,
+    mode: BoardPauseMode,
+  ): { state: BoardPauseState; interrupted: BoardInterruptResult[] } {
+    const prev = this.pause;
+    this.pause = {
+      mode,
+      since: prev?.since ?? this.nowIso(),
+      by: user.id,
+      byName: user.name,
+      clearedOnRestart: prev?.clearedOnRestart ?? 0,
+      heldInMemory: this.heldDeliveries(),
+    };
+    this.store.setBoardPause(this.pause);
+    // 剛暫停：已在佇列裡等目標空下來的，從現在起也是被擋下的，一則一則記下來。
+    if (!prev) this.delivery.noteHeld();
+    const interrupted = mode === 'interrupt' ? this.interruptRunning() : [];
+    // 剛被 spawn_member 開、還在啟動的成員：daemon 啟動後會自己把派工訊息（firstPrompt）送進去，閘門擋不到。
+    // 記下來讓 GM 知道（CONTRACTS §12）。
+    const startingDispatched = this.store
+      .listSessions()
+      .filter((s) => s.endedAt === null && s.status === 'starting' && s.dispatchedBy !== null)
+      .map((s) => s.id);
+    for (const r of interrupted) {
+      if (r.result === 'requested') this.pauseInterrupts.set(r.sessionId, user.id);
+    }
+    this.audit(
+      user.id,
+      null,
+      'board.pause',
+      JSON.stringify({
+        mode,
+        previous: prev?.mode ?? null,
+        interrupted,
+        ...(startingDispatched.length > 0 ? { startingDispatched } : {}),
+      }),
+    );
+    this.broadcastPause();
+    return { state: this.boardPauseState(), interrupted };
+  }
+
+  /**
+   * 請 daemon 對每個 RUN 送一次 Esc（`onlyIfStatus: 'running'`，daemon 看到的不是 running 就不送）。
+   * 派工工作、自動接續、`terminal.signal` audit 等 daemon 回報真的送了才處理（onPauseSignalResult），
+   * 否則 daemon 沒送、成員其實沒被中斷，hub 卻先清掉它手上的工作，之後 Stop 的結果就送不回呼叫者。
+   * 舊版 daemon 不會再確認狀態（Esc 可能把權限請求按成拒絕），不送，列為 unsupported。
+   */
+  private interruptRunning(): BoardInterruptResult[] {
+    const results: BoardInterruptResult[] = [];
+    for (const session of this.store.listSessions()) {
+      if (session.endedAt !== null) continue;
+      const running = session.status === 'running';
+      // 機器斷線時 RUN 會變成 OFF：記得斷線前在跑的，回報「沒送到：失聯」。
+      const wasRunning =
+        session.status === 'offline' && this.store.preOfflineStatus(session.id) === 'running';
+      if (!running && !wasRunning) continue;
+      const base = { sessionId: session.id, name: session.name };
+      const conn = running ? this.daemonFor(session.machineId) : null;
+      if (!conn) {
+        results.push({ ...base, result: 'offline' });
+      } else if (!conn.features.has(DAEMON_FEATURES.signalGuard)) {
+        results.push({ ...base, result: 'unsupported' });
+      } else {
+        this.toSessionDaemon(session.id, {
+          type: 'terminal.signal',
+          sessionId: session.id,
+          signal: 'escape',
+          onlyIfStatus: 'running',
+        });
+        results.push({ ...base, result: 'requested' });
+      }
+    }
+    return results;
+  }
+
+  /** daemon 回報「立刻中斷」的 Esc 有沒有送。只認這次暫停送出的；送了才照使用者按 Esc 處理。 */
+  private onPauseSignalResult(msg: Extract<DaemonToHub, { type: 'terminal.signalResult' }>): void {
+    const userId = this.pauseInterrupts.get(msg.sessionId);
+    if (userId === undefined) return;
+    this.pauseInterrupts.delete(msg.sessionId);
+    if (!msg.sent) {
+      this.audit(
+        userId,
+        msg.sessionId,
+        'board.interrupt_skipped',
+        JSON.stringify({ status: msg.status }),
+      );
+      return;
+    }
+    this.audit(userId, msg.sessionId, 'terminal.signal', msg.signal);
+    // daemon 確認送 Esc 時在跑：中斷的回合不會有 Stop，派工成員手上的工作清掉（CONTRACTS §11）。
+    this.guarded('dispatch', () => this.dispatch.onInterrupt(msg.sessionId));
+    this.guarded('auto continue', () => this.autoContinue.onUserInput(msg.sessionId));
+  }
+
+  /** 全部繼續：只解除閘門，不對被中斷的 session 送「繼續」（Q8）。沒暫停時什麼都不做。 */
+  resumeBoard(user: User): { state: BoardPauseState; released: BoardHeld } {
+    const prev = this.pause;
+    if (!prev) {
+      return {
+        state: this.boardPauseState(),
+        released: { deliveries: 0, sessions: 0, sessionsWaiting: 0, autoContinues: 0 },
+      };
+    }
+    const released = this.heldCounts();
+    this.pause = null;
+    this.pauseInterrupts.clear();
+    this.store.setBoardPause(null);
+    this.audit(
+      user.id,
+      null,
+      'board.resume',
+      JSON.stringify({ mode: prev.mode, since: prev.since, released }),
+    );
+    // 放出排隊的送字與 session，再推狀態（推的是放出之後的排隊數）。
+    this.guarded('delivery', () => this.delivery.flush());
+    this.drainQueue();
+    this.broadcastPause();
+    return { state: this.boardPauseState(), released };
+  }
+
+  private auditHeld(item: DeliveryItem): void {
+    const chars = [...item.message];
+    const message =
+      chars.length > HELD_MESSAGE_MAX
+        ? `${chars.slice(0, HELD_MESSAGE_MAX).join('')}…`
+        : item.message;
+    this.audit(
+      null,
+      item.targetId,
+      'board.held',
+      JSON.stringify({ kind: heldKind(item.key), key: item.key, message }),
+    );
+  }
+
+  /**
+   * 排隊數可能變了：暫停中資料庫記下記憶體佇列的則數（重啟時交代）；不論有沒有暫停，合併成一則推給 client
+   * （沒暫停時 held 照算，同一個事件迴圈內的變化合併，沒變不推）。
+   */
+  private pauseCountsChanged(): void {
+    if (this.closed) return;
+    if (this.pause) {
+      const inMemory = this.heldDeliveries();
+      if (inMemory !== this.pause.heldInMemory) {
+        this.pause = { ...this.pause, heldInMemory: inMemory };
+        this.store.setBoardPause(this.pause);
+      }
+    }
+    if (this.pauseBroadcastQueued) return;
+    this.pauseBroadcastQueued = true;
+    queueMicrotask(() =>
+      this.guarded('pause broadcast', () => {
+        this.pauseBroadcastQueued = false;
+        if (!this.closed) this.broadcastPause(false);
+      }),
+    );
+  }
+
+  private broadcastPause(force = true): void {
+    const pause = this.boardPauseState();
+    const frame = JSON.stringify(pause);
+    if (!force && frame === this.lastPauseFrame) return;
+    this.lastPauseFrame = frame;
+    this.broadcast({ type: 'board.pause', pause });
+  }
+
   // ── 設定 ─────────────────────────────────────────────
   /** 危險指令規則不能等 daemon 重連才生效：重送 welcome。 */
   onSettingsChanged(prev: Settings, next: Settings): void {
@@ -1920,6 +2219,8 @@ export class Hub {
       }
     }
     this.drainQueue();
+    // 名額上限或限流設定改了：會放出的 QUE 數可能變了。
+    this.pauseCountsChanged();
     // 改成不合併：手上這批馬上送，不丟。
     if (prev.notifications.coalesce && !next.notifications.coalesce) this.coalescer.flushNow();
     if (prev.notifications.waitingLimit !== next.notifications.waitingLimit) {

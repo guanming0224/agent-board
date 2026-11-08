@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AUDIT_SYSTEM_USER,
   AutoContinue,
+  BoardPause,
   DEFAULT_WAITING_LIMIT,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
@@ -25,8 +26,16 @@ import {
   type Template,
   type User,
 } from '@agent-board/protocol';
+import { z } from 'zod';
 import type { Db } from './db';
 import type { PushSubscriptionRecord, VapidKeys } from './push';
+
+/** 存在 settings 表 `boardPause` 鍵的暫停狀態；heldInMemory 是記憶體佇列裡被擋下的則數（重啟時拿來交代）。 */
+export const StoredBoardPause = BoardPause.extend({
+  heldInMemory: z.number().int().nonnegative().default(0),
+});
+export type StoredBoardPause = z.infer<typeof StoredBoardPause>;
+const BOARD_PAUSE_KEY = 'boardPause';
 
 const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   listenAddress,
@@ -1052,6 +1061,33 @@ export class Store {
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       )
       .run(key, JSON.stringify(value));
+  }
+
+  /**
+   * 全部暫停的狀態（P2 項目三）。和 vapid 一樣是 settings 表裡 `Settings` 以外的鍵：getSettings 會濾掉，
+   * `/api/settings` 讀不到也改不到。內容壞掉就當沒暫停（回 invalid: true 讓 hub 記 log）。
+   */
+  getBoardPause(): { pause: StoredBoardPause | null; invalid: boolean } {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(BOARD_PAUSE_KEY) as
+      { value: string } | undefined;
+    if (!row) return { pause: null, invalid: false };
+    let raw: unknown;
+    try {
+      raw = JSON.parse(row.value);
+    } catch {
+      return { pause: null, invalid: true };
+    }
+    if (raw === null) return { pause: null, invalid: false };
+    const parsed = StoredBoardPause.safeParse(raw);
+    return parsed.success ? { pause: parsed.data, invalid: false } : { pause: null, invalid: true };
+  }
+
+  setBoardPause(pause: StoredBoardPause | null): void {
+    if (pause === null) {
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(BOARD_PAUSE_KEY);
+      return;
+    }
+    this.setRaw(BOARD_PAUSE_KEY, pause);
   }
 
   /** 首次啟動才產生，之後沿用（換金鑰會讓所有訂閱失效）。 */

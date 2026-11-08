@@ -553,6 +553,70 @@ export const Settings = z.object({
 });
 export type Settings = z.infer<typeof Settings>;
 
+// ── 全部暫停（P2 項目三，GM 2026-11-08） ─────────────────────
+/**
+ * finish_turn：做完這輪就停——擋所有自動送字與自動開新 session，正在跑的回合跑完。
+ * interrupt：立刻中斷——同上，另外對每個 RUN（`running`）的 session 送一次 Esc。interrupt 一定包含 finish_turn 的閘門。
+ */
+export const BoardPauseMode = z.enum(['finish_turn', 'interrupt']);
+export type BoardPauseMode = z.infer<typeof BoardPauseMode>;
+
+/** 暫停中的狀態。存在 hub 的 settings 表（鍵 `boardPause`，不是 `Settings` 的欄位），hub 重啟後仍是暫停。 */
+export const BoardPause = z.object({
+  mode: BoardPauseMode,
+  /** 第一次按暫停的時間；暫停中改模式不重算。 */
+  since: IsoTime,
+  /** 按暫停的使用者（最後一次）。 */
+  by: Id.nullable(),
+  byName: z.string().nullable(),
+  /**
+   * 暫停中 hub 重啟、記憶體裡被擋下的送字因此清掉的則數（自動接續存在資料庫，不算在內）。0＝沒有。
+   * 畫面在提示列註明「hub 重啟，N 則排隊已清除」；按「全部繼續」後歸零。
+   */
+  clearedOnRestart: z.number().int().nonnegative().default(0),
+});
+export type BoardPause = z.infer<typeof BoardPause>;
+
+/** 被暫停擋下、繼續時會放出的東西（「全部繼續」前顯示）。 */
+export const BoardHeld = z.object({
+  /** 排隊中的送字（交接、任務自動執行、MCP 派工送工作與回報結果）。 */
+  deliveries: z.number().int().nonnegative(),
+  /**
+   * 繼續後會馬上開的 QUE：只因為暫停才沒開的（帳號沒限流、機器在線），再依同時 session 上限截斷。
+   * 因名額不足或帳號限流而排隊的不算（繼續後也不會開），另見 `sessionsWaiting`。
+   */
+  sessions: z.number().int().nonnegative(),
+  /** 其餘排隊中的 QUE（等名額、等帳號限流解除、機器離線）：繼續後也不會馬上開。舊版 hub 不送＝0。 */
+  sessionsWaiting: z.number().int().nonnegative().default(0),
+  /** 已到期、等著送出的額度恢復自動接續。 */
+  autoContinues: z.number().int().nonnegative(),
+});
+export type BoardHeld = z.infer<typeof BoardHeld>;
+
+/** 暫停狀態＋排隊統計。沒暫停時 paused 是 null（held 照算，QUE 可能因名額在排）。 */
+export const BoardPauseState = z.object({
+  paused: BoardPause.nullable(),
+  held: BoardHeld,
+});
+export type BoardPauseState = z.infer<typeof BoardPauseState>;
+
+export const NOT_PAUSED: BoardPauseState = {
+  paused: null,
+  held: { deliveries: 0, sessions: 0, sessionsWaiting: 0, autoContinues: 0 },
+};
+
+/**
+ * 「立刻中斷」對每個 RUN session 的結果。requested＝已請 daemon 送 Esc（daemon 再確認狀態是 running 才送，
+ * 實際結果記在 audit：送了照 Esc 處理，沒送寫 `board.interrupt_skipped`）；offline＝機器失聯沒送到；
+ * unsupported＝daemon 版本太舊、無法在送之前再確認狀態，為了不把權限請求按成拒絕，沒送。
+ */
+export const BoardInterruptResult = z.object({
+  sessionId: Id,
+  name: z.string(),
+  result: z.enum(['requested', 'offline', 'unsupported']),
+});
+export type BoardInterruptResult = z.infer<typeof BoardInterruptResult>;
+
 /** 合併通知的等待時間：第一個事件後等 15 秒，期間有新事件就從新事件再算，但從第一個事件起最多 60 秒。 */
 export const NOTIFY_WINDOW_MS = 15_000;
 /** 權限請求最急：批次裡有權限請求時，最晚在它發生後 5 秒送出。 */

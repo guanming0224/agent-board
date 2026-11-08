@@ -46,6 +46,7 @@ describe('HubClient', () => {
         capabilities: FAKE_CAPABILITIES,
         sessions: [],
         pendingApprovals: [],
+        features: [],
       }),
       onMessage: (message) => messages.push(message),
       onDisconnected: () => {

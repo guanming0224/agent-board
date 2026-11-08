@@ -50,7 +50,10 @@ export interface AutoContinueDeps {
   guarded(label: string, fn: () => void): void;
 }
 
-const keyFor = (sessionId: string) => `auto-continue:${sessionId}`;
+const KEY_PREFIX = 'auto-continue:';
+const keyFor = (sessionId: string) => `${KEY_PREFIX}${sessionId}`;
+/** 送字佇列裡的這一則是不是自動接續（全部暫停的統計分開算）。 */
+export const isAutoContinueKey = (key: string): boolean => key.startsWith(KEY_PREFIX);
 
 export class AutoContinueEngine {
   private timer: NodeJS.Timeout | null = null;
