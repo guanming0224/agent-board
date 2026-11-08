@@ -1,0 +1,48 @@
+/* 錯誤畫面（shared/ErrorBoundary.tsx）。只用 token，不依賴其他頁面的樣式。 */
+.error-screen {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: max(24px, env(safe-area-inset-top)) 16px 24px;
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+}
+.error-screen h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  color: var(--fg);
+}
+.error-screen p {
+  margin: 0 0 16px;
+  line-height: 1.5;
+}
+.error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.error-actions button {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--raise);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.error-actions button:first-child {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.error-screen pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--fg-muted);
+  font: 12px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
