@@ -170,7 +170,8 @@ PermissionRequest hook → daemon（建 Approval，卡住）→ hub → 瀏覽�
 | 事件                                                                            | 新狀態                                                                                          |
 | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | PTY 開啟                                                                        | `starting`                                                                                      |
-| `SessionStart`（`source` 為 startup 或 resume）且目前是 `starting`              | `waiting_input`，detail `idle:start`（`IDLE_START_DETAIL`：剛開好、閒著，不算「等你」，見 §10） |
+| `SessionStart`（`source` 為 startup）且目前是 `starting`                        | `waiting_input`，detail `idle:start`（`IDLE_START_DETAIL`：剛開好、閒著，不算「等你」，見 §10） |
+| `SessionStart`（`source` 為 resume）且目前是 `starting`                         | `waiting_input`，detail null（重新接回算「等你」，GM 2026-11-08）                               |
 | `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`           | `running`                                                                                       |
 | `Notification` + `permission_prompt`，或 `PermissionRequest`                    | `waiting_permission`                                                                            |
 | `Notification` + `idle_prompt`（不覆蓋 `plan_review`、`rate_limited`、`error`） | `waiting_input`                                                                                 |
@@ -324,7 +325,7 @@ hub 用資料庫裡的路徑組 `SessionLocator` 送 `session.inspect`，等 `se
 
 `packages/protocol/src/attention.ts`，hub 與 web 共用：
 
-- `sessionWaitsForUser`：沒封存、狀態是收件匣的範圍（`ATTENTION_STATUSES`：等你允許、回覆、審計畫、錯誤、卡住），**但不含 `statusDetail === 'idle:start'` 的 `waiting_input`**（daemon 在 `SessionStart` startup／resume 時標的：剛開好或剛接回，沒有新回覆）。做完一回合（`Stop`）detail 就變回 null，算「等你」；`idle_prompt` 不改 detail。信任對話框（detail `trust`）算。舊版 daemon 不標，照舊算。
+- `sessionWaitsForUser`：沒封存、狀態是收件匣的範圍（`ATTENTION_STATUSES`：等你允許、回覆、審計畫、錯誤、卡住），**但不含 `statusDetail === 'idle:start'` 的 `waiting_input`**（daemon 在 `SessionStart` startup 時標的：剛開好，沒有新回覆；畫面上的代碼是 NEW。resume 重新接回不標，算「等你」，GM 2026-11-08）。做完一回合（`Stop`）detail 就變回 null，算「等你」；`idle_prompt` 不改 detail。信任對話框（detail `trust`）算。舊版 daemon 不標，照舊算。
 - `waitingSessions(sessions, approvals)`：上面這些，加上有還沒決定的 approval 的 session（危險指令命中時常常還是 `running`），每個 session 只算一次。
 - 收件匣、「下一個等我的」的清單**沒有改**（閒著的 `waiting_input` 照樣列出、照樣可回覆）；只有數量、上限與推播用這個定義。
 - `rate_limited` 不在範圍裡（和收件匣一樣）。

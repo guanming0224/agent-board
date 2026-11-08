@@ -230,20 +230,31 @@ describe('createStatusTracker', () => {
   });
 
   describe('SessionStart', () => {
-    it.each(['startup', 'resume'])('starting 時 source=%s 變 waiting_input', (source) => {
-      tracker.onHook('SessionStart', payload('SessionStart', { source }));
+    it('starting 時 source=startup 變 waiting_input，標成剛開好', () => {
+      tracker.onHook('SessionStart', payload('SessionStart', { source: 'startup' }));
       expect(tracker.status).toBe('waiting_input');
       expect(last()).toMatchObject({
         from: 'starting',
         to: 'waiting_input',
-        reason: `hook:SessionStart:${source}`,
-        // 剛開好、閒著：不算在等你（protocol attention.ts）。
+        reason: 'hook:SessionStart:startup',
+        // 剛開好、閒著：不算在等你（protocol attention.ts，畫面上是 NEW）。
         detail: IDLE_START_DETAIL,
       });
     });
 
-    it('剛開好之後做完一回合，detail 就不是閒著了', () => {
+    it('starting 時 source=resume 變 waiting_input，不標剛開好（重新接回算在等你，GM 2026-11-08）', () => {
       tracker.onHook('SessionStart', payload('SessionStart', { source: 'resume' }));
+      expect(tracker.status).toBe('waiting_input');
+      expect(last()).toMatchObject({
+        from: 'starting',
+        to: 'waiting_input',
+        reason: 'hook:SessionStart:resume',
+        detail: null,
+      });
+    });
+
+    it('剛開好之後做完一回合，detail 就不是閒著了', () => {
+      tracker.onHook('SessionStart', payload('SessionStart', { source: 'startup' }));
       tracker.onHook('UserPromptSubmit', payload('UserPromptSubmit'));
       tracker.onHook('Stop', payload('Stop'));
       expect(last()).toMatchObject({ to: 'waiting_input', detail: null });

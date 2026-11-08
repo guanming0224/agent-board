@@ -216,9 +216,12 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
       case 'SessionStart': {
         // clear、compact、fork 發生在對話中途，不代表閒置。
         const source = stringField(payload, 'source');
-        // detail 標成「剛開好、閒著」：沒有新回覆，不算在等你（protocol attention.ts）。
-        if (status === 'starting' && (source === 'startup' || source === 'resume')) {
+        // startup：detail 標成「剛開好、閒著」，沒有新回覆，不算在等你（protocol attention.ts，畫面上是 NEW）。
+        // resume：重新接回的對話算在等你回覆（GM 2026-11-08，畫面上是 ASK），detail 不標。
+        if (status === 'starting' && source === 'startup') {
           transition('waiting_input', `${reason}:${source}`, IDLE_START_DETAIL);
+        } else if (status === 'starting' && source === 'resume') {
+          transition('waiting_input', `${reason}:${source}`, null);
         }
         break;
       }
