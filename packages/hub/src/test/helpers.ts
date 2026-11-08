@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
-import type { Approval, SessionRuntime, SessionSpec } from '@agent-board/protocol';
+import {
+  DAEMON_FEATURES,
+  type Approval,
+  type SessionRuntime,
+  type SessionSpec,
+} from '@agent-board/protocol';
 import { createHub, type HubOptions, type RunningHub } from '../server';
 import type { PushResult, PushTransport } from '../push';
 
@@ -168,7 +173,7 @@ export interface TestHub {
   /** 配對並完成 hello／welcome。 */
   onlineDaemon(
     ownerCookie: string,
-    hello?: { sessions?: SessionRuntime[]; pendingApprovals?: Approval[] },
+    hello?: { sessions?: SessionRuntime[]; pendingApprovals?: Approval[]; features?: string[] },
   ): Promise<{ daemon: Peer; machineId: string; token: string }>;
   client(cookie: string): Promise<Peer>;
   stop(): Promise<void>;
@@ -182,6 +187,8 @@ export const hello = (over: object = {}) => ({
   capabilities,
   sessions: [],
   pendingApprovals: [],
+  // 假 daemon 預設是新版（認得 terminal.signal.onlyIfStatus）；要模擬舊版就傳 features: []。
+  features: [DAEMON_FEATURES.signalGuard],
   ...over,
 });
 

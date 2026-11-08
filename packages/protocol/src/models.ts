@@ -581,8 +581,13 @@ export type BoardPause = z.infer<typeof BoardPause>;
 export const BoardHeld = z.object({
   /** 排隊中的送字（交接、任務自動執行、MCP 派工送工作與回報結果）。 */
   deliveries: z.number().int().nonnegative(),
-  /** 排隊中的 session（QUE）。 */
+  /**
+   * 繼續後會馬上開的 QUE：只因為暫停才沒開的（帳號沒限流、機器在線），再依同時 session 上限截斷。
+   * 因名額不足或帳號限流而排隊的不算（繼續後也不會開），另見 `sessionsWaiting`。
+   */
   sessions: z.number().int().nonnegative(),
+  /** 其餘排隊中的 QUE（等名額、等帳號限流解除、機器離線）：繼續後也不會馬上開。舊版 hub 不送＝0。 */
+  sessionsWaiting: z.number().int().nonnegative().default(0),
   /** 已到期、等著送出的額度恢復自動接續。 */
   autoContinues: z.number().int().nonnegative(),
 });
@@ -597,14 +602,18 @@ export type BoardPauseState = z.infer<typeof BoardPauseState>;
 
 export const NOT_PAUSED: BoardPauseState = {
   paused: null,
-  held: { deliveries: 0, sessions: 0, autoContinues: 0 },
+  held: { deliveries: 0, sessions: 0, sessionsWaiting: 0, autoContinues: 0 },
 };
 
-/** 「立刻中斷」對每個 RUN session 的結果：sent＝已送 Esc；offline＝機器失聯沒送到。 */
+/**
+ * 「立刻中斷」對每個 RUN session 的結果。requested＝已請 daemon 送 Esc（daemon 再確認狀態是 running 才送，
+ * 實際結果記在 audit：送了照 Esc 處理，沒送寫 `board.interrupt_skipped`）；offline＝機器失聯沒送到；
+ * unsupported＝daemon 版本太舊、無法在送之前再確認狀態，為了不把權限請求按成拒絕，沒送。
+ */
 export const BoardInterruptResult = z.object({
   sessionId: Id,
   name: z.string(),
-  result: z.enum(['sent', 'offline']),
+  result: z.enum(['requested', 'offline', 'unsupported']),
 });
 export type BoardInterruptResult = z.infer<typeof BoardInterruptResult>;
 

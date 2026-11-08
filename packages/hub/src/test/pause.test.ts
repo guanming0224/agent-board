@@ -232,14 +232,29 @@ describe('SafeDelivery 暫停閘門（單元）', () => {
     expect(t.held).toEqual(['task:2']);
   });
 
-  it('字打進去後、Enter 前按了暫停：不按 Enter（aborted）', async () => {
+  it('字打進去後、Enter 前按了暫停：照樣按 Enter 把這一則送完（不留殘字），下一則才擋', async () => {
     const t = setup();
     t.delivery.enqueue(t.item('rule:1'));
+    t.delivery.enqueue(t.item('rule:2'));
     expect(t.sent).toEqual(['msg rule:1']);
     t.state.paused = true;
     await until(() => t.outcome.length > 0, 'enter timer');
-    expect(t.outcome).toEqual(['aborted rule:1']);
-    expect(t.sent).toEqual(['msg rule:1']);
+    expect(t.outcome).toEqual(['delivered rule:1']);
+    expect(t.sent).toEqual(['msg rule:1', '\r']);
+    t.delivery.flush();
+    await sleep(50);
+    expect(t.sent).toEqual(['msg rule:1', '\r']);
+    expect(t.delivery.pendingKeys()).toEqual(['rule:2']);
+  });
+
+  it('暫停中同一個 key 被蓋掉重排：board.held 只記一次', () => {
+    const t = setup();
+    t.state.paused = true;
+    t.delivery.enqueue(t.item('send:W'));
+    t.delivery.enqueue(t.item('send:W'));
+    t.delivery.enqueue(t.item('rule:1'));
+    expect(t.held).toEqual(['send:W', 'rule:1']);
+    expect(t.delivery.pendingKeys()).toEqual(['send:W', 'rule:1']);
   });
 });
 
@@ -269,6 +284,7 @@ describe('全部暫停：擋自動送字', () => {
     expect((await pauseState(b.cookie)).held).toEqual({
       deliveries: 1,
       sessions: 0,
+      sessionsWaiting: 0,
       autoContinues: 0,
     });
     const held = auditRows('board.held');
@@ -277,7 +293,12 @@ describe('全部暫停：擋自動送字', () => {
     expect(JSON.parse(held[0]!.detail)).toMatchObject({ kind: 'handoff' });
 
     const resumed = await resumeBoard(b.cookie);
-    expect(resumed.released).toEqual({ deliveries: 1, sessions: 0, autoContinues: 0 });
+    expect(resumed.released).toEqual({
+      deliveries: 1,
+      sessions: 0,
+      sessionsWaiting: 0,
+      autoContinues: 0,
+    });
     expect(resumed.state.paused).toBeNull();
     await until(() => inputsTo(b.daemon, target).length === 2, 'handoff delivered');
     expect(inputsTo(b.daemon, target)[0]).toContain('Fixed the parser.');
@@ -426,6 +447,7 @@ describe('全部暫停：擋自動送字', () => {
     expect((await pauseState(b.cookie)).held).toEqual({
       deliveries: 0,
       sessions: 0,
+      sessionsWaiting: 0,
       autoContinues: 1,
     });
 
@@ -450,7 +472,9 @@ describe('全部暫停：擋自動開新 session', () => {
     });
     expect(queued.body.status).toBe('queued');
     b.daemon.clear();
-    await pauseBoard(b.cookie, 'finish_turn');
+    const paused = await pauseBoard(b.cookie, 'finish_turn');
+    // 等名額的 QUE 繼續後也不會開：不算「會放出」。
+    expect(paused.state.held).toMatchObject({ sessions: 0, sessionsWaiting: 1 });
 
     // 放寬名額：沒暫停的話 q 會馬上開。
     await hub.api('PATCH', '/api/settings', {
@@ -460,7 +484,7 @@ describe('全部暫停：擋自動開新 session', () => {
     await sleep();
     expect(b.daemon.of('session.create')).toEqual([]);
     expect(get(queued.body.id)?.status).toBe('queued');
-    expect((await pauseState(b.cookie)).held.sessions).toBe(1);
+    expect((await pauseState(b.cookie)).held).toMatchObject({ sessions: 1, sessionsWaiting: 0 });
 
     // GM 親手開的不擋（Q6）。
     const manual = await hub.api('POST', '/api/sessions', {
@@ -475,6 +499,10 @@ describe('全部暫停：擋自動開新 session', () => {
     await b.daemon.next('session.create', (m) => m.sessionId === queued.body.id);
   });
 });
+
+/** 假 daemon 回報「立刻中斷」的 Esc 有沒有送（真的 daemon 會先確認狀態）。 */
+const signalResult = (daemon: Peer, sessionId: string, sent: boolean, status: SessionStatus) =>
+  daemon.send({ type: 'terminal.signalResult', sessionId, signal: 'escape', sent, status });
 
 describe('全部暫停：立刻中斷', () => {
   it('只對 RUN 送 Esc（daemon 端再確認 running）；PERM／ASK 不動；失聯列為 offline；audit 齊全', async () => {
@@ -494,7 +522,7 @@ describe('全部暫停：立刻中斷', () => {
     const res = await pauseBoard(b.cookie, 'interrupt');
     expect(res.state.paused?.mode).toBe('interrupt');
     const byId = Object.fromEntries(res.interrupted.map((r) => [r.sessionId, r.result]));
-    expect(byId).toEqual({ [r1]: 'sent', [r2]: 'sent', [far]: 'offline' });
+    expect(byId).toEqual({ [r1]: 'requested', [r2]: 'requested', [far]: 'offline' });
 
     await until(() => b.daemon.of('terminal.signal').length === 2, 'two escapes');
     const signals = b.daemon.of('terminal.signal');
@@ -511,9 +539,65 @@ describe('全部暫停：立刻中斷', () => {
     expect(pauseAudit).toHaveLength(1);
     expect(pauseAudit[0]!.user_id).not.toBeNull();
     expect(JSON.parse(pauseAudit[0]!.detail)).toMatchObject({ mode: 'interrupt', previous: null });
+    // terminal.signal 等 daemon 確認真的送了才記；r2 在 daemon 那邊已經轉成 PERM，沒送。
+    expect(auditRows('terminal.signal')).toEqual([]);
+    signalResult(b.daemon, r1, true, 'running');
+    signalResult(b.daemon, r2, false, 'waiting_permission');
+    await until(() => auditRows('board.interrupt_skipped').length === 1, 'skipped');
     const signalAudit = auditRows('terminal.signal');
-    expect(signalAudit.map((r) => r.session_id).sort()).toEqual([r1, r2].sort());
-    expect(signalAudit.every((r) => r.detail === 'escape' && r.user_id !== null)).toBe(true);
+    expect(signalAudit.map((r) => r.session_id)).toEqual([r1]);
+    expect(signalAudit[0]).toMatchObject({ detail: 'escape', user_id: pauseAudit[0]!.user_id });
+    const skipped = auditRows('board.interrupt_skipped')[0]!;
+    expect(skipped.session_id).toBe(r2);
+    expect(JSON.parse(skipped.detail)).toEqual({ status: 'waiting_permission' });
+    // 不是這次暫停要的（重送、別的 session）不理。
+    signalResult(b.daemon, r1, true, 'running');
+    signalResult(b.daemon, perm, true, 'running');
+    await sleep();
+    expect(auditRows('terminal.signal')).toHaveLength(1);
+  });
+
+  it('舊版 daemon（不會再確認狀態）不送 Esc，列為 unsupported', async () => {
+    const b = await board();
+    const { machineId: m2, daemon: old } = await hub.onlineDaemon(b.cookie, { features: [] });
+    const r = await start(b, 'r', 'running', old, m2);
+    old.clear();
+    const res = await pauseBoard(b.cookie, 'interrupt');
+    expect(res.interrupted).toEqual([{ sessionId: r, name: 'r', result: 'unsupported' }]);
+    await sleep();
+    expect(old.of('terminal.signal')).toEqual([]);
+    expect(res.state.paused?.mode).toBe('interrupt');
+  });
+
+  it('派工成員：daemon 沒送 Esc 就不清它手上的工作（Stop 的結果照樣送回）；送了才清', async () => {
+    const b = await board();
+    const lead = await start(b, 'Lead');
+    const w1 = await start(b, 'W1', 'running');
+    const w2 = await start(b, 'W2', 'running');
+    const [work1, work2] = [randomUUID(), randomUUID()];
+    const work = (workId: string) => ({
+      from: lead,
+      workId,
+      kind: 'send' as const,
+      at: new Date().toISOString(),
+    });
+    hub.running.store.setDispatchWork(w1, work(work1));
+    hub.running.store.setDispatchWork(w2, work(work2));
+    b.daemon.clear();
+    await pauseBoard(b.cookie, 'interrupt');
+    await until(() => b.daemon.of('terminal.signal').length === 2, 'escapes');
+    // daemon 回報之前什麼都不清。
+    expect(hub.running.store.dispatchWork(w1)).not.toBeNull();
+    expect(hub.running.store.dispatchWork(w2)).not.toBeNull();
+    signalResult(b.daemon, w1, false, 'waiting_permission');
+    signalResult(b.daemon, w2, true, 'running');
+    await until(() => hub.running.store.dispatchWork(w2) === null, 'w2 cleared');
+    await until(() => auditRows('board.interrupt_skipped').length === 1, 'w1 skipped');
+    expect(hub.running.store.dispatchWork(w1)).toMatchObject({ workId: work1 });
+    expect(JSON.parse(auditRows('dispatch.blocked').at(-1)!.detail)).toMatchObject({
+      reason: 'interrupted',
+      workId: work2,
+    });
   });
 
   it('Esc 後回到等輸入的 session 不會被交接再餵（立刻中斷一定包含閘門）', async () => {
@@ -524,6 +608,7 @@ describe('全部暫停：立刻中斷', () => {
     b.daemon.clear();
     await pauseBoard(b.cookie, 'interrupt');
     await until(() => b.daemon.of('terminal.signal').length === 1, 'escape');
+    signalResult(b.daemon, a, true, 'running');
     stopHook(b.daemon, a, `${MARKER} Interrupted halfway.`);
     await setStatus(b.daemon, a, 'waiting_input');
     await until(() => auditRows('board.held').length === 1, 'held');
@@ -538,10 +623,31 @@ describe('全部暫停：立刻中斷', () => {
     b.daemon.clear();
     const second = await pauseBoard(b.cookie, 'interrupt');
     expect(second.state.paused?.since).toBe(first.state.paused?.since);
-    expect(second.interrupted).toEqual([{ sessionId: r, name: 'r', result: 'sent' }]);
+    expect(second.interrupted).toEqual([{ sessionId: r, name: 'r', result: 'requested' }]);
     expect(JSON.parse(auditRows('board.pause')[1]!.detail)).toMatchObject({
       mode: 'interrupt',
       previous: 'finish_turn',
+    });
+  });
+
+  it('暫停前剛開、還在啟動的派工成員記在 board.pause（firstPrompt 由 daemon 自己送，閘門擋不到）', async () => {
+    const b = await board();
+    const lead = await start(b, 'Lead');
+    const requestId = randomUUID();
+    b.daemon.send({
+      type: 'dispatch.request',
+      requestId,
+      sessionId: lead,
+      tool: 'spawn_member',
+      args: { role: 'researcher', prompt: 'Read the docs.' },
+    });
+    const reply = await b.daemon.next('dispatch.reply', (m) => m.requestId === requestId);
+    expect(reply.ok, String(reply.text)).toBe(true);
+    const [member] = hub.running.store.listDispatchedBy(lead);
+    expect(member?.status).toBe('starting');
+    await pauseBoard(b.cookie, 'finish_turn');
+    expect(JSON.parse(auditRows('board.pause')[0]!.detail)).toMatchObject({
+      startingDispatched: [member!.id],
     });
   });
 });
@@ -584,6 +690,7 @@ describe('全部暫停：GM 手動、權限、同步、重啟', () => {
     expect((await resumeBoard(member.cookie)).released).toEqual({
       deliveries: 0,
       sessions: 0,
+      sessionsWaiting: 0,
       autoContinues: 0,
     });
     expect(auditRows('board.resume')).toHaveLength(1);
@@ -608,6 +715,22 @@ describe('全部暫停：GM 手動、權限、同步、重啟', () => {
     three.ws.terminate();
     await resumeBoard(b.cookie);
     expect(pauseOf(await two.next('board.pause')).paused).toBeNull();
+  });
+
+  it('繼續後推出去的是放出之後的排隊數（不是放出前的）', async () => {
+    const b = await board();
+    const a = await start(b, 'a');
+    const target = await start(b, 'b');
+    await handoffRule(b, a, target);
+    await pauseBoard(b.cookie, 'finish_turn');
+    await finishTurn(b, a);
+    await until(() => auditRows('board.held').length === 1, 'held');
+    const client = await hub.client(b.cookie);
+    await resumeBoard(b.cookie);
+    const msg = pauseOf(await client.next('board.pause'));
+    expect(msg.paused).toBeNull();
+    expect(msg.held.deliveries).toBe(0);
+    await until(() => inputsTo(b.daemon, target).length === 2, 'delivered');
   });
 
   it('暫停中排隊數變了也推給 client', async () => {
@@ -669,7 +792,12 @@ describe('全部暫停：GM 手動、權限、同步、重啟', () => {
 
     const state = await pauseState(cookie);
     expect(state.paused).toMatchObject({ mode: 'finish_turn', clearedOnRestart: 1 });
-    expect(state.held).toEqual({ deliveries: 0, sessions: 1, autoContinues: 0 });
+    expect(state.held).toEqual({
+      deliveries: 0,
+      sessions: 1,
+      sessionsWaiting: 0,
+      autoContinues: 0,
+    });
     expect(JSON.parse(auditRows('board.held_cleared')[0]!.detail)).toEqual({
       reason: 'hub_restarted',
       count: 1,

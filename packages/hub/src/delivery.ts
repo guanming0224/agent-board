@@ -59,8 +59,10 @@ export class SafeDelivery {
   constructor(private readonly deps: DeliveryDeps) {}
 
   enqueue(item: DeliveryItem): void {
+    // 同一個 key 蓋掉還沒送的舊的：已經記過被擋，不再記一次（audit 的 board.held 筆數＝排隊則數）。
+    const existed = this.pending.has(item.key);
     this.pending.set(item.key, item);
-    if (this.isPaused()) this.deps.held?.(item);
+    if (this.isPaused() && !existed) this.deps.held?.(item);
     this.deliverNext(item.targetId);
     this.deps.changed?.();
   }
@@ -182,8 +184,9 @@ export class SafeDelivery {
   private pressEnter(targetId: string, item: DeliveryItem): void {
     const { store, audit, isReachable, sendInput } = this.deps;
     const current = store.getSession(targetId);
-    // 字打進去之後、Enter 之前按了暫停：不按 Enter（同目標不再等輸入，字留在輸入框給使用者處理）。
-    if (!current || !readyFor(item, current) || !isReachable(targetId) || this.isPaused()) {
+    // 字打進去之後、Enter 之前按了暫停：字已經在輸入框裡，照樣按 Enter 把這一則送完（不按會留下殘字，
+    // 這一則也會被當成沒送出丟掉）。暫停只擋還沒打字的（CONTRACTS §12）。
+    if (!current || !readyFor(item, current) || !isReachable(targetId)) {
       this.awaitingAck.delete(targetId);
       item.aborted();
       return;

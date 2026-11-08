@@ -28,6 +28,12 @@ import {
 
 export const WS_PATHS = { daemon: '/ws/daemon', client: '/ws/client' } as const;
 
+/** daemon 在 hello 的 `features` 宣告的協定功能。 */
+export const DAEMON_FEATURES = {
+  /** 認得 `terminal.signal.onlyIfStatus`，並回 `terminal.signalResult`（全部暫停「立刻中斷」用）。 */
+  signalGuard: 'signal.onlyIfStatus',
+} as const;
+
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);
 export type TerminalSignal = z.infer<typeof TerminalSignal>;
 
@@ -142,11 +148,27 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     /** 目前活著的 session，hub 用來對帳（重連、daemon 重啟）。 */
     sessions: z.array(SessionRuntime),
     pendingApprovals: z.array(Approval),
+    /**
+     * daemon 支援的協定功能（見 `DAEMON_FEATURES`）。舊版 daemon 不送＝空。hub 依此決定要不要用新功能，
+     * 例如「立刻中斷」只對支援 `signal.onlyIfStatus` 的 daemon 送 Esc。
+     */
+    features: z.array(z.string()).default([]),
   }),
   z.object({ type: z.literal('session.created'), requestId: Id, session: SessionRuntime }),
   z.object({ type: z.literal('session.createFailed'), requestId: Id, error: z.string() }),
   z.object({ type: z.literal('session.runtime'), session: SessionRuntime }),
   z.object({ type: z.literal('session.event'), event: SessionEvent }),
+  /**
+   * 帶 `onlyIfStatus` 的 `terminal.signal` 處理結果（不帶的不回）。sent＝已送出；false＝daemon 看到的狀態不符
+   * 或找不到 session，沒送。status 是 daemon 當下看到的狀態（找不到 session 時為 null）。
+   */
+  z.object({
+    type: z.literal('terminal.signalResult'),
+    sessionId: Id,
+    signal: TerminalSignal,
+    sent: z.boolean(),
+    status: SessionStatus.nullable(),
+  }),
   TerminalData.extend({ type: z.literal('terminal.output') }),
   TerminalSnapshot.extend({ type: z.literal('terminal.snapshot') }),
   z.object({ type: z.literal('approval.requested'), approval: Approval }),
@@ -226,7 +248,8 @@ export const HubToDaemon = z.discriminatedUnion('type', [
     signal: TerminalSignal,
     /**
      * 只在 daemon 看到的狀態是這個時才送（全部暫停「立刻中斷」用 running）：hub 看到的 RUN 可能正要轉成
-     * 權限請求，那時 Esc 會變成拒絕。沒帶＝照送（使用者自己按的）。舊版 daemon 不認得，照送。
+     * 權限請求，那時 Esc 會變成拒絕。沒帶＝照送（使用者自己按的）。帶了 daemon 會回 `terminal.signalResult`。
+     * 舊版 daemon 不認得、會照送，所以 hub 只對 hello `features` 有 `signal.onlyIfStatus` 的 daemon 帶。
      */
     onlyIfStatus: SessionStatus.optional(),
   }),

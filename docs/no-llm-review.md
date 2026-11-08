@@ -148,7 +148,8 @@ PTY 只有兩個寫入點：`ManagedSession.write`（`packages/daemon/src/sessio
 
 全部暫停（P2 項目三，`hub.ts` 的 `pauseBoard`）的「立刻中斷」由 hub 對每個 RUN session 送
 `terminal.signal escape`（只有 Esc，不送任何文字；使用者按下按鈕才送，帶 `onlyIfStatus: 'running'` 讓 daemon 再確認）。
-暫停本身只會讓 `SafeDelivery` 少送，不會多送；「全部繼續」只放出原本就排著的，不另外產生文字。
+暫停本身只會讓 `SafeDelivery` 少送，不會多送（按暫停時已打進輸入框、等 Enter 的那一則照樣按完 Enter，字是暫停前就送出的）；
+「全部繼續」只放出原本就排著的，不另外產生文字。daemon 對帶 `onlyIfStatus` 的 signal 只回報結果（`terminal.signalResult`），不送字。
 
 **daemon 不會自己送 prompt。** daemon 只在收到 hub 的 `terminal.input`／`terminal.signal` 時寫
 PTY，以及送使用者給的第一個指令。daemon 會自己做的事：重啟時用 `--resume` 接回原本的 session

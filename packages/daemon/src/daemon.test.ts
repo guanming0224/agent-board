@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
-import { DaemonToHub } from '@agent-board/protocol';
+import { DAEMON_FEATURES, DaemonToHub } from '@agent-board/protocol';
 import type { Daemon } from './daemon';
 import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -470,15 +470,26 @@ describe('終端機串流', () => {
     await h.waitForOutput('s1', 'GOT:CTRL_C');
   });
 
-  it('signal：onlyIfStatus 和 daemon 看到的狀態不同就不送（全部暫停的立刻中斷）', async () => {
+  it('signal：onlyIfStatus 和 daemon 看到的狀態不同就不送，並回報結果（全部暫停的立刻中斷）', async () => {
+    const hello = h.hub.received[0];
+    expect(hello?.type === 'daemon.hello' && hello.features).toContain(DAEMON_FEATURES.signalGuard);
     await h.createAndSubscribe('s1');
     const { status } = await waitUntil(() => lastRuntime('s1') ?? null, 'session.runtime');
     const other = status === 'running' ? 'plan_review' : 'running';
+    const results = () =>
+      h.hub.received.filter(
+        (m): m is Extract<DaemonToHub, { type: 'terminal.signalResult' }> =>
+          m.type === 'terminal.signalResult',
+      );
     h.hub.send({ type: 'terminal.signal', sessionId: 's1', signal: 'escape', onlyIfStatus: other });
     // 之後的訊息照順序處理：ctrl_c 到了，前面那個 Esc 若有送也已經到了。
     h.hub.send({ type: 'terminal.signal', sessionId: 's1', signal: 'ctrl_c' });
     await h.waitForOutput('s1', 'GOT:CTRL_C');
     expect(h.outputText('s1')).not.toContain('GOT:ESC');
+    // 沒帶 onlyIfStatus 的（ctrl_c）不回報。
+    expect(results()).toEqual([
+      { type: 'terminal.signalResult', sessionId: 's1', signal: 'escape', sent: false, status },
+    ]);
     h.hub.send({
       type: 'terminal.signal',
       sessionId: 's1',
@@ -486,6 +497,17 @@ describe('終端機串流', () => {
       onlyIfStatus: status,
     });
     await h.waitForOutput('s1', 'GOT:ESC');
+    await waitUntil(() => (results().length === 2 ? true : null), 'second result');
+    expect(results()[1]).toMatchObject({ sent: true, status });
+    // 找不到 session：沒送，status 是 null。
+    h.hub.send({
+      type: 'terminal.signal',
+      sessionId: 'ghost',
+      signal: 'escape',
+      onlyIfStatus: 'running',
+    });
+    await waitUntil(() => (results().length === 3 ? true : null), 'ghost result');
+    expect(results()[2]).toMatchObject({ sessionId: 'ghost', sent: false, status: null });
   });
 
   it('lastLines 是去 ANSI 的最後 4 行，lastOutputAt 會更新', async () => {
