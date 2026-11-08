@@ -134,6 +134,14 @@ hub 就把 `daemon` 換成 `hub`。
 
 **升級：** 重跑一次同樣的安裝指令。內容沒變就什麼都不會重啟；有變的話服務會重啟，daemon 用 `claude --resume` 接回 session。
 
+**退版：** hub 升級資料庫結構（schema）前，會自動把舊的 `hub.db` 備份成同資料夾的 `hub.db.bak-<日期>-<時間>-v<舊版本>`（本機時間、不含時區；只有擁有者能讀寫），備份路徑會寫進 hub 的 log；備份失敗就不升級。新版有問題要退回舊版時：
+
+1. 停掉 hub 服務（macOS：`launchctl bootout gui/$(id -u)/com.agent-board.hub`；Linux：`systemctl --user stop agent-board-hub`；Windows：`schtasks /End /TN AgentBoard-hub`）。
+2. 把要退回的那個備份複製回去，例如 `cp ~/.agent-board/hub.db.bak-20261108-090507-v8 ~/.agent-board/hub.db`，並刪掉同資料夾的 `hub.db-wal`、`hub.db-shm`（如果有）。備份之後的變更會遺失。
+3. 用舊版的安裝檔重跑安裝指令（`--from <舊版 tar.gz 或資料夾>`）裝回舊版。
+
+舊版 hub 開到新版資料庫時會拒絕啟動，錯誤訊息會列出同資料夾裡它能用的最新備份檔（依檔名裡的時間判斷；剛遇到夏令時間切換或改過時區時，請自己再看一下檔案時間）。
+
 **選項：** `--port`、`--host`、`--name`、`--claude-bin <路徑>`、`--repair`（已配對也重新配對）、`--no-service`（不設開機自動啟動）、`--no-start`（只寫服務設定、不啟動）、`--from <tar.gz 或資料夾>`。
 
 開機自動啟動的細節，包含 Windows 為什麼用排程工作：[docs/install/services.md](docs/install/services.md)。

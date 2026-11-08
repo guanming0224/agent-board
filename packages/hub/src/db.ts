@@ -1,6 +1,15 @@
 // SQLite 連線與 migration。版本號存在 PRAGMA user_version，只增不改。
-import { chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 
 export type Db = Database.Database;
@@ -207,36 +216,169 @@ const migrations: string[] = [
   `,
 ];
 
-export function migrate(db: Db): void {
-  const current = db.pragma('user_version', { simple: true }) as number;
-  if (current > migrations.length) {
-    throw new Error(
-      `Database schema v${current} is newer than this hub (v${migrations.length}). Upgrade the hub.`,
-    );
-  }
-  migrations.slice(current).forEach((sql, offset) => {
-    db.transaction(() => {
-      db.exec(sql);
-      db.pragma(`user_version = ${current + offset + 1}`);
-    })();
-  });
-}
-
 export const SCHEMA_VERSION = migrations.length;
 
+/**
+ * 把資料庫升到 SCHEMA_VERSION。整段包在 BEGIN IMMEDIATE 裡、在交易內才讀 user_version：
+ * 兩個行程（hub 服務與 reset-password）同時開同一個舊版資料庫時，後到的會等前一個升完，
+ * 再讀到新版本號就什麼都不跑，不會重跑 ALTER TABLE 撞 duplicate column。
+ * path 只用在「資料庫比程式新」的錯誤訊息裡找備份；沒給（或 :memory:）就不附還原提示。
+ */
+export function migrate(db: Db, path?: string): void {
+  db.transaction(() => {
+    const current = db.pragma('user_version', { simple: true }) as number;
+    if (current > SCHEMA_VERSION) throw new Error(tooNewMessage(path, current));
+    migrations.slice(current).forEach((sql, offset) => {
+      db.exec(sql);
+      db.pragma(`user_version = ${current + offset + 1}`);
+    });
+  }).immediate();
+}
+
+export interface OpenDatabaseOptions {
+  /** 升級前備份的紀錄（含備份路徑）；沒給就印到 stdout，跟 hub 其他紀錄進同一個 log 檔。 */
+  log?: (line: string) => void;
+  /** 備份檔名用的時間；測試用。 */
+  now?: () => Date;
+  /** 實際做備份的函式；只有測試會換掉它（模擬備份失敗）。 */
+  backup?: (db: Db, target: string) => void;
+}
+
+/**
+ * 備份檔名：`hub.db.bak-YYYYMMDD-HHMMSS-v<舊版本>`，跟上架前手動 sqlite3 .backup 的命名一樣。
+ * 時間是本機時間、檔名不帶時區：夏令時間結束那一小時或主機改過時區時，檔名順序可能跟實際先後不同。
+ */
+const BACKUP_PATTERN = /\.bak-(\d{8}-\d{6})(?:-\d+)?-v(\d+)$/;
+
+function stamp(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-` +
+    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+  );
+}
+
+/** 線上備份：VACUUM INTO 是同步的、會拿一致的快照（含 WAL 裡還沒寫回的內容）。 */
+function vacuumInto(db: Db, target: string): void {
+  db.prepare('VACUUM INTO ?').run(target);
+}
+
+/**
+ * 在跑 migration 之前把舊版資料庫備份到同資料夾。先用 0600 建空檔再讓 SQLite 寫進去，
+ * 備份從頭到尾都不會被別人讀到（含密碼雜湊與 VAPID 私鑰）。失敗就刪掉自己建的半成品並丟錯，不升級。
+ */
+function backupBeforeMigrate(
+  db: Db,
+  path: string,
+  version: number,
+  options: OpenDatabaseOptions,
+): string {
+  const base = `${path}.bak-${stamp((options.now ?? (() => new Date()))())}`;
+  let target = `${base}-v${version}`;
+  // 只有自己用 'wx' 建出來的檔才可以刪：同名檔可能是別的行程（例如同一秒開同一個舊版資料庫的
+  // reset-password）剛寫好的備份。檔名已被占用（EEXIST）就換下一個序號，不覆蓋也不刪別人的備份。
+  let created = false;
+  try {
+    for (let n = 1; !created; n++) {
+      target = n === 1 ? `${base}-v${version}` : `${base}-${n}-v${version}`;
+      try {
+        closeSync(openSync(target, 'wx', 0o600));
+        created = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+    }
+    (options.backup ?? vacuumInto)(db, target);
+    chmodSync(target, 0o600);
+    // 確認備份真的能開、版本是舊版、內容沒有壞（例如寫到一半被截斷），才算數。
+    const check = new Database(target, { readonly: true, fileMustExist: true });
+    try {
+      const saved = check.pragma('user_version', { simple: true }) as number;
+      if (saved !== version) throw new Error(`backup has schema v${saved}, expected v${version}`);
+      const integrity = check.pragma('quick_check', { simple: true }) as string;
+      if (integrity !== 'ok') throw new Error(`backup failed quick_check: ${integrity}`);
+    } finally {
+      check.close();
+    }
+  } catch (error) {
+    if (created) rmSync(target, { force: true });
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Could not back up ${path} (schema v${version}) to ${target} before upgrading to v${SCHEMA_VERSION}: ${reason}. ` +
+        'The database was not changed. Free disk space or fix permissions in that folder, then start the hub again.',
+    );
+  }
+  return target;
+}
+
+/** 同資料夾最新的備份檔（看檔名裡的時間），只挑這版 hub 讀得了的版本；沒有就 null。 */
+export function latestBackup(path: string, maxVersion = SCHEMA_VERSION): string | null {
+  const dir = dirname(path);
+  const prefix = `${basename(path)}.bak-`;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  const candidates = names
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => ({ name, match: BACKUP_PATTERN.exec(name) }))
+    .filter(
+      (c): c is { name: string; match: RegExpExecArray } =>
+        c.match !== null && Number(c.match[2]) <= maxVersion,
+    )
+    .sort((a, b) => {
+      const byStamp = a.match[1]!.localeCompare(b.match[1]!);
+      return byStamp !== 0
+        ? byStamp
+        : statSync(join(dir, a.name)).mtimeMs - statSync(join(dir, b.name)).mtimeMs;
+    });
+  const last = candidates.at(-1);
+  return last ? join(dir, last.name) : null;
+}
+
+/** 「資料庫比程式新」的錯誤訊息（唯一來源）；有檔案路徑才去同資料夾找可還原的備份。 */
+function tooNewMessage(path: string | undefined, current: number): string {
+  const head = `Database schema v${current} is newer than this hub (v${SCHEMA_VERSION}). Upgrade the hub.`;
+  if (path === undefined || path === ':memory:') return head;
+  const backup = latestBackup(path);
+  const restore = backup
+    ? ` To go back to this version instead, stop the hub, copy ${backup} over ${path} ` +
+      '(changes made after that backup are lost), then start this hub again.'
+    : ` No backup readable by this hub (v${SCHEMA_VERSION} or older) was found next to ${path}.`;
+  return `${head}${restore}`;
+}
+
 /** 資料庫含密碼雜湊與 VAPID 私鑰，資料夾與檔案都只給擁有者讀寫。 */
-export function openDatabase(path: string): Db {
+export function openDatabase(path: string, options: OpenDatabaseOptions = {}): Db {
   const inMemory = path === ':memory:';
   if (!inMemory) {
     const dir = dirname(path);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
+  // 要在 new Database 之前看：它會建出空檔，之後就分不出是不是新資料庫。
+  const existed = !inMemory && existsSync(path);
   const db = new Database(path);
-  if (!inMemory) chmodSync(path, 0o600);
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
-  db.pragma('foreign_keys = ON');
-  db.pragma('busy_timeout = 5000');
-  migrate(db);
+  try {
+    if (!inMemory) chmodSync(path, 0o600);
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.pragma('foreign_keys = ON');
+    db.pragma('busy_timeout = 5000');
+    const current = db.pragma('user_version', { simple: true }) as number;
+    if (current > SCHEMA_VERSION) throw new Error(tooNewMessage(path, current));
+    // 新資料庫（user_version 0）沒東西可備份；已經是最新版也不用。
+    if (existed && current > 0 && current < SCHEMA_VERSION) {
+      const target = backupBeforeMigrate(db, path, current, options);
+      (options.log ?? ((line: string) => console.log(line)))(
+        `Backed up hub database (schema v${current}) to ${target} before upgrading to v${SCHEMA_VERSION}.`,
+      );
+    }
+    migrate(db, path);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   return db;
 }

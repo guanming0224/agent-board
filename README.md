@@ -134,6 +134,14 @@ Replace `daemon` with `hub` for the hub.
 
 **Upgrade:** run the same install command again. If nothing changed, nothing restarts. If it did, services restart, and daemons reattach their sessions with `claude --resume`.
 
+**Rolling back:** before the hub upgrades the database schema, it copies the old `hub.db` to `hub.db.bak-<date>-<time>-v<old version>` (local time, no time zone) in the same folder (readable only by the owner) and writes the backup path to the hub log. If the backup fails, it does not upgrade. To go back to the previous version:
+
+1. Stop the hub service (macOS: `launchctl bootout gui/$(id -u)/com.agent-board.hub`; Linux: `systemctl --user stop agent-board-hub`; Windows: `schtasks /End /TN AgentBoard-hub`).
+2. Copy the backup you want back, for example `cp ~/.agent-board/hub.db.bak-20261108-090507-v8 ~/.agent-board/hub.db`, and delete `hub.db-wal` and `hub.db-shm` in that folder if they exist. Changes made after the backup are lost.
+3. Install the old version again by rerunning the install command with `--from <old tar.gz or folder>`.
+
+An older hub refuses to open a newer database, and its error names the newest backup in that folder that it can use (newest by the time in the file name; right after a daylight-saving change or a time zone change, check the file times yourself).
+
 **Options:** `--port`, `--host`, `--name`, `--claude-bin <path>`, `--repair` (pair again, even if already paired), `--no-service` (don't set up auto-start), `--no-start` (write the service files without starting them), `--from <tar.gz or folder>`.
 
 More about auto-start, including why Windows uses a scheduled task: [docs/install/services.en.md](docs/install/services.en.md).

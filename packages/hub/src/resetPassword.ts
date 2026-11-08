@@ -78,7 +78,7 @@ export async function runResetPassword(args: string[], io: ResetPasswordIo): Pro
     return 1;
   }
 
-  const db = openDatabase(dbPath);
+  const db = openDatabase(dbPath, { log: io.out });
   try {
     const store = new Store(db, DEFAULT_HOST);
     const found = store.userCredentials(name);
