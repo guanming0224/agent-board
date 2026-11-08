@@ -664,6 +664,14 @@ input.cmd:disabled {
   padding: 0 10px;
   font-size: 13px;
 }
+.card-submenu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-basis: 100%;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-2);
+}
 .rename {
   display: inline-flex;
   flex: 1 1 140px;

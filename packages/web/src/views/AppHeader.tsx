@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { chooseLocale } from '../flows/locale';
 import { MaskChip } from '../security';
+import { ZoneTabs } from '../zones';
 import { useLocale, useT, type Locale } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { useOverlay, toggleInbox } from './overlayStore';
@@ -53,7 +54,7 @@ function UsageSummaryText() {
 }
 
 /**
- * 頁首（P2 §1.2）：沒有分頁列。畫布是唯一主畫面，收件匣、團隊、設定都疊在畫布上，
+ * 頁首（P2 §1.2）：沒有原本的分頁列，那個位置改放工作區分頁（P2 §2.3）。畫布是唯一主畫面，收件匣、團隊、設定都疊在畫布上，
  * 從這裡的收件匣鈕、齒輪或網址打開。
  */
 export function AppHeader() {
@@ -194,6 +195,8 @@ export function AppHeader() {
           <span aria-hidden="true">⚙</span>
         </a>
       </div>
+      {/* 工作區分頁（P2 §2.3）：原分頁列的位置。「等你 N」與收件匣一律全域，分頁上另外顯示各自的等你數。 */}
+      <ZoneTabs />
       <WaitingBanner />
     </header>
   );

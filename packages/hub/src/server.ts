@@ -137,7 +137,11 @@ export function createHub(options: HubOptions): RunningHub {
   app.setErrorHandler((error: FastifyError | Error, req, reply) => {
     if (error instanceof HttpError) {
       if (error.retryAfterSeconds) reply.header('retry-after', error.retryAfterSeconds);
-      return reply.status(error.status).send({ code: error.code, message: error.message });
+      return reply.status(error.status).send({
+        code: error.code,
+        message: error.message,
+        ...(error.detail ? { detail: error.detail } : {}),
+      });
     }
     const sqlite = (error as { code?: string }).code ?? '';
     if (sqlite === 'SQLITE_CONSTRAINT_FOREIGNKEY') {

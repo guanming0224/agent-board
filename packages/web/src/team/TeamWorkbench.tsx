@@ -1,10 +1,21 @@
-// 團隊工作台：目標、成員、補成員、研究階段、任務板、TEAM.md、交接規則、全隊暫停／停止。
+// 團隊面板（P2 §2.3）：頂部名稱、工作區、寬版；名單（狀態代碼、角色、時間）；工作台原本的區塊（成員管理、補成員、
+// 研究階段、任務板、交接規則、目標與 TEAM.md）收合呈現；底部群發指令框。
 import { useCallback, useEffect, useState } from 'react';
 import { TeamRole } from '@agent-board/protocol';
 import type { Session, Task, Team, TeamMember } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { Callsign, errorText, handsClass, Lamp, ModeChip, ReadOnlyChip } from '../views';
+import {
+  Callsign,
+  errorText,
+  handsClass,
+  Lamp,
+  ModeChip,
+  ReadOnlyChip,
+  useViewsUi,
+} from '../views';
+import { moveTeamToZone, useZones } from '../zones';
+import { BroadcastBox, Roster } from './Roster';
 import {
   ActionMessage,
   ColorPicker,
@@ -123,21 +134,6 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
     });
   };
 
-  const changeRole = (id: string, next: Role) =>
-    run(async () => {
-      setConflict(null);
-      try {
-        await backend.putTeamMember(team.id, id, next);
-      } catch (e) {
-        // 唯讀成員改成會改檔案的角色：hub 會重新檢查同資料夾（CONTRACTS「團隊事件」）。
-        if ((e as { code?: string }).code !== 'worktree_required') throw e;
-        const name = members.find((s) => s.id === id)?.name ?? id;
-        setConflict(t('team.members.roleConflict', { name, detail: errorText(e) }));
-        return;
-      }
-      await refreshTeams(backend);
-    });
-
   const markDone = (id: string) =>
     run(async () => {
       await backend.updateSession(id, { markDone: true });
@@ -196,17 +192,7 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
                   </p>
                 )}
                 <div className="row">
-                  <select
-                    aria-label={t('team.members.roleOf', { name: s.name })}
-                    value={roleOf(s.id)}
-                    onChange={(e) => void changeRole(s.id, e.target.value as Role)}
-                  >
-                    {TeamRole.options.map((r) => (
-                      <option key={r} value={r}>
-                        {t('team.role.withAbbr', { role: t(`team.role.${r}`), abbr: ROLE_ABBR[r] })}
-                      </option>
-                    ))}
-                  </select>
+                  {/* 角色在上面的名單裡改（P2 §2.3），這裡只放完成、移除。 */}
                   {isLive(s) && (
                     <button onClick={() => void markDone(s.id)}>
                       {t('team.members.markDone')}
@@ -380,6 +366,7 @@ export function TeamWorkbench({ team }: { team: Team }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const { message, run } = useAction();
   const [adding, setAdding] = useState(false);
+  const phone = usePhone();
 
   const records = roles
     .filter((m) => m.teamId === team.id)
@@ -428,43 +415,62 @@ export function TeamWorkbench({ team }: { team: Team }) {
           }
         />
         <span className="spacer" />
+        <ZonePicker team={team} />
+        {!phone && <WideToggle />}
+      </div>
+      <div className="row team-head-controls">
         <TeamControls team={team} members={members} />
       </div>
       <ActionMessage message={message} />
-      <div className="team-grid">
-        <GoalPanel team={team} />
+      {/* 名單（P2 §2.3）：狀態代碼、名稱、角色、時間；點列＝畫布聚焦那張卡。 */}
+      <Roster team={team} rows={records} />
+      {/* 工作台原本的區塊收合呈現，點開在面板內展開；手機上只給「回電腦處理」。 */}
+      <Fold id="members" title={t('team.fold.members')} phone={phone}>
         <MembersPanel team={team} members={members} />
-      </div>
-      <div className="row add-members-toggle">
-        <button
-          aria-expanded={adding}
-          data-testid="add-members-toggle"
-          onClick={() => setAdding((open) => !open)}
-        >
-          {t('team.add.open')}
-        </button>
-        <span className="sub">{t('team.add.hint')}</span>
-      </div>
-      {adding && (
-        <AddMembers
-          team={team}
-          members={records}
-          title={t('team.add.title')}
-          onClose={() => setAdding(false)}
-        />
-      )}
-      {team.phase && <PhasePanel team={{ ...team, phase: team.phase }} members={records} />}
-      {loadError && (
-        <div className="alert" role="alert">
-          <span aria-hidden="true">✕</span>
-          <div>{t('team.error.tasks', { detail: loadError })}</div>
+      </Fold>
+      <Fold id="add" title={t('team.fold.add')} phone={phone}>
+        <div className="row add-members-toggle">
+          <button
+            aria-expanded={adding}
+            data-testid="add-members-toggle"
+            onClick={() => setAdding((open) => !open)}
+          >
+            {t('team.add.open')}
+          </button>
+          <span className="sub">{t('team.add.hint')}</span>
         </div>
+        {adding && (
+          <AddMembers
+            team={team}
+            members={records}
+            title={t('team.add.title')}
+            onClose={() => setAdding(false)}
+          />
+        )}
+      </Fold>
+      {team.phase && (
+        <Fold id="phase" title={t('team.fold.phase')} phone={phone}>
+          <PhasePanel team={{ ...team, phase: team.phase }} members={records} />
+        </Fold>
       )}
-      <TaskBoard team={team} members={members} tasks={tasks} reload={reloadTasks} />
-      <div className="team-grid">
-        <ContextPanel team={team} />
+      <Fold id="tasks" title={t('team.fold.tasks')} phone={phone}>
+        {loadError && (
+          <div className="alert" role="alert">
+            <span aria-hidden="true">✕</span>
+            <div>{t('team.error.tasks', { detail: loadError })}</div>
+          </div>
+        )}
+        <TaskBoard team={team} members={members} tasks={tasks} reload={reloadTasks} />
+      </Fold>
+      <Fold id="handoff" title={t('team.fold.handoff')} phone={phone}>
         <HandoffPanel team={team} members={members} />
-      </div>
+      </Fold>
+      <Fold id="goal" title={t('team.fold.goal')} phone={phone}>
+        <div className="team-grid">
+          <GoalPanel team={team} />
+          <ContextPanel team={team} />
+        </div>
+      </Fold>
       <div className="row team-delete">
         <TwoClickButton
           label={t('team.delete')}
@@ -478,6 +484,177 @@ export function TeamWorkbench({ team }: { team: Team }) {
           }
         />
       </div>
+      <BroadcastBox team={team} rows={records} />
     </div>
+  );
+}
+
+const FOLDS_KEY = 'agent-board.team.folds';
+const PHONE_QUERY = '(max-width: 640px)';
+
+function readFolds(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(FOLDS_KEY) ?? '[]');
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function usePhone(): boolean {
+  const [phone, setPhone] = useState(
+    () => typeof matchMedia !== 'undefined' && matchMedia(PHONE_QUERY).matches,
+  );
+  useEffect(() => {
+    const query = matchMedia(PHONE_QUERY);
+    const onChange = () => setPhone(query.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+  return phone;
+}
+
+/**
+ * 手機上的「回電腦處理」（§2.4）：按了複製這個團隊頁的連結，拿到電腦上打開；
+ * 複製不了（沒有剪貼簿權限、非 https）就直接把網址秀出來讓 GM 自己選取。
+ */
+function DesktopLink() {
+  const t = useT();
+  const [state, setState] = useState<'idle' | 'copied' | 'manual'>('idle');
+  const url = location.href;
+  const copy = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error('no clipboard');
+      await navigator.clipboard.writeText(url);
+      setState('copied');
+    } catch {
+      setState('manual');
+    }
+  };
+  return (
+    <span className="fold-desktop">
+      <button
+        type="button"
+        className="link"
+        onClick={() => void copy()}
+        data-testid="fold-desktop-link"
+      >
+        {t('team.fold.desktopOnly')}
+      </button>
+      {state === 'copied' && (
+        <span className="sub" role="status">
+          {t('team.fold.copied')}
+        </span>
+      )}
+      {state === 'manual' && (
+        <input
+          className="fold-url"
+          readOnly
+          value={url}
+          aria-label={t('team.fold.url')}
+          onFocus={(e) => e.currentTarget.select()}
+          data-testid="fold-desktop-url"
+        />
+      )}
+    </span>
+  );
+}
+
+/**
+ * 收合的區塊。預設收起；打開哪些每台瀏覽器自己記。手機不展開（任務板等要大畫面），給「回電腦處理」連結。
+ */
+function Fold({
+  id,
+  title,
+  phone,
+  children,
+}: {
+  id: string;
+  title: string;
+  phone: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(() => readFolds().includes(id));
+  if (phone) {
+    return (
+      <div className="fold fold-phone" data-testid={`fold-${id}`}>
+        <span>{title}</span>
+        <DesktopLink />
+      </div>
+    );
+  }
+  return (
+    <div className="fold" data-testid={`fold-${id}`} data-open={open ? 'true' : undefined}>
+      <button
+        type="button"
+        className="fold-toggle"
+        aria-expanded={open}
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          try {
+            const all = new Set(readFolds());
+            if (next) all.add(id);
+            else all.delete(id);
+            localStorage.setItem(FOLDS_KEY, JSON.stringify([...all]));
+          } catch {
+            // 存不了就只在這次有效。
+          }
+        }}
+        data-testid={`fold-toggle-${id}`}
+      >
+        <span aria-hidden="true">{open ? '▾' : '▸'}</span> {title}
+      </button>
+      {open && <div className="fold-body">{children}</div>}
+    </div>
+  );
+}
+
+/** 團隊面板頂部「工作區：[下拉]」：把團隊移到別的工作區（觸控也能用的做法，P2 §2.3）。 */
+function ZonePicker({ team }: { team: Team }) {
+  const t = useT();
+  const zones = useZones();
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <label className="zone-picker">
+      <span>{t('team.zone.label')}</span>
+      <select
+        value={team.zoneId}
+        onChange={(e) => {
+          setError(null);
+          moveTeamToZone(team.id, e.target.value).catch((err: unknown) => setError(errorText(err)));
+        }}
+        data-testid="team-zone-select"
+      >
+        {zones.map((z) => (
+          <option key={z.id} value={z.id}>
+            {z.name}
+          </option>
+        ))}
+      </select>
+      {error && (
+        <span className="msg err" role="alert">
+          {error}
+        </span>
+      )}
+    </label>
+  );
+}
+
+/** 面板切寬版（760px）看任務板。 */
+function WideToggle() {
+  const t = useT();
+  const wide = useViewsUi((s) => s.teamWide);
+  const setWide = useViewsUi((s) => s.setTeamWide);
+  return (
+    <button
+      type="button"
+      aria-pressed={wide}
+      onClick={() => setWide(!wide)}
+      data-testid="team-wide"
+      title={t('team.wide.hint')}
+    >
+      {wide ? t('team.wide.off') : t('team.wide.on')}
+    </button>
   );
 }

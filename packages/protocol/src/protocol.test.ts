@@ -4,6 +4,9 @@ import {
   ATTENTION_STATUSES,
   ClientToHub,
   DaemonToHub,
+  DEFAULT_ZONE_ID,
+  DEFAULT_ZONE_NAME,
+  DISPATCH_ROLES,
   HandoffRule,
   handoffRuleProblem,
   Team,
@@ -17,9 +20,11 @@ import {
   routes,
   sameWorkingTree,
   isReadOnlyMember,
+  Session,
   SessionSpec,
   SessionRuntime,
   SessionStatus,
+  TeamRole,
 } from './index';
 
 describe('session status', () => {
@@ -278,7 +283,16 @@ describe('two-way handoff and research teams (2026-11-06)', () => {
   });
 
   it('team phase and member kind are optional (old data has neither)', () => {
-    const team = { id: 't', name: 'T', goal: '', doneCriteria: '', color: 'teal', contextMd: '' };
+    // v9 起團隊一定帶工作區（hub 一定送）；phase、kind 仍是選填。
+    const team = {
+      id: 't',
+      name: 'T',
+      goal: '',
+      doneCriteria: '',
+      color: 'teal',
+      contextMd: '',
+      zoneId: 'main',
+    };
     expect(Team.parse(team)).toEqual(team);
     expect(Team.parse({ ...team, phase: 'revision' }).phase).toBe('revision');
     expect(Team.safeParse({ ...team, phase: 'other' }).success).toBe(false);
@@ -327,5 +341,69 @@ describe('board pause (P2 §3)', () => {
     expect(ClientToHub.parse({ ...signal, onlyIfStatus: 'running' })).not.toHaveProperty(
       'onlyIfStatus',
     );
+  });
+});
+
+describe('workspaces and team broadcast (P2 §2)', () => {
+  it('board.state from an older hub without zones or broadcasts: empty lists', () => {
+    const parsed = HubToClient.parse({
+      type: 'board.state',
+      machines: [],
+      sessions: [],
+      approvals: [],
+    });
+    expect(parsed.type === 'board.state' && parsed.zones).toEqual([]);
+    expect(parsed.type === 'board.state' && parsed.broadcasts).toEqual([]);
+  });
+
+  it('a session from an older hub is in the default workspace', () => {
+    expect(DEFAULT_ZONE_ID).toBe('main');
+    expect(DEFAULT_ZONE_NAME).toBe('主要');
+    const old = Session.parse({
+      id: 's',
+      machineId: 'm',
+      projectId: null,
+      name: 'a',
+      cwd: '/r',
+      branch: null,
+      worktreePath: null,
+      permissionMode: 'default',
+      model: null,
+      accountProfile: null,
+      status: 'waiting_input',
+      statusDetail: null,
+      claudeSessionId: null,
+      lastLines: [],
+      lastOutputAt: null,
+      statusSince: '2026-11-08T00:00:00.000Z',
+      contextTokens: null,
+      createdAt: '2026-11-08T00:00:00.000Z',
+      endedAt: null,
+      archived: false,
+    });
+    expect(old.zoneId).toBe(DEFAULT_ZONE_ID);
+  });
+
+  it('tester is a role and can be spawned; create without zoneId, PATCH without zoneId does not move', () => {
+    expect(TeamRole.options).toContain('tester');
+    expect(DISPATCH_ROLES).toContain('tester');
+    const create = routes.teamsCreate.body!.parse({
+      name: 'T',
+      goal: '',
+      doneCriteria: '',
+      color: 'teal',
+      contextMd: '',
+    });
+    expect(create).not.toHaveProperty('zoneId');
+    expect(routes.teamsUpdate.body!.parse({ name: 'x' })).toEqual({ name: 'x' });
+  });
+
+  it('broadcast body: text required and trimmed, targets optional but not empty; zone names trimmed', () => {
+    const body = routes.teamBroadcast.body!;
+    expect(body.parse({ text: '  hi ' })).toEqual({ text: 'hi' });
+    expect(body.safeParse({ text: '   ' }).success).toBe(false);
+    expect(body.safeParse({ text: 'x', targets: [] }).success).toBe(false);
+    expect(routes.zonesCreate.body!.parse({ name: ' 交易 ' })).toEqual({ name: '交易' });
+    expect(routes.zonesCreate.body!.safeParse({ name: 'x'.repeat(41) }).success).toBe(false);
   });
 });

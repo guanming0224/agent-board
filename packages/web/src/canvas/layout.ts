@@ -1,7 +1,7 @@
-import type { Layout, Session } from '@agent-board/protocol';
+import { CANVAS_LAYOUT_SET, type Layout, type Session } from '@agent-board/protocol';
 import type { BoardBackend } from '../shared/backend';
 
-export const WORKSPACE = 'default';
+export const WORKSPACE = CANVAS_LAYOUT_SET;
 /** 「上一次擺設」：每次一鍵整理前的全部位置，存在 hub 的另一個 workspace，重新載入、換裝置都還在。 */
 export const PREVIOUS_WORKSPACE = `${WORKSPACE}.previous`;
 

@@ -18,6 +18,7 @@ const ABBR_LABEL: Record<string, string> = {
   BD: 'builder',
   RS: 'researcher',
   RV: 'reviewer',
+  QA: 'tester',
   LR: 'literature',
   EX: 'experiments',
   WR: 'writing',

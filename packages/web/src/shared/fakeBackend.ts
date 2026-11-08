@@ -1,9 +1,13 @@
 // 假資料後端：只給 demo 模式（?demo=1）與測試使用，正式資料庫一開始是空的（DISPATCH §1.2）。
 import {
   AUDIT_SYSTEM_USER,
+  CANVAS_LAYOUT_SET,
+  DEFAULT_ZONE_ID,
+  DEFAULT_ZONE_NAME,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   handoffRuleProblem,
+  zoneMoveShift,
 } from '@agent-board/protocol';
 import type {
   Approval,
@@ -25,7 +29,10 @@ import type {
   TranscriptEntry,
   UsageSummary,
   User,
+  Zone,
+  Broadcast,
 } from '@agent-board/protocol';
+import { zoneOfSession } from '../zones/model';
 import type { AuditFilter, BoardBackend, BoardListener, BoardSnapshot } from './backend';
 import type { TerminalServerMessage, TerminalStream } from './terminal-contract';
 import { DECOMPOSE_PROMPT_START } from './decomposePrompt';
@@ -73,6 +80,7 @@ const session = (
   readOnly: false,
   autoContinue: null,
   dispatchedBy: null,
+  zoneId: 'main',
   ...over,
 });
 
@@ -440,8 +448,15 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       color: 'teal',
       contextMd: '# Team notes\n\nKeep the session cookie format unchanged.\n',
       taskAuto: false,
+      zoneId: DEFAULT_ZONE_ID,
     },
   ];
+  /** 工作區（P2 項目二）：和 hub 一樣一開始只有「主要」。 */
+  let zones: Zone[] = [
+    { id: DEFAULT_ZONE_ID, name: DEFAULT_ZONE_NAME, createdAt: minutesAgo(600), position: 0 },
+  ];
+  /** 群發（和 hub 一樣只在對象等輸入時送，其他排隊；GM 親手下的，不看暫停）。 */
+  let broadcasts: Broadcast[] = [];
   const members: TeamMember[] = [
     { teamId: 'team-demo-auth', sessionId: 's-tests', role: 'lead' },
     { teamId: 'team-demo-auth', sessionId: 's-auth', role: 'worker' },
@@ -509,6 +524,25 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   const terminal = new FakeTerminalStream();
   let settings = defaultSettings;
   let layouts: Layout[] = [];
+  /** 和 hub 相同：移進工作區的卡排到目標工作區現有內容的右側空白（存好的版面，畫布沒開也排）。 */
+  const placeInZone = (ids: readonly string[], zoneId: string) => {
+    const zoneOf = (id: string) => {
+      const s = state.sessions.find((x) => x.id === id);
+      return s && !s.archived ? zoneOfSession(s, teams, members) : null;
+    };
+    const moving = new Set(ids);
+    const rows = layouts.filter((l) => l.workspace === CANVAS_LAYOUT_SET);
+    const shift = zoneMoveShift(
+      rows.filter((l) => moving.has(l.sessionId) && zoneOf(l.sessionId) !== null),
+      rows.filter((l) => !moving.has(l.sessionId) && zoneOf(l.sessionId) === zoneId),
+    );
+    if (!shift) return;
+    layouts = layouts.map((l) =>
+      l.workspace === CANVAS_LAYOUT_SET && moving.has(l.sessionId)
+        ? { ...l, x: l.x + shift.dx, y: l.y + shift.dy }
+        : l,
+    );
+  };
   const templates: Template[] = [];
   const audit = demoAudit();
   const matchAudit = (filter: AuditFilter) =>
@@ -528,7 +562,35 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     ...state,
     sessions: state.sessions.filter((x) => !x.archived),
     waitingLimit: settings.notifications.waitingLimit,
+    zones,
+    broadcasts,
   });
+  /** 假的送字：打進終端機、對象開始工作。 */
+  const typeInto = (s: Session, text: string) => {
+    terminal.emit(s.id, `${text}\r\n`);
+    s.status = 'running';
+    s.statusSince = new Date().toISOString();
+  };
+  /** 對象變回等輸入：送出排在它身上的第一則群發（一次一則，和 hub 的佇列一樣）。 */
+  const deliverQueued = (s: Session) => {
+    if (s.status !== 'waiting_input') return;
+    for (const b of broadcasts) {
+      const target = b.targets.find((t) => t.sessionId === s.id && t.state === 'queued');
+      if (!target) continue;
+      typeInto(s, b.text);
+      broadcasts = broadcasts.map((x) =>
+        x.id === b.id
+          ? {
+              ...x,
+              targets: x.targets.map((t) =>
+                t === target ? { ...t, state: 'sent', at: new Date().toISOString() } : t,
+              ),
+            }
+          : x,
+      );
+      return;
+    }
+  };
   const publish = () => listeners.forEach((l) => l(visible()));
   const machineOnline = (s: Session) =>
     state.machines.find((m) => m.id === s.machineId)?.online ?? false;
@@ -652,6 +714,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         permissionMode: input.permissionMode,
         model: input.model,
         projectId: input.projectId,
+        zoneId: input.zoneId ?? DEFAULT_ZONE_ID,
       });
       state.sessions = [...state.sessions, created];
       publish();
@@ -660,6 +723,14 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     async updateSession(id, patch) {
       const s = find(id);
       if (patch.name) s.name = patch.name;
+      if (patch.zoneId) {
+        if (!zones.some((z) => z.id === patch.zoneId)) {
+          throw apiError(400, 'unknown_zone', 'Unknown workspace');
+        }
+        const moved = s.zoneId !== patch.zoneId && !members.some((m) => m.sessionId === id);
+        s.zoneId = patch.zoneId;
+        if (moved) placeInZone([id], patch.zoneId);
+      }
       if (patch.archived === true && !s.archived) {
         // 和 hub 相同（CONTRACTS §9.1）：還沒結束的先停掉，相關交接規則全部關掉。
         const stopped = s.endedAt === null && !['done', 'error', 'offline'].includes(s.status);
@@ -818,7 +889,9 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       Object.assign(findIn(tasks, id, 'task'), patch);
     },
     setSessionStatus(id, status) {
-      find(id).status = status;
+      const s = find(id);
+      s.status = status;
+      deliverQueued(s);
       publish();
     },
     patchSession(id, patch) {
@@ -940,14 +1013,37 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
 
     listTeams: async () => teams.map((x) => ({ ...x })),
     async createTeam(input) {
-      const team = { ...input, taskAuto: input.taskAuto ?? false, id: crypto.randomUUID() };
+      const team = {
+        ...input,
+        taskAuto: input.taskAuto ?? false,
+        zoneId: input.zoneId ?? DEFAULT_ZONE_ID,
+        id: crypto.randomUUID(),
+      };
       teams.push(team);
       return team;
     },
     async updateTeam(id, patch) {
-      return Object.assign(findIn(teams, id, 'team'), patch);
+      if (patch.zoneId && !zones.some((z) => z.id === patch.zoneId)) {
+        throw apiError(400, 'unknown_zone', 'Unknown workspace');
+      }
+      const team = findIn(teams, id, 'team');
+      const moved = patch.zoneId !== undefined && patch.zoneId !== team.zoneId;
+      Object.assign(team, patch);
+      if (moved) {
+        placeInZone(
+          members.filter((m) => m.teamId === id).map((m) => m.sessionId),
+          team.zoneId,
+        );
+      }
+      return team;
     },
     async deleteTeam(id) {
+      // 和 hub 一樣：成員留在團隊原本的工作區。
+      const team = findIn(teams, id, 'team');
+      for (const m of members.filter((x) => x.teamId === id)) {
+        const s = state.sessions.find((x) => x.id === m.sessionId);
+        if (s) s.zoneId = team.zoneId;
+      }
       removeFrom(teams, (x) => x.id === id);
       removeFrom(members, (x) => x.teamId === id);
       removeFrom(tasks, (x) => x.teamId === id);
@@ -965,6 +1061,110 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     },
     async deleteTeamMember(teamId, sessionId) {
       removeFrom(members, (x) => x.teamId === teamId && x.sessionId === sessionId);
+      const s = state.sessions.find((x) => x.id === sessionId);
+      const team = teams.find((x) => x.id === teamId);
+      if (s && team && !members.some((m) => m.sessionId === sessionId)) {
+        s.zoneId = team.zoneId;
+        publish();
+      }
+    },
+    async broadcastToTeam(teamId, text, targets) {
+      const ids = members.filter((m) => m.teamId === teamId).map((m) => m.sessionId);
+      const strangers = (targets ?? []).filter((id) => !ids.includes(id));
+      if (strangers.length > 0) throw apiError(400, 'not_member', 'Not members of this team');
+      const now = new Date().toISOString();
+      const chosen = (targets ?? ids).flatMap((id) => {
+        const s = state.sessions.find((x) => x.id === id);
+        return s && (targets !== undefined || !s.archived) ? [s] : [];
+      });
+      if (chosen.length === 0) throw apiError(400, 'no_targets', 'No members to send to');
+      const busy = new Set<string>();
+      const broadcast: Broadcast = {
+        id: crypto.randomUUID(),
+        teamId,
+        text,
+        mentioned: targets !== undefined,
+        by: demoUser.id,
+        byName: demoUser.name,
+        at: now,
+        boardPaused: false,
+        targets: chosen.map((s) => {
+          const gone = s.archived || s.endedAt !== null || s.status === 'done';
+          const ready = !gone && s.status === 'waiting_input' && !busy.has(s.id);
+          if (ready) {
+            typeInto(s, text);
+            busy.add(s.id);
+          }
+          return {
+            sessionId: s.id,
+            name: s.name,
+            state: gone ? 'skipped' : ready ? 'sent' : 'queued',
+            reason: gone ? (s.archived ? 'archived' : 'ended') : null,
+            at: now,
+          };
+        }),
+      };
+      broadcasts = [...broadcasts, broadcast];
+      for (const t of broadcast.targets) {
+        audit.unshift({
+          id: crypto.randomUUID(),
+          userId: demoUser.id,
+          sessionId: t.sessionId,
+          action: 'team.broadcast',
+          detail: JSON.stringify({ teamId, broadcastId: broadcast.id, text, state: t.state }),
+          at: now,
+        });
+      }
+      publish();
+      return broadcast;
+    },
+    async cancelBroadcast(broadcastId, sessionId) {
+      const b = findIn(broadcasts, broadcastId, 'broadcast');
+      const next: Broadcast = {
+        ...b,
+        targets: b.targets.map((t) =>
+          t.sessionId === sessionId && t.state === 'queued'
+            ? { ...t, state: 'cancelled', at: new Date().toISOString() }
+            : t,
+        ),
+      };
+      broadcasts = broadcasts.map((x) => (x.id === broadcastId ? next : x));
+      publish();
+      return next;
+    },
+    async createZone(name) {
+      const zone: Zone = {
+        id: crypto.randomUUID(),
+        name: name.trim(),
+        createdAt: new Date().toISOString(),
+        position: Math.max(...zones.map((z) => z.position)) + 1,
+      };
+      zones = [...zones, zone];
+      publish();
+      return zone;
+    },
+    async renameZone(id, name) {
+      const zone = { ...findIn(zones, id, 'zone'), name: name.trim() };
+      zones = zones.map((z) => (z.id === id ? zone : z));
+      publish();
+      return zone;
+    },
+    async deleteZone(id) {
+      findIn(zones, id, 'zone');
+      if (zones.length <= 1)
+        throw apiError(409, 'last_zone', 'The last workspace cannot be deleted');
+      const memberIds = new Set(members.map((m) => m.sessionId));
+      const teamCount = teams.filter((t) => t.zoneId === id).length;
+      const sessionCount = state.sessions.filter(
+        (s) => s.zoneId === id && !s.archived && !memberIds.has(s.id),
+      ).length;
+      if (teamCount > 0 || sessionCount > 0) {
+        throw apiError(409, 'zone_not_empty', `teams=${teamCount}, sessions=${sessionCount}`);
+      }
+      zones = zones.filter((z) => z.id !== id);
+      const fallback = zones[0]!.id;
+      for (const s of state.sessions) if (s.zoneId === id) s.zoneId = fallback;
+      publish();
     },
     listTasks: async (teamId) => tasks.filter((x) => x.teamId === teamId).map((x) => ({ ...x })),
     async createTask(teamId, input) {

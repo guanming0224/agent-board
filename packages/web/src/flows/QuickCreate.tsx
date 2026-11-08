@@ -5,6 +5,7 @@ import { PermissionMode } from '@agent-board/protocol';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
+import { currentZoneId } from '../zones';
 import { createErrorText, ModeChip, Msg, useProjects, type Note } from './common';
 import {
   Field,
@@ -99,6 +100,8 @@ export function QuickCreate({
         resumeClaudeSessionId: null,
         firstPrompt: firstPrompt.trim() || null,
         readOnly: false,
+        // 新建 session 放在目前工作區（P2 §2.3）。
+        zoneId: currentZoneId(),
       });
       onCreated(created);
     } catch (e) {

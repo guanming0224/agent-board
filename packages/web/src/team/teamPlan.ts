@@ -25,6 +25,8 @@ export const ROLE_ABBR: Record<Role, string> = {
   worker: 'BD',
   researcher: 'RS',
   reviewer: 'RV',
+  // 測試（P2，Q5）：和 hub dispatch.ts 的縮寫一樣。
+  tester: 'QA',
 };
 
 export const KIND_ABBR: Record<RowKind, string> = {
@@ -47,7 +49,7 @@ export const kindRole = (kind: RowKind): Role =>
 
 /** 這種團隊每列可選的分工。 */
 export const KINDS_FOR: Record<TeamType, readonly RowKind[]> = {
-  dev: ['lead', 'worker', 'researcher', 'reviewer'],
+  dev: ['lead', 'worker', 'researcher', 'reviewer', 'tester'],
   research: ResearchKind.options,
 };
 
@@ -60,6 +62,8 @@ export const ROLE_DEFAULT_MODE: Record<Role, PermissionMode> = {
   worker: 'acceptEdits',
   researcher: 'plan',
   reviewer: 'plan',
+  // 測試可寫但每步問（Q5）。
+  tester: 'default',
 };
 
 export const PRESETS = {
@@ -211,9 +215,12 @@ export function changeKind(
 /** 程式開發團隊的換角色（分工就是角色）。 */
 export const changeRole = changeKind;
 
-/** 每一列的資料夾：隊長用主資料夾；BD 各自開 worktree（是 git 才開得了）；研究、審查共用主資料夾。 */
+/**
+ * 每一列的資料夾：隊長用主資料夾；BD 與測試（QA，會寫測試檔，Q5）各自開 worktree（是 git 才開得了）；
+ * 研究、審查共用主資料夾。
+ */
 export const rowUsesWorktree = (row: Pick<PlanRow, 'role'>, gitOk: boolean) =>
-  row.role === 'worker' && gitOk;
+  (row.role === 'worker' || row.role === 'tester') && gitOk;
 
 /** 研究、審查一律開成唯讀 session（daemon 拿掉改檔工具），才能和隊長共用主資料夾。 */
 export const isReadOnlyRole = (role: Role) => (READ_ONLY_ROLES as readonly Role[]).includes(role);

@@ -14,7 +14,7 @@ export type RowStep =
 
 export interface PlanInput {
   /** 新團隊的內容，或已經存在的團隊（補成員：不再建立團隊）。 */
-  team: Omit<Team, 'id'> | { existing: Team };
+  team: (Omit<Team, 'id' | 'zoneId'> & { zoneId?: string }) | { existing: Team };
   machineId: string;
   cwd: string;
   projectId: string | null;
@@ -50,6 +50,8 @@ export async function runPlan(
         resumeClaudeSessionId: null,
         firstPrompt: null,
         readOnly: isReadOnlyRole(row.role),
+        // 成員跟著團隊的工作區（加入團隊前也先放在那裡，畫面不會閃到別的工作區）。
+        zoneId: team.zoneId,
       });
       sessionId = created.id;
     } catch (error) {

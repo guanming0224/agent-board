@@ -1,4 +1,4 @@
-// 團隊、成員、交接規則。畫布與工作台共用。協定沒有團隊的 WebSocket 訊息，所以用 REST 輪詢。
+// 團隊、成員、交接規則。畫布與工作台共用。用 REST 輪詢；P2 起 hub 另外推 team.updated／team.removed，收到就馬上重讀。
 import { useEffect, useState } from 'react';
 import type { HandoffRule, Team, TeamMember } from '@agent-board/protocol';
 import { create } from 'zustand';
@@ -61,9 +61,22 @@ export function useTeamSync(): { retry: () => void } {
     };
     load();
     const timer = setInterval(load, POLL_MS);
+    // hub 推的團隊變化（建立、改名、換工作區、刪除）：先就地換掉讓畫面馬上跟上，再整份重讀（成員、規則）。
+    const unwatch = backend.watchTeamChanges?.((change) => {
+      if ('team' in change) {
+        const { team } = change;
+        useTeams.setState((s) =>
+          s.teams.some((x) => x.id === team.id)
+            ? { teams: s.teams.map((x) => (x.id === team.id ? team : x)) }
+            : s,
+        );
+      }
+      load();
+    });
     return () => {
       alive = false;
       clearInterval(timer);
+      unwatch?.();
     };
   }, [backend, attempt]);
 

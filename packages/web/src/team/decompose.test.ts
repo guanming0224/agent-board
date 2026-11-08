@@ -155,4 +155,15 @@ describe('roles and auto-assign', () => {
     expect(prompt).not.toMatch(/[\r\n]/);
     expect(decomposePrompt(team)).toContain('like [{"title":"..."}]');
   });
+
+  it('a team with a tester explains QA as tester and can assign to it', () => {
+    const team = { goal: 'g', doneCriteria: '', contextMd: '' };
+    const refs = roleRefs(
+      {},
+      [member('ld', 'lead'), member('qa', 'tester')],
+      [session('ld', 'T-LD'), session('qa', 'T-QA')],
+    );
+    expect(presentAbbrs(refs)).toEqual(['LD', 'QA']);
+    expect(decomposePrompt(team, presentAbbrs(refs))).toContain('LD (lead), QA (tester).');
+  });
 });

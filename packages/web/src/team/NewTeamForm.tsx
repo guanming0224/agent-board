@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ResearchPhase } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
+import { currentZoneId } from '../zones';
 import { errorText } from '../views';
 import { ActionMessage, ColorPicker, useAction } from './common';
 import { createRules, ROUND_OPTIONS, TWO_WAY_DEFAULT_ROUNDS } from './handoffRules';
@@ -112,6 +113,8 @@ export function NewTeamForm() {
             // TEAM.md 不會自動送進任何 session，只有使用者按「請隊長拆解」時才帶上。
             contextMd: research ? t('team.research.contextTemplate') : '',
             ...(research ? { phase } : {}),
+            // 新團隊放在目前工作區。
+            zoneId: currentZoneId(),
           },
           machineId: place.machineId,
           cwd: place.cwd.trim(),

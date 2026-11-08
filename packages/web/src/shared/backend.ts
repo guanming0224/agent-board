@@ -3,6 +3,8 @@ import type {
   Approval,
   ApprovalDecision,
   AuditEntry,
+  BoardPauseState,
+  Broadcast,
   HandoffRule,
   Layout,
   Machine,
@@ -24,6 +26,7 @@ import type {
   TranscriptPage,
   UsageSummary,
   User,
+  Zone,
 } from '@agent-board/protocol';
 import type { TerminalStream } from './terminal-contract';
 
@@ -36,7 +39,19 @@ export interface BoardSnapshot {
    * 頁首的橫幅每個人都要，所以 hub 跟著 board.state 送。舊版 hub 沒有就是 undefined（用預設 3）。
    */
   waitingLimit?: number;
+  /** 工作區（P2 項目二）。舊版 hub 沒有＝undefined（當成只有預設工作區）。 */
+  zones?: Zone[];
+  /**
+   * 群發的結果（hub 只放在記憶體）。hub 重啟後重連時，原本還在排隊的對象會被標成 failed／hub_restarted
+   * （畫面寫「沒送出（hub 重啟）」），不默默消失。
+   */
+  broadcasts?: Broadcast[];
+  /** 全部暫停的狀態（P2 項目三）；群發送出鈕旁的「目前全部暫停中」看它。 */
+  pause?: BoardPauseState;
 }
+
+/** 團隊建立、修改（含換工作區）或刪除：hub 用 WS 推，不等輪詢。 */
+export type TeamChange = { team: Team } | { removed: string };
 
 export type BoardListener = (snapshot: BoardSnapshot) => void;
 
@@ -76,6 +91,8 @@ export interface BoardBackend {
   watchEvents?(listener: (event: SessionEvent) => void): () => void;
   /** 和 hub 的連線狀態；假後端沒有這個概念。 */
   watchConnection?(listener: (connected: boolean) => void): () => void;
+  /** 團隊即時變化（hub 的 team.updated／team.removed）；假後端沒有（團隊靠輪詢）。 */
+  watchTeamChanges?(listener: (change: TeamChange) => void): () => void;
 
   needsSetup(): Promise<boolean>;
   currentUser(): Promise<User | null>;
@@ -91,10 +108,11 @@ export interface BoardBackend {
   /** 把語言存到目前登入的帳號（User.locale），登入後畫面跟著它。沒登入時什麼都不做。 */
   saveLocale(locale: User['locale']): Promise<void>;
 
-  createSession(input: SessionSpec & { machineId: string }): Promise<Session>;
+  /** zoneId：放在哪個工作區（新建 session 放在目前工作區）；沒給＝預設工作區。 */
+  createSession(input: SessionSpec & { machineId: string; zoneId?: string }): Promise<Session>;
   updateSession(
     id: string,
-    patch: { name?: string; archived?: boolean; markDone?: true },
+    patch: { name?: string; archived?: boolean; markDone?: true; zoneId?: string },
   ): Promise<Session>;
   stopSession(id: string): Promise<Session>;
   /**
@@ -146,7 +164,8 @@ export interface BoardBackend {
 
   getLayouts(workspace: string): Promise<Layout[]>;
   saveLayouts(layouts: Layout[]): Promise<void>;
-  getNotes(workspace: string): Promise<Note[]>;
+  /** 某個工作區的便利貼（畫布尚未顯示便利貼）。 */
+  getNotes(zoneId: string): Promise<Note[]>;
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   /** 操作紀錄（只有 owner）。由新到舊。 */
@@ -164,7 +183,7 @@ export interface BoardBackend {
 
   /** 團隊工作台與畫布的團隊框、交接線（Phase 3）。 */
   listTeams(): Promise<Team[]>;
-  createTeam(input: Omit<Team, 'id'>): Promise<Team>;
+  createTeam(input: Omit<Team, 'id' | 'zoneId'> & { zoneId?: string }): Promise<Team>;
   updateTeam(id: string, patch: Partial<Omit<Team, 'id'>>): Promise<Team>;
   deleteTeam(id: string): Promise<void>;
   listTeamMembers(teamId: string): Promise<TeamMember[]>;
@@ -193,6 +212,19 @@ export interface BoardBackend {
     patch: Partial<Omit<HandoffRule, 'id' | 'teamId'>>,
   ): Promise<HandoffRule>;
   deleteHandoffRule(id: string): Promise<void>;
+  /**
+   * 群發（P2 §2.3）：hub 端走送字佇列，只在對象等輸入時送，其他排隊。targets 有給＝@ 點名。
+   * 不跳確認；結果之後經 board 快照的 broadcasts 更新。
+   */
+  broadcastToTeam(teamId: string, text: string, targets?: string[]): Promise<Broadcast>;
+  /** 取消某個對象還在排隊的群發。 */
+  cancelBroadcast(broadcastId: string, sessionId: string): Promise<Broadcast>;
+
+  /** 工作區（P2 項目二）。清單在 board 快照的 zones。刪除非空回 zone_not_empty、最後一個 last_zone。 */
+  createZone(name: string): Promise<Zone>;
+  renameZone(id: string, name: string): Promise<Zone>;
+  deleteZone(id: string): Promise<void>;
+
   /** 由舊到新。請隊長拆解從這裡讀回覆；最近的交接紀錄也是。 */
   sessionEvents(sessionId: string): Promise<SessionEvent[]>;
 }

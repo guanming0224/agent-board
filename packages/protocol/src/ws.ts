@@ -4,6 +4,9 @@ import { z } from 'zod';
 import {
   Approval,
   BoardPauseState,
+  Broadcast,
+  Team,
+  Zone,
   ClaudeSessionId,
   DEFAULT_WAITING_LIMIT,
   NOT_PAUSED,
@@ -329,7 +332,18 @@ export const HubToClient = z.discriminatedUnion('type', [
     waitingLimit: z.number().int().positive().default(DEFAULT_WAITING_LIMIT),
     /** 全部暫停的狀態與排隊統計（P2 項目三）。舊版 hub 不送＝沒暫停。 */
     pause: BoardPauseState.default(NOT_PAUSED),
+    /** 工作區（P2 項目二）。舊版 hub 不送＝空（前端當成只有預設工作區）。 */
+    zones: z.array(Zone).default([]),
+    /** hub 記憶體裡的群發（hub 重啟就清空）。 */
+    broadcasts: z.array(Broadcast).default([]),
   }),
+  /** 工作區清單變了（建立、改名、刪除）：整份推給每個 client。 */
+  z.object({ type: z.literal('zone.list'), zones: z.array(Zone) }),
+  /** 團隊建立或改了（含換工作區）：推給每個 client，不等輪詢。 */
+  z.object({ type: z.literal('team.updated'), team: Team }),
+  z.object({ type: z.literal('team.removed'), teamId: Id }),
+  /** 一則群發的對象狀態變了。 */
+  z.object({ type: z.literal('broadcast.updated'), broadcast: Broadcast }),
   /** 上限改了。 */
   z.object({ type: z.literal('board.waitingLimit'), waitingLimit: z.number().int().positive() }),
   /** 全部暫停的狀態或排隊統計變了（暫停、繼續、暫停中排隊數變化）：推給每個 client。 */

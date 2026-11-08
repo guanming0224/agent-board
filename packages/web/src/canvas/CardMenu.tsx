@@ -1,11 +1,66 @@
-// 卡片標題列的「⋯」：重新命名、建立交接線（P2 §4.2）、接續（已結束才有）、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
+// 卡片標題列的「⋯」：重新命名、建立交接線（P2 §4.2）、移到工作區（單獨 session，P2 §2.3 Q11）、接續（已結束才有）、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { canResume, errorText, useResume } from '../views';
 import { requestArchive } from './archive';
+import { useTeams } from '../team/store';
+import { moveSessionToZone, useCurrentZoneId, useZones } from '../zones';
 import { useLinkPick } from './linkPick';
+
+/**
+ * 「移到工作區 ▸」：只有單獨 session（不屬於任何團隊）有；團隊成員跟著團隊，要在團隊面板改。
+ * 選單展開在原地（不浮在 xterm 上）。
+ */
+function MoveToZone({ session, onClose }: { session: Session; onClose: () => void }) {
+  const t = useT();
+  const zones = useZones();
+  const current = useCurrentZoneId();
+  const inTeam = useTeams((s) => s.members.some((m) => m.sessionId === session.id));
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const others = zones.filter((z) => z.id !== current);
+  if (inTeam || others.length === 0) return null;
+  return (
+    <>
+      <button
+        type="button"
+        role="menuitem"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        data-testid="card-move-zone"
+      >
+        {t('zones.moveTo')} ▸
+      </button>
+      {open && (
+        <div className="card-submenu" role="menu" aria-label={t('zones.moveTo')}>
+          {others.map((z) => (
+            <button
+              key={z.id}
+              type="button"
+              role="menuitem"
+              data-testid={`card-move-zone-${z.id}`}
+              onClick={() =>
+                void moveSessionToZone(session.id, z.id).then(onClose, (e: unknown) =>
+                  setError(errorText(e)),
+                )
+              }
+            >
+              {t('zones.moveToItem', { name: z.name })}
+            </button>
+          ))}
+        </div>
+      )}
+      {error && (
+        <p className="msg" role="alert">
+          {error}
+        </p>
+      )}
+    </>
+  );
+}
 
 export function MenuButton({
   session,
@@ -89,6 +144,7 @@ export function CardMenu({
       >
         {t('canvas.menu.link')}
       </button>
+      <MoveToZone session={session} onClose={onClose} />
       {canResume(session) && (
         <button
           type="button"

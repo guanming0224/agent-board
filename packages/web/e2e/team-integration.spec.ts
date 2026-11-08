@@ -130,6 +130,17 @@ const auditOf = async (page: Page, action: string) => {
 
 test.beforeAll(async ({ browser }) => {
   shared = await browser.newContext({ baseURL: HUB, locale: 'zh-TW' });
+  // P2 §2.3：工作台的區塊在團隊面板裡預設收合；這裡測的是區塊本身，先記成全部打開。
+  await shared.addInitScript(() => {
+    try {
+      localStorage.setItem(
+        'agent-board.team.folds',
+        JSON.stringify(['members', 'add', 'phase', 'tasks', 'handoff', 'goal']),
+      );
+    } catch {
+      // 沒有 localStorage 就照預設（收合）。
+    }
+  });
   chmodSync(FAKE_CLAUDE, 0o755);
   daemonDir = mkdtempSync(join(tmpdir(), 'ab-team-e2e-daemon-'));
   repo = mkdtempSync(join(tmpdir(), 'ab-team-e2e-repo-'));
@@ -491,4 +502,98 @@ test('建立團隊時一起開 LD + BD + RV：真的建出 session、BD 有自�
   });
   expect(refused.status()).toBe(409);
   expect(((await refused.json()) as { code: string }).code).toBe('worktree_required');
+});
+
+test('工作區（P2 §2）：真 hub 建立、把團隊移過去；目前工作區重新整理後還在；不在目前工作區的 session 不訂閱終端機；群發真的送進 PTY', async ({
+  browser,
+}) => {
+  // 所有卡都畫成 xterm（縮小時不換摘要條），看得出「看得到的卡才訂閱」。
+  const context = await browser.newContext({ baseURL: HUB, locale: 'zh-TW' });
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem('agent-board.canvas.summary-when-zoomed-out', 'off');
+    } catch {
+      // 不給存就照預設。
+    }
+  });
+  const login = await context.request.post('/api/auth/login', {
+    data: { name: 'owner', password: PASSWORD },
+  });
+  expect(login.ok()).toBe(true);
+  const page = await context.newPage();
+  const teams = (await (await page.request.get('/api/teams')).json()) as {
+    id: string;
+    name: string;
+    zoneId: string;
+  }[];
+  const trioTeam = teams.find((x) => x.name === 'trio')!;
+  // 團隊 trio 的成員（trio-extra 加入被擋，不是成員，留在「主要」）。
+  const memberIds = (
+    (await (await page.request.get(`/api/teams/${trioTeam.id}/members`)).json()) as {
+      sessionId: string;
+    }[]
+  ).map((m) => m.sessionId);
+  const all = (await (await page.request.get('/api/sessions')).json()) as Session[];
+  const trio = all.filter((x) => memberIds.includes(x.id));
+  expect(trio).toHaveLength(3);
+  expect(trioTeam.zoneId).toBe('main');
+
+  await page.goto('/#/canvas');
+  await page.getByTestId('zone-add').click();
+  await page.getByTestId('zone-add-input').fill('Z2');
+  await page.getByTestId('zone-add-input').press('Enter');
+  const zones = (await (await page.request.get('/api/zones')).json()) as {
+    id: string;
+    name: string;
+  }[];
+  const z2 = zones.find((z) => z.name === 'Z2')!;
+  await expect(page.getByTestId(`zone-tab-${z2.id}`)).toHaveAttribute('aria-selected', 'true');
+  await page.reload();
+  await expect(page.getByTestId(`zone-tab-${z2.id}`)).toHaveAttribute('aria-selected', 'true');
+
+  await page.getByTestId('zone-tab-main').click();
+  await page.goto(`/#/team/${trioTeam.id}`);
+  await page.getByTestId('team-zone-select').selectOption({ label: 'Z2' });
+  await expect
+    .poll(async () => {
+      const list = (await (await page.request.get('/api/teams')).json()) as typeof teams;
+      return list.find((x) => x.id === trioTeam.id)?.zoneId;
+    })
+    .toBe(z2.id);
+  await expect(page.getByTestId(`card-${trio[0]!.id}`)).toHaveCount(0);
+
+  // 重新開一頁停在「主要」：記下這一頁送出的 terminal.subscribe。
+  const fresh = await context.newPage();
+  const subscribed: string[] = [];
+  fresh.on('websocket', (ws) =>
+    ws.on('framesent', (frame) => {
+      const text = typeof frame.payload === 'string' ? frame.payload : frame.payload.toString();
+      const message = JSON.parse(text) as { type: string; sessionId?: string };
+      if (message.type === 'terminal.subscribe' && message.sessionId) {
+        subscribed.push(message.sessionId);
+      }
+    }),
+  );
+  await fresh.goto('/#/canvas');
+  await expect(fresh.getByTestId('zone-tab-main')).toHaveAttribute('aria-selected', 'true');
+  await expect(fresh.getByTestId(`card-${lead.id}`)).toBeVisible();
+  await expect.poll(() => subscribed.includes(lead.id), { timeout: 10_000 }).toBe(true);
+  await fresh.waitForTimeout(500);
+  for (const s of trio) expect(subscribed, `${s.name} 不在目前工作區`).not.toContain(s.id);
+
+  // 群發：真的走 hub 的送字佇列進 PTY（假 claude 會把收到的字印在畫面上）。
+  await fresh.goto(`/#/team/${trioTeam.id}`);
+  await expect(fresh.getByTestId('zone-tab-' + z2.id)).toHaveAttribute('aria-selected', 'true');
+  const box = fresh.getByTestId('team-panel').getByTestId('broadcast-input');
+  await box.fill('roll call from GM');
+  await box.press('Enter');
+  for (const s of trio) {
+    await expect(
+      fresh.getByTestId('team-panel').getByTestId(`broadcast-result-${s.id}`),
+    ).toBeVisible();
+  }
+  await screenOf(fresh, trio[0]!.id).toContain('roll call from GM');
+  const audit = await auditOf(fresh, 'team.broadcast');
+  expect(audit.filter((a) => trio.some((s) => s.id === a.sessionId))).toHaveLength(trio.length);
+  await context.close();
 });

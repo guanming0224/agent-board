@@ -31,7 +31,7 @@ export function sameWorkingTree(a: WorkPlace, b: WorkPlace): boolean {
  */
 export const READ_ONLY_DISALLOWED_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const;
 
-/** 團隊裡可以和別人共用資料夾的角色（GM 2026-11-06）。 */
+/** 團隊裡可以和別人共用資料夾的角色（GM 2026-11-06）。測試（tester）會寫檔，不在這裡（Q5）。 */
 export const READ_ONLY_ROLES = ['researcher', 'reviewer'] as const;
 
 /**

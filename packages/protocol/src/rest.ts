@@ -2,6 +2,8 @@
 import { z } from 'zod';
 import {
   AuditEntry,
+  Broadcast,
+  BROADCAST_TEXT_MAX,
   BoardHeld,
   BoardInterruptResult,
   BoardPauseMode,
@@ -34,6 +36,8 @@ import {
   UsageSummary,
   User,
   UserRole,
+  Zone,
+  ZoneName,
 } from './models';
 import { DirEntry, FolderName, RepoInfo, SessionSpec } from './ws';
 
@@ -68,8 +72,19 @@ export const AuditQuery = z.object({
 });
 export type AuditQuery = z.infer<typeof AuditQuery>;
 
-export const ApiError = z.object({ code: z.string(), message: z.string() });
+export const ApiError = z.object({
+  code: z.string(),
+  message: z.string(),
+  /** 給程式讀的補充資料（例如 zone_not_empty 的 ZoneNotEmpty）；大多數錯誤沒有。 */
+  detail: z.record(z.string(), z.unknown()).optional(),
+});
 export type ApiError = z.infer<typeof ApiError>;
+/** 刪除非空工作區（409 zone_not_empty）的 detail：擋住刪除的團隊數、單獨 session 數（P2 §2.5）。 */
+export const ZoneNotEmpty = z.object({
+  teams: z.number().int().nonnegative(),
+  sessions: z.number().int().nonnegative(),
+});
+export type ZoneNotEmpty = z.infer<typeof ZoneNotEmpty>;
 
 /**
  * 修改設定的 body：只改有帶的鍵。`Settings` 頂層有預設值的欄位（autoContinue、dispatch）在這裡拿掉預設，
@@ -222,7 +237,8 @@ export const routes = {
     method: 'POST',
     path: '/api/sessions',
     auth: 'user',
-    body: SessionSpec.extend({ machineId: Id }),
+    /** zoneId：放在哪個工作區（P2 §2：新建 session 放在目前工作區）；沒帶＝排第一個的工作區。 */
+    body: SessionSpec.extend({ machineId: Id, zoneId: Id.optional() }),
     response: Session,
   }),
   sessionsUpdate: route({
@@ -235,6 +251,8 @@ export const routes = {
       archived: z.boolean().optional(),
       /** 使用者標記完成（§4 的 done 只能由使用者設定）。 */
       markDone: z.literal(true).optional(),
+      /** 移到別的工作區（單獨 session 用；團隊成員以團隊為準，這欄照存但不影響顯示）。 */
+      zoneId: Id.optional(),
     }),
     response: Session,
   }),
@@ -333,7 +351,7 @@ export const routes = {
     method: 'GET',
     path: '/api/notes',
     auth: 'user',
-    query: z.object({ workspace: z.string() }),
+    query: z.object({ zoneId: Id }),
     response: z.array(Note),
   }),
   notesCreate: route({
@@ -380,13 +398,33 @@ export const routes = {
     response: Ok,
   }),
 
+  // 工作區（P2 項目二）：全 hub 共用，一般使用者可改。刪除只在沒有團隊、也沒有單獨 session 時可以：
+  // 非空回 409 zone_not_empty（ApiError.detail 是 ZoneNotEmpty：團隊數、session 數），最後一個回 409 last_zone。
+  zonesList: route({ method: 'GET', path: '/api/zones', auth: 'user', response: z.array(Zone) }),
+  zonesCreate: route({
+    method: 'POST',
+    path: '/api/zones',
+    auth: 'user',
+    body: z.object({ name: ZoneName }),
+    response: Zone,
+  }),
+  zonesUpdate: route({
+    method: 'PATCH',
+    path: '/api/zones/:id',
+    auth: 'user',
+    body: z.object({ name: ZoneName }),
+    response: Zone,
+  }),
+  zonesDelete: route({ method: 'DELETE', path: '/api/zones/:id', auth: 'user', response: Ok }),
+
   // 團隊（Phase 3 實作，合約先定）
   teamsList: route({ method: 'GET', path: '/api/teams', auth: 'user', response: z.array(Team) }),
   teamsCreate: route({
     method: 'POST',
     path: '/api/teams',
     auth: 'user',
-    body: Team.omit({ id: true }),
+    /** zoneId 沒帶＝排第一個的工作區。 */
+    body: Team.omit({ id: true, zoneId: true }).extend({ zoneId: Id.optional() }),
     response: Team,
   }),
   teamsUpdate: route({
@@ -416,6 +454,29 @@ export const routes = {
     path: '/api/teams/:id/members/:sessionId',
     auth: 'user',
     response: Ok,
+  }),
+  /**
+   * 群發（P2 §2.3）：對整組或點名的成員送一則指令。hub 端走 SafeDelivery（只在對象等輸入時送，其他排隊），
+   * 瀏覽器不逐一送 terminal.input。全部暫停中照送（Q6，GM 親手下的）。targets 有帶＝點名，只送給這些人；
+   * 不是本團隊成員回 400 not_member。後續狀態變化經 WS `broadcast.updated` 推送。
+   */
+  teamBroadcast: route({
+    method: 'POST',
+    path: '/api/teams/:id/broadcast',
+    auth: 'user',
+    body: z.object({
+      text: z.string().trim().min(1).max(BROADCAST_TEXT_MAX),
+      targets: z.array(Id).min(1).optional(),
+    }),
+    response: Broadcast,
+  }),
+  /** 取消一則群發裡某個對象還在排隊的送字（已送出、已略過的不變）。 */
+  broadcastCancel: route({
+    method: 'POST',
+    path: '/api/broadcasts/:id/cancel',
+    auth: 'user',
+    body: z.object({ sessionId: Id }),
+    response: Broadcast,
   }),
   tasksList: route({
     method: 'GET',

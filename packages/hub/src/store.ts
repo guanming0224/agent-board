@@ -5,6 +5,7 @@ import {
   AutoContinue,
   BoardPause,
   DEFAULT_WAITING_LIMIT,
+  DEFAULT_ZONE_ID,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   DispatchWork,
@@ -25,6 +26,7 @@ import {
   type TeamMember,
   type Template,
   type User,
+  type Zone,
 } from '@agent-board/protocol';
 import { z } from 'zod';
 import type { Db } from './db';
@@ -99,6 +101,7 @@ interface SessionRow {
   auto_continue: string | null;
   dispatched_by: string | null;
   dispatch_work: string | null;
+  zone_id: string;
   pending_spec: string | null;
   pre_offline_status: SessionStatus | null;
 }
@@ -112,6 +115,7 @@ interface TeamRow {
   context_md: string;
   phase: Team['phase'] | null;
   task_auto: number;
+  zone_id: string;
 }
 
 interface TaskRow {
@@ -195,6 +199,25 @@ const toSession = (r: SessionRow): Session => ({
   readOnly: r.read_only === 1,
   autoContinue: parseAutoContinue(r.auto_continue),
   dispatchedBy: r.dispatched_by,
+  zoneId: r.zone_id,
+});
+
+interface NoteRow {
+  id: string;
+  zone_id: string;
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+}
+
+const toNote = (r: NoteRow): Note => ({
+  id: r.id,
+  zoneId: r.zone_id,
+  x: r.x,
+  y: r.y,
+  text: r.text,
+  color: r.color,
 });
 
 const toTeam = (r: TeamRow): Team => ({
@@ -206,6 +229,7 @@ const toTeam = (r: TeamRow): Team => ({
   contextMd: r.context_md,
   ...(r.phase ? { phase: r.phase } : {}),
   taskAuto: r.task_auto === 1,
+  zoneId: r.zone_id,
 });
 
 /** auto 是 hub 自己寫的 JSON；讀不懂（理論上不會）就當沒有，不能讓整個任務板讀不出來。 */
@@ -482,12 +506,12 @@ export class Store {
            permission_mode, model, account_profile, status, status_detail, claude_session_id,
            last_lines, last_output_at, status_since, context_tokens, created_at, ended_at, archived,
            archived_at, pending_spec, context_window, repo_root, repo_common_dir, read_only,
-           auto_continue, dispatched_by)
+           auto_continue, dispatched_by, zone_id)
          VALUES (@id, @machineId, @projectId, @name, @cwd, @branch, @worktreePath,
            @permissionMode, @model, @accountProfile, @status, @statusDetail, @claudeSessionId,
            @lastLines, @lastOutputAt, @statusSince, @contextTokens, @createdAt, @endedAt, @archived,
            @archivedAt, @pendingSpec, @contextWindow, @repoRoot, @repoCommonDir, @readOnly,
-           @autoContinue, @dispatchedBy)`,
+           @autoContinue, @dispatchedBy, @zoneId)`,
       )
       .run({
         ...session,
@@ -508,7 +532,7 @@ export class Store {
            last_output_at = @lastOutputAt, status_since = @statusSince,
            context_tokens = @contextTokens, ended_at = @endedAt, archived = @archived,
            archived_at = @archivedAt, context_window = @contextWindow, repo_root = @repoRoot,
-           repo_common_dir = @repoCommonDir, auto_continue = @autoContinue
+           repo_common_dir = @repoCommonDir, auto_continue = @autoContinue, zone_id = @zoneId
          WHERE id = @id`,
       )
       .run({
@@ -532,6 +556,7 @@ export class Store {
         repoRoot: session.repoRoot,
         repoCommonDir: session.repoCommonDir,
         autoContinue: session.autoContinue ? JSON.stringify(session.autoContinue) : null,
+        zoneId: session.zoneId,
       });
   }
 
@@ -782,24 +807,145 @@ export class Store {
     })();
   }
 
+  /** 在這個版面組存過座標的使用者。 */
+  layoutUserIds(workspace: string): string[] {
+    const rows = this.db
+      .prepare('SELECT DISTINCT user_id FROM layouts WHERE workspace = ? ORDER BY user_id')
+      .all(workspace) as { user_id: string }[];
+    return rows.map((r) => r.user_id);
+  }
+
+  /** 把幾張卡一起平移（工作區移入時排到右側空白）。 */
+  shiftLayouts(
+    userId: string,
+    workspace: string,
+    sessionIds: readonly string[],
+    dx: number,
+    dy: number,
+  ): void {
+    const update = this.db.prepare(
+      'UPDATE layouts SET x = x + ?, y = y + ? WHERE user_id = ? AND workspace = ? AND session_id = ?',
+    );
+    this.db.transaction(() => {
+      for (const id of sessionIds) update.run(dx, dy, userId, workspace, id);
+    })();
+  }
+
   // ── 便利貼 ───────────────────────────────────────────
-  listNotes(workspace: string): Note[] {
-    return this.db.prepare('SELECT * FROM notes WHERE workspace = ?').all(workspace) as Note[];
+  listNotes(zoneId: string): Note[] {
+    const rows = this.db.prepare('SELECT * FROM notes WHERE zone_id = ?').all(zoneId) as NoteRow[];
+    return rows.map(toNote);
   }
 
   getNote(id: string): Note | null {
-    return (this.db.prepare('SELECT * FROM notes WHERE id = ?').get(id) as Note) ?? null;
+    const row = this.db.prepare('SELECT * FROM notes WHERE id = ?').get(id) as NoteRow | undefined;
+    return row ? toNote(row) : null;
   }
 
   upsertNote(n: Note): void {
     this.db
       .prepare(
-        `INSERT INTO notes (id, workspace, x, y, text, color)
-         VALUES (@id, @workspace, @x, @y, @text, @color)
-         ON CONFLICT (id) DO UPDATE SET workspace = @workspace, x = @x, y = @y, text = @text,
+        `INSERT INTO notes (id, zone_id, x, y, text, color)
+         VALUES (@id, @zoneId, @x, @y, @text, @color)
+         ON CONFLICT (id) DO UPDATE SET zone_id = @zoneId, x = @x, y = @y, text = @text,
            color = @color`,
       )
       .run(n);
+  }
+
+  // ── 工作區（P2 項目二；程式內叫 zone，和 layouts.workspace 分開） ─────
+  listZones(): Zone[] {
+    const rows = this.db
+      .prepare('SELECT * FROM zones ORDER BY position, created_at, rowid')
+      .all() as {
+      id: string;
+      name: string;
+      created_at: string;
+      position: number;
+    }[];
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      createdAt: r.created_at,
+      position: r.position,
+    }));
+  }
+
+  /**
+   * 沒指定工作區時用哪一個：排第一個的工作區。「主要」只要不是最後一個就能刪，所以不能寫死它的 id。
+   * 至少一定有一個（最後一個不能刪）。
+   */
+  defaultZoneId(): string {
+    return this.listZones()[0]?.id ?? DEFAULT_ZONE_ID;
+  }
+
+  countNotes(zoneId: string): number {
+    return (
+      this.db.prepare('SELECT count(*) AS n FROM notes WHERE zone_id = ?').get(zoneId) as {
+        n: number;
+      }
+    ).n;
+  }
+
+  getZone(id: string): Zone | null {
+    return this.listZones().find((z) => z.id === id) ?? null;
+  }
+
+  insertZone(input: { id: string; name: string; createdAt: string }): Zone {
+    const row = this.db
+      .prepare(
+        `INSERT INTO zones (id, name, created_at, position)
+         VALUES (?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM zones))
+         RETURNING position`,
+      )
+      .get(input.id, input.name, input.createdAt) as { position: number };
+    return { ...input, position: row.position };
+  }
+
+  renameZone(id: string, name: string): boolean {
+    return this.db.prepare('UPDATE zones SET name = ? WHERE id = ?').run(name, id).changes === 1;
+  }
+
+  /**
+   * 工作區裡擋住刪除的東西：團隊數，與單獨 session 數（沒封存、不是任何團隊成員的）。
+   * 封存的 session、團隊成員那欄（被忽略）、便利貼不算，刪除時搬到 fallback。
+   */
+  zoneContents(id: string): { teams: number; sessions: number } {
+    const teams = this.db.prepare('SELECT count(*) AS n FROM teams WHERE zone_id = ?').get(id) as {
+      n: number;
+    };
+    const sessions = this.db
+      .prepare(
+        `SELECT count(*) AS n FROM sessions WHERE zone_id = ? AND archived = 0
+           AND id NOT IN (SELECT session_id FROM team_members)`,
+      )
+      .get(id) as { n: number };
+    return { teams: teams.n, sessions: sessions.n };
+  }
+
+  /** 刪除工作區：剩下不擋刪除的（封存的 session、成員那欄、便利貼）先搬到 fallback，同一個交易。 */
+  deleteZone(id: string, fallback: string): boolean {
+    return this.db.transaction(() => {
+      this.db.prepare('UPDATE sessions SET zone_id = ? WHERE zone_id = ?').run(fallback, id);
+      this.db.prepare('UPDATE notes SET zone_id = ? WHERE zone_id = ?').run(fallback, id);
+      return this.db.prepare('DELETE FROM zones WHERE id = ?').run(id).changes === 1;
+    })();
+  }
+
+  /** 換一個 session 的工作區（離開團隊、卡片選單「移到工作區」）。 */
+  setSessionZone(id: string, zoneId: string): void {
+    this.db.prepare('UPDATE sessions SET zone_id = ? WHERE id = ?').run(zoneId, id);
+  }
+
+  /** 這個 session 是哪些團隊的成員（依團隊名稱）。 */
+  teamsOfSession(sessionId: string): Team[] {
+    const rows = this.db
+      .prepare(
+        `SELECT teams.* FROM teams JOIN team_members ON team_members.team_id = teams.id
+         WHERE team_members.session_id = ? ORDER BY teams.name`,
+      )
+      .all(sessionId) as TeamRow[];
+    return rows.map(toTeam);
   }
 
   deleteNote(id: string): boolean {
@@ -850,10 +996,12 @@ export class Store {
   upsertTeam(t: Team): void {
     this.db
       .prepare(
-        `INSERT INTO teams (id, name, goal, done_criteria, color, context_md, phase, task_auto)
-         VALUES (@id, @name, @goal, @doneCriteria, @color, @contextMd, @phase, @taskAuto)
+        `INSERT INTO teams (id, name, goal, done_criteria, color, context_md, phase, task_auto,
+           zone_id)
+         VALUES (@id, @name, @goal, @doneCriteria, @color, @contextMd, @phase, @taskAuto, @zoneId)
          ON CONFLICT (id) DO UPDATE SET name = @name, goal = @goal, done_criteria = @doneCriteria,
-           color = @color, context_md = @contextMd, phase = @phase, task_auto = @taskAuto`,
+           color = @color, context_md = @contextMd, phase = @phase, task_auto = @taskAuto,
+           zone_id = @zoneId`,
       )
       .run({ ...t, phase: t.phase ?? null, taskAuto: t.taskAuto ? 1 : 0 });
   }

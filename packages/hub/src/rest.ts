@@ -379,8 +379,11 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       store.replaceLayouts(ctx.user.id, ctx.body);
       return ok;
     },
-    notesList: (ctx) => store.listNotes(ctx.query.workspace),
+    notesList: (ctx) => store.listNotes(ctx.query.zoneId),
     notesCreate: (ctx) => {
+      if (!store.getZone(ctx.body.zoneId)) {
+        throw new HttpError(400, 'unknown_zone', 'Unknown workspace');
+      }
       const note = { id: randomUUID(), ...ctx.body };
       store.upsertNote(note);
       return note;
@@ -389,6 +392,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       const current = store.getNote(param(ctx));
       if (!current) throw notFound('Note');
       const next = merge(current, ctx.body);
+      if (!store.getZone(next.zoneId))
+        throw new HttpError(400, 'unknown_zone', 'Unknown workspace');
       store.upsertNote(next);
       return next;
     },
@@ -415,10 +420,27 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       return ok;
     },
 
+    zonesList: () => store.listZones(),
+    zonesCreate: (ctx) => hub.createZone(ctx.body.name, ctx.user),
+    zonesUpdate: (ctx) => hub.renameZone(param(ctx), ctx.body.name, ctx.user),
+    zonesDelete: (ctx) => {
+      hub.deleteZone(param(ctx), ctx.user);
+      return ok;
+    },
+
     teamsList: () => store.listTeams(),
     teamsCreate: (ctx) => {
-      const team = { id: randomUUID(), ...ctx.body, taskAuto: ctx.body.taskAuto ?? false };
+      const team = {
+        id: randomUUID(),
+        ...ctx.body,
+        taskAuto: ctx.body.taskAuto ?? false,
+        // 沒帶＝排第一個的工作區（「主要」可能已經被刪掉）。
+        zoneId: ctx.body.zoneId ?? store.defaultZoneId(),
+      };
+      if (!store.getZone(team.zoneId))
+        throw new HttpError(400, 'unknown_zone', 'Unknown workspace');
       store.upsertTeam(team);
+      hub.broadcastTeam(team.id);
       if (team.taskAuto) {
         hub.audit(
           ctx.user.id,
@@ -431,7 +453,12 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     },
     teamsUpdate: (ctx) => hub.updateTeam(requireTeam(param(ctx)).id, ctx.body, ctx.user),
     teamsDelete: (ctx) => {
-      if (!store.deleteTeam(param(ctx))) throw notFound('Team');
+      const team = requireTeam(param(ctx));
+      const memberIds = store.listTeamMembers(team.id).map((m) => m.sessionId);
+      if (!store.deleteTeam(team.id)) throw notFound('Team');
+      // 團隊沒了：成員留在團隊原本的工作區（P2 §2.2）。
+      for (const sessionId of memberIds) hub.leaveTeamZone(sessionId, team);
+      hub.broadcastTeam(team.id);
       return ok;
     },
     teamMembersList: (ctx) => store.listTeamMembers(requireTeam(param(ctx)).id),
@@ -469,11 +496,17 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       return member;
     },
     teamMembersDelete: (ctx) => {
-      if (!store.deleteTeamMember(param(ctx), param(ctx, 'sessionId'))) {
+      const team = requireTeam(param(ctx));
+      const sessionId = param(ctx, 'sessionId');
+      if (!store.deleteTeamMember(team.id, sessionId)) {
         throw notFound('Team member');
       }
+      hub.leaveTeamZone(sessionId, team);
       return ok;
     },
+    teamBroadcast: (ctx) =>
+      hub.teamBroadcast(requireTeam(param(ctx)).id, ctx.body.text, ctx.body.targets, ctx.user),
+    broadcastCancel: (ctx) => hub.cancelBroadcast(param(ctx), ctx.body.sessionId, ctx.user),
     tasksList: (ctx) => store.listTasks(requireTeam(param(ctx)).id),
     tasksCreate: (ctx) => hub.createTask(requireTeam(param(ctx)).id, ctx.body),
     // 移欄、換負責人的規則與任務自動執行都在 hub.updateTask。

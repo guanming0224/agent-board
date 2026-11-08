@@ -21,7 +21,7 @@ const DEFAULT_VERSION = '2025-06-18';
 
 const INSTRUCTIONS = [
   'Agent Board tools let you delegate work to other Claude Code sessions shown on the Agent Board canvas, like subagents that keep running.',
-  'list_members shows your team. spawn_member starts a new member in this same project (writers get their own git worktree; researcher/reviewer are read-only) and gives it your prompt.',
+  'list_members shows your team. spawn_member starts a new member in this same project (writers — worker and tester — get their own git worktree; researcher/reviewer are read-only) and gives it your prompt.',
   'send_task types a new task into one of your members once it is waiting for input.',
   'When a member finishes the turn that handled your work, its result is typed back into this session automatically as "[Result from <name>] Summary: … | Detected file edits: … | Branch: …". Do not poll; wait for it.',
   "get_result shows a member's latest summary, files and branch on demand.",
@@ -37,21 +37,22 @@ const TOOLS = [
   {
     name: 'spawn_member',
     description:
-      'Start a new Claude Code session as a member of your team, in the same machine and project folder, and give it a first prompt. role worker edits files (gets its own git worktree by default); researcher and reviewer are read-only and share the folder. Its permission mode cannot exceed yours. At most 4 live members per caller. The result comes back to you automatically when it finishes the turn.',
+      'Start a new Claude Code session as a member of your team, in the same machine and project folder, and give it a first prompt. role worker edits files (gets its own git worktree by default); tester writes and runs tests (also its own worktree, asks before each step by default); researcher and reviewer are read-only and share the folder. Its permission mode cannot exceed yours. At most 4 live members per caller. The result comes back to you automatically when it finishes the turn.',
     inputSchema: {
       type: 'object',
       properties: {
-        role: { type: 'string', enum: ['worker', 'researcher', 'reviewer'] },
+        role: { type: 'string', enum: ['worker', 'researcher', 'reviewer', 'tester'] },
         prompt: { type: 'string', description: 'The work to do. One self-contained instruction.' },
         name: { type: 'string', description: 'Optional display name; numbered automatically.' },
         permissionMode: {
           type: 'string',
           enum: ['plan', 'default', 'acceptEdits', 'auto', 'dontAsk'],
-          description: 'Optional. Defaults: worker acceptEdits, researcher/reviewer plan.',
+          description:
+            'Optional. Defaults: worker acceptEdits, tester default, researcher/reviewer plan.',
         },
         useWorktree: {
           type: 'boolean',
-          description: 'Optional. Workers default to true (needs a git repo).',
+          description: 'Optional. Workers and testers default to true (needs a git repo).',
         },
         model: { type: 'string', description: 'Optional model; defaults to yours.' },
       },

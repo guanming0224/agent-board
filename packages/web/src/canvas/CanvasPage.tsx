@@ -19,7 +19,7 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { Layout, Session } from '@agent-board/protocol';
+import { zoneMoveShift, type Layout, type Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { codeClass, statusCode } from '../shared/status';
 import { useBoard } from '../shared/store';
@@ -65,7 +65,9 @@ import {
 import { TidyPanel, TidyToast, useTidy, type TidyState } from './tidy';
 import { SessionNode, TERMINAL_ZOOM, type SessionNodeType } from './SessionNode';
 import { TeamFrames } from './TeamFrames';
-import { groupHandoffs, teamForHandoff } from './teams';
+import { canvasTeams, groupHandoffs, teamForHandoff, teamRect } from './teams';
+import { teamHash } from '../views/overlay';
+import { useCurrentZoneId, useSessionZones, useZoneUi } from '../zones';
 import './canvas.css';
 import './links.css';
 import './messages';
@@ -223,11 +225,27 @@ function Flow({
   // 從全尺寸終端機回來：一開始就放在離開時的鏡頭，不先全部顯示再跳。
   const [returnViewport] = useState(() => useViewsUi.getState().canvasReturn);
 
+  // cards 是全部（沒封存的）session 的卡，畫布只畫目前工作區的（P2 §2.3）。座標共用同一個版面組，
+  // 存檔一律送全部，別的工作區的位置才不會被 PUT 洗掉。
   const [cards, setCards] = useState<SessionNodeType[]>(() =>
     [...reconcileRects(sessions, new Map(), layouts)].map(([id, r]) => toNode(id, r)),
   );
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
+  const currentZone = useCurrentZoneId();
+  const zoneOf = useSessionZones();
+  const teamsReady = useTeams((s) => s.status === 'ready');
+  const visibleIds = useMemo(
+    () => new Set(sessions.filter((s) => zoneOf(s) === currentZone).map((s) => s.id)),
+    [sessions, zoneOf, currentZone],
+  );
+  const visibleSessions = useMemo(
+    () => sessions.filter((s) => visibleIds.has(s.id)),
+    [sessions, visibleIds],
+  );
+  const nodes = useMemo(() => cards.filter((n) => visibleIds.has(n.id)), [cards, visibleIds]);
+  const visibleCardsRef = useRef(nodes);
+  visibleCardsRef.current = nodes;
   /** 從畫布雙擊建立的 session：等它出現在清單裡就放到雙擊的位置。 */
   const placeAt = useRef(new Map<string, Rect>());
 
@@ -246,9 +264,11 @@ function Flow({
       if (saveTimer.current !== null) clearTimeout(saveTimer.current);
       saveTimer.current = null;
       const { previous: snap, target } = tidyState.current;
-      const current =
-        rects ??
-        new Map(cardsRef.current.map((n) => [n.id, target?.get(n.id) ?? rectOf(n)] as const));
+      // 一律存全部的卡：rects 只有一部分（例如只整理了目前工作區）時，蓋在目前位置上。
+      const current = new Map(
+        cardsRef.current.map((n) => [n.id, target?.get(n.id) ?? rectOf(n)] as const),
+      );
+      for (const [id, rect] of rects ?? []) current.set(id, rect);
       // 快照裡被刪掉（不是封存）的 session，hub 存不進去（外鍵），整批會失敗：只送還在的。
       const known = new Set(useBoard.getState().sessions.map((s) => s.id));
       const snapRows = snap ? [...snap].filter(([id]) => known.has(id)) : null;
@@ -308,9 +328,10 @@ function Flow({
       }),
     [flow],
   );
+  // 「一鍵整理」只整理目前工作區（P2 §2.3）。
   const tidy = useTidy({
-    sessions,
-    cardsRef,
+    sessions: visibleSessions,
+    cardsRef: visibleCardsRef,
     setCards,
     tidyState,
     saveNow,
@@ -388,10 +409,11 @@ function Flow({
     [openQuickAt],
   );
 
-  const rects = useMemo(() => new Map(cards.map((n) => [n.id, rectOf(n)])), [cards]);
+  // 畫面上的卡（目前工作區）：團隊框、線、標籤都只看這些。
+  const rects = useMemo(() => new Map(nodes.map((n) => [n.id, rectOf(n)])), [nodes]);
 
   // ── 封存：選取卡片後 Delete／Backspace 開確認；框選（Shift＋拖曳）多張時出現按鈕 ──
-  const selectedIds = useMemo(() => cards.filter((n) => n.selected).map((n) => n.id), [cards]);
+  const selectedIds = useMemo(() => nodes.filter((n) => n.selected).map((n) => n.id), [nodes]);
   const selectedKey = selectedIds.join('|');
   useEffect(() => {
     if (selectedIds.length === 0) return;
@@ -406,7 +428,7 @@ function Flow({
     // selectedKey 代表 selectedIds 的內容。
   }, [selectedKey]);
 
-  const liveIds = useMemo(() => new Set(cards.map((n) => n.id)), [cards]);
+  const liveIds = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
   // 標籤避開卡片要用螢幕上的大小換算；縮放取到 0.05，拖曳縮放時不每格重算。
   const zoom = useStore((s) => Math.round(s.transform[2] * 20) / 20);
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
@@ -681,11 +703,96 @@ function Flow({
     );
   };
 
+  // ── 工作區（P2 §2.3） ──
+  // 切換：記下離開的工作區畫面位置；到新的工作區還原它上次的位置，沒有就全部顯示。
+  // 有聚焦目標（跨工作區的「下一個」、在畫布上看、#/team/<id>）時交給下面的聚焦，不先 fit 再跳。
+  const shownZone = useRef(currentZone);
+  useEffect(() => {
+    if (shownZone.current === currentZone) return;
+    useZoneUi.getState().saveViewport(shownZone.current, flow.getViewport());
+    shownZone.current = currentZone;
+    const ui = useViewsUi.getState();
+    if (ui.pendingFocus || ui.pendingTeamFocus) return;
+    const saved = useZoneUi.getState().viewports[currentZone];
+    const frame = requestAnimationFrame(() => {
+      if (saved) void flow.setViewport(saved, { duration: 0 });
+      else void flow.fitView({ ...FIT_OPTIONS, duration: 0 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [currentZone, flow]);
+
+  // 團隊或 session 換了工作區：排到目標工作區現有內容的右側空白處（座標共用，不能疊在別人上面）。
+  // 每台開著畫布的裝置都會在自己的版面上排一次（版面每個使用者各自存）。
+  const zoneMap = useMemo(
+    () => (teamsReady ? new Map(sessions.map((s) => [s.id, zoneOf(s)] as const)) : null),
+    [sessions, zoneOf, teamsReady],
+  );
+  const lastZones = useRef<Map<string, string> | null>(null);
+  useEffect(() => {
+    const before = lastZones.current;
+    lastZones.current = zoneMap;
+    if (!before || !zoneMap) return;
+    const movedTo = new Map<string, string[]>();
+    for (const [id, zone] of zoneMap) {
+      const was = before.get(id);
+      if (was !== undefined && was !== zone) movedTo.set(zone, [...(movedTo.get(zone) ?? []), id]);
+    }
+    if (movedTo.size === 0) return;
+    setCards((prev) => {
+      let next = prev;
+      for (const [zone, ids] of movedTo) {
+        const moving = new Set(ids);
+        const group = next.filter((n) => moving.has(n.id)).map(rectOf);
+        const others = next
+          .filter((n) => !moving.has(n.id) && zoneMap.get(n.id) === zone)
+          .map(rectOf);
+        // 和 hub 排存好的版面用同一個規則（團隊框外緣再加 240 畫布 px，同整理畫布時團隊之間）。
+        const shift = zoneMoveShift(group, others);
+        if (!shift) continue;
+        const { dx, dy } = shift;
+        next = next.map((n) =>
+          moving.has(n.id) ? { ...n, position: { x: n.position.x + dx, y: n.position.y + dy } } : n,
+        );
+      }
+      return next;
+    });
+    scheduleSave();
+  }, [zoneMap, scheduleSave]);
+
+  /** 點畫布空白處：落在團隊框裡（沒有拖動）就開那個團隊的面板（P2 §1.2、§4.2 驗收 6）。 */
+  const openFrameAt = useCallback(
+    (clientX: number, clientY: number) => {
+      const point = flow.screenToFlowPosition({ x: clientX, y: clientY });
+      const { teams, members } = useTeams.getState();
+      const hit = canvasTeams(teams, members)
+        .map((team) => ({ team, rect: teamRect(team, rects) }))
+        .filter(
+          ({ rect }) =>
+            rect !== null &&
+            point.x >= rect.x &&
+            point.x <= rect.x + rect.w &&
+            point.y >= rect.y &&
+            point.y <= rect.y + rect.h,
+        )
+        // 框疊在一起時取最小的（最裡面的）那個。
+        .sort((a, b) => a.rect!.w * a.rect!.h - b.rect!.w * b.rect!.h)[0];
+      if (hit) location.hash = teamHash(hit.team.id);
+    },
+    [flow, rects],
+  );
+
   // 初次顯示與「下一個等我的」都要等節點量好尺寸。有目標就直接去，不先全部顯示再跳一次。
+  // 目標在別的工作區：先切過去（P2 §2.3 跨工作區導航），切完這裡會再跑一次。
   const fitted = useRef(false);
   useEffect(() => {
     if (!initialized) return;
     const ui = useViewsUi.getState();
+    const wanted = ui.pendingFocus ?? ui.pendingTeamFocus?.[0] ?? null;
+    const wantedSession = wanted ? sessions.find((s) => s.id === wanted) : undefined;
+    if (wantedSession && zoneOf(wantedSession) !== currentZone) {
+      useZoneUi.getState().setCurrent(zoneOf(wantedSession));
+      return;
+    }
     const target = ui.takePendingFocus();
     const team = target ? null : ui.takePendingTeamFocus();
     // 右側面板蓋住的寬度：卡要放在看得到的那一塊中央（面板開著時「下一個」「在畫布上看」照常可用）。
@@ -726,7 +833,8 @@ function Flow({
     }
     fitted.current = true;
     useViewsUi.getState().setCanvasReturn(null);
-  }, [initialized, pendingFocus, pendingTeamFocus, flow, returnViewport]);
+    // sessions、zoneOf 只用來判斷目標在不在這個工作區，不必因為它們變了就重跑。
+  }, [initialized, pendingFocus, pendingTeamFocus, flow, returnViewport, currentZone]);
 
   const minimapColor = (node: Node) => {
     const session = useBoard.getState().sessions.find((s) => s.id === node.id);
@@ -743,7 +851,7 @@ function Flow({
       data-picking={pickFrom ? 'true' : undefined}
     >
       <ReactFlow
-        nodes={cards}
+        nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
@@ -759,10 +867,12 @@ function Flow({
           if (useLinkPick.getState().from) pickTarget(node.id);
         }}
         isValidConnection={(c) => c.source !== c.target}
-        onPaneClick={() => {
+        onPaneClick={(e) => {
           clearFocus();
           setQuick(null);
-          cancelPick();
+          // 選交接目標中：點空白只是取消，不開團隊面板。
+          if (useLinkPick.getState().from) cancelPick();
+          else openFrameAt(e.clientX, e.clientY);
         }}
         onDoubleClick={onDoubleClick}
         defaultViewport={returnViewport ?? undefined}
@@ -894,7 +1004,16 @@ export function CanvasPage() {
   const t = useT();
   const board = useBoardLoad();
   const { state: layouts, retry } = useLayouts();
-  useTeamSync();
+  const teamSync = useTeamSync();
+  // 團隊還沒讀到時不知道誰屬於哪個工作區（成員跟著團隊）：先等，別的工作區的卡才不會先畫出來、訂閱終端機。
+  // 第一次就讀失敗：顯示錯誤＋再試一次，不畫卡片（成員自己的 zoneId 被忽略，照它畫會畫錯工作區）。
+  // 只等第一次讀到：之後重讀失敗（保留舊資料）或按「重試」不能把整張畫布卸載。
+  const teamsSeen = useRef(false);
+  const teamStatus = useTeams((s) => s.status);
+  const teamDetail = useTeams((s) => s.detail);
+  if (teamStatus === 'ready') teamsSeen.current = true;
+  const teamsLoading = !teamsSeen.current && teamStatus === 'loading';
+  const teamsFailed = !teamsSeen.current && teamStatus === 'error';
   const sessions = useBoard().sessions.filter((s) => !s.archived);
 
   let body;
@@ -906,7 +1025,14 @@ export function CanvasPage() {
     body = (
       <ErrorState text={t('canvas.error.layout', { detail: layouts.detail })} onRetry={retry} />
     );
-  } else if (board.status === 'loading' || layouts.status === 'loading') {
+  } else if (teamsFailed) {
+    body = (
+      <ErrorState
+        text={t('canvas.error.teamsFirst', { detail: teamDetail ?? '' })}
+        onRetry={teamSync.retry}
+      />
+    );
+  } else if (board.status === 'loading' || layouts.status === 'loading' || teamsLoading) {
     body = <LoadingState />;
   } else {
     body = (

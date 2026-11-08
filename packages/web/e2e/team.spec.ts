@@ -13,6 +13,18 @@ test.beforeEach(async ({ page }) => {
   });
   page.on('pageerror', (e) => problems.push(e.message));
   await page.setViewportSize({ width: 1440, height: 1000 });
+  // P2 §2.3：工作台原本的區塊在團隊面板裡預設收合。這個檔案測的是那些區塊本身，先記成全部打開
+  // （收合本身在 workspaces.spec.ts 測）。
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem(
+        'agent-board.team.folds',
+        JSON.stringify(['members', 'add', 'phase', 'tasks', 'handoff', 'goal']),
+      );
+    } catch {
+      // 沒有 localStorage 就照預設（收合）。
+    }
+  });
 });
 
 test.afterEach(() => {

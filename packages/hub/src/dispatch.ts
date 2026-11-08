@@ -36,7 +36,22 @@ const ROLE_ABBR: Record<(typeof DISPATCH_ROLES)[number], string> = {
   worker: 'BD',
   researcher: 'RS',
   reviewer: 'RV',
+  tester: 'QA',
 };
+
+/**
+ * 會改檔案的角色：成員與測試（Q5：測試要跑測試、寫測試檔，不唯讀）。其他（研究、審查）開成唯讀。
+ * 寫入者預設開自己的 worktree。
+ */
+export const isWriterRole = (role: (typeof DISPATCH_ROLES)[number]): boolean =>
+  role === 'worker' || role === 'tester';
+
+/** 角色的預設權限模式：成員 acceptEdits、測試 default（每步問，Q5）、研究與審查 plan。 */
+export function defaultModeFor(role: (typeof DISPATCH_ROLES)[number]): PermissionMode {
+  if (role === 'worker') return 'acceptEdits';
+  if (role === 'tester') return 'default';
+  return 'plan';
+}
 /** 新團隊的框色（team/colors.ts 的第一個）。 */
 const DEFAULT_TEAM_COLOR = 'teal';
 
@@ -66,7 +81,7 @@ export function clampPermissionMode(
   caller: PermissionMode,
   role: (typeof DISPATCH_ROLES)[number],
 ): { mode: PermissionMode; clamped: boolean } {
-  const wanted = requested ?? (role === 'worker' ? 'acceptEdits' : 'plan');
+  const wanted = requested ?? defaultModeFor(role);
   const cap = Math.min(permissionRank(caller), TOOL_MAX_RANK);
   if (permissionRank(wanted) <= cap) return { mode: wanted, clamped: false };
   const fallback = permissionRank(caller) <= TOOL_MAX_RANK ? caller : 'acceptEdits';
@@ -157,7 +172,10 @@ export interface DispatchDeps {
   /** 全部暫停中（P2 項目三）：不開新成員；送工作照收但排隊到繼續後才送。沒給＝不暫停。 */
   paused?(): boolean;
   /** 走 hub 開 session 的同一條路（排隊、worktree、hooks、第一個指令照常），記下是誰開的。 */
-  createSession(input: SessionSpec & { machineId: string }, dispatchedBy: string): Session;
+  createSession(
+    input: SessionSpec & { machineId: string; zoneId?: string },
+    dispatchedBy: string,
+  ): Session;
   /** 機器在線才開得了 session；離線時回 false。 */
   machineOnline(machineId: string): boolean;
 }
@@ -310,6 +328,8 @@ export class DispatchEngine {
       color: DEFAULT_TEAM_COLOR,
       contextMd: '',
       taskAuto: false,
+      // 新團隊放在呼叫者目前所在的工作區（P2 §2.3：成員跟呼叫者同工作區）。
+      zoneId: caller.zoneId,
     };
     store.upsertTeam(team);
     store.upsertTeamMember({ teamId: team.id, sessionId: caller.id, role: 'lead' });
@@ -351,7 +371,7 @@ export class DispatchEngine {
         `Members started by dispatch cannot start more members. Report back to ${by} instead.`,
       );
     }
-    const readOnly = args.role !== 'worker';
+    const readOnly = !isWriterRole(args.role);
     if (caller.readOnly && !readOnly) {
       return fail(
         'read_only_caller',
@@ -416,6 +436,7 @@ export class DispatchEngine {
           resumeClaudeSessionId: null,
           firstPrompt: message,
           readOnly,
+          zoneId: team.zoneId,
         },
         caller.id,
       );
