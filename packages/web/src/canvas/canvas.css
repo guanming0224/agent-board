@@ -192,6 +192,12 @@ input.cmd:disabled {
   position: relative;
   z-index: -1;
 }
+/*
+ * 團隊框（P2 §4.2）：一塊安靜的玻璃底座，最亮的仍是等你的卡。
+ * Liquid Glass 只用在底色與質感：團隊色只留 1px 框線與標籤；光暈、陰影一律中性白／黑（GM Q10），
+ * 不用任何狀態色（--you、--c-* …）。所有長度用 --z 反向換算成螢幕上的大小。
+ * 框本身不吃滑鼠，拖畫布要穿過去；只有標籤上的按鈕吃（.team-tidy）。
+ */
 .team {
   position: absolute;
   left: 0;
@@ -199,13 +205,22 @@ input.cmd:disabled {
   pointer-events: none;
   transform-origin: 0 0;
   border: calc(1px / var(--z)) solid var(--team);
-  border-radius: calc(12px / var(--z));
-  background: color-mix(in srgb, var(--team) 8%, transparent);
+  border-radius: calc(16px / var(--z));
+  /* 透明深色底（--surface 約 5%）＋背景模糊＝毛玻璃 */
+  background: color-mix(in srgb, var(--surface) 5%, transparent);
+  -webkit-backdrop-filter: blur(calc(10px / var(--z)));
+  backdrop-filter: blur(calc(10px / var(--z)));
+  /* 外側一圈靜態柔光（中性白，不呼吸、不閃）＋柔和陰影讓框和畫布分層 */
+  box-shadow:
+    0 0 0 calc(1px / var(--z)) rgb(255 255 255 / 4%),
+    0 0 calc(18px / var(--z)) rgb(255 255 255 / 5%),
+    0 calc(10px / var(--z)) calc(32px / var(--z)) rgb(0 0 0 / 35%),
+    inset 0 calc(1px / var(--z)) 0 rgb(255 255 255 / 6%);
 }
 .team > span {
   position: absolute;
   top: 0;
-  left: calc(12px / var(--z));
+  left: calc(16px / var(--z));
   transform: translateY(-50%) scale(calc(1 / var(--z)));
   transform-origin: 0 50%;
   display: inline-flex;
@@ -215,10 +230,59 @@ input.cmd:disabled {
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
+  /* 玻璃膠囊：名稱標籤不只靠顏色辨認 */
   border-radius: 999px;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   border: 1px solid var(--team);
+  box-shadow:
+    0 2px 10px rgb(0 0 0 / 35%),
+    inset 0 1px 0 rgb(255 255 255 / 8%);
   color: var(--fg-muted);
+}
+/*
+ * 效能退路：平移、縮放進行中（CanvasPage 在 .canvas 設 data-moving）暫時拿掉模糊，
+ * 大面積 backdrop-filter 疊在多個 xterm 後面縮放時可能掉幀（P2 §4.6）。
+ */
+.canvas[data-moving] .team,
+.canvas[data-moving] .team > span {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/*
+ * 減少透明度，或瀏覽器不支援背景模糊：退回原本的 1px 框＋8% 團隊色底（12px 圓角、沒有光暈與陰影），
+ * 標籤是實心底。@media 和 @supports 不能寫成同一個條件，下面兩個區塊的宣告必須完全一樣（改一邊就要改另一邊）。
+ */
+@media (prefers-reduced-transparency: reduce) {
+  .team {
+    border-radius: calc(12px / var(--z));
+    background: color-mix(in srgb, var(--team) 8%, transparent);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+  .team > span {
+    background: var(--bg);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .team {
+    border-radius: calc(12px / var(--z));
+    background: color-mix(in srgb, var(--team) 8%, transparent);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+  .team > span {
+    background: var(--bg);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
 }
 
 /* 交接線 */
@@ -407,7 +471,11 @@ input.cmd:disabled {
   vector-effect: non-scaling-stroke;
 }
 
-/* 拖線把手：在外框邊上、標題的高度，永遠不會蓋到 xterm */
+/*
+ * 拖線把手：在外框邊上、標題的高度，永遠不會蓋到 xterm。
+ * 平常隱藏（P2 §4.2）：滑鼠移入卡片或卡片取得焦點才淡入；拖線中（.canvas[data-connecting]）
+ * 出發卡（data-connect-source）以外所有卡的目標把手都顯示。只用 opacity 隱藏、絕對定位不佔版面：xyflow 放開時的命中判定仍找得到把手。
+ */
 .canvas .react-flow__handle.ab-handle {
   z-index: 2;
   top: 28px;
@@ -417,10 +485,62 @@ input.cmd:disabled {
   min-height: 0;
   background: var(--surface-2);
   border: calc(1px / var(--z)) solid var(--muted);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.canvas .react-flow__node:hover .ab-handle,
+.canvas .react-flow__node:focus-within .ab-handle,
+.canvas[data-connecting] .react-flow__node:not([data-connect-source]) .ab-handle.target,
+.canvas .react-flow__handle.ab-handle.connectingfrom {
+  opacity: 1;
+}
+/* 出發的卡自己的目標把手不能放（不能連到自己）：拖線中就算它有 hover／焦點也不顯示。 */
+.canvas[data-connecting] .react-flow__node[data-connect-source] .ab-handle.target {
+  opacity: 0;
 }
 .canvas .react-flow__handle.ab-handle:hover,
 .canvas .react-flow__handle.ab-handle.connectingto {
   background: var(--fg);
+}
+/* 觸控裝置（沒有 hover）：把手一律隱藏，改用卡片選單的「建立交接線…」 */
+@media (hover: none) {
+  .canvas .react-flow__handle.ab-handle {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas .react-flow__handle.ab-handle {
+    transition: none;
+  }
+}
+
+/* 「建立交接線…」選目標模式：頂部提示；點卡片＝選它，卡片裡的按鈕暫時不吃點擊。 */
+.canvas .pick-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  font-size: 13px;
+}
+.canvas .pick-hint button {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+.canvas[data-picking] .react-flow__node {
+  cursor: crosshair;
+}
+.canvas[data-picking] .react-flow__node .frame > article {
+  pointer-events: none;
+}
+.canvas .frame[data-pick='source'] {
+  outline: calc(2px / var(--z)) dashed var(--muted);
+  outline-offset: calc(6px / var(--z));
 }
 
 /* 右下縮放與小地圖 */

@@ -1,10 +1,11 @@
-// 卡片標題列的「⋯」：重新命名、接續（已結束才有）、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
+// 卡片標題列的「⋯」：重新命名、建立交接線（P2 §4.2）、接續（已結束才有）、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { canResume, errorText, useResume } from '../views';
 import { requestArchive } from './archive';
+import { useLinkPick } from './linkPick';
 
 export function MenuButton({
   session,
@@ -72,6 +73,17 @@ export function CardMenu({
         }}
       >
         {t('canvas.menu.rename')}
+      </button>
+      {/* 拖線的替代：觸控裝置看不到把手，桌面也可以用鍵盤完成（之後點目標卡，見 CanvasPage）。 */}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          onClose();
+          useLinkPick.getState().start(session.id);
+        }}
+      >
+        {t('canvas.menu.link')}
       </button>
       {canResume(session) && (
         <button
