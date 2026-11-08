@@ -2,7 +2,7 @@
 // 為主，夾雜 progress、system 行，中英混合）。只量本機讀檔與解析，不碰 ~/.claude。
 //
 // 預設跑小規模（約 60MB、30 份），每次 `pnpm -r test` 都會印出數字；設 AB_DEEP_PERF=1 跑實際量級：
-// 225 份、共約 629MB，其中 7 天內修改的約 400MB（Mac mini 實測的量），用預設上限（300MB、15 秒）。
+// 225 份、共約 629MB，其中 7 天內修改的約 400MB（其中一台機器實測的量），用預設上限（300MB、15 秒）。
 import { createWriteStream, mkdirSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import {
