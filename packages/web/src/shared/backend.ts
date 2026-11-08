@@ -50,7 +50,11 @@ import type { TerminalStream } from './terminal-contract';
  */
 export type DeepSearchEvent =
   | Extract<HubToClient, { type: 'search.deepStarted' | 'search.deepResult' | 'search.deepDone' }>
-  | { type: 'search.deepFailed'; searchId: string; error: 'disconnected' };
+  /**
+   * 前端自己判斷的失敗：disconnected 連線斷了；no_reply hub 沒有回（例如舊版 hub 不認得 search.deep、
+   * 回 error invalid_message），或過了各台的時間上限加寬限還沒全部結束。
+   */
+  | { type: 'search.deepFailed'; searchId: string; error: 'disconnected' | 'no_reply' };
 
 /** 進行中的深層搜尋。cancel 會送 search.cancel（hub 再叫各台 daemon 停止讀檔）。 */
 export interface DeepSearchHandle {

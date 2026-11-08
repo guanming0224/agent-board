@@ -2,6 +2,8 @@
 // 依機器分組，對每台在線且支援 `search.v1` 的 daemon 送一個 search.request；結果逐台串流轉給發起的那條連線。
 // hub 不存終端機與對話內容（CONTRACTS §2）：片段只經過記憶體轉送，不建索引、不落地。
 // 一個使用者同時只有一個深層搜尋（新的取消舊的）；每次搜尋結束（或取消）寫一筆 audit `search.deep`。
+// 瀏覽器的 searchId 只用來回給那條連線；hub 和 daemon 之間用 hub 自己產生的 id（別人送一樣的 searchId 也碰不到這次搜尋）。
+import { randomUUID } from 'node:crypto';
 import {
   AbsolutePath,
   ClaudeSessionId,
@@ -11,6 +13,7 @@ import {
   foldCase,
   parseSearchTerms,
   SEARCH_DEEP_GRACE_MS,
+  SEARCH_SNIPPET_MAX,
   SEARCH_SINCE_MS,
   type DaemonToHub,
   type DeepSearchRequest,
@@ -54,6 +57,9 @@ interface MachineRun {
 }
 
 interface Run<C> {
+  /** hub 產生的 id：送給 daemon、收 daemon 的回覆都用這個。 */
+  id: string;
+  /** 瀏覽器產生的 id：只用在回給發起的連線。 */
   searchId: string;
   client: C;
   userId: string;
@@ -88,6 +94,7 @@ function validClaudeId(id: string | null): string | null {
 }
 
 export class DeepSearchEngine<C> {
+  /** 以 hub 產生的 id 為鍵。 */
   private readonly runs = new Map<string, Run<C>>();
   private readonly limits: DeepSearchLimits;
   private readonly graceMs: number;
@@ -102,11 +109,13 @@ export class DeepSearchEngine<C> {
    * 先告訴瀏覽器要搜哪幾台（search.deepStarted），失聯與舊版的機器立刻回 deepDone。
    */
   start(client: C, userId: string, request: DeepSearchRequest): void {
+    // 只取消同一個使用者的；別人的 searchId 和這次一樣也不相干（各自用 hub 產生的 id）。
     for (const run of [...this.runs.values()]) {
-      if (run.userId === userId || run.searchId === request.searchId) this.finish(run, true);
+      if (run.userId === userId) this.finish(run, true);
     }
     const terms = parseSearchTerms(request.q);
     const run: Run<C> = {
+      id: randomUUID(),
       searchId: request.searchId,
       client,
       userId,
@@ -141,7 +150,7 @@ export class DeepSearchEngine<C> {
         timer: null,
       });
     }
-    this.runs.set(run.searchId, run);
+    this.runs.set(run.id, run);
     this.deps.sendClient(client, {
       type: 'search.deepStarted',
       searchId: run.searchId,
@@ -163,7 +172,7 @@ export class DeepSearchEngine<C> {
       }
       daemon.send({
         type: 'search.request',
-        searchId: run.searchId,
+        searchId: run.id,
         terms,
         mask: run.mask,
         since,
@@ -173,7 +182,7 @@ export class DeepSearchEngine<C> {
       const machine = run.machines.get(machineId)!;
       machine.timer = setTimeout(() => {
         // daemon 自己的 deadline 過了還沒回：當成逾時，叫它停。
-        this.deps.daemon(machineId)?.send({ type: 'search.cancel', searchId: run.searchId });
+        this.deps.daemon(machineId)?.send({ type: 'search.cancel', searchId: run.id });
         this.settle(run, machineId, 'timeout', 0);
       }, this.limits.deadlineMs + this.graceMs);
       machine.timer.unref();
@@ -183,8 +192,9 @@ export class DeepSearchEngine<C> {
 
   /** 瀏覽器取消（改字、再按 Enter、關視窗）：叫還在搜的 daemon 停下，寫 audit。 */
   cancel(client: C, searchId: string): void {
-    const run = this.runs.get(searchId);
-    if (run && run.client === client) this.finish(run, true);
+    for (const run of [...this.runs.values()]) {
+      if (run.client === client && run.searchId === searchId) this.finish(run, true);
+    }
   }
 
   onDaemonMessage(
@@ -266,17 +276,24 @@ export class DeepSearchEngine<C> {
     };
   }
 
-  /** 補 machineId；遮蔽模式再檢查一次（daemon 已遮好，這裡是第二道：舊規則或有問題的 daemon 不會把金鑰帶到裝置上）。 */
+  /**
+   * 補 machineId；片段最多 SEARCH_SNIPPET_MAX 字、命中位置一定落在片段裡（有問題的 daemon 也不能把整段原文送到裝置上）；
+   * 遮蔽模式再檢查一次（daemon 已遮好，這裡是第二道：舊規則或有問題的 daemon 不會把金鑰帶到裝置上）。
+   */
   private sanitize(run: Run<C>, machineId: string, item: SearchItem): SearchItem {
-    const out: SearchItem = { ...item, machineId };
-    if (!run.mask) return out;
-    const masked = maskSecrets(item.snippet);
-    if (masked === item.snippet) return out;
-    return {
-      ...out,
-      snippet: masked,
-      matchRanges: findTerms(foldCase(masked), run.terms) ?? [],
-    };
+    let snippet = item.snippet;
+    if (snippet.length > SEARCH_SNIPPET_MAX) {
+      let end = SEARCH_SNIPPET_MAX - 1;
+      const code = snippet.charCodeAt(end - 1);
+      if (code >= 0xd800 && code <= 0xdbff) end -= 1; // 不切開 surrogate pair
+      snippet = `${snippet.slice(0, end)}…`;
+    }
+    if (run.mask) snippet = maskSecrets(snippet);
+    const matchRanges =
+      snippet === item.snippet
+        ? item.matchRanges.filter(([a, b]) => a >= 0 && a < b && b <= snippet.length)
+        : (findTerms(foldCase(snippet), run.terms) ?? []);
+    return { ...item, machineId, snippet, matchRanges };
   }
 
   private settle(run: Run<C>, machineId: string, state: DeepSearchState, scanned: number): void {
@@ -301,13 +318,13 @@ export class DeepSearchEngine<C> {
 
   /** 結束一次搜尋：取消時叫還在搜的 daemon 停下；寫一筆 audit。 */
   private finish(run: Run<C>, cancelled: boolean, audit = true): void {
-    if (this.runs.get(run.searchId) !== run) return;
-    this.runs.delete(run.searchId);
+    if (this.runs.get(run.id) !== run) return;
+    this.runs.delete(run.id);
     for (const [machineId, machine] of run.machines) {
       if (machine.timer) clearTimeout(machine.timer);
       machine.timer = null;
       if (!settled(machine)) {
-        this.deps.daemon(machineId)?.send({ type: 'search.cancel', searchId: run.searchId });
+        this.deps.daemon(machineId)?.send({ type: 'search.cancel', searchId: run.id });
       }
     }
     if (!audit) return;

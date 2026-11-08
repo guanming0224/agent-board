@@ -1,6 +1,15 @@
 // 深層搜尋（P3 ③b，§3.6、驗收 7）：暫存資料夾裡的假對話紀錄，不碰 ~/.claude。
-import { createWriteStream, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  createReadStream,
+  createWriteStream,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import {
   DeepSearchLimits,
   parseSearchTerms,
@@ -9,9 +18,19 @@ import {
   type SearchItem,
 } from '@agent-board/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DeepSearcher, makePrefilter, searchScreen, type SearchRequest } from './deepSearch';
+import {
+  clampRequest,
+  DEEP_HARD_LIMITS,
+  DeepSearcher,
+  makePrefilter,
+  readLines,
+  searchScreen,
+  type Budget,
+  type SearchRequest,
+} from './deepSearch';
+import { indexTranscripts } from './sessionFiles';
 import { makeTempDir } from './test-support/harness';
-import { readTranscript, readTranscriptFile } from './transcript';
+import { countEntries, parseLine, readTranscript, readTranscriptFile } from './transcript';
 
 const temps: string[] = [];
 function temp(): string {
@@ -100,10 +119,15 @@ function request(
   };
 }
 
-function harness(config: string, screens: Record<string, string[]> = {}) {
+function harness(
+  config: string,
+  screens: Record<string, string[]> = {},
+  profiles: readonly string[] = [],
+) {
   const sent: DaemonToHub[] = [];
   const searcher = new DeepSearcher({
     configDir: config,
+    knownProfile: (profile) => profiles.includes(profile),
     screen: (sessionId) => screens[sessionId] ?? null,
     send: (m) => sent.push(m),
   });
@@ -203,34 +227,20 @@ describe('對話紀錄', () => {
     expect(done()).toMatchObject({ state: 'done', scannedSessions: 1, totalSessions: 2 });
   });
 
-  it('驗收 7：3 份 JSONL（一份 50MB），讀檔上限設小 → timeout 與正確的 scannedSessions；每 session ≤ 3 筆；同時讀對話紀錄檢視不被擋', async () => {
+  it('驗收 7：3 份 JSONL（一份 50MB），讀檔上限設小 → timeout 與正確的 scannedSessions；每 session ≤ 3 筆', async () => {
     const config = temp();
     writeTranscript(config, 1, [assistant('手續費 0.1425 (s1)')]);
     writeTranscript(config, 2, [assistant('手續費 0.1425 (s2)')]);
     const bigDir = join(config, 'projects', '-tmp-big');
     mkdirSync(bigDir, { recursive: true });
-    const big = join(bigDir, `${id(3)}.jsonl`);
-    await writeBig(big, 50 * 1024 * 1024, 500);
+    await writeBig(join(bigDir, `${id(3)}.jsonl`), 50 * 1024 * 1024, 500);
     // s1、s2 比較新，先讀；s3（50MB）讀到 8MB 就停。
     const targets = [target(1, 1), target(2, 2), target(3, 3)];
     const { searcher, items, done } = harness(config);
-    let searchDone = 0;
-    let viewerDone = 0;
-    const search = searcher
-      .start(request('手續費', targets, { maxBytes: 8 * 1024 * 1024 }))
-      .then(() => (searchDone = performance.now()));
-    // 對話紀錄檢視讀另一份大檔：走自己的佇列，不用等搜尋。
-    const viewer = readTranscript(config, id(3), { cursor: 0, limit: 5, query: null }).then(
-      (page) => {
-        viewerDone = performance.now();
-        return page;
-      },
-    );
-    const [page] = await Promise.all([viewer, search]);
-    expect(page.missing).toBe(false);
-    expect(page.total).toBeGreaterThan(10_000);
-    expect(searchDone).toBeGreaterThan(0);
-    expect(viewerDone).toBeGreaterThan(0);
+    const stats = await searcher.start(request('手續費', targets, { maxBytes: 8 * 1024 * 1024 }));
+    expect(stats.stopped).toBe('bytes');
+    // 每讀一塊（1MB）檢查一次：最多多讀一塊。
+    expect(stats.bytes).toBeLessThanOrEqual(9 * 1024 * 1024);
     expect(done()).toMatchObject({ state: 'timeout', scannedSessions: 2, totalSessions: 3 });
     const perSession = new Map<string, number>();
     for (const item of items()) {
@@ -241,23 +251,269 @@ describe('對話紀錄', () => {
     expect(perSession.get('s3')).toBeLessThanOrEqual(3);
     expect(perSession.get('s3')).toBeGreaterThan(0); // 讀到的那一段的命中照樣回
 
-    // 時間上限：deadline 設很短，一樣停在 timeout。
+    // 時間上限：時鐘走快 1000 倍（50MB 在 page cache 裡讀得比 50ms 還快），一樣停在 timeout。
     const slow = harness(config);
-    await slow.searcher.start(request('手續費', [target(3)], { deadlineMs: 50 }));
+    const start = Date.now();
+    const fast = new DeepSearcher({
+      configDir: config,
+      knownProfile: () => false,
+      screen: () => null,
+      send: (m) => slow.sent.push(m),
+      now: () => start + (Date.now() - start) * 1000,
+    });
+    const slowStats = await fast.start(request('手續費', [target(3)], { deadlineMs: 50 }));
+    expect(slowStats.stopped).toBe('deadline');
     expect(slow.done()).toMatchObject({ state: 'timeout', scannedSessions: 0, totalSessions: 1 });
   }, 60_000);
 
-  it('取消：停止讀檔、不再回 done；新的搜尋照常', async () => {
+  it('驗收 7：搜尋期間讀對話紀錄檢視不必等搜尋結束（兩條佇列並行）', async () => {
+    const config = temp();
+    writeTranscript(config, 1, [user('看一下'), assistant('好')]);
+    const bigDir = join(config, 'projects', '-tmp-big');
+    mkdirSync(bigDir, { recursive: true });
+    await writeBig(join(bigDir, `${id(3)}.jsonl`), 80 * 1024 * 1024, 2);
+    const { searcher, done } = harness(config);
+    // 搜尋整份 80MB（不設讀檔上限）；它先開始。
+    const startedAt = performance.now();
+    let searchDone = 0;
+    const search = searcher
+      .start(request('手續費', [target(3)]))
+      .then(() => (searchDone = performance.now()));
+    // 檢視器讀另一份小檔：走自己的佇列，不用等搜尋。若兩者排在同一條佇列，檢視器要等搜尋讀完 80MB。
+    const page = await readTranscript(config, id(1), { cursor: 0, limit: 5, query: null });
+    const viewerDone = performance.now();
+    expect(page.entries).toHaveLength(3); // user＋assistant 的文字與工具呼叫
+    // 檢視器回來時搜尋還在跑：還沒送 search.done。
+    expect(done()).toBeUndefined();
+    expect(searchDone).toBe(0);
+    await search;
+    expect(viewerDone).toBeLessThan(searchDone);
+    console.log(
+      `驗收 7 並行：檢視器 ${Math.round(viewerDone - startedAt)}ms、搜尋 ${Math.round(searchDone - startedAt)}ms`,
+    );
+    expect(done()).toMatchObject({ state: 'done', scannedSessions: 1 });
+  }, 60_000);
+
+  it('取消：下一塊就停止讀檔（讀的量遠小於檔案）、不再回 done；新的搜尋照常', async () => {
     const config = temp();
     const bigDir = join(config, 'projects', '-tmp-big');
     mkdirSync(bigDir, { recursive: true });
-    await writeBig(join(bigDir, `${id(3)}.jsonl`), 20 * 1024 * 1024, 100);
-    const { searcher, sent } = harness(config);
-    const first = searcher.start(request('手續費', [target(3)]));
-    setTimeout(() => searcher.cancel('q1'), 5);
-    await first;
+    await writeBig(join(bigDir, `${id(3)}.jsonl`), 40 * 1024 * 1024, 100);
+    const sent: DaemonToHub[] = [];
+    // 取消在讀第 3 塊時進來（每讀一塊前看一次時鐘：在那裡模擬 hub 的 search.cancel 剛好到）。
+    let checks = 0;
+    const searcher: DeepSearcher = new DeepSearcher({
+      configDir: config,
+      knownProfile: () => false,
+      screen: () => null,
+      send: (m) => sent.push(m),
+      now: () => {
+        checks += 1;
+        if (checks === 4) searcher.cancel('q1');
+        return Date.now();
+      },
+    });
+    const stats = await searcher.start(request('手續費', [target(3)]));
+    expect(stats.stopped).toBe('cancelled');
+    // 取消之後最多再讀一塊（1MB）：遠小於 40MB 的檔。
+    expect(stats.bytes).toBeLessThanOrEqual(5 * 1024 * 1024);
     expect(sent.some((m) => m.type === 'search.done')).toBe(false);
-    await searcher.start({ ...request('手續費', [target(3)]), searchId: 'q2' });
+
+    // 用真的計時器取消一次：一樣停下、不回 done。
+    const timed = harness(config);
+    const first = timed.searcher.start(request('手續費', [target(3)]));
+    setTimeout(() => timed.searcher.cancel('q1'), 1);
+    const timedStats = await first;
+    if (timedStats.stopped === 'cancelled') {
+      expect(timedStats.bytes).toBeLessThan(40 * 1024 * 1024);
+      expect(timed.sent.some((m) => m.type === 'search.done')).toBe(false);
+    }
+
+    const second = await searcher.start({ ...request('手續費', [target(3)]), searchId: 'q2' });
+    expect(second.stopped).toBeNull();
+    expect(second.bytes).toBeGreaterThanOrEqual(40 * 1024 * 1024);
     expect(sent.find((m) => m.type === 'search.done')).toMatchObject({ searchId: 'q2' });
   }, 30_000);
+
+  it('新的請求讓舊的讓位：正在跑的那個送出部分結果並回 timeout，新的照常跑完', async () => {
+    const config = temp();
+    const bigDir = join(config, 'projects', '-tmp-big');
+    mkdirSync(bigDir, { recursive: true });
+    await writeBig(join(bigDir, `${id(3)}.jsonl`), 40 * 1024 * 1024, 100);
+    writeTranscript(config, 1, [assistant('手續費 (s1)')]);
+    const { searcher, sent } = harness(config);
+    const first = searcher.start(request('手續費', [target(3)]));
+    await new Promise((r) => setTimeout(r, 5));
+    const second = searcher.start({ ...request('手續費', [target(1)]), searchId: 'q2' });
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.stopped).toBe('deadline');
+    expect(a.bytes).toBeLessThan(40 * 1024 * 1024);
+    expect(b.stopped).toBeNull();
+    const dones = sent.filter((m) => m.type === 'search.done');
+    expect(dones).toEqual([
+      expect.objectContaining({ searchId: 'q1', state: 'timeout', scannedSessions: 0 }),
+      expect.objectContaining({ searchId: 'q2', state: 'done', scannedSessions: 1 }),
+    ]);
+  }, 30_000);
+
+  it('停下之後，剩下的 session 本來就不必讀的（修改時間在範圍前、沒有 claude id）也算搜過', async () => {
+    const config = temp();
+    const bigDir = join(config, 'projects', '-tmp-big');
+    mkdirSync(bigDir, { recursive: true });
+    await writeBig(join(bigDir, `${id(3)}.jsonl`), 10 * 1024 * 1024, 100);
+    const old = writeTranscript(config, 2, [assistant('手續費 old')]);
+    const longAgo = new Date(Date.now() - 10 * 24 * 3_600_000);
+    utimesSync(old, longAgo, longAgo);
+    writeTranscript(config, 4, [assistant('手續費 (s4)')]);
+    const targets = [
+      target(3, 1), // 最新：讀到上限
+      target(2, 2), // 檔案在範圍之前：不必讀
+      { ...target(5, 3), claudeSessionId: null }, // 沒有對話紀錄：只搜畫面
+      target(4, 4), // 範圍內、沒讀到：不算
+    ];
+    const { searcher, done } = harness(config);
+    await searcher.start(request('手續費', targets, { maxBytes: 2 * 1024 * 1024 }));
+    expect(done()).toMatchObject({ state: 'timeout', scannedSessions: 2, totalSessions: 4 });
+  }, 30_000);
+
+  it('accountProfile 只認這台用過的帳號設定目錄；不認得的只搜畫面、不讀對話紀錄', async () => {
+    const config = temp();
+    const other = temp();
+    writeTranscript(other, 1, [assistant('risk.py 在別的帳號')]);
+    const screens = { s1: ['risk.py on screen'] };
+    const withProfile = { ...target(1), accountProfile: other };
+    const unknown = harness(config, screens);
+    await unknown.searcher.start(request('risk.py', [withProfile]));
+    expect(unknown.items().map((i) => i.kind)).toEqual(['screen']);
+    const known = harness(config, screens, [other]);
+    await known.searcher.start(request('risk.py', [withProfile]));
+    expect(known.items().map((i) => i.kind)).toEqual(['screen', 'transcript']);
+    // 相對路徑一律不讀。
+    const relative = harness(config, screens, ['rel/dir']);
+    await relative.searcher.start(
+      request('risk.py', [{ ...withProfile, accountProfile: 'rel/dir' }]),
+    );
+    expect(relative.items().map((i) => i.kind)).toEqual(['screen']);
+  });
+});
+
+describe('daemon 自己的防線', () => {
+  it('hub 送來的上限與 session 數收斂到天花板以內', () => {
+    const sessions = Array.from({ length: DEEP_HARD_LIMITS.sessions + 5 }, (_, n) => target(n));
+    const clamped = clampRequest(
+      request('risk', sessions, {
+        perSession: 1_000,
+        perMachine: 1_000_000,
+        maxBytes: 50 * 1024 ** 3,
+        deadlineMs: 3_600_000,
+      }),
+    );
+    expect(clamped.sessions).toHaveLength(DEEP_HARD_LIMITS.sessions);
+    expect(clamped.limits).toEqual({
+      perSession: DEEP_HARD_LIMITS.perSession,
+      perMachine: DEEP_HARD_LIMITS.perMachine,
+      maxBytes: DEEP_HARD_LIMITS.maxBytes,
+      deadlineMs: DEEP_HARD_LIMITS.deadlineMs,
+    });
+    // 比天花板小的照原樣。
+    expect(clampRequest(request('risk', [target(1)], { deadlineMs: 50 })).limits.deadlineMs).toBe(
+      50,
+    );
+  });
+
+  it('檔案清單一次掃完：不跟符號連結、同一個 id 有多份取最新、只收 <uuid>.jsonl', async () => {
+    const config = temp();
+    const older = writeTranscript(config, 1, [assistant('old')]);
+    const longAgo = new Date(Date.now() - 10 * 24 * 3_600_000);
+    utimesSync(older, longAgo, longAgo);
+    const newerDir = join(config, 'projects', '-tmp-newer');
+    mkdirSync(newerDir, { recursive: true });
+    writeFileSync(join(newerDir, `${id(1)}.jsonl`), assistant('new') + '\n');
+    writeFileSync(join(newerDir, 'notes.jsonl'), '{}\n');
+    const outside = join(temp(), 'secret.jsonl');
+    writeFileSync(outside, assistant('secret') + '\n');
+    symlinkSync(outside, join(newerDir, `${id(7)}.jsonl`));
+    symlinkSync(join(temp()), join(config, 'projects', '-tmp-linked-dir'));
+    const index = await indexTranscripts(config);
+    expect([...index.keys()]).toEqual([id(1)]);
+    expect(index.get(id(1))!.path).toBe(join(newerDir, `${id(1)}.jsonl`));
+  });
+
+  it('自己切行：和 readline 切出來的一樣（跨區塊、CRLF、最後一行沒有換行）；太長的行整行丟掉；符號連結開不起來', async () => {
+    const dir = temp();
+    const file = join(dir, 'lines.jsonl');
+    const lines = [
+      'a',
+      '',
+      'x'.repeat(700_000),
+      '中文'.repeat(300_000),
+      'crlf\r',
+      'y'.repeat(1_500_000),
+      'tail',
+    ];
+    writeFileSync(file, lines.join('\n'));
+    const budget = (): Budget => ({
+      deadline: Date.now() + 60_000,
+      maxBytes: Number.MAX_SAFE_INTEGER,
+      bytes: 0,
+      cancelled: false,
+    });
+    const ours: string[] = [];
+    const result = await readLines(file, budget(), Date.now, (line) => ours.push(line));
+    expect(result.stopped).toBeNull();
+    const theirs: string[] = [];
+    for await (const line of createInterface({
+      input: createReadStream(file, 'utf8'),
+      crlfDelay: Infinity,
+    })) {
+      theirs.push(line);
+    }
+    expect(ours.map((l) => l.length)).toEqual(theirs.map((l) => l.length));
+    expect(ours).toEqual(theirs);
+
+    // 超過 MAX_LINE_CHARS 的 3 倍位元組：整行丟掉，前後的行照常。
+    const huge = join(dir, 'huge.jsonl');
+    const out = createWriteStream(huge);
+    out.write('before\n');
+    const block = 'z'.repeat(1024 * 1024);
+    for (let i = 0; i < 25; i += 1) {
+      if (!out.write(block)) await new Promise((r) => out.once('drain', r));
+    }
+    out.write('\nafter\n');
+    await new Promise<void>((r) => out.end(r));
+    const kept: string[] = [];
+    await readLines(huge, budget(), Date.now, (line) => kept.push(line));
+    expect(kept).toEqual(['before', 'after']);
+
+    const link = join(dir, 'link.jsonl');
+    symlinkSync(file, link);
+    const viaLink: string[] = [];
+    expect(await readLines(link, budget(), Date.now, (line) => viaLink.push(line))).toEqual({
+      bytes: 0,
+      stopped: null,
+    });
+    expect(viaLink).toEqual([]);
+  }, 30_000);
+
+  it('countEntries 和 parseLine 算出的則數一樣', () => {
+    const samples = [
+      user('hi'),
+      user('   '),
+      assistant('text'),
+      toolResult('result'),
+      toolResult('  \n '),
+      progress(),
+      JSON.stringify({ type: 'user', isMeta: true, message: { content: 'meta' } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use' }, 3, null] } }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', content: 'plain' }, { type: 'image' }] },
+      }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '\u3000' }] } }),
+      JSON.stringify({ type: 'user', message: 'no content' }),
+      '{broken',
+    ];
+    for (const line of samples) expect(countEntries(line)).toBe(parseLine(line).length);
+  });
 });

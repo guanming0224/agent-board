@@ -254,10 +254,15 @@ export function makeSnippet(
 
 // ── 深層（③b，§3.6、§3.7）：hub 扇出給各台 daemon，daemon 搜對話紀錄 JSONL 與活著的 session 的終端機畫面 ──
 
-/** 深層：每個 session 最多幾筆、每台機器最多幾筆、每台讀檔總量上限、每台的時間上限（§3.6）。 */
+/**
+ * 深層：每個 session 最多幾筆、每台機器最多幾筆、每台讀檔總量上限、每台的時間上限（§3.6）。
+ * 讀檔量：規格原訂 300MB，但一台機器 7 天內的對話紀錄實測約 400MB，預設的 7 天搜尋會每次停在讀檔上限、
+ * 舊一點的 session 永遠搜不到。改成 1GB、主要靠 15 秒 deadline 擋（合成 400MB 約 1.2 秒讀完，熱 cache）。
+ * 這個數字偏離規格，待 GM 確認；要改回只改這一行。
+ */
 export const SEARCH_DEEP_PER_SESSION = 3;
 export const SEARCH_DEEP_PER_MACHINE = 100;
-export const SEARCH_DEEP_MAX_BYTES = 300 * 1024 * 1024;
+export const SEARCH_DEEP_MAX_BYTES = 1024 * 1024 * 1024;
 export const SEARCH_DEEP_DEADLINE_MS = 15_000;
 /** hub 等 daemon 的 `search.done` 比 daemon 自己的 deadline 多等這麼久；再沒回就當逾時並送取消。 */
 export const SEARCH_DEEP_GRACE_MS = 3_000;

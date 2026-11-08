@@ -128,7 +128,7 @@ describe('深層搜尋的協定（③b）', () => {
     expect(request.type === 'search.request' && request.limits).toEqual({
       perSession: SEARCH_DEEP_PER_SESSION,
       perMachine: 100,
-      maxBytes: 300 * 1024 * 1024,
+      maxBytes: 1024 * 1024 * 1024,
       deadlineMs: 15_000,
     });
     expect(HubToDaemon.safeParse({ ...request, terms: [] }).success, '沒有詞不送').toBe(false);

@@ -38,6 +38,11 @@ const PersistedState = z.object({
   sessions: z.array(PersistedSession),
   /** 已結束但結果還沒送到 hub 的 session。hello 只列活著的，hub 只能靠這個知道結果。 */
   endedRuntimes: z.array(SessionRuntime).default([]),
+  /**
+   * 這台開過 session 的帳號設定目錄（CLAUDE_CONFIG_DIR，非預設的那些）。深層搜尋只讀這些目錄底下的對話紀錄
+   * （P3 ③b）：session 結束、daemon 重啟後還認得。舊檔沒有這個欄位：升級後開過的才算。
+   */
+  accountProfiles: z.array(z.string()).default([]),
 });
 type PersistedState = z.infer<typeof PersistedState>;
 
@@ -51,6 +56,7 @@ export class SessionStore {
     memory: false,
     sessions: [],
     endedRuntimes: [],
+    accountProfiles: [],
   };
 
   constructor(dataDir: string) {
@@ -117,6 +123,17 @@ export class SessionStore {
     this.state.stuckMinutes = stuckMinutes;
     this.state.dispatch = dispatch;
     this.state.memory = memory;
+    this.save();
+  }
+
+  get accountProfiles(): readonly string[] {
+    return this.state.accountProfiles;
+  }
+
+  /** 記下開過 session 的帳號設定目錄（已記過就不寫檔）。 */
+  rememberAccountProfile(profile: string): void {
+    if (this.state.accountProfiles.includes(profile)) return;
+    this.state.accountProfiles = [...this.state.accountProfiles, profile];
     this.save();
   }
 

@@ -2,7 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NOT_PAUSED, type BoardPauseState, type Broadcast } from '@agent-board/protocol';
 import type { BoardSnapshot } from './backend';
-import { createHubBackend, mergeAfterReconnect } from './hubBackend';
+import {
+  createHubBackend,
+  DEEP_START_TIMEOUT_MS,
+  DEEP_TOTAL_TIMEOUT_MS,
+  mergeAfterReconnect,
+} from './hubBackend';
 
 class FakeSocket {
   static readonly OPEN = 1;
@@ -14,7 +19,7 @@ class FakeSocket {
   constructor() {
     FakeSocket.last = this;
   }
-  send() {}
+  send(_data: string) {}
   close() {}
   push(message: unknown) {
     this.onmessage?.({ data: JSON.stringify(message) });
@@ -158,5 +163,78 @@ describe('群發：hub 重啟後重連', () => {
     expect(mergeAfterReconnect(before, [broadcast('a', ['sent'])])[0]!.targets[0]!.state).toBe(
       'sent',
     );
+  });
+});
+
+describe('hubBackend 深層搜尋的看門狗', () => {
+  afterEach(() => vi.useRealTimers());
+
+  const request = {
+    q: 'risk.py',
+    scope: 'all',
+    since: '7d',
+    archived: false,
+    mask: false,
+  } as const;
+
+  it('hub 沒回 deepStarted（例如舊版 hub 回 invalid_message）：5 秒後當失敗、送 search.cancel', async () => {
+    const { backend, ws } = await connect();
+    const sent: string[] = [];
+    ws.send = (data: string) => sent.push(data);
+    vi.useFakeTimers();
+    const events: { type: string; error?: string }[] = [];
+    const handle = backend.deepSearch(request, (e) => events.push(e));
+    ws.push({ type: 'error', code: 'invalid_message', message: 'bad' });
+    vi.advanceTimersByTime(DEEP_START_TIMEOUT_MS - 1);
+    expect(events).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(events).toEqual([
+      { type: 'search.deepFailed', searchId: handle.searchId, error: 'no_reply' },
+    ]);
+    expect(sent.map((m) => JSON.parse(m) as { type: string })).toEqual([
+      expect.objectContaining({ type: 'search.deep', searchId: handle.searchId }),
+      { type: 'search.cancel', searchId: handle.searchId },
+    ]);
+    // 之後晚到的事件不再交給畫面。
+    ws.push({ type: 'search.deepStarted', searchId: handle.searchId, machines: [] });
+    expect(events).toHaveLength(1);
+  });
+
+  it('有 deepStarted 但某台一直沒 deepDone：過了總時間上限才失敗；全部結束就不再計時', async () => {
+    const { backend, ws } = await connect();
+    vi.useFakeTimers();
+    const events: { type: string; error?: string }[] = [];
+    const slow = backend.deepSearch(request, (e) => events.push(e));
+    ws.push({
+      type: 'search.deepStarted',
+      searchId: slow.searchId,
+      machines: [{ machineId: 'm1', totalSessions: 1 }],
+    });
+    vi.advanceTimersByTime(DEEP_START_TIMEOUT_MS * 2);
+    expect(events.map((e) => e.type)).toEqual(['search.deepStarted']);
+    vi.advanceTimersByTime(DEEP_TOTAL_TIMEOUT_MS);
+    expect(events.at(-1)).toEqual({
+      type: 'search.deepFailed',
+      searchId: slow.searchId,
+      error: 'no_reply',
+    });
+
+    const done: { type: string }[] = [];
+    const fast = backend.deepSearch(request, (e) => done.push(e));
+    ws.push({
+      type: 'search.deepStarted',
+      searchId: fast.searchId,
+      machines: [{ machineId: 'm1', totalSessions: 1 }],
+    });
+    ws.push({
+      type: 'search.deepDone',
+      searchId: fast.searchId,
+      machineId: 'm1',
+      state: 'done',
+      scannedSessions: 1,
+      totalSessions: 1,
+    });
+    vi.advanceTimersByTime(DEEP_TOTAL_TIMEOUT_MS * 2);
+    expect(done.map((e) => e.type)).toEqual(['search.deepStarted', 'search.deepDone']);
   });
 });

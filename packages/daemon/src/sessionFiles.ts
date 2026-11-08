@@ -135,6 +135,52 @@ export async function findTranscriptFiles(
   return found;
 }
 
+export interface TranscriptIndexEntry {
+  path: string;
+  mtimeMs: number;
+}
+
+const TRANSCRIPT_NAME = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+
+/**
+ * 一次掃完 `<config>/projects/*` 底下所有 `<uuid>.jsonl`，回「claude id（小寫）→ 最新那份」。
+ * 深層搜尋每次只掃一次，不必每個 session 各掃一遍所有專案資料夾（readdir 每個資料夾一次，lstat 只做在對話紀錄檔上）。
+ * 規則同 findTranscriptFiles：專案資料夾與檔案都不跟符號連結、路徑一定在 projects 底下、同一個 id 有多份取最新。
+ * stop() 回 true（逾時、取消）就提早結束，回目前掃到的。
+ */
+export async function indexTranscripts(
+  configDir: string,
+  stop: () => boolean = () => false,
+): Promise<Map<string, TranscriptIndexEntry>> {
+  const index = new Map<string, TranscriptIndexEntry>();
+  const projects = resolve(configDir, 'projects');
+  let dirents;
+  try {
+    dirents = await readdir(projects, { withFileTypes: true });
+  } catch {
+    return index;
+  }
+  for (const dirent of dirents) {
+    if (stop()) break;
+    if (!dirent.isDirectory()) continue;
+    const dir = join(projects, dirent.name);
+    if (!inside(projects, dir)) continue;
+    const files = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const file of files) {
+      const match = TRANSCRIPT_NAME.exec(file.name);
+      if (!match || !file.isFile()) continue;
+      const path = join(dir, file.name);
+      if (!inside(projects, path)) continue;
+      const info = await lstat(path).catch(() => null);
+      if (!info?.isFile()) continue;
+      const id = match[1]!.toLowerCase();
+      const seen = index.get(id);
+      if (!seen || info.mtimeMs > seen.mtimeMs) index.set(id, { path, mtimeMs: info.mtimeMs });
+    }
+  }
+  return index;
+}
+
 async function treeBytes(path: string): Promise<number> {
   const info = await lstat(path).catch(() => null);
   if (!info) return 0;

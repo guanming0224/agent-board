@@ -20,6 +20,8 @@ export type DeepState =
       searchId: string;
       machines: DeepMachine[];
       items: SearchItem[];
+      /** failed 的原因（連線斷了或 hub 沒回）。 */
+      error?: 'disconnected' | 'no_reply';
     };
 
 /** 把 hub 推來的深層事件併進畫面狀態（純函式，單元測試用）。不是這次 searchId 的事件不理。 */
@@ -27,7 +29,7 @@ export function reduceDeep(prev: DeepState, event: DeepSearchEvent): DeepState {
   if (prev.state === 'idle' || prev.state === 'blocked' || prev.searchId !== event.searchId) {
     return prev;
   }
-  if (event.type === 'search.deepFailed') return { ...prev, state: 'failed' };
+  if (event.type === 'search.deepFailed') return { ...prev, state: 'failed', error: event.error };
   let machines = prev.machines;
   let items = prev.items;
   if (event.type === 'search.deepStarted') {

@@ -275,6 +275,11 @@ export class Daemon {
     });
     this.deepSearch = new DeepSearcher({
       configDir: config.claudeConfigDir,
+      // 只認這台開過 session 的帳號設定目錄（記在 sessions.json，重啟後還在）與還在清單上的 session 用的。
+      knownProfile: (profile) =>
+        this.accountProfiles.has(profile) ||
+        this.store.accountProfiles.includes(profile) ||
+        this.store.sessions.some((s) => s.spec.accountProfile === profile),
       screen: (sessionId) => {
         const session = this.sessions.get(sessionId);
         // 規格只搜活著的 session 的畫面（結束後留著給人看的那些不算）。
@@ -786,7 +791,10 @@ export class Daemon {
     const { spec, sessionId } = entry;
     // 接續同一個 session：上一輪還沒送出的結果已不適用，不可蓋掉新的狀態。
     this.store.removeEnded(sessionId);
-    if (spec.accountProfile) this.accountProfiles.add(spec.accountProfile);
+    if (spec.accountProfile) {
+      this.accountProfiles.add(spec.accountProfile);
+      this.store.rememberAccountProfile(spec.accountProfile);
+    }
 
     const args = buildClaudeArgs({
       ...how,

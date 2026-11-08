@@ -6,7 +6,9 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
+  createWriteStream,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -553,6 +555,70 @@ test('全域搜尋深層：Enter 搜真 daemon 的對話紀錄與畫面、結果
   );
   for (const entry of deep) expect(entry.detail).not.toContain('sk-ant-demo03-deep');
   expect(deep.some((e) => e.detail.includes('zqdeep'))).toBe(true);
+});
+
+test('全域搜尋深層：改字就取消——WebSocket 上真的送出 search.cancel（同一個 searchId），audit 記 cancelled（P3 ③b 驗收 6）', async ({
+  page,
+}) => {
+  const live = await getSession(page.request, session.id);
+  // 一份大的對話紀錄（每行都命中，要逐行解析），讓 daemon 搜得夠久，改字時還在搜。
+  const projectDir = join(claudeConfigDir, 'projects', '-tmp-e2e-deep-big');
+  mkdirSync(projectDir, { recursive: true });
+  const big = join(projectDir, `${live.claudeSessionId}.jsonl`);
+  const out = createWriteStream(big);
+  const now = new Date().toISOString();
+  const line =
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: now,
+      message: { content: [{ type: 'text', text: `zqslow ${'慢慢讀 '.repeat(300)}` }] },
+    }) + '\n';
+  const block = line.repeat(200);
+  for (let written = 0; written < 300 * 1024 * 1024; written += Buffer.byteLength(block)) {
+    if (!out.write(block)) await new Promise((r) => out.once('drain', r));
+  }
+  await new Promise<void>((r) => out.end(r));
+  try {
+    const sentFrames: string[] = [];
+    page.on('websocket', (ws) => {
+      if (ws.url().includes('/ws/client'))
+        ws.on('framesent', (f) => sentFrames.push(String(f.payload)));
+    });
+    const sentOf = (type: string) =>
+      sentFrames
+        .map((f) => JSON.parse(f) as { type: string; searchId?: string })
+        .filter((m) => m.type === type);
+    await page.goto('/#/search');
+    const input = page.getByTestId('search-input');
+    await input.fill('zqslow');
+    await expect(page.getByTestId('search-deep')).toHaveAttribute('data-state', 'idle');
+    await input.press('Enter');
+    await expect(page.getByTestId('search-deep')).toHaveAttribute('data-state', 'running');
+    // 改字：取消進行中的深層搜尋。
+    await input.fill('zqslow2');
+    await expect(page.getByTestId('search-deep')).toHaveAttribute('data-state', 'idle');
+    await expect.poll(() => sentOf('search.cancel').length).toBe(1);
+    const [started] = sentOf('search.deep');
+    expect(sentOf('search.cancel')[0]).toEqual({
+      type: 'search.cancel',
+      searchId: started!.searchId,
+    });
+    // hub 那筆 audit：被取消、還在搜的那台寫 cancelled。
+    await expect
+      .poll(async () => {
+        const audit = (await (await page.request.get('/api/audit?limit=500')).json()) as {
+          action: string;
+          detail: string;
+        }[];
+        const entry = audit.find((e) => e.action === 'search.deep' && e.detail.includes('zqslow'));
+        return entry
+          ? (JSON.parse(entry.detail) as { cancelled: boolean; machines: { state: string }[] })
+          : null;
+      })
+      .toMatchObject({ cancelled: true, machines: [{ state: 'cancelled' }] });
+  } finally {
+    rmSync(big, { force: true });
+  }
 });
 
 test('daemon 被殺：卡片失聯；重啟：--resume 接回、畫面還在', async ({ page }) => {

@@ -159,10 +159,10 @@ PTY 只有兩個寫入點：`ManagedSession.write`（`packages/daemon/src/sessio
 
 **全域搜尋（P3 項目三）不送任何字。** 快速層（③a）只讀 hub 自己的 SQLite。深層（③b，2026-11-09，`docs/p3-spec.md` §3.6、CONTRACTS §16）只有使用者按 Enter（或「也搜對話與終端機」鈕）時才跑：
 瀏覽器送 `search.deep` → hub（`packages/hub/src/deepSearch.ts`）在**既有的** daemon WebSocket 上送 `search.request`／`search.cancel`（不是新的連線）→
-daemon（`packages/daemon/src/deepSearch.ts`）只做兩件本機的讀取：用 `fs.createReadStream` 逐行讀 `<CLAUDE_CONFIG_DIR>/projects/*/<claudeSessionId>.jsonl`（找檔沿用 `sessionFiles.ts` 的 `findTranscriptFiles`，解析沿用 `transcript.ts` 的 `parseLine`），
+daemon（`packages/daemon/src/deepSearch.ts`）只做兩件本機的讀取：用 `fs.open`（唯讀、`O_NOFOLLOW`）逐塊讀 `<CLAUDE_CONFIG_DIR>/projects/*/<claudeSessionId>.jsonl`（找檔用 `sessionFiles.ts` 的 `indexTranscripts`，規則同 `findTranscriptFiles`；解析沿用 `transcript.ts` 的 `parseLine`／`countEntries`；CLAUDE_CONFIG_DIR 只認這台開過 session 的），
 以及讀記憶體裡 headless xterm 的畫面（`ManagedSession.screenLines`，只讀 buffer，不寫 PTY）。比對是 protocol 的子字串規則（`parseSearchTerms`／`makeSnippet`），不是語意搜尋、不呼叫模型；
 結果只回 ≤ 160 字的片段（`search.result`／`search.done`），hub 只轉送給發起的那條瀏覽器連線、不存、不建索引（守 CONTRACTS §2），每次搜尋寫一筆 audit `search.deep`。
-daemon 端不開行程、不對外連線、不送 `terminal.input`；有讀檔總量（300MB）、時間（15 秒）、筆數上限與取消。
+daemon 端不開行程、不對外連線、不送 `terminal.input`；有讀檔總量（1GB）、時間（15 秒）、筆數上限與取消，hub 送來的上限 daemon 會再收斂到自己的天花板以內。
 
 全部暫停（P2 項目三，`hub.ts` 的 `pauseBoard`）的「立刻中斷」由 hub 對每個 RUN session 送
 `terminal.signal escape`（只有 Esc，不送任何文字；使用者按下按鈕才送，帶 `onlyIfStatus: 'running'` 讓 daemon 再確認）。

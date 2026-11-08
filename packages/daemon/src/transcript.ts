@@ -63,22 +63,36 @@ export function entriesOfLine(line: string): Raw[] {
   return parseLine(line).map((p) => p.raw);
 }
 
-/** 同 entriesOfLine，另帶搜尋比對用的全文（深層搜尋 deepSearch.ts 也用這一份，序號才和對話紀錄檢視一致）。 */
-export function parseLine(line: string): ParsedEntry[] {
+interface LineRecord {
+  type: 'user' | 'assistant';
+  at: string | null;
+  content: unknown;
+}
+
+/** 解析一行、只留下會產生內容的 user／assistant 紀錄；其他回 null（parseLine 與 countEntries 共用，規則才不會分岔）。 */
+function recordOf(line: string): LineRecord | null {
   let record: unknown;
   try {
     record = JSON.parse(line);
   } catch {
-    return [];
+    return null;
   }
-  if (!isRecord(record) || record.isMeta === true) return [];
+  if (!isRecord(record) || record.isMeta === true) return null;
   const type = record.type;
-  if (type !== 'user' && type !== 'assistant') return [];
+  if (type !== 'user' && type !== 'assistant') return null;
   const at =
     typeof record.timestamp === 'string' && IsoTime.safeParse(record.timestamp).success
       ? record.timestamp
       : null;
   const content = isRecord(record.message) ? record.message.content : undefined;
+  return { type, at, content };
+}
+
+/** 同 entriesOfLine，另帶搜尋比對用的全文（深層搜尋 deepSearch.ts 也用這一份，序號才和對話紀錄檢視一致）。 */
+export function parseLine(line: string): ParsedEntry[] {
+  const record = recordOf(line);
+  if (!record) return [];
+  const { type, at, content } = record;
   const out: ParsedEntry[] = [];
   const push = (role: Raw['role'], text: string, search = text) => {
     if (text.trim() !== '') out.push({ raw: { role, at, text }, search });
@@ -97,6 +111,33 @@ export function parseLine(line: string): ParsedEntry[] {
     } else if (block.type === 'tool_result') push('tool', toolResultText(block.content));
   }
   return out;
+}
+
+/** 有非空白字元（和 `trim() !== ''` 同義，但不複製字串）。 */
+const hasText = (text: string) => /\S/.test(text);
+
+/**
+ * 一行會產生幾則，和 `parseLine(line).length` 一樣，但不組搜尋全文（工具參數不 JSON.stringify）。
+ * 深層搜尋對「先篩就知道不會命中」的行只要算序號，用這個省 CPU。
+ */
+export function countEntries(line: string): number {
+  const record = recordOf(line);
+  if (!record) return 0;
+  const { content } = record;
+  if (typeof content === 'string') return hasText(content) ? 1 : 0;
+  if (!Array.isArray(content)) return 0;
+  let count = 0;
+  for (const block of content) {
+    if (!isRecord(block)) continue;
+    if (block.type === 'text' && typeof block.text === 'string') {
+      if (hasText(block.text)) count += 1;
+    } else if (block.type === 'tool_use') {
+      count += 1; // 顯示文字是「→ <name> …」，一定不是空白
+    } else if (block.type === 'tool_result' && hasText(toolResultText(block.content))) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 export interface TranscriptQuery {

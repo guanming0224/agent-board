@@ -682,7 +682,7 @@ export function SearchPanel() {
       )}
       {deep.state === 'failed' && (
         <p className="search-note err" role="alert" data-testid="search-deep-failed">
-          {t('search.deep.failed')}
+          {t(deep.error === 'no_reply' ? 'search.deep.noReply' : 'search.deep.failed')}
         </p>
       )}
       {deep.state === 'blocked' && (

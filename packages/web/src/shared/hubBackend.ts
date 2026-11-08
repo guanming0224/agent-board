@@ -1,5 +1,11 @@
 // 真後端：REST 走 routes 表，其餘走 /ws/client（CONTRACTS.md §6、§7）。登入後才連 WebSocket。
-import { HubToClient, routes, WS_PATHS } from '@agent-board/protocol';
+import {
+  HubToClient,
+  routes,
+  SEARCH_DEEP_DEADLINE_MS,
+  SEARCH_DEEP_GRACE_MS,
+  WS_PATHS,
+} from '@agent-board/protocol';
 import { progressOwnerKey, progressOwnerOf } from '@agent-board/protocol';
 import type {
   BoardPauseState,
@@ -94,6 +100,10 @@ async function request<N extends RouteName>(
   return res;
 }
 
+/** 深層搜尋：送出後多久沒收到 hub 的 search.deepStarted 就當 hub 沒收下（舊版 hub、訊息被拒）。 */
+export const DEEP_START_TIMEOUT_MS = 5_000;
+/** 深層搜尋整次最多等多久（各台的時間上限＋hub 的寬限＋網路餘裕）。 */
+export const DEEP_TOTAL_TIMEOUT_MS = SEARCH_DEEP_DEADLINE_MS + SEARCH_DEEP_GRACE_MS + 5_000;
 const RECONNECT_MAX_MS = 30_000;
 
 class HubConnection implements TerminalStream {
@@ -113,6 +123,8 @@ class HubConnection implements TerminalStream {
   /** 還沒回 deepDone 的機器。 */
   private searchWaiting = new Map<string, Set<string>>();
   private searchSeq = 0;
+  /** 深層搜尋的看門狗計時器（hub 沒回就當失敗，畫面不會一直停在「搜尋中」）。 */
+  private searchTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
 
   start(): void {
     this.wanted = true;
@@ -190,14 +202,38 @@ class HubConnection implements TerminalStream {
       queueMicrotask(() =>
         listener({ type: 'search.deepFailed', searchId, error: 'disconnected' }),
       );
+    } else {
+      // hub 收下會立刻回 deepStarted；各台最晚在時間上限＋寬限後回 deepDone。都沒等到就當失敗並叫 hub 停。
+      this.searchTimers.set(searchId, [
+        setTimeout(() => {
+          if (!this.searchWaiting.has(searchId)) this.failSearch(searchId);
+        }, DEEP_START_TIMEOUT_MS),
+        setTimeout(() => this.failSearch(searchId), DEEP_TOTAL_TIMEOUT_MS),
+      ]);
     }
     return {
       searchId,
       cancel: () => {
-        this.searchWaiting.delete(searchId);
+        this.clearSearch(searchId);
         if (this.searchListeners.delete(searchId)) this.send({ type: 'search.cancel', searchId });
       },
     };
+  }
+
+  /** 看門狗到了還沒結束：告訴畫面失敗、叫 hub 停（hub 若根本沒收下，這則只是多送）。 */
+  private failSearch(searchId: string): void {
+    const listener = this.searchListeners.get(searchId);
+    this.clearSearch(searchId);
+    if (!listener) return;
+    this.searchListeners.delete(searchId);
+    this.send({ type: 'search.cancel', searchId });
+    listener({ type: 'search.deepFailed', searchId, error: 'no_reply' });
+  }
+
+  private clearSearch(searchId: string): void {
+    for (const timer of this.searchTimers.get(searchId) ?? []) clearTimeout(timer);
+    this.searchTimers.delete(searchId);
+    this.searchWaiting.delete(searchId);
   }
 
   send(message: ClientToHub): boolean {
@@ -229,6 +265,7 @@ class HubConnection implements TerminalStream {
       // 深層搜尋綁在這條連線上：斷了就不會再有結果（hub 也已取消），告訴畫面。
       const searches = [...this.searchListeners];
       this.searchListeners.clear();
+      for (const searchId of [...this.searchTimers.keys()]) this.clearSearch(searchId);
       this.searchWaiting.clear();
       for (const [searchId, listener] of searches) {
         listener({ type: 'search.deepFailed', searchId, error: 'disconnected' });
@@ -332,7 +369,7 @@ class HubConnection implements TerminalStream {
           this.searchWaiting.get(message.searchId)?.delete(message.machineId);
         }
         if (this.searchWaiting.get(message.searchId)?.size === 0) {
-          this.searchWaiting.delete(message.searchId);
+          this.clearSearch(message.searchId);
           this.searchListeners.delete(message.searchId);
         }
         listener(message);

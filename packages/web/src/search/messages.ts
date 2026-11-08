@@ -53,6 +53,7 @@ export const zhTW: Record<string, string> = {
   'search.deep.empty': '各台機器都沒找到。',
   'search.deep.none': '範圍內沒有可搜的 session（已結束且這段時間沒有活動的不搜）。',
   'search.deep.failed': '和中控台的連線斷了，深層搜尋停止；恢復連線後再按一次。',
+  'search.deep.noReply': '中控台沒有回應深層搜尋（可能是中控台版本太舊）；稍後再按一次。',
   'search.deep.blocked': '遮蔽模式開著，查詢字像金鑰：不送出深層搜尋。',
   'search.kind.transcript': '對話',
   'search.kind.transcriptAt': '對話 #{n}',
@@ -139,6 +140,8 @@ export const en: Record<string, string> = {
     'No sessions to search in this scope (ended sessions with no activity in the time range are skipped).',
   'search.deep.failed':
     'Lost the connection to the board, so the search stopped. Try again once it reconnects.',
+  'search.deep.noReply':
+    'The board did not answer the deep search (it may be an older version). Try again later.',
   'search.deep.blocked': 'Masking is on and the query looks like a key, so it was not sent.',
   'search.kind.transcript': 'Transcript',
   'search.kind.transcriptAt': 'Transcript #{n}',

@@ -126,8 +126,10 @@ describe('深層搜尋：扇出、串流、狀態', () => {
     });
 
     const request = await a.daemon.next('search.request');
+    // hub 和 daemon 之間用 hub 自己產生的 id，不是瀏覽器的 searchId。
+    const did = request.searchId as string;
+    expect(did).not.toBe('d1');
     expect(request).toMatchObject({
-      searchId: 'd1',
       mask: false,
       terms: ['手續費', KEY.toLowerCase()],
     });
@@ -142,7 +144,7 @@ describe('深層搜尋：扇出、串流、狀態', () => {
 
     a.daemon.send({
       type: 'search.result',
-      searchId: 'd1',
+      searchId: did,
       items: [
         {
           kind: 'transcript',
@@ -175,7 +177,7 @@ describe('深層搜尋：扇出、串流、狀態', () => {
     });
     a.daemon.send({
       type: 'search.done',
-      searchId: 'd1',
+      searchId: did,
       state: 'done',
       scannedSessions: 2,
       totalSessions: 2,
@@ -215,24 +217,26 @@ describe('深層搜尋：扇出、串流、狀態', () => {
   it('取消：daemon 收到 search.cancel；之後晚到的結果不再轉送（驗收 6）；同一個人開新的會取消舊的', async () => {
     const { client, a } = await setup();
     client.send({ type: 'search.deep', searchId: 'd1', q: 'risk.py' });
-    await a.daemon.next('search.request');
+    const d1 = (await a.daemon.next('search.request')).searchId as string;
     client.send({ type: 'search.cancel', searchId: 'd1' });
-    expect(await a.daemon.next('search.cancel')).toMatchObject({ searchId: 'd1' });
+    expect(await a.daemon.next('search.cancel')).toMatchObject({ searchId: d1 });
     a.daemon.send({
       type: 'search.result',
-      searchId: 'd1',
+      searchId: d1,
       items: [{ kind: 'screen', sessionId: 's-a1', snippet: 'risk.py', matchRanges: [[0, 7]] }],
     });
     await new Promise((r) => setTimeout(r, 50));
     expect(client.of('search.deepResult')).toEqual([]);
     // 晚到的結果：hub 再叫它停一次（daemon 可能還在搜）。
-    expect(await a.daemon.next('search.cancel')).toMatchObject({ searchId: 'd1' });
+    expect(await a.daemon.next('search.cancel')).toMatchObject({ searchId: d1 });
 
     client.send({ type: 'search.deep', searchId: 'd2', q: 'risk.py' });
-    await a.daemon.next('search.request', (m) => m.searchId === 'd2');
+    const d2 = (await a.daemon.next('search.request', (m) => m.searchId !== d1)).searchId as string;
     client.send({ type: 'search.deep', searchId: 'd3', q: 'risk.py 2' });
-    expect(await a.daemon.next('search.cancel')).toMatchObject({ searchId: 'd2' });
-    await a.daemon.next('search.request', (m) => m.searchId === 'd3');
+    expect(await a.daemon.next('search.cancel', (m) => m.searchId === d2)).toMatchObject({
+      searchId: d2,
+    });
+    await a.daemon.next('search.request', (m) => m.searchId !== d1 && m.searchId !== d2);
     await until(() => auditRows().length === 2, 'audit');
     expect(
       auditRows().map((r) => (JSON.parse(r.detail) as { cancelled: boolean }).cancelled),
@@ -242,10 +246,11 @@ describe('深層搜尋：扇出、串流、狀態', () => {
   it('遮蔽：hub 轉送前再遮一次（daemon 沒遮好也不會把金鑰帶到裝置上）（驗收 9）', async () => {
     const { client, a } = await setup();
     client.send({ type: 'search.deep', searchId: 'd1', q: 'deploy', mask: true });
-    expect(await a.daemon.next('search.request')).toMatchObject({ mask: true });
+    const request = await a.daemon.next('search.request');
+    expect(request).toMatchObject({ mask: true });
     a.daemon.send({
       type: 'search.result',
-      searchId: 'd1',
+      searchId: request.searchId as string,
       items: [
         {
           kind: 'transcript',
@@ -264,16 +269,15 @@ describe('深層搜尋：扇出、串流、狀態', () => {
   it('daemon 過了 deadline 沒回 → timeout 並叫它停；搜到一半斷線 → offline', async () => {
     const { client, a } = await setup({ deepSearchDeadlineMs: 50, deepSearchGraceMs: 20 });
     client.send({ type: 'search.deep', searchId: 'd1', q: 'risk.py' });
-    expect(await a.daemon.next('search.request')).toMatchObject({
-      limits: expect.objectContaining({ deadlineMs: 50 }),
-    });
+    const first = await a.daemon.next('search.request');
+    expect(first).toMatchObject({ limits: expect.objectContaining({ deadlineMs: 50 }) });
     expect(await client.next('search.deepDone', (m) => m.machineId === a.machineId)).toMatchObject({
       state: 'timeout',
     });
-    expect(await a.daemon.next('search.cancel')).toMatchObject({ searchId: 'd1' });
+    expect(await a.daemon.next('search.cancel')).toMatchObject({ searchId: first.searchId });
 
     client.send({ type: 'search.deep', searchId: 'd2', q: 'risk.py' });
-    await a.daemon.next('search.request', (m) => m.searchId === 'd2');
+    await a.daemon.next('search.request', (m) => m.searchId !== first.searchId);
     a.daemon.ws.terminate();
     expect(
       await client.next(
@@ -288,8 +292,65 @@ describe('深層搜尋：扇出、串流、狀態', () => {
     client.send({ type: 'search.deep', searchId: 'd1', q: 'x' });
     expect(await client.next('search.deepStarted')).toMatchObject({ machines: [] });
     client.send({ type: 'search.deep', searchId: 'd2', q: 'risk.py' });
-    await a.daemon.next('search.request');
+    const request = await a.daemon.next('search.request');
     client.close();
-    expect(await a.daemon.next('search.cancel')).toMatchObject({ searchId: 'd2' });
+    expect(await a.daemon.next('search.cancel')).toMatchObject({ searchId: request.searchId });
+  });
+
+  it('別的使用者送一樣的 searchId：碰不到這次搜尋（各自用 hub 產生的 id），也取消不了', async () => {
+    const { owner, client, a } = await setup();
+    client.send({ type: 'search.deep', searchId: 'same', q: 'risk.py' });
+    const mine = (await a.daemon.next('search.request')).searchId as string;
+    const member = await hub.createMember(owner);
+    const intruder = await hub.client(member.cookie);
+    intruder.send({ type: 'search.cancel', searchId: 'same' });
+    intruder.send({ type: 'search.deep', searchId: 'same', q: 'risk.py' });
+    await intruder.next('search.deepStarted');
+    await new Promise((r) => setTimeout(r, 50));
+    // 送給 daemon 的（若有）是另一個 id。
+    for (const m of a.daemon.of('search.request')) expect(m.searchId).not.toBe(mine);
+    // 我的搜尋沒被取消：daemon 沒收到我的 cancel，結果照樣送到我這裡。
+    expect(a.daemon.of('search.cancel')).toEqual([]);
+    a.daemon.send({
+      type: 'search.result',
+      searchId: mine,
+      items: [{ kind: 'screen', sessionId: 's-a1', snippet: 'risk.py', matchRanges: [[0, 7]] }],
+    });
+    expect(await client.next('search.deepResult')).toMatchObject({ searchId: 'same' });
+    expect(intruder.of('search.deepResult')).toEqual([]);
+  });
+
+  it('daemon 回的片段超過 160 字截掉、命中位置超出片段的丟掉', async () => {
+    const { client, a } = await setup();
+    client.send({ type: 'search.deep', searchId: 'd1', q: 'risk.py' });
+    const request = await a.daemon.next('search.request');
+    a.daemon.send({
+      type: 'search.result',
+      searchId: request.searchId as string,
+      items: [
+        {
+          kind: 'transcript',
+          sessionId: 's-a1',
+          snippet: `risk.py ${'整段原文'.repeat(500)}`,
+          matchRanges: [[0, 7]],
+        },
+        {
+          kind: 'screen',
+          sessionId: 's-a1',
+          snippet: 'risk.py',
+          matchRanges: [
+            [0, 7],
+            [5, 99],
+            [6, 3],
+          ],
+        },
+      ],
+    });
+    const result = await client.next('search.deepResult');
+    const items = result.items as { snippet: string; matchRanges: number[][] }[];
+    expect(items[0]!.snippet.length).toBeLessThanOrEqual(160);
+    expect(items[0]!.snippet.endsWith('…')).toBe(true);
+    expect(items[0]!.matchRanges).toEqual([[0, 7]]);
+    expect(items[1]!.matchRanges).toEqual([[0, 7]]);
   });
 });

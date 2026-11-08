@@ -2,7 +2,7 @@
 // 為主，夾雜 progress、system 行，中英混合）。只量本機讀檔與解析，不碰 ~/.claude。
 //
 // 預設跑小規模（約 60MB、30 份），每次 `pnpm -r test` 都會印出數字；設 AB_DEEP_PERF=1 跑實際量級：
-// 225 份、共約 629MB，其中 7 天內修改的約 400MB（其中一台機器實測的量），用預設上限（300MB、15 秒）。
+// 225 份、共約 629MB，其中 7 天內修改的約 400MB（其中一台機器實測的量），用預設上限（1GB、15 秒）。
 import { createWriteStream, mkdirSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -142,10 +142,11 @@ describe('深層搜尋效能（合成資料）', () => {
         const start = performance.now();
         const searcher = new DeepSearcher({
           configDir: config,
+          knownProfile: () => false,
           screen: () => null,
           send: (m) => sent.push({ at: performance.now() - start, m }),
         });
-        await searcher.start({
+        const stats = await searcher.start({
           type: 'search.request',
           searchId: q,
           terms: parseSearchTerms(q),
@@ -161,7 +162,15 @@ describe('深層搜尋效能（合成資料）', () => {
           (n, s) => n + (s.m.type === 'search.result' ? s.m.items.length : 0),
           0,
         );
-        return { q, totalMs: Math.round(total), firstMs: first && Math.round(first), items, done };
+        return {
+          q,
+          totalMs: Math.round(total),
+          firstMs: first && Math.round(first),
+          items,
+          readMB: Math.round(stats.bytes / MB),
+          stopped: stats.stopped,
+          done,
+        };
       };
 
       const results = [await run('手續費 0.1425'), await run('zzqx-沒有這個')];
