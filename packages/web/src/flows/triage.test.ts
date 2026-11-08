@@ -5,14 +5,13 @@ import type { Approval, Session } from '@agent-board/protocol';
 import {
   contextLine,
   filterTriage,
-  groupReview,
   groupTriage,
+  inboxItems,
   keepSelection,
   leadApproval,
-  reviewItems,
   triageItems,
+  urgencyOrder,
 } from './triage';
-import { workItems } from './workItems';
 
 const at = (m: number) => new Date(Date.UTC(2026, 10, 6, 12, 0) - m * 60_000).toISOString();
 
@@ -204,29 +203,43 @@ describe('contextLine', () => {
   });
 });
 
-describe('審核中心', () => {
-  it('依種類分組：危險指令 → 權限 → 計畫 → 提問 → 等你回覆；不列故障與剛開好的', () => {
+describe('收件匣（P2 §1.2）', () => {
+  it('只列算「等你」的：列數＝頁首「等你 N」；NEW（剛開好）與額度用完不列', () => {
     const { sessions, approvals } = board();
-    const items = reviewItems(workItems({ sessions, approvals }));
-    const groups = groupReview(items);
-    expect(groups.map((g) => [g.group, g.items.map((i) => i.key)])).toEqual([
-      ['danger', ['a-danger']],
-      ['permission', ['a-perm']],
-      ['plan', ['a-plan']],
-      ['question', ['a-ask']],
-      ['reply', ['reply']],
+    const ids = inboxItems(sessions, approvals).map((i) => i.session.id);
+    expect(ids).not.toContain('idle');
+    expect(ids).not.toContain('quota');
+    expect(ids.length).toBe(waitingSessions(sessions, approvals).length);
+    expect([...ids].sort()).toEqual(
+      waitingSessions(sessions, approvals)
+        .map((s) => s.id)
+        .sort(),
+    );
+  });
+
+  it('依急迫：⛔ → ERR（錯誤、卡住）→ PERM → PLAN／ASK，同級等最久的在前', () => {
+    const { sessions, approvals } = board();
+    const ordered = urgencyOrder(inboxItems(sessions, approvals));
+    expect(ordered.map((i) => i.session.id)).toEqual([
+      'danger',
+      'stuck',
+      'err',
+      'perm',
+      'reply',
+      'plan',
+      'ask',
     ]);
   });
 
-  it('同組等最久的在前', () => {
-    const items = workItems({
-      sessions: [session({ id: 's1' }), session({ id: 's2' })],
-      approvals: [
-        approval({ id: 'new', sessionId: 's1', createdAt: at(1) }),
-        approval({ id: 'old', sessionId: 's2', createdAt: at(9) }),
-      ],
-    });
-    expect(groupReview(items)[0]?.items.map((i) => i.key)).toEqual(['old', 'new']);
+  it('依組別：沿用待處理的分組（決定 → 回覆 → 出問題）', () => {
+    const { sessions, approvals } = board();
+    const groups = groupTriage(inboxItems(sessions, approvals));
+    expect(groups.map((g) => [g.group, g.items.map((i) => i.session.id)])).toEqual([
+      ['decide', ['danger', 'perm', 'plan']],
+      ['reply', ['reply', 'ask']],
+      ['trouble', ['stuck', 'err']],
+      ['other', []],
+    ]);
   });
 });
 

@@ -25,11 +25,43 @@ interface ViewsUi {
   /** 畫布縮小（低於 xterm 門檻）時要不要換成摘要條。關掉就每張卡都一直是 xterm（GM 2026-11-06）。 */
   summaryWhenZoomedOut: boolean;
   setSummaryWhenZoomedOut: (on: boolean) => void;
+  /** 收件匣的排序（GM 2026-11-08 Q1）：預設依急迫，可切依組別；每台瀏覽器自己記。 */
+  inboxSort: InboxSort;
+  setInboxSort: (sort: InboxSort) => void;
+  /** 收件匣抽屜展開成寬版（看 diff 用）。 */
+  inboxWide: boolean;
+  setInboxWide: (wide: boolean) => void;
+  /** 右側面板蓋住的畫布寬度：聚焦卡片時把卡放在看得到的那一塊中央。 */
+  rightInset: number;
+  setRightInset: (px: number) => void;
+  /** 還沒被畫布框進畫面的團隊成員（開 #/team/<id> 時）。 */
+  pendingTeamFocus: string[] | null;
+  focusTeam: (memberIds: string[]) => void;
+  takePendingTeamFocus: () => string[] | null;
 }
+
+export type InboxSort = 'urgency' | 'group';
 
 const NARROW = '(max-width: 860px)';
 /** 每台瀏覽器自己記；讀不到（私密視窗、封鎖儲存）就用預設的「開」。 */
 const SUMMARY_KEY = 'agent-board.canvas.summary-when-zoomed-out';
+const INBOX_SORT_KEY = 'agent-board.inbox.sort';
+
+function readInboxSort(): InboxSort {
+  try {
+    return localStorage.getItem(INBOX_SORT_KEY) === 'group' ? 'group' : 'urgency';
+  } catch {
+    return 'urgency';
+  }
+}
+
+function saveInboxSort(sort: InboxSort): void {
+  try {
+    localStorage.setItem(INBOX_SORT_KEY, sort);
+  } catch {
+    // 存不了就只在這次有效
+  }
+}
 
 function readSummaryPref(): boolean {
   try {
@@ -75,5 +107,21 @@ export const useViewsUi = create<ViewsUi>((set, get) => ({
   setSummaryWhenZoomedOut: (summaryWhenZoomedOut) => {
     saveSummaryPref(summaryWhenZoomedOut);
     set({ summaryWhenZoomedOut });
+  },
+  inboxSort: readInboxSort(),
+  setInboxSort: (inboxSort) => {
+    saveInboxSort(inboxSort);
+    set({ inboxSort });
+  },
+  inboxWide: false,
+  setInboxWide: (inboxWide) => set({ inboxWide }),
+  rightInset: 0,
+  setRightInset: (rightInset) => set({ rightInset }),
+  pendingTeamFocus: null,
+  focusTeam: (memberIds) => set({ pendingTeamFocus: memberIds }),
+  takePendingTeamFocus: () => {
+    const ids = get().pendingTeamFocus;
+    if (ids !== null) set({ pendingTeamFocus: null });
+    return ids;
   },
 }));

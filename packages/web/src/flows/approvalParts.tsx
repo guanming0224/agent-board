@@ -1,4 +1,4 @@
-// 審核中心與收件匣共用：把 approval 內容畫出來、送出決定。
+// 收件匣的審核卡與手機收件匣共用：把 approval 內容畫出來、送出決定。
 import { useState } from 'react';
 import type { Approval, ApprovalDecision, Machine, User } from '@agent-board/protocol';
 import { useMaskText } from '../security';

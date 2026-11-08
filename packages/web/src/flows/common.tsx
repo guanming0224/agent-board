@@ -113,6 +113,13 @@ export function Msg({ note }: { note: Note | null }) {
 }
 
 /** hub 連不上：整頁淡化＋一行字，內容凍結（呼叫端同時停用操作）。 */
+/** 回到頁頂：疊在畫布上的次畫面（設定、封存）是自己捲動的框，不是整個視窗。 */
+export function scrollPageTop(): void {
+  const box = document.querySelector('.modal-body');
+  if (box) box.scrollTo(0, 0);
+  else scrollTo(0, 0);
+}
+
 export function Page({
   children,
   narrow,
@@ -299,7 +306,7 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
   );
 }
 
-/** `#/review/<sessionId>`、`#/inbox/<sessionId>`：畫布卡片的按鈕與推播通知用它指定要看哪個 session。 */
+/** `#/inbox/<sessionId>`、`#/archive/<sessionId>`：畫布卡片的按鈕與推播通知用它指定要看哪個 session。 */
 function targetFromHash(): string | null {
   const segment = location.hash.replace(/^#\/?/, '').split('/')[1];
   if (!segment) return null;

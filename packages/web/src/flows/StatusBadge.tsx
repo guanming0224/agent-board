@@ -1,4 +1,4 @@
-// 待處理與審核中心清單列上的狀態徽章：英文狀態代碼＋符號（GM 2026-11-08）。畫法和畫布卡片、側欄圖例
+// 收件匣清單列上的狀態徽章：英文狀態代碼＋符號（GM 2026-11-08）。畫法和畫布卡片、側欄圖例
 // 共用 views/session.tsx 的 CodeChip（樣式在 shared/styles/status.css）。
 import type { SessionStatus } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';

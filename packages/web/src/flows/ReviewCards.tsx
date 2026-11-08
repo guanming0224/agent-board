@@ -1,4 +1,4 @@
-// 審核中心：按「允許」之前先確認呼號（STYLE.md 邏輯 2、6）。
+// 審核卡：按「允許」之前先確認呼號（STYLE.md 邏輯 2、6）。收件匣展開一列、全尺寸終端機旁都用這一張。
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { useMaskText } from '../security';
@@ -15,36 +15,22 @@ import {
 import {
   callsign,
   Callsign,
-  Empty,
-  ErrorBox,
   handsClass,
   Lamp,
-  Loading,
   ModeChip,
   Msg,
-  Page,
   useCurrentUser,
   useListSettling,
   useNow,
   useProjects,
-  useTargetSession,
   useTwoStep,
   WaitAge,
   type Loaded,
   type Note,
 } from './common';
 import { terminalHash } from '../canvas/terminalRoute';
-import { DecisionHistory } from './DecisionHistory';
-import { StatusBadge } from './StatusBadge';
 import { summarizeTool } from './toolView';
-import {
-  contextLine,
-  groupReview,
-  keepSelection,
-  reviewGroupOf,
-  reviewItems,
-  type ReviewGroup,
-} from './triage';
+import { reviewGroupOf } from './triage';
 import { workItems, type WorkItem } from './workItems';
 
 interface CardContext {
@@ -391,7 +377,7 @@ function ReviewCard({
   item: WorkItem;
   context: CardContext;
   targeted: boolean;
-  /** 審核中心右側的詳細面板：多顯示原因與 session 最後的輸出。 */
+  /** 收件匣展開的審核卡：多顯示原因與 session 最後的輸出。 */
   detail?: boolean;
 }) {
   const t = useT();
@@ -504,205 +490,31 @@ function ReviewCard({
   );
 }
 
-const GROUP_LABEL: Record<ReviewGroup, string> = {
-  danger: 'flows.review.group.danger',
-  permission: 'flows.review.group.permission',
-  plan: 'flows.review.group.plan',
-  question: 'flows.review.group.question',
-  reply: 'flows.review.group.reply',
-};
-
-function isTyping(target: EventTarget | null): boolean {
-  return (
-    target instanceof HTMLElement &&
-    (target.isContentEditable || target.closest('input, textarea, select') !== null)
-  );
-}
-
-/** 窄螢幕清單在上、詳細在下：選了之後捲到詳細。 */
-const NARROW = '(max-width: 899px)';
-
-export function ReviewPage() {
-  const t = useT();
-  const mask = useMaskText();
-  const board = useBoard();
-  const projects = useProjects();
-  const me = useCurrentUser();
-  const target = useTargetSession();
-  const now = useNow();
-  const items = reviewItems(workItems(board));
-  const groups = groupReview(items);
-  const order = groups.flatMap((g) => g.items.map((item) => item.key));
-  const settling = useListSettling(items.map((item) => item.key).join('|'));
-  const context: CardContext = {
-    machines: board.machines,
-    projects: projects.data ?? [],
-    now,
-    me,
-    settling,
-  };
-
-  // 同一個 session 有多張卡時，指向排最前面的那張。
-  const targetKey = groups
-    .flatMap((g) => g.items)
-    .find((item) => (item.approval?.sessionId ?? item.session?.id) === target)?.key;
-  const loaded = !(projects.loading && !projects.data);
-
-  const [picked, setPicked] = useState<string | null>(null);
-  const previous = useRef(order);
-  // 選中的處理掉之後，選原本位置的下一個（不跳回最上面）。
-  const selected = keepSelection(previous.current, order, picked);
-  useEffect(() => {
-    previous.current = order;
-    if (selected !== picked) setPicked(selected);
-  });
-  // 從畫布或網址指定的 session：選它。
-  useEffect(() => {
-    if (targetKey) setPicked(targetKey);
-  }, [targetKey]);
-
-  const listRef = useRef<HTMLElement>(null);
-  const detailRef = useRef<HTMLDivElement>(null);
-  const select = (key: string, focusRow = false) => {
-    setPicked(key);
-    if (focusRow) {
-      listRef.current
-        ?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`)
-        ?.focus({ preventScroll: false });
-    }
-  };
-  const move = (step: 1 | -1) => {
-    if (order.length === 0) return;
-    const at = selected === null ? -1 : order.indexOf(selected);
-    const next = order[Math.max(0, Math.min(order.length - 1, at + step))];
-    if (next) select(next, true);
-  };
-
-  // j／k、↑↓ 換選中的項目；在輸入框裡不搶。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || isTyping(e.target)) return;
-      const inList = listRef.current?.contains(e.target as Node) ?? false;
-      const free = e.target === document.body || e.target === document.documentElement;
-      if (!inList && !free) return;
-      if (e.key === 'j' || e.key === 'ArrowDown') {
-        e.preventDefault();
-        move(1);
-      } else if (e.key === 'k' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        move(-1);
-      }
-    };
-    addEventListener('keydown', onKey);
-    return () => removeEventListener('keydown', onKey);
-  });
-
-  const current = items.find((item) => item.key === selected) ?? null;
-
-  return (
-    <Page>
-      <header className="page-head">
-        <h1>{t('flows.review.title')}</h1>
-        {items.length > 0 && (
-          <span className="sub" data-testid="review-total">
-            {t('flows.review.total', { n: items.length })}
-          </span>
-        )}
-      </header>
-      {target && loaded && !targetKey && (
-        <p className="blocked target-missing" role="status" data-testid="review-target-missing">
-          {t('flows.review.targetNone')}
-        </p>
-      )}
-      {projects.error && (
-        <ErrorBox
-          what={t('flows.error.projects', { error: projects.error })}
-          how={t('flows.error.projectsHow')}
-          onRetry={projects.reload}
-        />
-      )}
-      {!loaded ? (
-        <Loading />
-      ) : items.length === 0 ? (
-        <Empty
-          title={t('flows.waiting.none')}
-          next={
-            <>
-              {t('flows.review.emptyNext')} <a href="#/new">{t('flows.new.title')}</a>
-            </>
-          }
-        />
-      ) : (
-        <div className="review-layout">
-          <nav className="review-queue" ref={listRef} aria-label={t('flows.review.listAria')}>
-            {groups.map(({ group, items: rows }) => (
-              <section key={group} data-testid={`review-group-${group}`}>
-                <h2 className="group-title">
-                  {t(GROUP_LABEL[group])}
-                  <span className="count num">{rows.length}</span>
-                </h2>
-                <ul>
-                  {rows.map((item) => (
-                    <li key={item.key}>
-                      <button
-                        type="button"
-                        className="review-row"
-                        data-key={item.key}
-                        data-testid={`review-row-${item.key}`}
-                        aria-current={item.key === selected ? 'true' : undefined}
-                        tabIndex={item.key === selected ? 0 : -1}
-                        onClick={() => {
-                          select(item.key);
-                          if (matchMedia(NARROW).matches) {
-                            detailRef.current?.scrollIntoView({ block: 'start' });
-                          }
-                        }}
-                      >
-                        <span className="row-top">
-                          <StatusBadge kind={reviewGroupOf(item)} />
-                          <span className="row-name">
-                            {item.session?.name ?? t('flows.review.unknownSession')}
-                          </span>
-                          <WaitAge since={item.since} now={now} />
-                        </span>
-                        <span className="row-context">
-                          {mask(
-                            item.session ? contextLine({ ...item, session: item.session }) : '',
-                          )}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ))}
-            <p className="keys">{t('flows.review.keys')}</p>
-          </nav>
-          <div className="review-detail" ref={detailRef}>
-            {current && (
-              <ReviewCard
-                key={current.key}
-                item={current}
-                context={context}
-                targeted={current.key === targetKey}
-                detail
-              />
-            )}
-          </div>
-        </div>
-      )}
-      {loaded && <DecisionHistory me={me} />}
-    </Page>
-  );
-}
-
-/** 全尺寸終端機旁用：只列這個 session 待決的 approval，按鈕與規則和審核中心同一套。 */
-export function SessionReviewCards({ sessionId }: { sessionId: string }) {
+/**
+ * 一個 session 的審核卡，按鈕與規則全部同一套（危險指令按兩次、原因必填）。
+ * 全尺寸終端機旁只列待決的 approval；收件匣展開一列時連「等你回覆」「故障」也列（includeSession）。
+ */
+export function SessionReviewCards({
+  sessionId,
+  includeSession = false,
+  detail = false,
+  settling: outerSettling = false,
+}: {
+  sessionId: string;
+  includeSession?: boolean;
+  detail?: boolean;
+  /** 外層清單剛換過（處理完一項、下一項滑上來）：短暫停用，連點不會按到別人。 */
+  settling?: boolean;
+}) {
   const board = useBoard();
   const projects = useProjects();
   const me = useCurrentUser();
   const now = useNow();
-  const items = workItems(board).filter((item) => item.approval?.sessionId === sessionId);
+  const items = workItems(board).filter(
+    (item) =>
+      item.approval?.sessionId === sessionId ||
+      (includeSession && !item.approval && item.session?.id === sessionId),
+  );
   const settling = useListSettling(items.map((item) => item.key).join('|'));
   if (items.length === 0) return null;
   const context: CardContext = {
@@ -710,12 +522,12 @@ export function SessionReviewCards({ sessionId }: { sessionId: string }) {
     projects: projects.data ?? [],
     now,
     me,
-    settling,
+    settling: settling || outerSettling,
   };
   return (
     <div className="flows session-reviews">
       {items.map((item) => (
-        <ReviewCard key={item.key} item={item} context={context} targeted={false} />
+        <ReviewCard key={item.key} item={item} context={context} targeted={false} detail={detail} />
       ))}
     </div>
   );

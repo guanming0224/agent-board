@@ -1,89 +1,209 @@
-import { useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
-import { CanvasPage, QueuePage, TerminalPage } from './canvas';
+// 路由（P2 §1）：畫布是唯一主畫面且常駐，收件匣、團隊是右側面板（互斥），設定、封存細節、完整新增表單是
+// 置中次畫面，可疊在右側面板之上。全尺寸終端機、登入、首次引導仍是整頁。手機（≤ 640px）的收件匣、團隊、
+// 設定是全螢幕頁。網址規則在 views/overlay.ts。
+import { useEffect, useState, type ReactNode } from 'react';
+import { CanvasPage, InboxDrawer, TerminalPage } from './canvas';
 import {
   ArchivePage,
   InboxPage,
   LoginPage,
   NewSessionPage,
   OnboardingPage,
-  ReviewPage,
   SettingsPage,
 } from './flows';
 import { applyAccountLocale } from './flows/locale';
 import { markBooted } from './shared/boot';
+import { useT } from './shared/i18n';
 import { isDemo, useBoard } from './shared/store';
-import { TeamPage } from './team';
-import { AppHeader, type TabName } from './views';
+import { TeamContent, TeamDrawer } from './team';
+import {
+  cameFrom,
+  closeModal,
+  closeRight,
+  markHistory,
+  replaceHash,
+  resolve,
+  toggleInbox,
+  useOverlay,
+  useViewsUi,
+  type ModalKind,
+  type RightPanel,
+} from './views';
+import { ModalLayer, PhonePage } from './views/Overlays';
 
-const ROUTES: Record<string, ComponentType> = {
-  canvas: CanvasPage,
-  queue: QueuePage,
-  terminal: TerminalPage,
-  team: TeamPage,
-  new: NewSessionPage,
-  review: ReviewPage,
-  inbox: InboxPage,
-  settings: SettingsPage,
-  archive: ArchivePage,
-  onboarding: OnboardingPage,
-  login: LoginPage,
-};
-
-/** 這些頁面自己沒有導覽，要包 App 頁首。畫布與待處理由 PageShell 自帶。 */
-const WITH_HEADER: Record<string, TabName> = {
-  new: 'canvas',
-  review: 'review',
-  settings: 'settings',
-  archive: 'settings',
-};
-
-const PUBLIC_ROUTES = new Set(['login', 'onboarding']);
 const PHONE_WIDTH = 640;
+const PHONE_QUERY = `(max-width: ${PHONE_WIDTH}px)`;
+const PUBLIC_PAGES = new Set(['login', 'onboarding']);
 
-function currentRoute(): string {
-  const name = location.hash.replace(/^#\/?/, '').split('/')[0] ?? '';
-  return name in ROUTES ? name : 'canvas';
+function hashOf(url: string): string {
+  try {
+    return new URL(url).hash;
+  } catch {
+    return '';
+  }
 }
 
-function WithHeader({ tab, children }: { tab: TabName; children: ReactNode }) {
-  const header = useRef<HTMLDivElement>(null);
+function isPhone(): boolean {
+  return typeof matchMedia !== 'undefined' && matchMedia(PHONE_QUERY).matches;
+}
 
-  // 流程頁的 sticky 元素要避開頁首，頁首高度會隨換行改變。
+function usePhone(): boolean {
+  const [phone, setPhone] = useState(isPhone);
   useEffect(() => {
-    const element = header.current;
-    if (!element) return;
-    const observer = new ResizeObserver(() => {
-      document.documentElement.style.setProperty(
-        '--app-header-height',
-        `${element.offsetHeight}px`,
-      );
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
+    const query = matchMedia(PHONE_QUERY);
+    const onChange = () => setPhone(query.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
   }, []);
+  return phone;
+}
+
+/** 打字中（含終端機 xterm 的 textarea）：Esc 與 I 交給它，不關面板（Esc 在終端機是中斷 Claude）。 */
+function isTyping(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.closest('input, textarea, select, .xterm, [role="textbox"]') !== null)
+  );
+}
+
+interface Nav {
+  hash: string;
+  right: RightPanel | null;
+  /** 每次網址變一次：同一個 #/inbox/<id> 再送一次（推播點兩次）也要重新捲到那一項。 */
+  nonce: number;
+}
+
+/** 舊網址換成新網址；有換就回 true（換完會再收到一次 hashchange）。 */
+function redirect(hash: string): boolean {
+  const { view } = resolve(hash, null);
+  if (view.kind !== 'redirect') return false;
+  if (view.inboxSort) useViewsUi.getState().setInboxSort(view.inboxSort);
+  replaceHash(view.to);
+  return true;
+}
+
+function ModalContent({ kind }: { kind: ModalKind }) {
+  if (kind === 'settings') return <SettingsPage />;
+  if (kind === 'archive') return <ArchivePage />;
+  return <NewSessionPage />;
+}
+
+const MODAL_LABEL: Record<ModalKind, string> = {
+  settings: 'flows.settings.title',
+  archive: 'flows.archived.title',
+  new: 'flows.new.title',
+};
+
+/** 手機：上一筆歷史就是 app 裡的畫面就上一頁，否則回收件匣（手機的首頁）。 */
+function phoneBack() {
+  if (cameFrom() !== null) history.back();
+  else replaceHash('#/inbox');
+}
+
+function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
+  const t = useT();
+  const { view } = resolve(nav.hash, nav.right);
+  const modal = view.kind === 'board' ? view.modal : null;
+  const right = nav.right;
+
+  // 手機（≤ 640px）：收件匣、團隊、設定、新增都是全螢幕頁；畫布只有開 #/canvas 時才有。
+  if (phone) {
+    if (modal) {
+      return (
+        <PhonePage onBack={phoneBack} testId={`phone-${modal}`}>
+          <ModalContent kind={modal} />
+        </PhonePage>
+      );
+    }
+    if (right?.kind === 'inbox') return <InboxPage />;
+    if (right?.kind === 'team') {
+      return (
+        <PhonePage onBack={phoneBack} testId="phone-team">
+          <div className="phone-team">
+            <TeamContent teamId={right.teamId} />
+          </div>
+        </PhonePage>
+      );
+    }
+    return <CanvasPage />;
+  }
 
   return (
     <>
-      <div ref={header} style={{ position: 'sticky', top: 0, zIndex: 20 }}>
-        <AppHeader tab={tab} />
+      {/* 畫布永遠掛著（開面板不卸載，終端機不重連）；次畫面開著時整層 inert，焦點不會跑到背後。 */}
+      <div className="board-layer" inert={modal !== null}>
+        <CanvasPage />
+        {right?.kind === 'inbox' && <InboxDrawer target={right.target} nonce={nav.nonce} />}
+        {right?.kind === 'team' && <TeamDrawer teamId={right.teamId} />}
       </div>
-      {children}
+      {modal && (
+        <ModalLayer label={t(MODAL_LABEL[modal])} onClose={closeModal} testId="modal">
+          <ModalContent kind={modal} />
+        </ModalLayer>
+      )}
     </>
   );
 }
 
 export function App() {
-  const [route, setRoute] = useState(currentRoute);
+  const [nav, setNav] = useState<Nav>(() => ({
+    hash: location.hash,
+    right: resolve(location.hash, null).right,
+    nonce: 0,
+  }));
   const [checked, setChecked] = useState(isDemo);
   const backend = useBoard((s) => s.backend);
+  const phone = usePhone();
 
   useEffect(() => {
-    if (!location.hash && innerWidth <= PHONE_WIDTH) location.hash = '#/inbox';
-    const onChange = () => setRoute(currentRoute());
+    if (!location.hash && innerWidth <= PHONE_WIDTH) replaceHash('#/inbox');
+    // 開頁的這一筆沒有「上一筆」：關面板時用 replace，不會上一頁跳出 app。
+    markHistory(null);
+    const onChange = (e?: HashChangeEvent) => {
+      if (e) markHistory(hashOf(e.oldURL));
+      if (redirect(location.hash)) return;
+      setNav((prev) => ({
+        hash: location.hash,
+        right: resolve(location.hash, prev.right).right,
+        nonce: prev.nonce + 1,
+      }));
+    };
     onChange();
     addEventListener('hashchange', onChange);
     return () => removeEventListener('hashchange', onChange);
   }, []);
+
+  // 頁首、收件匣的開關從這裡讀現在開著什麼。
+  const { view } = resolve(nav.hash, nav.right);
+  const modal = view.kind === 'board' ? view.modal : null;
+  const onBoard = view.kind === 'board';
+  useEffect(() => {
+    useOverlay.setState({ right: onBoard ? nav.right : null, modal });
+  }, [nav.right, modal, onBoard]);
+
+  // Esc 只關最上層；I 開關收件匣。打字中（終端機、輸入框）一律不攔。
+  useEffect(() => {
+    if (!onBoard || phone) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || isTyping(e.target)) return;
+      if (e.key === 'Escape') {
+        // 等別的元件先處理（卡片選單、快速建立、對話框會 preventDefault），沒人處理才關面板。
+        setTimeout(() => {
+          if (e.defaultPrevented) return;
+          const { modal: open, right } = useOverlay.getState();
+          if (open) closeModal();
+          else if (right) closeRight();
+        }, 0);
+      } else if ((e.key === 'i' || e.key === 'I') && !e.shiftKey) {
+        if (useOverlay.getState().modal) return;
+        e.preventDefault();
+        toggleInbox();
+      }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [onBoard, phone]);
 
   useEffect(() => {
     if (isDemo) return;
@@ -96,7 +216,8 @@ export function App() {
         else {
           // 已登入：畫面用帳號的語言（只在開頁時套一次，之後切換由頁首／設定頁負責）。
           if (!cancelled) applyAccountLocale(user);
-          if (PUBLIC_ROUTES.has(currentRoute())) location.hash = '#/canvas';
+          const now = resolve(location.hash, null).view;
+          if (now.kind === 'page' && PUBLIC_PAGES.has(now.page)) location.hash = '#/canvas';
         }
       } catch {
         // hub 連不上時停在登入頁，那裡會說明怎麼辦。
@@ -116,13 +237,21 @@ export function App() {
 
   if (!checked) return null;
 
-  const Page = ROUTES[route] ?? CanvasPage;
-  const tab = WITH_HEADER[route];
-  return tab ? (
-    <WithHeader tab={tab}>
-      <Page />
-    </WithHeader>
-  ) : (
-    <Page />
-  );
+  let content: ReactNode;
+  if (view.kind === 'page') {
+    content =
+      view.page === 'terminal' ? (
+        <TerminalPage />
+      ) : view.page === 'login' ? (
+        <LoginPage />
+      ) : (
+        <OnboardingPage />
+      );
+  } else if (view.kind === 'redirect') {
+    // 轉址中（下一個 hashchange 就會換成新網址）。
+    content = null;
+  } else {
+    content = <Board nav={nav} phone={phone} />;
+  }
+  return content;
 }

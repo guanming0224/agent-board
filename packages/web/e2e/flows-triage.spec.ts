@@ -137,11 +137,26 @@ async function open(page: Page, route: string, seed: Seed = {}) {
     const { backend } = useBoard.getState();
     const calls: unknown[] = [];
     Object.assign(window, { __calls: calls, __board: useBoard });
-    backend.decideApproval = async (a: { id: string }, decision: unknown) => {
+    backend.decideApproval = async (a: { id: string; sessionId: string }, decision: unknown) => {
       calls.push({ type: 'decide', id: a.id, decision });
-      useBoard.setState((state: { approvals: { id: string }[] }) => ({
-        approvals: state.approvals.filter((x) => x.id !== a.id),
-      }));
+      // 和 hub 一樣：決定後 approval 消失；那個 session 沒有別的待決項目就回到工作中。
+      useBoard.setState(
+        (state: {
+          approvals: { id: string; sessionId: string }[];
+          sessions: { id: string; status: string }[];
+        }) => {
+          const approvals = state.approvals.filter((x) => x.id !== a.id);
+          const left = approvals.some((x) => x.sessionId === a.sessionId);
+          return {
+            approvals,
+            sessions: left
+              ? state.sessions
+              : state.sessions.map((x) =>
+                  x.id === a.sessionId ? { ...x, status: 'running', statusDetail: null } : x,
+                ),
+          };
+        },
+      );
     };
     backend.sendPrompt = (sessionId: string, text: string) => {
       calls.push({ type: 'prompt', sessionId, text });
@@ -218,30 +233,74 @@ test.afterEach(async ({ page }) => {
   expect(problems.get(page)).toEqual([]);
 });
 
-test.describe('待處理', () => {
+const urgencyIds = (page: Page) =>
+  page
+    .getByTestId('inbox-urgency')
+    .locator('.triage-row')
+    .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+
+test.describe('收件匣（待處理＋審核中心合併）', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test('分四組、各組數量、組內危險指令置頂與等最久的在前；「等你」和頁首一致', async ({ page }) => {
+  test('預設依急迫：⛔ → ERR → PERM → PLAN／ASK，同級等最久的在前；NEW 與額度用完不列；列數＝頁首「等你」', async ({
+    page,
+  }) => {
+    await page.goto('about:blank');
+    await page.goto('/?demo=1#/canvas');
+    await page.evaluate(() => localStorage.removeItem('agent-board.inbox.sort'));
+    await open(page, 'inbox', board());
+    await expect(page.getByTestId('inbox-sort-urgency')).toHaveAttribute('aria-pressed', 'true');
+    await expect
+      .poll(() => urgencyIds(page))
+      .toEqual([
+        'queue-danger',
+        'queue-err',
+        'queue-perm',
+        'queue-perm2',
+        'queue-reply',
+        'queue-plan',
+        'queue-ask',
+      ]);
+    await expect(page.getByTestId('queue-idle')).toHaveCount(0);
+    await expect(page.getByTestId('queue-quota')).toHaveCount(0);
+    await expect(page.getByTestId('waiting-count')).toHaveText('7');
+    await expect(page.getByTestId('inbox-button').locator('b')).toHaveText('7');
+    await expect(page.getByTestId('triage-note')).toContainText('1 個額度用完');
+    await expect(page.getByTestId('triage-note')).toContainText('1 個剛開好還沒做事');
+
+    // 切「依組別」並記住（重新整理後還是依組別）
+    await page.getByTestId('inbox-sort-group').click();
+    await expect(page.getByTestId('triage-group-decide')).toBeVisible();
+    await page.reload();
+    await expect(page.getByTestId('inbox-sort-group')).toHaveAttribute('aria-pressed', 'true');
+    await page.getByTestId('inbox-sort-urgency').click();
+    expect(await page.evaluate(() => localStorage.getItem('agent-board.inbox.sort'))).toBe(
+      'urgency',
+    );
+  });
+
+  test('依組別（舊網址 #/queue 轉過來）：分三組、各組數量、組內危險指令置頂與等最久的在前', async ({
+    page,
+  }) => {
     await open(page, 'queue', board());
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/inbox');
+    await expect(page.getByTestId('inbox-sort-group')).toHaveAttribute('aria-pressed', 'true');
     await expect
       .poll(() => rowIds(page, 'decide'))
       .toEqual(['queue-danger', 'queue-perm', 'queue-perm2', 'queue-plan']);
     expect(await rowIds(page, 'reply')).toEqual(['queue-reply', 'queue-ask']);
-    expect(await rowIds(page, 'trouble')).toEqual(['queue-err', 'queue-quota']);
-    expect(await rowIds(page, 'other')).toEqual(['queue-idle']);
+    // 額度用完不算等你，收件匣不列（只在下方說明）；剛開好（NEW）也不列。
+    expect(await rowIds(page, 'trouble')).toEqual(['queue-err']);
+    await expect(page.getByTestId('triage-group-other')).toHaveCount(0);
     await expect(page.getByTestId('queue-busy')).toHaveCount(0);
     await expect(page.getByTestId('triage-count-decide')).toHaveText('4');
     await expect(page.getByTestId('triage-count-reply')).toHaveText('2');
 
-    // 頁首的「等你」（attention.ts）：額度用完與剛開好的不算，頁面說明差在哪。
+    // 頁首的「等你」（attention.ts）＝收件匣列數；額度用完與剛開好的不算，說明差在哪。
     await expect(page.getByTestId('waiting-count')).toHaveText('7');
-    await expect(page.getByTestId('triage-waiting').locator('b')).toHaveText('7');
+    await expect(page.getByTestId('inbox-drawer').locator('.triage-row')).toHaveCount(7);
     await expect(page.getByTestId('triage-note')).toContainText('1 個額度用完');
     await expect(page.getByTestId('triage-note')).toContainText('1 個剛開好還沒做事');
-    // 剛開好的是 NEW 灰（不算等你），回覆是 ASK 黃（GM 2026-11-08）。
-    const idleBadge = page.getByTestId('queue-idle').locator('.badge');
-    await expect(idleBadge).toHaveText('◌NEW');
-    await expect(idleBadge).toHaveCSS('background-color', 'rgb(154, 164, 178)');
     await expect(page.getByTestId('queue-reply').locator('.badge')).toHaveText('◇ASK');
 
     // 每列：徽章、名稱、呼號、一行摘要、等多久
@@ -262,10 +321,12 @@ test.describe('待處理', () => {
     await setBoard(page, { sessions: board().sessions!.filter((s) => s.id === 'err') });
     await expect(page.getByTestId('triage-group-decide')).toContainText('沒有要你允許或審核的。');
     await expect(page.getByTestId('triage-group-reply')).toContainText('沒有在等你回覆的。');
-    await expect(page.getByTestId('triage-note')).not.toContainText('不算');
+    await expect(page.getByTestId('triage-note')).toHaveCount(0);
   });
 
-  test('鍵盤：j／k、↑↓ 移動，Enter 在畫布上打開；N 照常跳到下一個', async ({ page }) => {
+  test('鍵盤：j／k、↑↓ 移動，Enter 展開審核卡；N 照常跳到下一個，抽屜不關並同步標出', async ({
+    page,
+  }) => {
     await open(page, 'queue', board());
     await expect(page.getByTestId('queue-danger')).toBeVisible();
     await page.keyboard.press('j');
@@ -279,21 +340,30 @@ test.describe('待處理', () => {
     // 只有一列可以 Tab 進來（roving tabindex）
     await expect(page.locator('.triage-row[tabindex="0"]')).toHaveCount(1);
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/#\/canvas/);
+    await expect(page.getByTestId('inbox-toggle-perm')).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByTestId('review-a-perm')).toBeVisible();
+    await expect(page).toHaveURL(/#\/inbox$/);
 
-    await page.evaluate(() => (location.hash = '#/queue'));
-    await expect(page.getByTestId('queue-danger')).toBeVisible();
-    await page.keyboard.press('n');
-    await expect(page).toHaveURL(/#\/canvas/);
-    // 「下一個」從剛才打開的那列接著走（順序照 pendingQueue：⛔ → 故障 → 等你）。
+    // 「在畫布上看」：框出那張卡，抽屜不關
+    await page.getByTestId('inbox-show-perm2').click();
     const focused = () =>
       page.evaluate(async () => {
         const path = '/src/views/uiStore.ts';
         const { useViewsUi } = await import(/* @vite-ignore */ path);
         return useViewsUi.getState().focusId as string | null;
       });
-    await expect.poll(focused).not.toBe('perm');
-    expect(await focused()).toBeTruthy();
+    await expect.poll(focused).toBe('perm2');
+    await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('n');
+    // 抽屜照開；「下一個」框出的卡在收件匣裡也標出來。
+    await expect(page).toHaveURL(/#\/inbox$/);
+    await expect.poll(focused).not.toBe('perm2');
+    const id = await focused();
+    expect(id).toBeTruthy();
+    await expect(page.getByTestId(`queue-${id}`)).toHaveClass(/focused/);
   });
 
   test('列上的動作：允許一次、拒絕要原因、危險指令按兩次並先顯示全文', async ({ page }) => {
@@ -342,7 +412,7 @@ test.describe('待處理', () => {
       });
   });
 
-  test('列上的動作：回覆送進 session、回答提問、計畫去審核中心、標記完成、開終端機', async ({
+  test('列上的動作：回覆送進 session、回答提問、計畫展開審核卡、標記完成、開終端機', async ({
     page,
   }) => {
     await open(page, 'queue', board());
@@ -368,14 +438,15 @@ test.describe('待處理', () => {
         { type: 'decide', id: 'a-ask', decision: { behavior: 'answer', text: 'v2' } },
         { type: 'update', id: 'err', patch: { markDone: true } },
       ]);
-    // 額度用完沒有「標記完成」（只能等）
-    await expect(page.getByTestId('queue-quota').getByRole('button')).toHaveCount(0);
     await expect(
-      page.getByTestId('queue-quota').getByRole('link', { name: '開啟終端機' }),
-    ).toHaveAttribute('href', '#/terminal/quota');
-    await page.getByTestId('queue-plan').getByRole('link', { name: '審核計畫' }).click();
-    await expect(page).toHaveURL(/#\/review\/plan$/);
-    await expect(page.getByTestId('review-a-plan')).toBeFocused();
+      page.getByTestId('queue-perm').getByRole('link', { name: '開啟終端機' }),
+    ).toHaveAttribute('href', '#/terminal/perm');
+    // 計畫：在列上展開審核卡（批准計畫／要求修改），抽屜不換頁
+    await page.getByTestId('queue-plan').getByRole('button', { name: '審核計畫' }).click();
+    await expect(page).toHaveURL(/#\/inbox$/);
+    const plan = page.getByTestId('review-a-plan');
+    await expect(plan.getByRole('button', { name: '批准計畫' })).toBeVisible();
+    await expect(plan.getByRole('button', { name: '要求修改' })).toBeVisible();
   });
 
   test('成員：危險指令的按鈕停用並說明', async ({ page }) => {
@@ -400,7 +471,7 @@ test.describe('待處理', () => {
     await expect(page.getByTestId('queue-perm')).toBeVisible();
     await expect(page.getByTestId('queue-err')).toBeVisible();
     // 篩選不改「等你」的數量（和頁首一致）
-    await expect(page.getByTestId('triage-waiting').locator('b')).toHaveText('7');
+    await expect(page.getByTestId('waiting-count')).toHaveText('7');
     await page.getByTestId('triage-filter-team').selectOption({ label: '全部' });
     await page.getByTestId('triage-filter-machine').selectOption({ label: 'rig-b' });
     await expect(page.locator('.triage-row')).toHaveCount(2);
@@ -409,41 +480,34 @@ test.describe('待處理', () => {
   });
 });
 
-test.describe('審核中心', () => {
+test.describe('收件匣：展開審核卡（原審核中心）', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test('左邊依種類分組、選一項看詳細；處理完選下一項；j／k 換項', async ({ page }) => {
+  test('點列展開審核卡；一次展開一列；處理完展開原本位置的下一列', async ({ page }) => {
     await open(page, 'review', board());
-    const groups = page.locator('.review-queue section');
-    await expect(groups).toHaveCount(5);
-    await expect(page.getByTestId('review-group-danger')).toContainText('危險指令1');
-    await expect(page.getByTestId('review-group-permission').locator('.review-row')).toHaveCount(2);
-    // 故障與剛開好的沒有東西可審
-    await expect(page.getByTestId('review-row-err')).toHaveCount(0);
-    await expect(page.getByTestId('review-row-idle')).toHaveCount(0);
-    await expect(page.getByTestId('review-total')).toHaveText('6 項待決定');
-
-    // 危險指令置頂並預設選中；詳細寫出原因
-    await expect(page.getByTestId('review-row-a-danger')).toHaveAttribute('aria-current', 'true');
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/inbox');
+    // 預設不展開；點列名展開，詳細寫出原因
+    await expect(page.locator('.session-reviews')).toHaveCount(0);
+    await page.getByTestId('inbox-toggle-danger').click();
     const card = page.getByTestId('review-a-danger');
     await expect(card.locator('.why')).toHaveText(
       '這個指令命中危險指令清單，要你親自確認才會執行。',
     );
     await expect(card.locator('.command')).toHaveText(DANGER_CMD);
+    // 展開時列上的快速按鈕收起來，按鈕只有審核卡上那一組
+    await expect(
+      page.getByTestId('queue-danger').getByRole('button', { name: '允許一次' }),
+    ).toHaveCount(1);
 
-    // 鍵盤換項
-    await page.keyboard.press('j');
+    // 點列的空白處也能展開；一次只展開一列
+    await page.getByTestId('queue-perm').locator('.row-sign').click();
     await expect(page.getByTestId('review-a-perm')).toBeVisible();
-    await expect(page.getByTestId('review-row-a-perm')).toBeFocused();
-    await page.keyboard.press('ArrowDown');
-    await expect(page.getByTestId('review-a-perm2')).toBeVisible();
-    await page.keyboard.press('k');
-    await expect(page.getByTestId('review-a-perm')).toBeVisible();
+    await expect(card).toHaveCount(0);
 
-    // 處理完選原本位置的下一個，不跳回最上面的危險指令
+    // 處理完展開原本位置的下一個，不跳回最上面的危險指令
     await page.getByTestId('review-a-perm').getByRole('button', { name: '允許一次' }).click();
     await expect(page.getByTestId('review-a-perm2')).toBeVisible();
-    await expect(page.getByTestId('review-row-a-perm2')).toHaveAttribute('aria-current', 'true');
+    await expect(page.getByTestId('inbox-toggle-perm2')).toHaveAttribute('aria-expanded', 'true');
     // 剛換上來的項目短暫停用，連點不會按到別人
     await expect(
       page.getByTestId('review-a-perm2').getByRole('button', { name: '允許一次' }),
@@ -452,14 +516,14 @@ test.describe('審核中心', () => {
   });
 
   test('決定列：拒絕和必填原因在同一排；長計畫先收合，可以展開', async ({ page }) => {
-    await open(page, 'review', board());
-    await page.getByTestId('review-row-a-perm').click();
+    await open(page, 'inbox', board());
+    await page.getByTestId('inbox-toggle-perm').click();
     const card = page.getByTestId('review-a-perm');
     const row = card.locator('.decision-bar .deny-row');
     await expect(row.getByLabel('拒絕原因（必填）')).toBeVisible();
     await expect(row.getByRole('button', { name: '拒絕' })).toBeVisible();
 
-    await page.getByTestId('review-row-a-plan').click();
+    await page.getByTestId('inbox-toggle-plan').click();
     const plan = page.getByTestId('review-a-plan');
     const toggle = plan.getByRole('button', { name: '展開全文' });
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
@@ -477,7 +541,7 @@ test.describe('審核中心', () => {
   });
 
   test('最近的決定：打開才讀，顯示結果與原因；成員看到說明', async ({ page }) => {
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       ...board(),
       patch: `window.__audit = 0; backend.listAudit = async (f) => { window.__audit += 1; window.__auditFilter = f; return [
         { id: 'h1', userId: 'u-demo', sessionId: 'perm', action: 'approval.decide', at: new Date().toISOString(),
@@ -503,7 +567,7 @@ test.describe('審核中心', () => {
       limit: 20,
     });
 
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       ...board(),
       patch: `backend.currentUser = async () => ({ id: 'u2', name: 'pat', role: 'member', locale: 'zh-TW' });`,
     });
@@ -516,7 +580,10 @@ for (const width of [320, 375]) {
   test.describe(`${width}px`, () => {
     test.use({ viewport: { width, height: 760 }, hasTouch: true });
 
-    test('待處理：沒有水平捲軸，動作按鈕夠大，展開拒絕原因也不撐版面', async ({ page }) => {
+    // 手機寬度：舊網址 #/queue、#/review/<id> 轉成收件匣，收件匣在手機是全螢幕（沿用手機版的大按鈕）。
+    test('#/queue 轉成全螢幕收件匣：沒有水平捲軸，按鈕夠大，展開拒絕原因也不撐版面', async ({
+      page,
+    }) => {
       const seed = board();
       seed.sessions = seed.sessions!.map((s) =>
         s.id === 'perm'
@@ -528,27 +595,26 @@ for (const width of [320, 375]) {
           : s,
       );
       await open(page, 'queue', seed);
-      await expect(page.getByTestId('queue-perm')).toBeVisible();
+      await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/inbox');
+      await expect(page.getByTestId('inbox-a-perm')).toBeVisible();
+      await expect(page.getByTestId('inbox-drawer')).toHaveCount(0);
       expect(await noOverflow(page)).toBe(true);
-      const allow = page.getByTestId('queue-perm').getByRole('button', { name: '允許一次' });
+      const allow = page.getByTestId('inbox-a-perm').getByRole('button', { name: '允許一次' });
       expect((await allow.boundingBox())!.height).toBeGreaterThanOrEqual(40);
-      await page.getByTestId('queue-perm').getByRole('button', { name: '拒絕' }).click();
-      await page.getByTestId('queue-danger').getByRole('button', { name: '允許一次' }).click();
-      await expect(page.getByTestId('queue-danger').locator('.armed .command')).toBeVisible();
+      await page.getByTestId('inbox-a-perm').getByRole('button', { name: '拒絕' }).click();
+      await page.getByTestId('inbox-a-danger').getByRole('button', { name: '允許一次' }).click();
+      await expect(page.getByTestId('inbox-a-danger').locator('.armed .command')).toBeVisible();
       expect(await noOverflow(page)).toBe(true);
     });
 
-    test('審核中心：清單在上、詳細在下，選了捲到詳細；沒有水平捲軸', async ({ page }) => {
-      await open(page, 'review', board());
-      const list = (await page.locator('.review-queue').boundingBox())!;
-      const detail = (await page.locator('.review-detail').boundingBox())!;
-      expect(detail.y).toBeGreaterThan(list.y + list.height - 1);
+    test('#/review/<id> 轉成 #/inbox/<id>：那一項在可視範圍；沒有水平捲軸', async ({ page }) => {
+      await open(page, 'review/ask', board());
+      await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/inbox/ask');
+      await expect(page.getByTestId('inbox-a-ask')).toBeInViewport();
+      await expect(page.getByTestId('inbox-a-ask')).toHaveClass(/targeted/);
       expect(await noOverflow(page)).toBe(true);
-      await page.getByTestId('review-row-a-ask').click();
-      await expect(page.getByTestId('review-a-ask')).toBeInViewport();
-      await page.getByTestId('review-row-a-danger').click();
-      await page.getByTestId('review-a-danger').getByRole('button', { name: '允許一次' }).click();
-      await expect(page.getByTestId('review-a-danger').locator('.armed .command')).toHaveText(
+      await page.getByTestId('inbox-a-danger').getByRole('button', { name: '允許一次' }).click();
+      await expect(page.getByTestId('inbox-a-danger').locator('.armed .command')).toHaveText(
         DANGER_CMD,
       );
       expect(await noOverflow(page)).toBe(true);

@@ -33,7 +33,10 @@ export function LinkPanel() {
       if (!(e.target instanceof Node) || !root.current?.contains(e.target)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setOpen(false);
+      }
     };
     document.addEventListener('pointerdown', onDown, true);
     document.addEventListener('keydown', onKey);

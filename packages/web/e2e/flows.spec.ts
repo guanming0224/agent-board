@@ -100,11 +100,26 @@ async function open(page: Page, route: string, seed: Seed = {}) {
     const { backend } = useBoard.getState();
     const calls: unknown[] = [];
     Object.assign(window, { __calls: calls, __board: useBoard });
-    backend.decideApproval = async (a: { id: string }, decision: unknown) => {
+    backend.decideApproval = async (a: { id: string; sessionId: string }, decision: unknown) => {
       calls.push({ type: 'decide', id: a.id, decision });
-      useBoard.setState((state: { approvals: { id: string }[] }) => ({
-        approvals: state.approvals.filter((x) => x.id !== a.id),
-      }));
+      // 和 hub 一樣：決定後 approval 消失；那個 session 沒有別的待決項目就回到工作中。
+      useBoard.setState(
+        (state: {
+          approvals: { id: string; sessionId: string }[];
+          sessions: { id: string; status: string }[];
+        }) => {
+          const approvals = state.approvals.filter((x) => x.id !== a.id);
+          const left = approvals.some((x) => x.sessionId === a.sessionId);
+          return {
+            approvals,
+            sessions: left
+              ? state.sessions
+              : state.sessions.map((x) =>
+                  x.id === a.sessionId ? { ...x, status: 'running', statusDetail: null } : x,
+                ),
+          };
+        },
+      );
     };
     backend.sendPrompt = (sessionId: string, text: string) => {
       calls.push({ type: 'prompt', sessionId, text });
@@ -141,8 +156,12 @@ async function open(page: Page, route: string, seed: Seed = {}) {
   }, `#/${route}`);
 }
 
-/** 審核中心一次只展開一項：從左邊（手機是上面）的清單選。 */
-const pick = (page: Page, key: string) => page.getByTestId(`review-row-${key}`).click();
+/** 收件匣一次展開一列（一個 session）：點列名展開原本審核中心的審核卡。 */
+const pick = (page: Page, sessionId: string) =>
+  page.getByTestId(`inbox-toggle-${sessionId}`).click();
+
+/** 設定、新增等次畫面疊在畫布上（P2 §1.2）：畫布在背後，找元素要限定在次畫面裡。 */
+const modal = (page: Page) => page.getByTestId('modal');
 
 const calls = (page: Page) =>
   page.evaluate(() => (window as unknown as { __calls: Record<string, unknown>[] }).__calls);
@@ -213,11 +232,12 @@ test.afterEach(async ({ page }) => {
   expect(problems.get(page)).toEqual([]);
 });
 
-test.describe('審核中心', () => {
+test.describe('收件匣抽屜：審核卡（原審核中心）', () => {
   test.use({ locale: 'zh-TW' });
 
   test('demo 資料：呼號在最上方，允許一次真的走後端', async ({ page }) => {
-    await open(page, 'review');
+    await open(page, 'inbox');
+    await pick(page, 's-auth');
     const card = page.getByTestId('review-a-1');
     await expect(card.locator('.sign .callsign')).toHaveText('demo-studio / project @ ab/fix-auth');
     await expect(card.locator('.sign .chip')).toHaveText('default');
@@ -236,11 +256,12 @@ test.describe('審核中心', () => {
   });
 
   test('拒絕沒填原因不可送出，只有空白也不行', async ({ page }) => {
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       machines: [rigA],
       sessions: [session({ id: 's1', name: 'Fix', machineId: 'm-a' })],
       approvals: [approval({ id: 'a1', sessionId: 's1' })],
     });
+    await pick(page, 's1');
     const card = page.getByTestId('review-a1');
     const reason = card.getByLabel('拒絕原因（必填）');
     await card.getByRole('button', { name: '拒絕' }).click();
@@ -283,8 +304,10 @@ test.describe('審核中心', () => {
   });
 
   test('危險指令：置頂、紅線、按一次不送，第一次顯示全文，按兩次才送一次', async ({ page }) => {
-    await open(page, 'review', dangerSeed());
-    await expect(page.locator('.review').first()).toHaveAttribute('data-testid', 'review-d1');
+    await open(page, 'inbox', dangerSeed());
+    // 依急迫：危險指令置頂
+    await expect(page.locator('[data-row-id]').first()).toHaveAttribute('data-row-id', 's1');
+    await pick(page, 's1');
     const card = page.getByTestId('review-d1');
     await expect(card.getByRole('alert')).toContainText('⛔');
     await expect(card.getByRole('alert')).toContainText('git push --force');
@@ -316,7 +339,8 @@ test.describe('審核中心', () => {
   });
 
   test('危險指令：超過 4 秒要重來，手滑連點不算兩次', async ({ page }) => {
-    await open(page, 'review', dangerSeed());
+    await open(page, 'inbox', dangerSeed());
+    await pick(page, 's1');
     const card = page.getByTestId('review-d1');
     await card.getByRole('button', { name: '允許一次' }).click();
     await expect(card.getByRole('button', { name: '再按一次確認' })).toBeVisible();
@@ -332,7 +356,7 @@ test.describe('審核中心', () => {
   });
 
   test('diff 配 + −，顏色只有 diff 是綠的', async ({ page }) => {
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       machines: [rigA],
       sessions: [session({ id: 's1', name: 'Edit', machineId: 'm-a' })],
       approvals: [
@@ -348,6 +372,7 @@ test.describe('審核中心', () => {
         }),
       ],
     });
+    await pick(page, 's1');
     const diff = page.locator('.diff');
     await expect(diff).toHaveAttribute('aria-label', '程式碼差異：刪除 1 行、新增 2 行');
     await expect(diff.locator('.d')).toHaveText('−if (!cookie) return null;');
@@ -364,7 +389,7 @@ test.describe('審核中心', () => {
   });
 
   test('允許並記住：沒有建議時停用，有建議時送 remember', async ({ page }) => {
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       machines: [rigA],
       sessions: [
         session({ id: 's1', name: 'A', machineId: 'm-a' }),
@@ -375,10 +400,11 @@ test.describe('審核中心', () => {
         approval({ id: 'some', sessionId: 's2', suggestions: [{ type: 'addRules' }] }),
       ],
     });
+    await pick(page, 's1');
     await expect(
       page.getByTestId('review-none').getByRole('button', { name: '允許並記住' }),
     ).toBeDisabled();
-    await pick(page, 'some');
+    await pick(page, 's2');
     await page.getByTestId('review-some').getByRole('button', { name: '允許並記住' }).click();
     await expect(page.getByTestId('review-some')).toHaveCount(0);
     expect(await calls(page)).toEqual([
@@ -387,7 +413,7 @@ test.describe('審核中心', () => {
   });
 
   test('審核計畫：要求修改意見必填，批准送 allow', async ({ page }) => {
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       machines: [rigGpu],
       sessions: [
         session({
@@ -423,6 +449,7 @@ test.describe('審核中心', () => {
         }),
       ],
     });
+    await pick(page, 's1');
     const card = page.getByTestId('review-p1');
     await expect(card.locator('.command')).toContainText('2. Backfill');
     await expect(card.locator('.lamp')).toContainText('▣');
@@ -432,7 +459,7 @@ test.describe('審核中心', () => {
     await card.getByLabel('修改意見（必填）').fill('先備份');
     await card.getByRole('button', { name: '要求修改' }).click();
     await expect(card).toHaveCount(0);
-    // 處理完自動選下一項（不跳回最上面）。
+    // 處理完自動展開下一項（不跳回最上面）。
     await expect(page.getByTestId('review-p2').locator('.command')).toHaveText('Plan from message');
     await page.getByTestId('review-p2').getByRole('button', { name: '批准計畫' }).click();
     await expect(page.getByTestId('review-p2')).toHaveCount(0);
@@ -443,7 +470,7 @@ test.describe('審核中心', () => {
   });
 
   test('回答提問：選項填入、空白不可送；等你回覆直接送進 session', async ({ page }) => {
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       machines: [rigA],
       sessions: [
         session({ id: 's1', name: 'Docs', machineId: 'm-a', status: 'waiting_input' }),
@@ -469,6 +496,7 @@ test.describe('審核中心', () => {
         }),
       ],
     });
+    await pick(page, 's1');
     const card = page.getByTestId('review-q1');
     await expect(card).toContainText('Which language?');
     await card.getByRole('button', { name: '送出回答' }).click();
@@ -494,7 +522,8 @@ test.describe('審核中心', () => {
 
   test('危險指令只有 owner 能決定：member 看得到卡片但允許與拒絕都停用', async ({ page }) => {
     const member = `backend.currentUser = async () => ({ id: 'u2', name: 'pat', role: 'member', locale: 'zh-TW' });`;
-    await open(page, 'review', { ...dangerSeed(), patch: member });
+    await open(page, 'inbox', { ...dangerSeed(), patch: member });
+    await pick(page, 's1');
     const card = page.getByTestId('review-d1');
     await expect(card.locator('.command')).toHaveText(DANGER_CMD);
     await expect(card).toContainText('只有管理員能決定這個');
@@ -502,30 +531,32 @@ test.describe('審核中心', () => {
     await expect(card.getByRole('button', { name: '拒絕' })).toBeDisabled();
     await expect(card.getByLabel('拒絕原因（必填）')).toHaveCount(0);
     // 一般權限請求 member 照常能決定。
-    await pick(page, 'old');
+    await pick(page, 's2');
     const normal = page.getByTestId('review-old');
     await normal.getByRole('button', { name: '允許一次' }).click();
     await expect(normal).toHaveCount(0);
     expect(await calls(page)).toHaveLength(1);
 
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       ...dangerSeed(),
       patch: `backend.currentUser = async () => { throw new Error('down'); };`,
     });
+    await pick(page, 's1');
     const unknown = page.getByTestId('review-d1');
     await expect(unknown).toContainText('讀不到你的登入身分');
     await expect(unknown.getByRole('button', { name: '允許一次' })).toBeDisabled();
 
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       ...dangerSeed(),
       patch: patchBackend('currentUser', `() => new Promise(() => {})`),
     });
+    await pick(page, 's1');
     await expect(
       page.getByTestId('review-d1').getByRole('button', { name: '允許一次' }),
     ).toBeDisabled();
   });
 
-  test('#/review/<sessionId>：捲到並聚焦那張卡；資料更新不搶焦點；沒有項目時說明', async ({
+  test('#/inbox/<sessionId>（舊網址 #/review/<id> 轉過來）：捲到、展開並高亮那一項；資料更新不搶焦點；已處理完時說明', async ({
     page,
   }) => {
     const many: Seed = {
@@ -539,47 +570,69 @@ test.describe('審核中心', () => {
     };
     await page.setViewportSize({ width: 800, height: 500 });
     await open(page, 'review/s7', many);
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/inbox/s7');
+    const row = page.getByTestId('queue-s7');
+    await expect(row).toBeFocused();
+    await expect(row).toHaveClass(/targeted/);
     const card = page.getByTestId('review-a7');
-    await expect(card).toBeFocused();
-    await expect(card).toBeInViewport();
-    await expect(card).toHaveClass(/targeted/);
+    await expect(card).toBeVisible();
+    await expect(card.getByRole('button', { name: '允許一次' })).toBeInViewport();
+    // 高亮 2 秒後消失
+    await expect(row).not.toHaveClass(/targeted/, { timeout: 4000 });
 
-    await pick(page, 'a6');
+    await pick(page, 's6');
     const other = page.getByTestId('review-a6').getByLabel('拒絕原因（必填）');
     await other.focus();
     await setBoard(page, { machines: [{ ...rigA }] });
     await expect(other).toBeFocused();
 
     await page.evaluate(() => {
-      location.hash = '#/review/s0';
+      location.hash = '#/inbox/s0';
     });
-    const first = page.getByTestId('review-a0');
+    const first = page.getByTestId('queue-s0');
     await expect(first).toBeFocused();
     await expect(first).toBeInViewport();
     await expect(first).toHaveClass(/targeted/);
+    await expect(page.getByTestId('review-a0')).toBeVisible();
     await expect(card).toHaveCount(0);
 
-    await page.evaluate(() => {
-      location.hash = '#/review/nope';
+    // 已經不在等你：抽屜照開，頂部一行說現在的狀態，可以去畫布看
+    await setBoard(page, {
+      sessions: many.sessions!.map((x) => (x.id === 's3' ? { ...x, status: 'running' } : x)),
+      approvals: many.approvals!.filter((a) => a.sessionId !== 's3'),
     });
-    await expect(page.getByTestId('review-target-missing')).toHaveText(
-      '這個 session 目前沒有要審核的項目。',
+    await page.evaluate(() => {
+      location.hash = '#/inbox/s3';
+    });
+    await expect(page.getByTestId('inbox-target-gone')).toContainText(
+      '這個 session 已處理完（目前：RUN）。',
+    );
+    await expect(
+      page.getByTestId('inbox-target-gone').getByRole('button', { name: '在畫布上看' }),
+    ).toBeVisible();
+    await page.evaluate(() => {
+      location.hash = '#/inbox/nope';
+    });
+    await expect(page.getByTestId('inbox-target-gone')).toHaveText(
+      '找不到這個 session，可能已經封存或刪除。',
     );
     await page.evaluate(() => {
-      location.hash = '#/review';
+      location.hash = '#/inbox';
     });
-    await expect(page.getByTestId('review-target-missing')).toHaveCount(0);
+    await expect(page.getByTestId('inbox-target-gone')).toHaveCount(0);
   });
 
-  test('審核中心沒有自己的「等你 N」', async ({ page }) => {
-    await open(page, 'review');
-    await expect(page.getByTestId('review-a-1')).toBeVisible();
-    // App 頁首那一份不算，要驗的是審核中心頁面自己沒有。
+  test('收件匣不重複自己的「等你 N」；列數＝頁首的「等你 N」', async ({ page }) => {
+    await open(page, 'inbox');
+    await expect(page.getByTestId('queue-s-auth')).toBeVisible();
+    // 頁首那一份就是收件匣的數字，抽屜自己不再放一份。
     await expect(page.locator('.flows .waiting')).toHaveCount(0);
+    const n = Number(await page.getByTestId('waiting-count').textContent());
+    await expect(page.getByTestId('inbox-drawer').locator('[data-row-id]')).toHaveCount(n);
   });
 
   test('看不出 session、機器失聯、hub 斷線：不能允許', async ({ page }) => {
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       machines: [rigOff],
       sessions: [session({ id: 's1', name: 'Off', machineId: 'm-off' })],
       approvals: [
@@ -587,10 +640,11 @@ test.describe('審核中心', () => {
         approval({ id: 'off', sessionId: 's1' }),
       ],
     });
-    const lost = page.getByTestId('review-lost');
-    await expect(lost.getByRole('button', { name: '允許一次' })).toBeDisabled();
-    await expect(lost).toContainText('看不出這是哪個 session');
-    await pick(page, 'off');
+    // 看不出 session 的 approval 不算「等你」（每個 session 算一次），收件匣也不列，就沒有按鈕可以按。
+    await expect(page.getByTestId('review-lost')).toHaveCount(0);
+    await expect(page.getByTestId('inbox-drawer').locator('[data-row-id]')).toHaveCount(1);
+    await expect(page.getByTestId('waiting-count')).toHaveText('1');
+    await pick(page, 's1');
     const off = page.getByTestId('review-off');
     await expect(off.getByRole('button', { name: '允許一次' })).toBeDisabled();
     await expect(off).toContainText('連不到 rig-off，恢復後會自動接回');
@@ -598,26 +652,31 @@ test.describe('審核中心', () => {
     await expect(off).toHaveCSS('opacity', '0.45');
     await expect(off).toHaveCSS('background-image', /repeating-linear-gradient/);
 
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       machines: [rigA],
       sessions: [session({ id: 's1', name: 'A', machineId: 'm-a' })],
       approvals: [approval({ id: 'a1', sessionId: 's1' })],
       connected: false,
     });
-    await expect(page.locator('.stale-line')).toContainText('連不到 hub');
-    await expect(page.locator('.page.is-stale')).toBeVisible();
+    await expect(page.getByTestId('inbox-stale')).toContainText('連不到 hub');
+    await expect(page.locator('.flows.inbox.is-stale')).toBeVisible();
+    await expect(
+      page.getByTestId('queue-s1').getByRole('button', { name: '允許一次' }),
+    ).toBeDisabled();
+    await pick(page, 's1');
     await expect(
       page.getByTestId('review-a1').getByRole('button', { name: '允許一次' }),
     ).toBeDisabled();
   });
 
   test('送出失敗留在畫面、寫發生什麼與怎麼辦，可以再按', async ({ page }) => {
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       machines: [rigA],
       sessions: [session({ id: 's1', name: 'A', machineId: 'm-a' })],
       approvals: [approval({ id: 'a1', sessionId: 's1' })],
       patch: patchBackend('decideApproval', `async () => { throw new Error('boom'); }`),
     });
+    await pick(page, 's1');
     const card = page.getByTestId('review-a1');
     await card.getByRole('button', { name: '允許一次' }).click();
     await expect(card.locator('.msg.err')).toHaveText('送不出去：boom。請求還在，稍後再按一次。');
@@ -625,25 +684,25 @@ test.describe('審核中心', () => {
   });
 
   test('載入、空的、錯誤', async ({ page }) => {
-    await open(page, 'review', {
+    await open(page, 'inbox', {
       patch: patchBackend('listProjects', `() => new Promise(() => {})`),
     });
-    await expect(page.locator('[data-state=loading]')).toBeVisible();
+    await expect(page.getByTestId('inbox-drawer').locator('[data-state=loading]')).toBeVisible();
 
-    await open(page, 'review', { sessions: [], approvals: [] });
-    await expect(page.locator('[data-state=empty]')).toContainText('沒有等你的');
-    await expect(page.locator('[data-state=empty]').getByRole('link')).toHaveAttribute(
-      'href',
-      '#/new',
-    );
+    await open(page, 'inbox', { sessions: [], approvals: [] });
+    const empty = page.getByTestId('inbox-drawer').locator('[data-state=empty]');
+    await expect(empty).toContainText('沒有等你的');
+    await expect(empty.getByRole('link')).toHaveAttribute('href', '#/new');
 
-    await open(page, 'review', {
-      patch: `let n = 0; const ok = backend.listProjects;
-        backend.listProjects = async () => { if (n++ < 2) throw new Error('down'); return ok(); };`,
+    await open(page, 'inbox', {
+      // 畫布與收件匣各自讀專案清單，次數不固定：按重試前一律失敗。
+      patch: `const ok = backend.listProjects;
+        backend.listProjects = async () => { if (!window.__projectsOk) throw new Error('down'); return ok(); };`,
     });
-    const box = page.locator('[data-state=error]');
+    const box = page.getByTestId('inbox-drawer').locator('[data-state=error]');
     await expect(box).toContainText('讀不到專案清單：down');
-    await expect(page.getByTestId('review-a-1')).toBeVisible();
+    await expect(page.getByTestId('queue-s-auth')).toBeVisible();
+    await page.evaluate(() => Object.assign(window, { __projectsOk: true }));
     await box.getByRole('button', { name: '重試' }).click();
     await expect(box).toHaveCount(0);
   });
@@ -958,13 +1017,13 @@ test.describe('新增 session', () => {
     await expect(page.getByTestId('bypass-alert')).toHaveCount(0);
     await page.getByRole('radio', { name: /略過權限/ }).check();
     await expect(page.getByTestId('bypass-alert')).toContainText('略過權限');
-    await expect(page.locator('aside .chip.bypass')).toHaveText('略過權限');
+    await expect(modal(page).locator('aside .chip.bypass')).toHaveText('略過權限');
     await expect(preview(page)).toContainText('--permission-mode bypassPermissions');
     const border = await page
       .locator('.modes-bypass')
       .evaluate((el) => getComputedStyle(el).borderTopColor);
     expect(border).toBe('rgb(240, 102, 95)');
-    const asideBorder = await page
+    const asideBorder = await modal(page)
       .locator('aside')
       .evaluate((el) => getComputedStyle(el).borderTopColor);
     expect(asideBorder).toBe('rgb(240, 102, 95)');
@@ -1313,16 +1372,14 @@ test.describe('新增 session', () => {
     await page.getByLabel('名稱').fill('x');
     const top = (selector: string) =>
       page.locator(selector).evaluate((el) => el.getBoundingClientRect().top);
-    await page.evaluate(() => scrollTo(0, 0));
+    // 新增表單是疊在畫布上的次畫面，自己捲動。
+    const body = modal(page).locator('.modal-body');
+    await body.evaluate((el) => el.scrollTo(0, 0));
     expect(await top('aside.preview')).toBe(await top('form.form-card'));
-    await page.evaluate(() => scrollTo(0, 300));
-    // 要停在 App 頁首下方，頁首本身不可以被捲走。
-    const header = await page
-      .locator('header')
-      .first()
-      .evaluate((el) => el.getBoundingClientRect());
-    expect(header.top).toBe(0);
-    await expect.poll(() => top('aside.preview')).toBeCloseTo(header.height + 12, 0);
+    await body.evaluate((el) => el.scrollTo(0, 300));
+    // 要停在次畫面頂端下方，不會被捲走。
+    const frame = await body.evaluate((el) => el.getBoundingClientRect());
+    await expect.poll(() => top('aside.preview')).toBeCloseTo(frame.top + 12, 0);
   });
 
   test('使用者輸入照 shell 規則引號，不會看起來像重導向', async ({ page }) => {
@@ -1342,8 +1399,8 @@ test.describe('新增 session', () => {
     await expect(page.getByTestId('quota-warnings').locator('[data-state=loading]')).toBeVisible();
 
     await open(page, 'new', { machines: [], sessions: [], approvals: [] });
-    await expect(page.locator('[data-state=empty]')).toContainText('還沒有機器');
-    await expect(page.locator('[data-state=empty]').getByRole('link')).toHaveAttribute(
+    await expect(modal(page).locator('[data-state=empty]')).toContainText('還沒有機器');
+    await expect(modal(page).locator('[data-state=empty]').getByRole('link')).toHaveAttribute(
       'href',
       '#/settings/machines',
     );
@@ -1357,7 +1414,7 @@ test.describe('新增 session', () => {
     await expect(page.getByTestId('quota-warnings')).toContainText('讀不到省額度設定');
 
     await open(page, 'new', { ...newSeed(), connected: false });
-    await expect(page.locator('.stale-line')).toBeVisible();
+    await expect(modal(page).locator('.stale-line')).toBeVisible();
     await expect(page.getByRole('button', { name: '建立 session' })).toBeDisabled();
   });
 });
@@ -1647,7 +1704,7 @@ test.describe('設定', () => {
     await expect(page.getByTestId('save-bar')).toContainText('1 項未存檔');
 
     await open(page, 'settings/machines', { connected: false });
-    await expect(page.locator('.stale-line')).toBeVisible();
+    await expect(modal(page).locator('.stale-line')).toBeVisible();
     await expect(page.getByRole('button', { name: '產生配對碼' })).toBeDisabled();
   });
 
@@ -1811,7 +1868,7 @@ test.describe('設定', () => {
     const member = `backend.currentUser = async () =>
       ({ id: 'u-m', name: 'pat', role: 'member', locale: 'zh-TW' });`;
     await open(page, 'new', { machines: [], sessions: [], approvals: [], patch: member });
-    const empty = page.locator('[data-state=empty]');
+    const empty = modal(page).locator('[data-state=empty]');
     await expect(empty).toContainText('請管理員到設定配對一台機器。');
     await expect(empty.getByRole('link')).toHaveCount(0);
   });
@@ -1875,7 +1932,14 @@ test.describe('設定', () => {
       const top = await target.evaluate((el) => el.getBoundingClientRect().top);
       expect(top).toBeGreaterThanOrEqual(0);
       await expect(target).toBeInViewport();
-      if (section !== 'archived') expect(await page.evaluate(() => scrollY)).toBeGreaterThan(0);
+      // 設定是疊在畫布上的次畫面，捲的是次畫面自己。
+      if (section !== 'archived') {
+        expect(
+          await modal(page)
+            .locator('.modal-body')
+            .evaluate((el) => el.scrollTop),
+        ).toBeGreaterThan(0);
+      }
     });
   }
 
@@ -2280,7 +2344,7 @@ test.describe('語系與版面', () => {
               ...rich(),
               patch: route === 'onboarding' ? `backend.needsSetup = async () => true;` : undefined,
             });
-            await page.waitForSelector('.flows main h1');
+            await page.waitForSelector('.flows h1');
             if (route === 'new') {
               await page
                 .getByLabel(/名稱|Name/)
@@ -2318,17 +2382,17 @@ test.describe('語系與版面', () => {
   test.describe('英文固定用詞', () => {
     test.use({ locale: 'en-US' });
     test('審核卡用 STYLE.md §6 的詞', async ({ page }) => {
-      await open(page, 'review', rich());
-      await pick(page, 'a1');
+      await open(page, 'inbox', rich());
+      await pick(page, 's1');
       const card = page.getByTestId('review-a1');
       await expect(card.getByRole('button', { name: 'Allow once' })).toBeVisible();
       await expect(card.getByRole('button', { name: 'Always allow' })).toBeVisible();
       await expect(card.getByRole('button', { name: 'Deny' })).toBeVisible();
-      await pick(page, 'a3');
+      await pick(page, 's3');
       const plan = page.getByTestId('review-a3');
       await expect(plan.getByRole('button', { name: 'Approve plan' })).toBeVisible();
       await expect(plan.getByRole('button', { name: 'Request changes' })).toBeVisible();
-      await pick(page, 'a2');
+      await pick(page, 's2');
       await expect(page.getByTestId('review-a2').locator('.chip.bypass')).toHaveText(
         'Bypass permissions',
       );

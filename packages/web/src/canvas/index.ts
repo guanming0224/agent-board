@@ -1,3 +1,3 @@
 export { CanvasPage } from './CanvasPage';
-export { QueuePage } from './QueuePage';
+export { InboxDrawer } from './InboxPanel';
 export { TerminalPage } from './TerminalPage';

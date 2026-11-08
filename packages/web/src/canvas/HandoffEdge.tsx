@@ -105,7 +105,11 @@ function PairPopover({
       aria-labelledby={`${id}-title`}
       data-testid={`pair-popover-${source}-${target}`}
       onKeyDown={(e) => {
-        if (e.key === 'Escape') onClose();
+        if (e.key === 'Escape') {
+          // 告訴 App 這個 Esc 已經用掉了，不要再關右側面板（Esc 只關最上層）。
+          e.preventDefault();
+          onClose();
+        }
       }}
     >
       <div className="pair-pop-head">

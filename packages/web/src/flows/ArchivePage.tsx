@@ -19,6 +19,7 @@ import {
   Msg,
   Page,
   restoreErrorText,
+  scrollPageTop,
   useCurrentUser,
   useLoad,
   useProjects,
@@ -353,7 +354,7 @@ export function ArchivePage() {
   const resumer = useResume();
   // 從設定頁下方的清單點進來時，換 hash 不會重設捲動位置。
   useEffect(() => {
-    window.scrollTo(0, 0);
+    scrollPageTop();
   }, [id]);
   const session = list.data?.find((s) => s.id === id) ?? null;
   const machine = machines.find((m) => m.id === session?.machineId);

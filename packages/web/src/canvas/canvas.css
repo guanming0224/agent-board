@@ -597,6 +597,15 @@ input.cmd:disabled {
 }
 
 /* 一鍵整理：團隊框標籤旁的「整理團隊」、右上角工具列、整理後的「已整理・復原」。 */
+.team .team-open {
+  pointer-events: auto;
+  color: inherit;
+  text-decoration: none;
+}
+.team .team-open:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
 .team .team-tidy {
   pointer-events: auto;
   min-height: 22px;

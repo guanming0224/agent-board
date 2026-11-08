@@ -123,7 +123,7 @@ test.describe('遮蔽模式：畫面', () => {
     await setMaskStored(page, true);
     await seed(
       page,
-      'review',
+      'inbox',
       [
         session({ id: 's1', name: 'cmd', status: 'waiting_permission' }),
         session({ id: 's2', name: 'edit', status: 'waiting_permission' }),
@@ -153,16 +153,18 @@ test.describe('遮蔽模式：畫面', () => {
       ],
     );
     await expect(page.getByTestId('mask-chip')).toHaveText(/遮蔽中/);
-    await expect(page.locator('pre.command').first()).toContainText('curl');
+    // 收件匣一次展開一列的審核卡：逐列展開，確認三張卡都真的畫出來了，「不含金鑰」才有意義。
+    await page.getByTestId('inbox-toggle-s1').click();
+    const card = page.getByTestId('review-a1');
+    await expect(card.locator('pre.command').first()).toContainText('curl');
     // 命中危險指令：第一次按會顯示指令全文，那裡也要打碼。
-    await page.getByRole('button', { name: '允許一次' }).first().click();
-    await expect(page.locator('.armed pre.command')).toContainText('curl');
+    await card.getByRole('button', { name: '允許一次' }).click();
+    await expect(card.locator('.armed pre.command')).toContainText('curl');
     await expect(page.locator('body')).not.toContainText(BODY);
-    // 審核中心一次只展開一項：逐項選，確認三張卡都真的畫出來了，「不含金鑰」才有意義。
-    await page.getByTestId('review-row-a2').click();
+    await page.getByTestId('inbox-toggle-s2').click();
     await expect(page.locator('.diff')).toContainText('TOKEN=');
     await expect(page.locator('body')).not.toContainText(BODY);
-    await page.getByTestId('review-row-a3').click();
+    await page.getByTestId('inbox-toggle-s3').click();
     await expect(page.locator('.question')).toContainText('Use ');
     await expect(page.locator('body')).not.toContainText(BODY);
   });
@@ -183,11 +185,14 @@ test.describe('遮蔽模式：畫面', () => {
     await setMaskStored(page, false);
     await seed(
       page,
-      'review',
+      'inbox',
       [session({ status: 'waiting_permission' })],
       [approval({ toolInput: { command: `use ${KEY}` } })],
     );
-    await expect(page.locator('pre.command').first()).toContainText(KEY);
+    await page.getByTestId('inbox-toggle-s1').click();
+    await expect(page.getByTestId('inbox-drawer').locator('pre.command').first()).toContainText(
+      KEY,
+    );
   });
 });
 
@@ -297,6 +302,17 @@ test.describe('XSS', () => {
       await seed(page, route, sessions, approvals);
       await expect(page.locator('body')).toContainText('<img src=x');
       await assertClean(page);
+      // 收件匣的審核卡要展開才畫：逐列展開（原本審核中心逐張畫的內容）。
+      if (route === 'inbox') {
+        for (const id of ['s1', 's2', 's3', 's4', 's5']) {
+          await page.getByTestId(`inbox-toggle-${id}`).click();
+          await expect(page.getByTestId(`inbox-toggle-${id}`)).toHaveAttribute(
+            'aria-expanded',
+            'true',
+          );
+          await assertClean(page);
+        }
+      }
     }
   });
 

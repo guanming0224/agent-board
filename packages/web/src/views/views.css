@@ -578,3 +578,166 @@ kbd {
     font-size: 16px;
   }
 }
+
+/* ── 疊加層（P2 §1.2）：畫布常駐，右側面板非模態、設定置中模態 ── */
+.shell-head {
+  position: relative;
+  z-index: 20;
+  flex-shrink: 0;
+}
+.top .inbox-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.top .inbox-btn b {
+  color: var(--you);
+}
+.top .inbox-btn[aria-pressed='true'] {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+.top a.gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  min-height: 36px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  color: var(--fg-muted);
+  font-size: 18px;
+  text-decoration: none;
+}
+.top a.gear:hover,
+.top a.gear[aria-current='page'] {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.top .bar {
+  padding-bottom: 10px;
+}
+
+.side-panel {
+  position: fixed;
+  top: var(--app-header-height, 56px);
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: min(var(--panel-width, 480px), 100vw);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg);
+  border-left: 1px solid var(--border-2);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
+  animation: panel-in 180ms ease-out;
+}
+@keyframes panel-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+.side-panel .panel-tools {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  justify-content: flex-end;
+  height: 0;
+}
+.side-panel .panel-tools .overlay-close {
+  margin: 8px 8px 0 0;
+}
+/* 團隊工作台放進 420px：全部改單欄（細節由 P2 項目二重做） */
+.side-panel .page {
+  padding: 14px 16px 40px 20px;
+}
+.side-panel .team-grid,
+.side-panel .columns,
+.side-panel .plan-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.overlay-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  background: var(--surface-2);
+}
+
+.modal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.6);
+  animation: fade-in 160ms ease-out;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.modal-box {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(960px, calc(100vw - 96px));
+  height: min(85vh, calc(100vh - 96px));
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-card);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  outline: none;
+  overflow: hidden;
+}
+.modal-box:focus-visible {
+  outline: none;
+}
+.modal-tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+}
+/* 次畫面自己捲動；流程頁的 sticky 不用再讓出頁首高度 */
+.modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  --app-header-height: 0px;
+}
+.modal-body .page {
+  padding-top: 18px;
+}
+
+.phone-page {
+  min-height: 100dvh;
+}
+.phone-back {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.phone-back button {
+  min-height: 44px;
+}
+.phone-team .page {
+  padding: 14px 16px 40px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side-panel,
+  .modal-layer {
+    animation: none;
+  }
+}

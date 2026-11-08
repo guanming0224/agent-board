@@ -238,11 +238,13 @@ test('daemon 回報 repo 根目錄；新 session 選同 repo 的子資料夾時�
 });
 
 test('權限請求：網頁看到、按允許，決定真的回到 claude', async ({ page }) => {
-  await page.goto('/#/review');
+  // 收件匣是疊在畫布上的抽屜（P2 §1）；畫布上的卡也有同樣的字，限定在抽屜裡找。
+  await page.goto('/#/inbox');
+  const inbox = page.getByTestId('inbox-drawer');
   await type(page, session.id, 'ask-permission');
   await expectStatus(page.request, session.id, 'waiting_permission');
-  await expect(page.getByText('npm test').first()).toBeVisible();
-  await page.getByRole('button', { name: '允許一次' }).first().click();
+  await expect(inbox.getByText('npm test').first()).toBeVisible();
+  await inbox.getByRole('button', { name: '允許一次' }).first().click();
 
   await expect
     .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
@@ -251,12 +253,15 @@ test('權限請求：網頁看到、按允許，決定真的回到 claude', asyn
 });
 
 test('拒絕要填原因，原因真的回到 claude', async ({ page }) => {
-  await page.goto('/#/review');
+  await page.goto('/#/inbox');
+  const inbox = page.getByTestId('inbox-drawer');
   await type(page, session.id, 'ask-permission');
   await expectStatus(page.request, session.id, 'waiting_permission');
-  const reason = page.getByPlaceholder(/拒絕原因/).first();
+  // 展開那一列的審核卡（原審核中心）
+  await inbox.getByTestId(`inbox-toggle-${session.id}`).click();
+  const reason = inbox.getByPlaceholder(/拒絕原因/).first();
   await reason.fill('integration-deny-reason');
-  await page.getByRole('button', { name: '拒絕' }).first().click();
+  await inbox.getByRole('button', { name: '拒絕' }).first().click();
 
   await expect
     .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
@@ -264,15 +269,16 @@ test('拒絕要填原因，原因真的回到 claude', async ({ page }) => {
 });
 
 test('危險指令：攔下、按兩次才放行', async ({ page }) => {
-  await page.goto('/#/review');
+  await page.goto('/#/inbox');
+  const inbox = page.getByTestId('inbox-drawer');
   await type(page, session.id, 'danger');
-  await expect(page.getByText(/命中危險指令/).first()).toBeVisible({ timeout: 20_000 });
+  await expect(inbox.getByText(/命中危險指令/).first()).toBeVisible({ timeout: 20_000 });
   await expectStatus(page.request, session.id, 'waiting_permission');
-  const allow = page.getByRole('button', { name: '允許一次' }).first();
+  const allow = inbox.getByRole('button', { name: '允許一次' }).first();
   await allow.click();
   await page.waitForTimeout(500);
   expect(await readScreen(page, session.id)).not.toContain('"permissionDecision":"allow"');
-  await page
+  await inbox
     .getByRole('button', { name: /再按一次/ })
     .first()
     .click();
@@ -281,7 +287,7 @@ test('危險指令：攔下、按兩次才放行', async ({ page }) => {
     .toContain('"permissionDecision":"allow"');
   // 假 CLI 接著還會走一次 PermissionRequest，答掉才會結束這一輪
   await expectStatus(page.request, session.id, 'waiting_permission');
-  await page.getByRole('button', { name: '允許一次' }).first().click();
+  await inbox.getByRole('button', { name: '允許一次' }).first().click();
   await expectStatus(page.request, session.id, 'waiting_input');
 });
 
