@@ -1,5 +1,6 @@
 // 安全送字（交接規則與任務自動執行共用）：只在目標等輸入時送，文字和 Enter 分開，送 Enter 前再確認一次。
 // 佇列只在記憶體，hub 重啟會遺失；兩邊各自決定重啟後怎麼交代（交接留 audit，任務標成沒送出）。
+// 全部暫停（P2 項目三）：所有 hub 自己送的字都經過這裡，暫停時只收不送（留在佇列），繼續後照常送。
 import type { Session } from '@agent-board/protocol';
 import type { Store } from './store';
 
@@ -39,6 +40,12 @@ export interface DeliveryDeps {
   isReachable(sessionId: string): boolean;
   sendInput(sessionId: string, data: string): void;
   guarded(label: string, fn: () => void): void;
+  /** 全部暫停中：只收不送。沒給＝永遠不暫停。 */
+  paused?(): boolean;
+  /** 暫停中被擋下的一則（排進來時、或按暫停時已在佇列裡的），呼叫的人負責記錄。 */
+  held?(item: DeliveryItem): void;
+  /** 佇列內容變了（排進、取出、拿掉）。 */
+  changed?(): void;
 }
 
 export const isGone = (session: Session): boolean =>
@@ -53,12 +60,30 @@ export class SafeDelivery {
 
   enqueue(item: DeliveryItem): void {
     this.pending.set(item.key, item);
+    if (this.isPaused()) this.deps.held?.(item);
     this.deliverNext(item.targetId);
+    this.deps.changed?.();
   }
 
   /** 還沒送出的就拿掉，不呼叫 dropped（呼叫的人自己交代）。回傳有沒有拿掉。 */
   cancel(key: string): boolean {
-    return this.pending.delete(key);
+    const removed = this.pending.delete(key);
+    if (removed) this.deps.changed?.();
+    return removed;
+  }
+
+  /** 排隊中的 key（暫停時統計各類數量用）。 */
+  pendingKeys(): string[] {
+    return [...this.pending.keys()];
+  }
+
+  /** 剛按下暫停：已在佇列裡的每一則都交給 held 記錄。 */
+  noteHeld(): void {
+    for (const item of this.pending.values()) this.deps.held?.(item);
+  }
+
+  private isPaused(): boolean {
+    return this.deps.paused?.() === true;
   }
 
   has(key: string): boolean {
@@ -104,11 +129,14 @@ export class SafeDelivery {
   }
 
   private dropPendingTo(targetId: string): void {
+    let removed = false;
     for (const [key, item] of this.pending) {
       if (item.targetId !== targetId) continue;
       this.pending.delete(key);
+      removed = true;
       item.dropped('target_ended');
     }
+    if (removed) this.deps.changed?.();
   }
 
   /**
@@ -122,8 +150,12 @@ export class SafeDelivery {
       this.dropPendingTo(targetId);
       return;
     }
+    // 暫停中：留在佇列，不送（目標結束的照樣丟掉，上面已處理）。
+    if (this.isPaused()) return;
     if (this.awaitingAck.has(targetId) || !deps.isReachable(targetId)) return;
+    const before = this.pending.size;
     const next = this.takeNext(target);
+    if (this.pending.size !== before) this.deps.changed?.();
     if (!next) return;
     this.awaitingAck.set(targetId, deps.now().getTime());
     deps.sendInput(targetId, next.message);
@@ -150,7 +182,8 @@ export class SafeDelivery {
   private pressEnter(targetId: string, item: DeliveryItem): void {
     const { store, audit, isReachable, sendInput } = this.deps;
     const current = store.getSession(targetId);
-    if (!current || !readyFor(item, current) || !isReachable(targetId)) {
+    // 字打進去之後、Enter 之前按了暫停：不按 Enter（同目標不再等輸入，字留在輸入框給使用者處理）。
+    if (!current || !readyFor(item, current) || !isReachable(targetId) || this.isPaused()) {
       this.awaitingAck.delete(targetId);
       item.aborted();
       return;

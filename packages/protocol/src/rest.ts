@@ -2,6 +2,10 @@
 import { z } from 'zod';
 import {
   AuditEntry,
+  BoardHeld,
+  BoardInterruptResult,
+  BoardPauseMode,
+  BoardPauseState,
   HandoffRule,
   Id,
   IsoTime,
@@ -480,6 +484,31 @@ export const routes = {
     auth: 'owner',
     query: AuditQuery,
     response: z.string(),
+  }),
+  // 全部暫停（P2 項目三）：user 權限（手機登入的一般帳號也要能用）。
+  boardPauseGet: route({
+    method: 'GET',
+    path: '/api/board/pause',
+    auth: 'user',
+    response: BoardPauseState,
+  }),
+  /**
+   * 暫停（已暫停時改模式）。interrupt 另外對每個 RUN session 送 Esc，interrupted 列出結果；
+   * finish_turn 的 interrupted 是空陣列。
+   */
+  boardPause: route({
+    method: 'POST',
+    path: '/api/board/pause',
+    auth: 'user',
+    body: z.object({ mode: BoardPauseMode }),
+    response: z.object({ state: BoardPauseState, interrupted: z.array(BoardInterruptResult) }),
+  }),
+  /** 解除暫停：只解除閘門，不對被中斷的 session 送「繼續」（Q8）。released 是放出的數量（沒暫停時全是 0）。 */
+  boardResume: route({
+    method: 'POST',
+    path: '/api/board/resume',
+    auth: 'user',
+    response: z.object({ state: BoardPauseState, released: BoardHeld }),
   }),
   settingsGet: route({ method: 'GET', path: '/api/settings', auth: 'owner', response: Settings }),
   settingsUpdate: route({

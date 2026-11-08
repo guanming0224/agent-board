@@ -3,8 +3,10 @@
 import { z } from 'zod';
 import {
   Approval,
+  BoardPauseState,
   ClaudeSessionId,
   DEFAULT_WAITING_LIMIT,
+  NOT_PAUSED,
   DispatchTool,
   PurgeOptions,
   PurgeResult,
@@ -20,12 +22,14 @@ import {
   ResourceSample,
   Session,
   SessionEvent,
+  SessionStatus,
   UsageSummary,
 } from './models';
 
 export const WS_PATHS = { daemon: '/ws/daemon', client: '/ws/client' } as const;
 
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);
+export type TerminalSignal = z.infer<typeof TerminalSignal>;
 
 const TerminalData = z.object({
   sessionId: Id,
@@ -216,7 +220,16 @@ export const HubToDaemon = z.discriminatedUnion('type', [
   z.object({ type: z.literal('terminal.unsubscribe'), sessionId: Id }),
   z.object({ type: z.literal('terminal.input'), sessionId: Id, data: z.string() }),
   Resize.extend({ type: z.literal('terminal.resize') }),
-  z.object({ type: z.literal('terminal.signal'), sessionId: Id, signal: TerminalSignal }),
+  z.object({
+    type: z.literal('terminal.signal'),
+    sessionId: Id,
+    signal: TerminalSignal,
+    /**
+     * 只在 daemon 看到的狀態是這個時才送（全部暫停「立刻中斷」用 running）：hub 看到的 RUN 可能正要轉成
+     * 權限請求，那時 Esc 會變成拒絕。沒帶＝照送（使用者自己按的）。舊版 daemon 不認得，照送。
+     */
+    onlyIfStatus: SessionStatus.optional(),
+  }),
   z.object({
     type: z.literal('approval.decide'),
     approvalId: Id,
@@ -291,9 +304,13 @@ export const HubToClient = z.discriminatedUnion('type', [
     approvals: z.array(Approval),
     /** 同時等你的上限（`Settings.notifications.waitingLimit`）：設定只有 owner 讀得到，橫幅每個人都要。 */
     waitingLimit: z.number().int().positive().default(DEFAULT_WAITING_LIMIT),
+    /** 全部暫停的狀態與排隊統計（P2 項目三）。舊版 hub 不送＝沒暫停。 */
+    pause: BoardPauseState.default(NOT_PAUSED),
   }),
   /** 上限改了。 */
   z.object({ type: z.literal('board.waitingLimit'), waitingLimit: z.number().int().positive() }),
+  /** 全部暫停的狀態或排隊統計變了（暫停、繼續、暫停中排隊數變化）：推給每個 client。 */
+  z.object({ type: z.literal('board.pause'), pause: BoardPauseState }),
   TerminalData.extend({ type: z.literal('terminal.output') }),
   TerminalSnapshot.extend({ type: z.literal('terminal.snapshot') }),
   /** PTY 目前的尺寸與擁有者。快照之後、尺寸或擁有者改變時送給該 session 的每個訂閱者。 */

@@ -154,6 +154,8 @@ export interface DispatchDeps {
   audit(sessionId: string, action: string, detail: string): void;
   addEvent(sessionId: string, type: string, payload: Record<string, unknown>, at?: string): void;
   enabled(): boolean;
+  /** 全部暫停中（P2 項目三）：不開新成員；送工作照收但排隊到繼續後才送。沒給＝不暫停。 */
+  paused?(): boolean;
   /** 走 hub 開 session 的同一條路（排隊、worktree、hooks、第一個指令照常），記下是誰開的。 */
   createSession(input: SessionSpec & { machineId: string }, dispatchedBy: string): Session;
   /** 機器在線才開得了 session；離線時回 false。 */
@@ -315,6 +317,14 @@ export class DispatchEngine {
   }
 
   private spawn(caller: Session, raw: Record<string, unknown>): DispatchReply {
+    if (this.deps.paused?.()) {
+      const detail = { fromSessionId: caller.id, tool: 'spawn_member', reason: 'board_paused' };
+      this.deps.audit(caller.id, 'dispatch.blocked', JSON.stringify(detail));
+      return fail(
+        'board_paused',
+        'Agent Board is paused (the user pressed "pause all"); no new members can be started. Do not retry; wait for the user to resume, or do the work yourself.',
+      );
+    }
     const parsed = SpawnArgs.safeParse(raw);
     if (!parsed.success) {
       return fail(
@@ -498,15 +508,18 @@ export class DispatchEngine {
     this.deps.delivery.enqueue(this.sendItem(caller, target, message, summary, workId, key));
     const now = this.deps.store.getSession(target.id);
     const busy = !now || now.status !== 'waiting_input' || this.deps.store.dispatchWork(target.id);
+    const paused = this.deps.paused?.() === true;
     return okJson({
       member: target.name,
-      state: busy ? 'queued' : 'sent',
+      state: busy || paused ? 'queued' : 'sent',
       ...(replaced
         ? { note: 'Replaced your previous task to this member that was not delivered yet.' }
         : {}),
-      detail: busy
-        ? `${target.name} is busy (${now?.status ?? 'unknown'}); the task is typed in when it waits for input.`
-        : `Typed into ${target.name}.`,
+      detail: paused
+        ? `Agent Board is paused; the task is typed into ${target.name} after the user resumes.`
+        : busy
+          ? `${target.name} is busy (${now?.status ?? 'unknown'}); the task is typed in when it waits for input.`
+          : `Typed into ${target.name}.`,
       result: 'Its result comes back to you automatically as "[Result from …]".',
     });
   }

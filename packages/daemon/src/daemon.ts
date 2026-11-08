@@ -387,6 +387,14 @@ export class Daemon {
         return;
       case 'terminal.signal':
         this.withSession(message.sessionId, message.type, (s) => {
+          // 全部暫停「立刻中斷」：hub 以為在跑，這裡再確認一次（正要轉權限請求時 Esc 會變成拒絕）。
+          const status = s.runtime().status;
+          if (message.onlyIfStatus !== undefined && status !== message.onlyIfStatus) {
+            log.info(
+              `terminal.signal：session ${message.sessionId} 狀態是 ${status}，不是 ${message.onlyIfStatus}，不送`,
+            );
+            return;
+          }
           if (message.signal === 'escape') s.write('\x1b');
           else if (message.signal === 'ctrl_c') s.write('\x03');
           else s.terminate();

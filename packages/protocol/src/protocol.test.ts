@@ -10,7 +10,9 @@ import {
   TeamMember,
   HookPayload,
   HubToClient,
+  HubToDaemon,
   needsAttention,
+  NOT_PAUSED,
   QuotaGuards,
   routes,
   sameWorkingTree,
@@ -289,5 +291,41 @@ describe('two-way handoff and research teams (2026-11-06)', () => {
     const body = routes.teamsUpdate.body!;
     // PATCH 沒帶 phase 不能變成清掉（沒有 default）。
     expect(body.parse({ goal: 'g' })).toEqual({ goal: 'g' });
+  });
+});
+
+describe('board pause (P2 §3)', () => {
+  it('board.state from an older hub without pause means not paused', () => {
+    const parsed = HubToClient.parse({
+      type: 'board.state',
+      machines: [],
+      sessions: [],
+      approvals: [],
+    });
+    expect(parsed.type === 'board.state' && parsed.pause).toEqual(NOT_PAUSED);
+  });
+
+  it('board.pause carries the state; modes are finish_turn and interrupt only', () => {
+    const pause = {
+      paused: { mode: 'interrupt', since: '2026-11-08T06:00:00.000Z', by: 'u', byName: 'GM' },
+      held: { deliveries: 2, sessions: 1, autoContinues: 0 },
+    };
+    const parsed = HubToClient.parse({ type: 'board.pause', pause });
+    expect(parsed.type === 'board.pause' && parsed.pause.paused?.clearedOnRestart).toBe(0);
+    expect(routes.boardPause.body.safeParse({ mode: 'finish_turn' }).success).toBe(true);
+    expect(routes.boardPause.body.safeParse({ mode: 'stop' }).success).toBe(false);
+    expect(routes.boardPause.auth).toBe('user');
+    expect(routes.boardResume.auth).toBe('user');
+    expect(routes.boardPauseGet.auth).toBe('user');
+  });
+
+  it('only the hub can ask the daemon to check the status before an escape', () => {
+    const signal = { type: 'terminal.signal', sessionId: 's', signal: 'escape' };
+    expect(HubToDaemon.parse({ ...signal, onlyIfStatus: 'running' })).toMatchObject({
+      onlyIfStatus: 'running',
+    });
+    expect(ClientToHub.parse({ ...signal, onlyIfStatus: 'running' })).not.toHaveProperty(
+      'onlyIfStatus',
+    );
   });
 });

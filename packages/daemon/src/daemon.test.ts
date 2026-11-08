@@ -470,6 +470,24 @@ describe('終端機串流', () => {
     await h.waitForOutput('s1', 'GOT:CTRL_C');
   });
 
+  it('signal：onlyIfStatus 和 daemon 看到的狀態不同就不送（全部暫停的立刻中斷）', async () => {
+    await h.createAndSubscribe('s1');
+    const { status } = await waitUntil(() => lastRuntime('s1') ?? null, 'session.runtime');
+    const other = status === 'running' ? 'plan_review' : 'running';
+    h.hub.send({ type: 'terminal.signal', sessionId: 's1', signal: 'escape', onlyIfStatus: other });
+    // 之後的訊息照順序處理：ctrl_c 到了，前面那個 Esc 若有送也已經到了。
+    h.hub.send({ type: 'terminal.signal', sessionId: 's1', signal: 'ctrl_c' });
+    await h.waitForOutput('s1', 'GOT:CTRL_C');
+    expect(h.outputText('s1')).not.toContain('GOT:ESC');
+    h.hub.send({
+      type: 'terminal.signal',
+      sessionId: 's1',
+      signal: 'escape',
+      onlyIfStatus: status,
+    });
+    await h.waitForOutput('s1', 'GOT:ESC');
+  });
+
   it('lastLines 是去 ANSI 的最後 4 行，lastOutputAt 會更新', async () => {
     await h.createAndSubscribe('s1');
     input('s1', 'paint');
