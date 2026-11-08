@@ -1,16 +1,31 @@
 // schema 升級前自動備份：舊版資料庫先備份（0600、內容是舊版）再升級；新資料庫不備份；備份失敗就不升級。
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { latestBackup, openDatabase, SCHEMA_VERSION } from '../db';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { latestBackup, migrate, openDatabase, SCHEMA_VERSION } from '../db';
+import { runResetPassword } from '../resetPassword';
 
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-board-backup-'));
 });
 afterEach(() => {
+  // 測試可能把資料夾改成唯讀；先改回來才刪得掉。
+  chmodSync(dir, 0o700);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -103,6 +118,77 @@ describe('backup before schema upgrade', () => {
     db.close();
   });
 
+  it('really fails (folder not writable): stops with a clear error and leaves v7 untouched', () => {
+    const path = join(dir, 'hub.db');
+    makeV7(path);
+    // 另開一條連線撐住 -wal/-shm，唯讀資料夾裡 openDatabase 還能開庫，失敗的是建備份檔那一步（不靠注入）。
+    const holder = new Database(path);
+    holder.pragma('journal_mode = WAL');
+    chmodSync(dir, 0o500);
+    try {
+      expect(() => openDatabase(path, { log: () => undefined, now: NOW })).toThrow(
+        /Could not back up .*hub\.db \(schema v7\).*EACCES.*not changed/,
+      );
+    } finally {
+      chmodSync(dir, 0o700);
+      holder.close();
+    }
+    expect(backups()).toEqual([]);
+    const db = new Database(path, { readonly: true });
+    expect(db.pragma('user_version', { simple: true })).toBe(7);
+    db.close();
+  });
+
+  it('never deletes a backup another process already wrote under the same name', () => {
+    const path = join(dir, 'hub.db');
+    makeV7(path);
+    const other = join(dir, `hub.db.bak-${STAMP}-v7`);
+    writeFileSync(other, 'written by another process');
+    let used = '';
+    expect(() =>
+      openDatabase(path, {
+        log: () => undefined,
+        now: NOW,
+        backup: (_db, target) => {
+          used = target;
+          throw new Error('disk I/O error');
+        },
+      }),
+    ).toThrow(/Could not back up/);
+    // 名字被占用就換序號；失敗只清自己建的那個，別人的備份原封不動。
+    expect(used).toBe(join(dir, `hub.db.bak-${STAMP}-2-v7`));
+    expect(backups()).toEqual([`hub.db.bak-${STAMP}-v7`]);
+    expect(readFileSync(other, 'utf8')).toBe('written by another process');
+  });
+
+  it('rejects a damaged backup whose header and version still look right', () => {
+    const path = join(dir, 'hub.db');
+    makeV7(path);
+    expect(() =>
+      openDatabase(path, {
+        log: () => undefined,
+        now: NOW,
+        backup: (db, target) => {
+          db.prepare('VACUUM INTO ?').run(target);
+          // 弄壞 machines 表的資料頁（不是 schema 頁）：表頭與 user_version 照樣讀得到，只有內容檢查抓得到。
+          const copy = new Database(target, { readonly: true });
+          const pageSize = copy.pragma('page_size', { simple: true }) as number;
+          const { rootpage } = copy
+            .prepare(
+              `SELECT rootpage FROM sqlite_master WHERE type = 'table' AND name = 'machines'`,
+            )
+            .get() as { rootpage: number };
+          copy.close();
+          const fd = openSync(target, 'r+');
+          // b-tree 頁首第 3–4 位元組是 cell 數，改成 0xFFFF。
+          writeSync(fd, Buffer.from([0xff, 0xff]), 0, 2, (rootpage - 1) * pageSize + 3);
+          closeSync(fd);
+        },
+      }),
+    ).toThrow(/Could not back up .*(quick_check|malformed)/);
+    expect(backups()).toEqual([]);
+  });
+
   it('rejects a backup that does not hold the old version', () => {
     const path = join(dir, 'hub.db');
     makeV7(path);
@@ -137,6 +223,40 @@ describe('backup before schema upgrade', () => {
     expect(message).toMatch(/newer than this hub/);
     expect(message).toContain(newest);
     expect(existsSync(path)).toBe(true);
+  });
+
+  it('migrate() alone uses the same too-new message, without a restore hint', () => {
+    const db = new Database(':memory:');
+    db.pragma(`user_version = ${SCHEMA_VERSION + 1}`);
+    expect(() => migrate(db)).toThrow(
+      `Database schema v${SCHEMA_VERSION + 1} is newer than this hub (v${SCHEMA_VERSION}). Upgrade the hub.`,
+    );
+    db.close();
+  });
+
+  it('reset-password writes the backup line through its own output, not console.log', async () => {
+    makeV7(join(dir, 'hub.db'));
+    const out: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      // 沒有這個使用者：指令會在開完（升級完）資料庫後停下，剛好看得到備份那一行。
+      const code = await runResetPassword(['ghost'], {
+        env: { AGENT_BOARD_DATA_DIR: dir },
+        input: {
+          isTTY: false,
+          promptHidden: () => Promise.reject(new Error('not a terminal')),
+          readAll: async () => 'irrelevant-password\n',
+        },
+        out: (line) => out.push(line),
+        err: () => undefined,
+      });
+      expect(code).toBe(1);
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+    expect(out.join('\n')).toMatch(/Backed up hub database \(schema v7\) to .*hub\.db\.bak-.*-v7/);
+    expect(backups()).toHaveLength(1);
   });
 
   it('says so when there is no backup to restore', () => {
