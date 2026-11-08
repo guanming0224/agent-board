@@ -3,7 +3,15 @@ import { useEffect, useState } from 'react';
 import { QUEUE_DETAIL_RATE_LIMITED } from '@agent-board/protocol';
 import type { Machine, PermissionMode, Project, Session } from '@agent-board/protocol';
 import { useT, useLocale } from '../shared/i18n';
-import { HANDS_LINE, STATUS_VISUAL } from '../shared/status';
+import {
+  codeClass,
+  HANDS_LINE,
+  statusCode,
+  statusGlyph,
+  statusLabelKey,
+  STATUS_VISUAL,
+  type StatusCode,
+} from '../shared/status';
 import { useBoard } from '../shared/store';
 import { contextPercent, formatTokens } from './usage';
 import { useProjects } from './useBoardLoad';
@@ -31,16 +39,65 @@ export function Callsign({ session }: { session: Session }) {
 }
 
 /**
- * 狀態燈：符號＋文字，不只靠顏色（規則一）。
- * badge：膠囊徽章（shared/styles/status.css），卡片標題列與圖例用；其他頁面要醒目也可以用。
+ * 狀態燈：符號＋英文狀態代碼（GM 2026-11-08，代碼與顏色見 shared/status.ts 的 statusCode）。
+ * 完整說明（分得出錯誤／卡住、剛開好／啟動中）放在 title 與 aria-label。
+ * badge：實心膠囊徽章（shared/styles/status.css），卡片標題列與圖例用，只顯示代碼；
+ * 不是徽章的（清單、成員列）代碼後面再接一段說明文字。
+ * detail 是 session 的 statusDetail（判斷 NEW 要用）；只有狀態沒有 session 時（例如狀態變化紀錄）可以不給。
  */
-export function Lamp({ status, badge = false }: { status: Session['status']; badge?: boolean }) {
+export function Lamp({
+  status,
+  detail = null,
+  badge = false,
+}: {
+  status: Session['status'];
+  detail?: string | null;
+  badge?: boolean;
+}) {
   const t = useT();
-  const v = STATUS_VISUAL[status];
+  const session = { status, statusDetail: detail };
   return (
-    <span className={`lamp l-${v.holder} s-${status}${badge ? ' badge' : ''}`} data-status={status}>
-      <i aria-hidden="true">{v.glyph}</i>
-      {t(v.labelKey)}
+    <CodeChip
+      code={statusCode(session)}
+      glyph={statusGlyph(session)}
+      label={t(statusLabelKey(session))}
+      badge={badge}
+      data={{ 'data-status': status }}
+    />
+  );
+}
+
+/**
+ * 代碼徽章的畫法只有這一份（Lamp 與 flows 的 StatusBadge 共用）：符號＋代碼，說明在 title／aria-label。
+ * 不是徽章時代碼後面接說明文字。
+ */
+export function CodeChip({
+  code,
+  glyph,
+  label,
+  badge = false,
+  data,
+}: {
+  code: StatusCode;
+  glyph: string;
+  label: string;
+  badge?: boolean;
+  data?: Record<`data-${string}`, string>;
+}) {
+  const t = useT();
+  const full = t('status.title', { code, label });
+  return (
+    <span
+      className={`lamp ${codeClass(code)}${badge ? ' badge' : ''}`}
+      data-code={code}
+      {...data}
+      role="img"
+      title={full}
+      aria-label={full}
+    >
+      <i aria-hidden="true">{glyph}</i>
+      <span className="code">{code}</span>
+      {!badge && <span className="lamp-label">{label}</span>}
     </span>
   );
 }
@@ -171,7 +228,8 @@ export function Age({ session }: { session: Session }) {
   let text: string;
   let at: string | null = session.statusSince;
 
-  switch (STATUS_VISUAL[session.status].holder) {
+  // 剛開好（NEW）不是在等你回覆，只寫「多久前」（views.age.since）。
+  switch (statusCode(session) === 'NEW' ? 'agent' : STATUS_VISUAL[session.status].holder) {
     case 'you':
       text = t('views.age.waiting', { span: span(session.statusSince) });
       break;

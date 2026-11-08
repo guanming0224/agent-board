@@ -164,7 +164,7 @@ async function expectNoPageOverflow(page: Page) {
   ).toBeLessThanOrEqual(size.client);
 }
 
-/** 綠色只能出現在 diff 區塊（STYLE.md 規則一）。回傳違規元素。 */
+/** 綠色只能出現在 diff 區塊與 DONE 狀態代碼（STYLE.md 規則一）。回傳違規元素。 */
 const findGreenOutsideDiff = (page: Page) =>
   page.evaluate(() => {
     const isGreen = (color: string) => {
@@ -173,13 +173,17 @@ const findGreenOutsideDiff = (page: Page) =>
       const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
       return g > r + 20 && g > b + 20;
     };
-    return [...document.querySelectorAll('.flows *')]
-      .filter((el) => !el.closest('.diff'))
-      .filter((el) => {
-        const style = getComputedStyle(el);
-        return [style.color, style.backgroundColor, style.borderLeftColor].some(isGreen);
-      })
-      .map((el) => el.tagName + '.' + el.className);
+    return (
+      [...document.querySelectorAll('.flows *')]
+        .filter((el) => !el.closest('.diff'))
+        // DONE 的狀態徽章／狀態燈可以是綠色（GM 2026-11-08）。
+        .filter((el) => !el.closest('.lamp.c-done'))
+        .filter((el) => {
+          const style = getComputedStyle(el);
+          return [style.color, style.backgroundColor, style.borderLeftColor].some(isGreen);
+        })
+        .map((el) => el.tagName + '.' + el.className)
+    );
   });
 
 const problems = new WeakMap<Page, string[]>();
@@ -1222,7 +1226,8 @@ test.describe('新增 session', () => {
       .locator('li')
       .first()
       .evaluate((el) => getComputedStyle(el).color);
-    expect(color).toBe('rgb(229, 139, 224)');
+    // 額度相關用 QUOTA 代碼的紫色（GM 2026-11-08）。
+    expect(color).toBe('rgb(155, 107, 255)');
   });
 
   test('同 repo 不同子資料夾也建議 worktree；各自 worktree 的只告知，不預設打開', async ({

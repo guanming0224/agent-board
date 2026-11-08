@@ -166,26 +166,6 @@
   line-height: 1;
 }
 
-.flows .l-you {
-  color: var(--you);
-}
-
-.flows .l-fault {
-  color: var(--fault);
-}
-
-.flows .l-agent {
-  color: var(--agent);
-}
-
-.flows .l-quota {
-  color: var(--quota);
-}
-
-.flows .l-idle {
-  color: var(--idle);
-}
-
 .flows .title {
   font-size: 15px;
   font-weight: 650;

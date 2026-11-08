@@ -410,7 +410,7 @@ export function ArchivePage() {
       <>
         <header className="page-head archive-head">
           <h1>{session.name}</h1>
-          <Lamp status={session.status} />
+          <Lamp status={session.status} detail={session.statusDetail} />
         </header>
         <Callsign text={callsign(session, machines, projects.data ?? [])} />
         <div className="acts">

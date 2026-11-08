@@ -1,9 +1,15 @@
 import { useEffect, useState } from 'react';
-import type { Machine, ResourceSample, SessionStatus, UsageSummary } from '@agent-board/protocol';
+import type { Machine, ResourceSample, UsageSummary } from '@agent-board/protocol';
 import { useLocale, useT } from '../shared/i18n';
-import { STATUS_VISUAL, type HandsLine } from '../shared/status';
+import {
+  codeLabelKey,
+  statusCode,
+  STATUS_VISUAL,
+  type HandsLine,
+  type StatusCode,
+} from '../shared/status';
 import { useBoard } from '../shared/store';
-import { Meter, useClock } from './session';
+import { CodeChip, Meter, useClock } from './session';
 import { useViewsUi } from './uiStore';
 import {
   cacheTokens,
@@ -14,15 +20,29 @@ import {
 } from './usage';
 import { useUsageStore } from './usageStore';
 
-/** 狀態圖例分三組：要你處理的、agent 在做的、其他（等額度、結束、失聯）。和卡片上的徽章同一套樣式。 */
-const LEGEND_GROUPS: { key: 'needsYou' | 'working' | 'other'; statuses: SessionStatus[] }[] = [
-  {
-    key: 'needsYou',
-    statuses: ['waiting_permission', 'waiting_input', 'plan_review', 'error', 'stuck'],
-  },
-  { key: 'working', statuses: ['running', 'starting', 'queued'] },
-  { key: 'other', statuses: ['rate_limited', 'done', 'offline'] },
+/**
+ * 狀態圖例分三組：算「等你」的、在進行的、其他（等額度、結束、失聯）。10 個代碼，每個一色（GM 2026-11-08）。
+ * 和卡片上的徽章同一套樣式，旁邊寫中文說明。
+ */
+const LEGEND_GROUPS: { key: 'needsYou' | 'working' | 'other'; codes: StatusCode[] }[] = [
+  { key: 'needsYou', codes: ['PERM', 'ASK', 'PLAN', 'ERR'] },
+  { key: 'working', codes: ['NEW', 'RUN', 'QUE'] },
+  { key: 'other', codes: ['QUOTA', 'DONE', 'OFF'] },
 ];
+
+/** 圖例徽章的符號：ERR 包含錯誤與卡住，用錯誤的符號。 */
+const LEGEND_GLYPH: Record<StatusCode, string> = {
+  NEW: STATUS_VISUAL.starting.glyph,
+  RUN: STATUS_VISUAL.running.glyph,
+  ASK: STATUS_VISUAL.waiting_input.glyph,
+  PERM: STATUS_VISUAL.waiting_permission.glyph,
+  PLAN: STATUS_VISUAL.plan_review.glyph,
+  ERR: STATUS_VISUAL.error.glyph,
+  QUOTA: STATUS_VISUAL.rate_limited.glyph,
+  QUE: STATUS_VISUAL.queued.glyph,
+  DONE: STATUS_VISUAL.done.glyph,
+  OFF: STATUS_VISUAL.offline.glyph,
+};
 
 const HANDS_ORDER: HandsLine[] = ['dotted', 'dashed', 'solid', 'heavy', 'bypass'];
 
@@ -130,29 +150,25 @@ function UsageSection() {
 function StatusLegend() {
   const t = useT();
   const sessions = useBoard((s) => s.sessions);
-  const counts = new Map<SessionStatus, number>();
+  const counts = new Map<StatusCode, number>();
   for (const s of sessions) {
-    if (!s.archived) counts.set(s.status, (counts.get(s.status) ?? 0) + 1);
+    if (s.archived) continue;
+    const code = statusCode(s);
+    counts.set(code, (counts.get(code) ?? 0) + 1);
   }
   return (
     <div className="legend-groups">
       {LEGEND_GROUPS.map((group) => (
         <div key={group.key} className={`legend-group g-${group.key}`}>
           <h4>{t(`views.legend.${group.key}`)}</h4>
-          <ul className="legend legend-badges">
-            {group.statuses.map((status) => {
-              const v = STATUS_VISUAL[status];
-              const n = counts.get(status) ?? 0;
+          <ul className="legend legend-codes">
+            {group.codes.map((code) => {
+              const n = counts.get(code) ?? 0;
+              const label = t(codeLabelKey(code));
               return (
-                <li
-                  key={status}
-                  className={`l-${v.holder} s-${status}`}
-                  data-testid={`legend-${status}`}
-                >
-                  <span className={`lamp badge l-${v.holder} s-${status}`}>
-                    <b aria-hidden="true">{v.glyph}</b>
-                    {t(v.labelKey)}
-                  </span>
+                <li key={code} data-testid={`legend-${code}`}>
+                  <CodeChip code={code} glyph={LEGEND_GLYPH[code]} label={label} badge />
+                  <span className="legend-label">{label}</span>
                   {n > 0 && (
                     <span className="legend-n num" title={t('views.legend.count', { n })}>
                       {n}

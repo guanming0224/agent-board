@@ -238,10 +238,17 @@ test.describe('待處理', () => {
     await expect(page.getByTestId('triage-waiting').locator('b')).toHaveText('7');
     await expect(page.getByTestId('triage-note')).toContainText('1 個額度用完');
     await expect(page.getByTestId('triage-note')).toContainText('1 個剛開好還沒做事');
+    // 剛開好的是 NEW 灰（不算等你），回覆是 ASK 黃（GM 2026-11-08）。
+    const idleBadge = page.getByTestId('queue-idle').locator('.badge');
+    await expect(idleBadge).toHaveText('◌NEW');
+    await expect(idleBadge).toHaveCSS('background-color', 'rgb(154, 164, 178)');
+    await expect(page.getByTestId('queue-reply').locator('.badge')).toHaveText('◇ASK');
 
     // 每列：徽章、名稱、呼號、一行摘要、等多久
     const danger = page.getByTestId('queue-danger');
-    await expect(danger.locator('.badge')).toHaveText('⛔危險指令');
+    // 危險指令是一種權限請求：PERM 代碼、⛔ 符號，說明在提示框（GM 2026-11-08）。
+    await expect(danger.locator('.badge')).toHaveText('⛔PERM');
+    await expect(danger.locator('.badge')).toHaveAttribute('title', 'PERM：危險指令');
     await expect(danger.locator('.row-rule')).toContainText('git push --force');
     await expect(danger.locator('.triage-context')).toContainText(DANGER_CMD);
     await expect(danger.locator('.callsign').first()).toHaveText('rig-a / api @ ab/fix');

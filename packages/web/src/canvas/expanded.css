@@ -59,8 +59,12 @@
   background: var(--surface);
   border-left: 1px solid var(--border);
 }
-.xpand-card.you {
-  box-shadow: inset 0 0 0 2px var(--you);
+/* 外框用狀態代碼色（GM 2026-11-08）：算「等你」的四種 2px，其他 1px；OFF 另有斜紋（.gone）。 */
+.xpand-card.st-code {
+  box-shadow: inset 0 0 0 1px var(--st);
+}
+.xpand-card.waits {
+  box-shadow: inset 0 0 0 2px var(--st);
 }
 .xpand-card > header {
   flex-shrink: 0;

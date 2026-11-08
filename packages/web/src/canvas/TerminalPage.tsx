@@ -73,7 +73,7 @@ function SessionList({ currentId }: { currentId: string | null }) {
               data-testid={`full-item-${s.id}`}
             >
               <span className="head">
-                <Lamp status={s.status} />
+                <Lamp status={s.status} detail={s.statusDetail} />
                 <Age session={s} />
               </span>
               <span className="title">{s.name}</span>

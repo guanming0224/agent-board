@@ -1,7 +1,7 @@
 // 待處理項目：審核中心與收件匣共用的清單與排序（STYLE.md §2-3）。
 import type { Approval, Session, SessionStatus } from '@agent-board/protocol';
 import type { BoardSnapshot } from '../shared/backend';
-import { attentionQueue, STATUS_VISUAL } from '../shared/status';
+import { attentionQueue, codeRank, statusCode, STATUS_VISUAL } from '../shared/status';
 
 export interface WorkItem {
   key: string;
@@ -19,9 +19,10 @@ const APPROVAL_STATUS: Record<Approval['kind'], SessionStatus> = {
   question: 'waiting_input',
 };
 
+/** 危險指令置頂，其餘照狀態代碼：故障（ERR）→ PERM → PLAN／ASK（shared/status.ts）。 */
 const rank = (item: WorkItem) => {
   if (item.approval?.kind === 'danger') return 0;
-  return STATUS_VISUAL[item.status].holder === 'fault' ? 1 : 2;
+  return 1 + codeRank(statusCode({ status: item.status, statusDetail: null }));
 };
 
 /**

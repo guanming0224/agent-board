@@ -11,7 +11,7 @@ import {
 import type { Session } from '@agent-board/protocol';
 import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
-import { STATUS_VISUAL } from '../shared/status';
+import { codeClass, codeWaits, statusCode } from '../shared/status';
 import { useBoard } from '../shared/store';
 import type { TerminalViewProps } from '../shared/terminal-contract';
 import { TerminalView } from '../terminal';
@@ -127,7 +127,7 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
     <>
       {/* 標題列就是卡片頂端的狀態帶（canvas.css），所以危險指令的警示放在它下面。 */}
       <div className="head">
-        <Lamp status={session.status} badge />
+        <Lamp status={session.status} detail={session.statusDetail} badge />
         {renaming ? (
           <RenameInput session={session} onDone={() => setRenaming(false)} />
         ) : (
@@ -168,20 +168,23 @@ export function useSizeNote() {
   return { note, onSizeOwnerChange: setOwner };
 }
 
-export const cardClass = (base: string, session: Session) =>
-  [
+/** 卡片的 class：放手線、狀態代碼色（邊框、標題色帶、光圈都用它，canvas.css、expanded.css）。 */
+export const cardClass = (base: string, session: Session) => {
+  const code = statusCode(session);
+  return [
     base,
     'hands-host',
     handsClass(session.permissionMode),
-    STATUS_VISUAL[session.status].holder === 'you' ? 'you' : '',
-    // 狀態帶與「等你」的光圈用（canvas.css、expanded.css）。
-    `st-${STATUS_VISUAL[session.status].holder}`,
-    // 每個狀態自己的顏色（GM 2026-11-08，shared/styles/status.css 的 .s-<status>）。
-    `s-${session.status}`,
+    // 算「等你」的四種（ASK、PERM、PLAN、ERR）：粗框；光圈畫在外層 .frame。
+    codeWaits(code) ? 'waits' : '',
+    'st-code',
+    // 狀態代碼的顏色（GM 2026-11-08，shared/styles/status.css 的 .c-<code>）。
+    codeClass(code),
     session.status === 'offline' ? 'gone' : '',
   ]
     .filter(Boolean)
     .join(' ');
+};
 
 export function SessionNode({
   data,
@@ -244,12 +247,13 @@ export function SessionNode({
 
   return (
     <div
-      className={`frame${focused ? ' spot' : ''}`}
+      className={`frame ${codeClass(statusCode(session))}${focused ? ' spot' : ''}`}
       style={{ width: w, height: h }}
       data-testid={`card-${session.id}`}
       data-mode={isTerminal ? 'terminal' : 'summary'}
       data-handoff={receiving ? 'in' : undefined}
-      data-holder={STATUS_VISUAL[session.status].holder}
+      data-code={statusCode(session)}
+      data-waits={codeWaits(statusCode(session)) ? 'true' : undefined}
     >
       <Handle
         type="target"

@@ -174,7 +174,7 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
               >
                 <div className="member-head">
                   <b>{s.name}</b>
-                  <Lamp status={s.status} />
+                  <Lamp status={s.status} detail={s.statusDetail} />
                 </div>
                 <div className="sign">
                   <Callsign session={s} />

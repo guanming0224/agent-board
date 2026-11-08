@@ -68,7 +68,7 @@ async function expectNoPageOverflow(page: Page) {
   expect(size.scroll, `scrollWidth ${size.scroll}`).toBeLessThanOrEqual(size.client);
 }
 
-/** 綠色只能出現在 diff 區塊（STYLE.md 規則一）。 */
+/** 綠色只能出現在 diff 區塊與 DONE 狀態代碼（STYLE.md 規則一）。 */
 const findGreen = (page: Page) =>
   page.evaluate(() => {
     const isGreen = (color: string) => {
@@ -77,13 +77,17 @@ const findGreen = (page: Page) =>
       const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
       return g > r + 20 && g > b + 20;
     };
-    return [...document.querySelectorAll('.flows *')]
-      .filter((el) => !el.closest('.diff'))
-      .filter((el) => {
-        const style = getComputedStyle(el);
-        return [style.color, style.backgroundColor, style.borderLeftColor].some(isGreen);
-      })
-      .map((el) => el.tagName + '.' + el.className);
+    return (
+      [...document.querySelectorAll('.flows *')]
+        .filter((el) => !el.closest('.diff'))
+        // DONE 的狀態徽章／狀態燈可以是綠色（GM 2026-11-08）。
+        .filter((el) => !el.closest('.lamp.c-done'))
+        .filter((el) => {
+          const style = getComputedStyle(el);
+          return [style.color, style.backgroundColor, style.borderLeftColor].some(isGreen);
+        })
+        .map((el) => el.tagName + '.' + el.className)
+    );
   });
 
 test.describe('已封存清單', () => {
@@ -101,7 +105,9 @@ test.describe('已封存清單', () => {
     const api = page.getByTestId('archived-s-old-api');
     await expect(api.getByTestId('archived-size')).toHaveText('對話 1.8 MB');
     await expect(api).toContainText('demo-studio / api @ ab/old-api');
-    await expect(api.locator('.lamp')).toHaveText('✓完成');
+    // 狀態代碼＋說明（GM 2026-11-08）。
+    await expect(api.locator('.lamp')).toHaveText('✓DONE完成');
+    await expect(api.locator('.lamp')).toHaveCSS('color', 'rgb(70, 194, 106)');
     await expect(page.getByTestId('archived-s-old-shared').getByTestId('archived-size')).toHaveText(
       '對話 —',
     );
@@ -403,8 +409,8 @@ test.describe('舊資料頁', () => {
 
     const history = page.locator('.archive-history li');
     await expect(history).toHaveCount(2);
-    await expect(history.nth(1)).toContainText('◇等你回覆');
-    await expect(history.nth(1)).toContainText('✓完成');
+    await expect(history.nth(1)).toContainText('◇ASK等你回覆');
+    await expect(history.nth(1)).toContainText('✓DONE完成');
 
     await expect(page.getByTestId('transcript-count')).toHaveText('共 230 則');
     const entries = page.getByTestId('transcript-entry');
@@ -504,7 +510,12 @@ test.describe('接續', () => {
     await button.click();
     await expect(page).toHaveURL(/#\/canvas$/);
     await expect(page.getByTestId('card-s-old-api')).toBeVisible();
-    await expect(page.getByTestId('card-s-old-api').locator('.lamp')).toContainText('啟動中');
+    // 啟動中是 NEW（GM 2026-11-08），說明在提示框。
+    await expect(page.getByTestId('card-s-old-api').locator('.lamp')).toHaveText('◌NEW');
+    await expect(page.getByTestId('card-s-old-api').locator('.lamp')).toHaveAttribute(
+      'title',
+      'NEW：啟動中',
+    );
   });
 
   test('沒有 Claude 對話 id 就不給接續', async ({ page }) => {
