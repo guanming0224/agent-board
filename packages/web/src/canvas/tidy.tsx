@@ -17,6 +17,19 @@ const TIDY_MS = 360;
 
 const ease = (t: number) => (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2);
 
+/**
+ * 畫布上收合的進度卡最高多高（畫布 px，progress/CanvasProgress.tsx 的 .progress-anchor）。
+ * 收合的卡沒有縮放（scale 1），offsetHeight 就是畫布 px；展開的卡和縮很小時的小標籤都不算。
+ */
+function measureProgressHeight(): number {
+  let max = 0;
+  for (const el of document.querySelectorAll<HTMLElement>('.progress-anchor')) {
+    if (el.classList.contains('expanded') || el.querySelector('.progress-tiny')) continue;
+    max = Math.max(max, el.offsetHeight);
+  }
+  return max;
+}
+
 export interface TidyState {
   /** 上一次擺設（一鍵整理前的全部位置）。 */
   previous: ReadonlyMap<string, Rect> | null;
@@ -132,6 +145,7 @@ export function useTidy({
       })),
       teams,
       members,
+      progressH: measureProgressHeight(),
     }),
     [current, members, progress, sessions, teams],
   );

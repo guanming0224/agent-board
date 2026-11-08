@@ -5,6 +5,9 @@ import {
   arrangeTeam,
   MAX_ROW_W,
   restoreLayout,
+  PROGRESS_CARD_W,
+  PROGRESS_DEFAULT_H,
+  PROGRESS_GAP,
   PROGRESS_RESERVE,
   TEAM_BLOCK_GAP,
   TEAM_CLEAR,
@@ -27,7 +30,7 @@ import {
   WORKSPACE,
   type Rect,
 } from './layout';
-import { canvasTeams, teamRect } from './teams';
+import { canvasTeams, TEAM_PADDING, teamRect } from './teams';
 
 const STEP_X = CARD_W + GAP_X;
 const STEP_Y = CARD_H + GAP_Y;
@@ -418,17 +421,24 @@ describe('arrangeCanvas', () => {
     }
   });
 
-  it('團隊框右邊預留進度卡的寬度（P3 §1.5）：同一列右邊的東西離框至少 TEAM_BLOCK_GAP＋PROGRESS_RESERVE', () => {
-    expect(PROGRESS_RESERVE).toBe(296);
+  it('團隊框右邊預留進度卡的寬與高（P3 §1.5；GM 2026-11-09 整理不要壓到進度卡）：卡片不壓到右邊、下一列的東西', () => {
+    expect(PROGRESS_RESERVE).toBe(PROGRESS_CARD_W + PROGRESS_GAP);
+    // 卡片比團隊框高很多時（400）也不能壓到下一列。
+    const H = 400;
     for (let seed = 1; seed <= 200; seed += 1) {
-      const data = randomCanvas(seed);
+      const data = { ...randomCanvas(seed), progressH: H };
       const out = arrangeCanvas(data);
       const cluster = clusterOf(data);
       const drawn = frames(data, out);
       const inTeam = new Set(data.members.map((m) => m.sessionId));
-      // 進度卡的位置：框的右上角外側 16px、寬 280，高度至少一張收合卡。
+      // 進度卡的位置：框的右上角外側 PROGRESS_GAP、寬 PROGRESS_CARD_W、高 H（和 progress/CanvasProgress.tsx 一致）。
       for (const a of drawn) {
-        const card = { x: a.rect.x + a.rect.w + 16, y: a.rect.y, w: 280, h: 48 };
+        const card = {
+          x: a.rect.x + a.rect.w + PROGRESS_GAP,
+          y: a.rect.y,
+          w: PROGRESS_CARD_W,
+          h: H,
+        };
         const others: Rect[] = [
           ...drawn.filter((b) => !cluster.get(a.team.id)!.has(b.team.id)).map((b) => b.rect),
           ...[...out].filter(([id]) => !inTeam.has(id)).map(([, r]) => r),
@@ -445,7 +455,7 @@ describe('arrangeCanvas', () => {
     }
   });
 
-  it('寫過進度卡的單獨 session 自己一塊、右邊預留 PROGRESS_RESERVE：卡片右側 16px 寬 280 不壓到別的卡', () => {
+  it('寫過進度卡的單獨 session 自己一塊、右邊預留 PROGRESS_RESERVE：卡片（預設高度）不壓到別的卡', () => {
     const rects: Record<string, Rect> = {};
     const ids = ['a', 'b', 'c', 'd', 'e', 'f'];
     ids.forEach((id, i) => (rects[id] = card(i * STEP_X, 0)));
@@ -454,7 +464,12 @@ describe('arrangeCanvas', () => {
     expect(overlapping(out)).toEqual([]);
     for (const id of ['a', 'c']) {
       const r = out.get(id)!;
-      const note = { x: r.x + r.w + 16, y: r.y, w: 280, h: 48 };
+      const note = {
+        x: r.x + r.w + PROGRESS_GAP,
+        y: r.y,
+        w: PROGRESS_CARD_W,
+        h: PROGRESS_DEFAULT_H,
+      };
       for (const [other, o] of out) {
         if (other === id) continue;
         expect(overlaps(note, o), `${id} 的進度卡壓到 ${other}`).toBe(false);
@@ -464,6 +479,41 @@ describe('arrangeCanvas', () => {
     const rest = ['b', 'd', 'e'].map((id) => out.get(id)!);
     expect(rest[1]!.x - rest[0]!.x).toBe(STEP_X);
     expect(rest[0]!.y).toBe(rest[1]!.y);
+  });
+
+  it('只有一列、卡片比區塊高：下一列從卡片底下開始（GM 2026-11-09）', () => {
+    const rects: Record<string, Rect> = {};
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    ids.forEach((id, i) => (rects[id] = card(i * STEP_X, 0)));
+    const sessions = ids.map((id) => session(id, { progress: id === 'a' }));
+    // 列寬小到每塊各自一列，才看得出「下一列」的位置。
+    const out = arrangeCanvas({ ...input(rects, [], sessions), progressH: 900 }, 1);
+    const a = out.get('a')!;
+    const note = { x: a.x + a.w + PROGRESS_GAP, y: a.y, w: PROGRESS_CARD_W, h: 900 };
+    for (const [id, r] of out) {
+      if (id === 'a') continue;
+      expect(overlaps(note, r), `a 的進度卡壓到 ${id}`).toBe(false);
+    }
+  });
+
+  it('整理團隊：進度卡的位置也算禁區，原本在那裡的卡被移走（GM 2026-11-09）', () => {
+    const rects: Record<string, Rect> = {
+      a: card(0, 0),
+      b: card(STEP_X, 0),
+      // x 剛好落在團隊框右邊、進度卡會畫的地方（框右緣＋PROGRESS_GAP 之後）。
+      z: card(2 * STEP_X - GAP_X + TEAM_PADDING + PROGRESS_GAP + 20, 40),
+    };
+    const members = [member('t', 'a', 'lead'), member('t', 'b', 'worker')];
+    const data = input(rects, members);
+    const out = arrangeTeam('t', data);
+    const frame = frames({ ...data, rects: out }, out).find((f) => f.team.id === 't')!.rect;
+    const note = {
+      x: frame.x + frame.w + PROGRESS_GAP,
+      y: frame.y,
+      w: PROGRESS_CARD_W,
+      h: PROGRESS_DEFAULT_H,
+    };
+    expect(overlaps(note, out.get('z')!)).toBe(false);
   });
 
   it('整理後全部顯示：手機與桌面寬度下，團隊之間在畫面上至少 48px（P2 §4.2）', () => {

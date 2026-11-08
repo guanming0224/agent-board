@@ -1,10 +1,11 @@
-// 畫布上的進度卡（P3 項目一，§1.5）：團隊框右上角外側、與框頂對齊、間距 16px（螢幕 px，隨縮放換算），
+// 畫布上的進度卡（P3 項目一，§1.5）：團隊框右上角外側、與框頂對齊、間距 PROGRESS_GAP（畫布 px），
 // 跟著團隊框移動；單獨 session 的卡貼在 session 卡右側。不是 React Flow 節點（同 TeamFrames 不當節點），
-// 不參與「一鍵整理」的排列，但整理時預留它的寬度（canvas/arrange.ts 的 PROGRESS_RESERVE）。
+// 不參與「一鍵整理」的排列，但整理時預留它的寬度與高度（canvas/arrange.ts 的 PROGRESS_RESERVE、progressH）。
 // 縮放 < 90% 只畫收合樣式、< 40% 只畫「進度」小標籤與 ⚠；點開（或從 Memory、收件匣展開）時反向縮放回螢幕大小。
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '@xyflow/react';
 import { progressOwnerKey, type ProgressOwner } from '@agent-board/protocol';
+import { PROGRESS_GAP } from '../canvas/arrange';
 import type { Rect } from '../canvas/layout';
 import { canvasTeams, teamRect } from '../canvas/teams';
 import { useBoard } from '../shared/store';
@@ -13,8 +14,6 @@ import { useCurrentZoneId } from '../zones';
 import { ProgressCardView } from './ProgressCard';
 import { useProgressUi } from './uiStore';
 
-/** 卡片和團隊框之間（螢幕 px）。 */
-const GAP_SCREEN = 16;
 /** 摘要模式（只畫收合）與小標籤的門檻（同畫布卡片的語意縮放）。 */
 const SUMMARY_ZOOM = 0.9;
 const TINY_ZOOM = 0.4;
@@ -40,7 +39,8 @@ export function CanvasProgress({ rects }: { rects: ReadonlyMap<string, Rect> }) 
   const zoneId = useCurrentZoneId();
   const expanded = useProgressUi((s) => s.expanded);
   const setExpanded = useProgressUi((s) => s.setExpanded);
-  const gap = GAP_SCREEN / zoom;
+  // 固定的畫布距離，和一鍵整理預留的一樣（canvas/arrange.ts）。
+  const gap = PROGRESS_GAP;
   // 底部指令列（views 的 CommandBar，在畫布外面那一層、z-index 比這層高）的頂端，相對這一層（螢幕 px）。
   // P3 整合：指令列多了 Presets、Memory 後變寬（窄的時候換行變高），展開的卡（衝突並排、歷史）會長到它底下、
   // 存檔／取消鈕被蓋住；展開的卡限制高度到指令列上方，內容在卡裡捲動。

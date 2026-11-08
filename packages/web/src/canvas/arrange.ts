@@ -36,7 +36,14 @@ export interface ArrangeInput {
   /** 這個順序就是整理後團隊的順序。 */
   teams: readonly { id: string }[];
   members: readonly TeamMember[];
+  /**
+   * 畫布上收合的進度卡最高多高（畫布 px）。整理時區塊高度至少這麼高，卡片才不會壓到下一列。
+   * 沒給或比 PROGRESS_DEFAULT_H 小就用 PROGRESS_DEFAULT_H。
+   */
+  progressH?: number;
 }
+
+const cardHeight = (input: ArrangeInput) => Math.max(input.progressH ?? 0, PROGRESS_DEFAULT_H);
 
 /** 每列最多幾張卡。 */
 export const MAX_COLS = 3;
@@ -51,7 +58,16 @@ export const TEAM_BLOCK_GAP = 240;
  * 團隊框右側預留給進度卡的寬度（畫布 px，P3 §1.5）：卡寬 280＋和框之間 16。進度卡不是節點、不參與排列，
  * 但整理畫布時團隊框右邊多留這麼多，卡片才不會壓到右邊的團隊或卡。
  */
-export const PROGRESS_RESERVE = 280 + 16;
+export const PROGRESS_CARD_W = 280;
+/**
+ * 進度卡和團隊框（或單獨 session 卡）之間的距離，畫布 px（GM 2026-11-09：整理畫布時不要壓到進度卡）。
+ * 以前是「螢幕 16px」換算，整理後縮到 0.2 倍時會變成 80 畫布 px、超出預留，所以改成固定的畫布距離，
+ * progress/CanvasProgress.tsx 畫卡片時用同一個值。
+ */
+export const PROGRESS_GAP = 24;
+export const PROGRESS_RESERVE = PROGRESS_CARD_W + PROGRESS_GAP;
+/** 量不到卡片高度時（例如卡片還沒畫出來）整理用的高度，畫布 px。收合的卡通常 150–250。 */
+export const PROGRESS_DEFAULT_H = 260;
 /** 一鍵整理後團隊之間至少要有的螢幕像素（P2 §4.2）。 */
 export const TEAM_GAP_SCREEN = 48;
 /** 整理畫布後「全部顯示」的最小縮放：TEAM_BLOCK_GAP 在畫面上至少 TEAM_GAP_SCREEN。 */
@@ -264,8 +280,19 @@ export function arrangeTeam(teamId: string, input: ArrangeInput): Map<string, Re
   place(block, anchor, input.rects, next);
 
   const footprint = inflate({ x: anchor.x, y: anchor.y, w: block.w, h: block.h }, TEAM_CLEAR);
+  // 團隊的進度卡畫在框右側（框＝成員外圍再留 TEAM_PADDING；只有一位時貼在那張卡右側），也不能被別的卡壓到。
+  const pad = memberIds.length > 1 ? TEAM_PADDING : 0;
+  const card = inflate(
+    {
+      x: anchor.x + block.w + pad + PROGRESS_GAP,
+      y: anchor.y - pad,
+      w: PROGRESS_CARD_W,
+      h: cardHeight(input),
+    },
+    MIN_GAP,
+  );
   const intruders = [...next]
-    .filter(([id, r]) => !memberSet.has(id) && overlaps(r, footprint))
+    .filter(([id, r]) => !memberSet.has(id) && (overlaps(r, footprint) || overlaps(r, card)))
     .sort(([a, ra], [b, rb]) => ra.y - rb.y || ra.x - rb.x || compareText(a, b))
     .map(([id]) => id);
   const pending = new Set(intruders);
@@ -283,7 +310,7 @@ export function arrangeTeam(teamId: string, input: ArrangeInput): Map<string, Re
       const frame = frameOf(ids, settled);
       return frame ? [inflate(frame, MIN_GAP)] : [];
     });
-    next.set(id, nearestFree(rect, [footprint, ...cards, ...frames]));
+    next.set(id, nearestFree(rect, [footprint, card, ...cards, ...frames]));
   }
   return next;
 }
@@ -382,6 +409,7 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW = MAX_ROW_W): Map<str
 
   // 由左到右、超過列寬換列。
   const origin = boundsOf([...input.rects.values()])!;
+  const cardH = cardHeight(input);
   let x = 0;
   let y = 0;
   let rowH = 0;
@@ -391,7 +419,8 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW = MAX_ROW_W): Map<str
     const team = pad > 0;
     // 右邊還有進度卡（P3）：當成區塊的一部分，換列判斷與下一塊的位置都算進去。
     const w = block.w + 2 * pad + (reserve ? PROGRESS_RESERVE : 0);
-    const h = block.h + 2 * pad;
+    // 進度卡和框頂（單獨 session 是卡頂）對齊往下長：比區塊高時，這一列的高度以卡片為準。
+    const h = Math.max(block.h + 2 * pad, reserve ? cardH : 0);
     if (x > 0 && x + w > maxRowW) {
       x = 0;
       y += rowH + (rowTeam ? TEAM_BLOCK_GAP : BLOCK_GAP);
