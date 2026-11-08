@@ -5,6 +5,7 @@ import {
   arrangeTeam,
   MAX_ROW_W,
   restoreLayout,
+  TEAM_BLOCK_GAP,
   TEAM_CLEAR,
   teamRows,
   type ArrangeInput,
@@ -381,6 +382,35 @@ describe('arrangeCanvas', () => {
     const out = arrangeCanvas(input(rects, [], sessions));
     for (const r of out.values()) expect(r.x + r.w).toBeLessThanOrEqual(MAX_ROW_W);
     expect(new Set([...out.values()].map((r) => r.y)).size).toBeGreaterThan(1);
+  });
+
+  it('團隊框之間（與後面沒有團隊的卡）至少隔 TEAM_BLOCK_GAP（P2 §4.2）', () => {
+    // 兩點之間的空隙：重疊或相鄰回 0 以下。
+    const gap = (a: Rect, b: Rect) =>
+      Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w), b.y - (a.y + a.h), a.y - (b.y + b.h));
+    expect(TEAM_BLOCK_GAP).toBeGreaterThan(GAP_X);
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const data = randomCanvas(seed);
+      const out = arrangeCanvas(data);
+      const cluster = clusterOf(data);
+      const drawn = frames(data, out);
+      const inTeam = new Set(data.members.map((m) => m.sessionId));
+      for (const a of drawn) {
+        for (const b of drawn) {
+          if (cluster.get(a.team.id)!.has(b.team.id)) continue;
+          expect(
+            gap(a.rect, b.rect),
+            `seed ${seed} ${a.team.id}/${b.team.id}`,
+          ).toBeGreaterThanOrEqual(TEAM_BLOCK_GAP);
+        }
+        for (const [id, r] of out) {
+          if (inTeam.has(id)) continue;
+          expect(gap(a.rect, r), `seed ${seed} ${id}/${a.team.id}`).toBeGreaterThanOrEqual(
+            TEAM_BLOCK_GAP,
+          );
+        }
+      }
+    }
   });
 
   it('隨機畫布：卡不重疊、不同群的團隊框不重疊、框裡沒有別群的卡', () => {

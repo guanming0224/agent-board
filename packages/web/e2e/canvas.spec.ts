@@ -2150,3 +2150,293 @@ test.describe('線上標籤不擋卡片（審查回饋 2026-11-06）', () => {
     await expect(page.locator('.link-legend')).toHaveCount(0);
   });
 });
+
+test.describe('團隊框質感與拖線把手（P2 §4）', () => {
+  const TEAMS = '/src/team/store.ts';
+  const opacity = (loc: ReturnType<Page['locator']>) =>
+    loc.evaluate((el) => getComputedStyle(el).opacity);
+  const handleOf = (page: Page, id: string, kind: 'source' | 'target') =>
+    card(page, id).locator(`.ab-handle.${kind}`);
+  /** 畫布上目前的交接規則（團隊 store 的 rules），只取比對要用的欄位。 */
+  const rules = (page: Page) =>
+    page.evaluate(async (url) => {
+      const { useTeams } = await import(/* @vite-ignore */ url);
+      return (
+        useTeams.getState().rules as {
+          fromSessionId: string;
+          action: { toSessionId: string };
+          enabled: boolean;
+        }[]
+      )
+        .map((r) => `${r.fromSessionId}->${r.action.toSessionId}:${r.enabled ? 'on' : 'off'}`)
+        .sort();
+    }, TEAMS);
+  const menuOf = (page: Page, id: string) =>
+    card(page, id).getByRole('button', { name: /的更多動作$/ });
+  const viewport = (page: Page) =>
+    page.locator('.react-flow__viewport').evaluate((el) => (el as HTMLElement).style.transform);
+
+  test('滑鼠：把手平常隱藏、移入卡片才出現；拖線中所有目標把手都出現，建立關閉中的交接線', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await page.mouse.move(2, 2);
+    for (const h of await page.locator('.ab-handle').all()) {
+      await expect.poll(() => opacity(h)).toBe('0');
+    }
+
+    // 移入卡片：只有這張卡的兩個把手出現。
+    await card(page, 's-tests').locator('.tail').hover();
+    await expect.poll(() => opacity(handleOf(page, 's-tests', 'source'))).toBe('1');
+    await expect.poll(() => opacity(handleOf(page, 's-tests', 'target'))).toBe('1');
+    expect(await opacity(handleOf(page, 's-etl', 'target'))).toBe('0');
+    await shot(page, 'handles-hover');
+
+    // 拖線中：別張卡的目標把手都看得到（來源把手不用）。
+    const from = (await handleOf(page, 's-tests', 'source').boundingBox())!;
+    const to = (await handleOf(page, 's-etl', 'target').boundingBox())!;
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to.x - 60, to.y + 80, { steps: 6 });
+    await expect.poll(() => opacity(handleOf(page, 's-etl', 'target'))).toBe('1');
+    await expect.poll(() => opacity(handleOf(page, 's-auth', 'target'))).toBe('1');
+    await expect.poll(() => opacity(handleOf(page, 's-ml', 'target'))).toBe('1');
+    expect(await opacity(handleOf(page, 's-ml', 'source'))).toBe('0');
+    await shot(page, 'handles-connecting');
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 4 });
+    await page.mouse.up();
+    await expect(page.getByTestId('handoff-s-tests-s-etl')).toContainText('完成時交接');
+    expect(await rules(page)).toContain('s-tests->s-etl:off');
+
+    // 放開後恢復隱藏。
+    await page.mouse.move(2, 2);
+    await expect.poll(() => opacity(handleOf(page, 's-ml', 'target'))).toBe('0');
+    await expect.poll(() => opacity(handleOf(page, 's-etl', 'target'))).toBe('0');
+  });
+
+  test('鍵盤：Tab 到卡片時把手出現；「建立交接線…」可全程用鍵盤完成，Esc 取消', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await page.mouse.move(2, 2);
+    await expect.poll(() => opacity(handleOf(page, 's-auth', 'source'))).toBe('0');
+    const before = await rules(page);
+
+    // Tab 到第一張卡（xyflow 節點可取得焦點）。
+    const focusedNode = () =>
+      page.evaluate(() =>
+        document.activeElement?.classList.contains('react-flow__node')
+          ? document.activeElement.getAttribute('data-id')
+          : null,
+      );
+    for (let i = 0; i < 80 && !(await focusedNode()); i += 1) await page.keyboard.press('Tab');
+    const first = await focusedNode();
+    expect(first).not.toBeNull();
+    await expect.poll(() => opacity(handleOf(page, first!, 'source'))).toBe('1');
+    await expect.poll(() => opacity(handleOf(page, first!, 'target'))).toBe('1');
+
+    // 選單：⋯ → 建立交接線…（Tab 到它、Enter）→ Tab 到目標卡按 Enter。
+    await menuOf(page, 's-tests').focus();
+    await page.keyboard.press('Enter');
+    const item = card(page, 's-tests').getByRole('menuitem', { name: '建立交接線…' });
+    await expect(card(page, 's-tests').getByRole('menuitem', { name: '重新命名' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(item).toBeFocused();
+    await page.keyboard.press('Enter');
+    const hint = page.getByTestId('link-pick');
+    await expect(hint).toContainText('點要交接給誰的卡片；Esc 或 ✕ 取消');
+    await expect(card(page, 's-tests')).toHaveAttribute('data-pick', 'source');
+    await shot(page, 'link-pick');
+
+    // Esc 取消：不建立。
+    await page.keyboard.press('Escape');
+    await expect(hint).toHaveCount(0);
+    await expect(card(page, 's-tests')).not.toHaveAttribute('data-pick');
+
+    await menuOf(page, 's-tests').focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Enter');
+    await expect(hint).toBeVisible();
+    await node(page, 's-etl').focus();
+    await page.keyboard.press('Enter');
+    await expect(hint).toHaveCount(0);
+    await expect(page.getByTestId('handoff-s-tests-s-etl')).toContainText('完成時交接');
+    expect(await rules(page)).toEqual([...before, 's-tests->s-etl:off'].sort());
+
+    // 兩張都不在團隊：和拖線一樣的錯誤，不建立。
+    await menuOf(page, 's-ml').focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Enter');
+    await node(page, 's-docs').focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('alert')).toContainText('交接規則屬於團隊');
+    expect(await rules(page)).toHaveLength(before.length + 1);
+  });
+
+  test.describe('觸控（沒有 hover）', () => {
+    test.use({ hasTouch: true, isMobile: true, viewport: { width: 1024, height: 768 } });
+
+    test('把手一律隱藏；選單「建立交接線…」→ 點 B 卡建立；點空白或 ✕ 取消', async ({ page }) => {
+      await openCanvas(page);
+      expect(await page.evaluate(() => matchMedia('(hover: none)').matches)).toBe(true);
+      for (const h of await page.locator('.ab-handle').all()) {
+        expect(await h.evaluate((el) => getComputedStyle(el).visibility)).toBe('hidden');
+      }
+      const before = await rules(page);
+
+      // 點空白處取消：不建立。
+      await menuOf(page, 's-tests').tap();
+      await card(page, 's-tests').getByRole('menuitem', { name: '建立交接線…' }).tap();
+      const hint = page.getByTestId('link-pick');
+      await expect(hint).toBeVisible();
+      // 第二列中間那張卡下方的空白（離卡夠遠，觸控的點擊校正不會吸到卡上）。
+      const docs = (await card(page, 's-docs').boundingBox())!;
+      const blankY = docs.y + docs.height + 40;
+      expect(blankY).toBeLessThan(768 - 40);
+      await page.touchscreen.tap(docs.x + docs.width / 2, blankY);
+      await expect(hint).toHaveCount(0);
+      expect(await rules(page)).toEqual(before);
+
+      // ✕ 取消。
+      await menuOf(page, 's-tests').tap();
+      await card(page, 's-tests').getByRole('menuitem', { name: '建立交接線…' }).tap();
+      await hint.getByRole('button', { name: '取消建立交接線' }).tap();
+      await expect(hint).toHaveCount(0);
+
+      // 點自己不算；點 B 卡＝建立。卡片裡的按鈕這時不吃點擊。
+      await menuOf(page, 's-tests').tap();
+      await card(page, 's-tests').getByRole('menuitem', { name: '建立交接線…' }).tap();
+      await card(page, 's-tests').tap();
+      await expect(hint).toBeVisible();
+      await card(page, 's-etl').tap();
+      await expect(hint).toHaveCount(0);
+      await expect(page.getByTestId('handoff-s-tests-s-etl')).toContainText('完成時交接');
+      expect(await rules(page)).toEqual([...before, 's-tests->s-etl:off'].sort());
+    });
+  });
+
+  test('團隊框：毛玻璃、16px 圓角、中性白光暈；不含任何狀態色', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    const team = page.locator('.team').first();
+    const style = await team.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const z = Number(getComputedStyle(el.closest('.canvas')!).getPropertyValue('--z'));
+      return {
+        blur: cs.backdropFilter,
+        radius: parseFloat(cs.borderTopLeftRadius) * z,
+        shadow: cs.boxShadow,
+        label: getComputedStyle(el.querySelector(':scope > span')!).backdropFilter,
+      };
+    });
+    expect(style.blur).toContain('blur');
+    expect(style.label).toContain('blur');
+    expect(style.radius).toBeCloseTo(16, 0);
+    // 光暈、陰影只有中性色（r = g = b）。
+    const colors = [...style.shadow.matchAll(/rgba?\((\d+), (\d+), (\d+)/g)];
+    expect(colors.length).toBeGreaterThan(0);
+    for (const [, r, g, b] of colors) expect([r, r]).toEqual([g, b]);
+
+    // 掃描所有樣式表裡跟團隊框有關的規則（含媒體查詢）與行內樣式：不得出現狀態色變數。
+    const found = await page.evaluate(() => {
+      const texts: string[] = [];
+      const walk = (list: CSSRuleList) => {
+        for (const rule of Array.from(list)) {
+          if (rule instanceof CSSStyleRule && /\.team(?![\w-])/.test(rule.selectorText)) {
+            texts.push(rule.cssText);
+          }
+          if ('cssRules' in rule) walk((rule as CSSGroupingRule).cssRules);
+        }
+      };
+      for (const sheet of Array.from(document.styleSheets)) walk(sheet.cssRules);
+      for (const el of Array.from(document.querySelectorAll('.team, .team *'))) {
+        texts.push((el as HTMLElement).style.cssText);
+      }
+      return texts;
+    });
+    expect(found.length).toBeGreaterThan(3);
+    for (const text of found) {
+      expect(text).not.toMatch(/--(you|fault|agent|quota|idle|c-[\w-]+|st)\b/);
+    }
+    await shot(page, 'team-frame-glass');
+  });
+
+  test('在團隊框內拖動：畫布平移、不開任何東西；平移中暫時拿掉模糊', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    const auth = (await card(page, 's-auth').boundingBox())!;
+    const tests = (await card(page, 's-tests').boundingBox())!;
+    const frame = (await page.locator('.team').first().boundingBox())!;
+    // 兩張隊員卡中間的空隙：在框裡、不在卡上。
+    const left = Math.min(auth.x + auth.width, tests.x + tests.width);
+    const right = Math.max(auth.x, tests.x);
+    const x = (left + right) / 2;
+    const y = auth.y + auth.height / 2;
+    expect(x).toBeGreaterThan(frame.x);
+    expect(x).toBeLessThan(frame.x + frame.width);
+    const hash = await page.evaluate(() => location.hash);
+    const before = await viewport(page);
+    const cardBefore = await position(page, 's-auth');
+
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 60, y + 40, { steps: 4 });
+    await expect(page.locator('.canvas')).toHaveAttribute('data-moving', 'true');
+    expect(
+      await page
+        .locator('.team')
+        .first()
+        .evaluate((el) => getComputedStyle(el).backdropFilter),
+    ).toBe('none');
+    await page.mouse.move(x + 140, y + 90, { steps: 4 });
+    await page.mouse.up();
+
+    await expect.poll(() => viewport(page)).not.toBe(before);
+    await expect(page.locator('.canvas')).not.toHaveAttribute('data-moving');
+    await expect
+      .poll(() =>
+        page
+          .locator('.team')
+          .first()
+          .evaluate((el) => getComputedStyle(el).backdropFilter),
+      )
+      .toContain('blur');
+    expect(await position(page, 's-auth')).toBe(cardBefore);
+    expect(await page.evaluate(() => location.hash)).toBe(hash);
+    await expect(page.getByTestId('link-pick')).toHaveCount(0);
+    await expect(page.getByTestId('quick-create')).toHaveCount(0);
+  });
+
+  test('減少透明度（prefers-reduced-transparency）：沒有背景模糊，退回 1px 框＋8% 底', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }],
+    });
+    await openCanvas(page);
+    expect(
+      await page.evaluate(() => matchMedia('(prefers-reduced-transparency: reduce)').matches),
+    ).toBe(true);
+    const team = page.locator('.team').first();
+    const style = await team.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        blur: cs.backdropFilter,
+        shadow: cs.boxShadow,
+        label: getComputedStyle(el.querySelector(':scope > span')!).backdropFilter,
+        bg: cs.backgroundColor,
+      };
+    });
+    expect(style.blur).toBe('none');
+    expect(style.label).toBe('none');
+    expect(style.shadow).toBe('none');
+    // 8% 團隊色底（不是透明的深色底）。
+    expect(style.bg).toMatch(/0\.08\)$/);
+  });
+});

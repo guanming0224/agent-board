@@ -33,6 +33,7 @@ import { CommandInput } from './CommandInput';
 import { DoneHint } from './DoneHint';
 import { useHandoffActivity } from './handoffActivity';
 import { isReceiving } from './handoffActivityState';
+import { useLinkPick } from './linkPick';
 import { fitCardZoom, STRIP_W } from './layout';
 import { motion } from './motion';
 import { terminalHash } from './terminalRoute';
@@ -213,6 +214,8 @@ export function SessionNode({
   const focused = useViewsUi((s) => s.focusId === data.sessionId);
   // 剛收到交接：外框一圈淡藍光，看得出是誰收到（動畫在 canvas.css）。
   const receiving = useHandoffActivity((s) => isReceiving(s.activities, data.sessionId));
+  // 「建立交接線…」選目標中，出發的那張卡標出來。
+  const pickSource = useLinkPick((s) => s.from === data.sessionId);
   const flow = useReactFlow();
   const store = useStoreApi();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -254,6 +257,7 @@ export function SessionNode({
       data-handoff={receiving ? 'in' : undefined}
       data-code={statusCode(session)}
       data-waits={codeWaits(statusCode(session)) ? 'true' : undefined}
+      data-pick={pickSource ? 'source' : undefined}
     >
       <Handle
         type="target"

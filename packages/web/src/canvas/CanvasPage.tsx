@@ -47,6 +47,7 @@ import { activityKey, type Channel } from './handoffActivityState';
 import { buildLinks, COUNT_MS, trafficHosts } from './interactions';
 import { placeLabels, textWidth } from './labelPlacement';
 import { LinkPanel } from './LinkPanel';
+import { useLinkPick } from './linkPick';
 import { motion } from './motion';
 import {
   CARD_H,
@@ -556,6 +557,51 @@ function Flow({
     [backend, changeHandoffs, handoffs, t],
   );
 
+  // ── 「建立交接線…」選目標模式（P2 §4.2）：點另一張卡＝和拖線一樣建立規則；點空白、Esc、✕ 取消 ──
+  const pickFrom = useLinkPick((s) => s.from);
+  const cancelPick = useLinkPick((s) => s.cancel);
+  const pickTarget = useCallback(
+    (target: string) => {
+      const source = useLinkPick.getState().from;
+      // 點到出發的那張卡不算選好，繼續等。
+      if (!source || source === target) return;
+      useLinkPick.getState().cancel();
+      onConnect({ source, target, sourceHandle: null, targetHandle: null });
+    },
+    [onConnect],
+  );
+  useEffect(() => {
+    if (!pickFrom) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        cancelPick();
+        return;
+      }
+      // 鍵盤：Tab 到目標卡（xyflow 節點可取得焦點）按 Enter／空白鍵。
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const el = e.target instanceof Element ? e.target : null;
+      const id = el?.classList.contains('react-flow__node') ? el.getAttribute('data-id') : null;
+      if (!id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pickTarget(id);
+    };
+    // 捕獲階段：先於 xyflow 節點自己的 Enter（選取）。
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [pickFrom, cancelPick, pickTarget]);
+  // 離開畫布就不再停在選目標模式。
+  useEffect(() => () => useLinkPick.getState().cancel(), []);
+
+  // 拖線中所有卡的目標把手都要看得到；平移、縮放中暫時拿掉團隊框的毛玻璃（效能退路）。
+  // 直接改 DOM 屬性（canvas.css 讀），不為了這個重畫整張畫布。
+  const flag = useCallback((name: 'connecting' | 'moving', on: boolean) => {
+    const el = host.current;
+    if (!el) return;
+    if (on) el.dataset[name] = 'true';
+    else delete el.dataset[name];
+  }, []);
+
   const selectedHandoff =
     selectedEdges.size === 1 ? handoffs.find((h) => selectedEdges.has(h.id)) : undefined;
   const toggleHandoff = (id: string) => {
@@ -602,6 +648,7 @@ function Flow({
       role="region"
       aria-label={t('canvas.aria')}
       data-focus={focusId ?? undefined}
+      data-picking={pickFrom ? 'true' : undefined}
     >
       <ReactFlow
         nodes={cards}
@@ -611,10 +658,18 @@ function Flow({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onConnectStart={() => flag('connecting', true)}
+        onConnectEnd={() => flag('connecting', false)}
+        onMoveStart={() => flag('moving', true)}
+        onMoveEnd={() => flag('moving', false)}
+        onNodeClick={(_, node) => {
+          if (useLinkPick.getState().from) pickTarget(node.id);
+        }}
         isValidConnection={(c) => c.source !== c.target}
         onPaneClick={() => {
           clearFocus();
           setQuick(null);
+          cancelPick();
         }}
         onDoubleClick={onDoubleClick}
         defaultViewport={returnViewport ?? undefined}
@@ -650,6 +705,19 @@ function Flow({
         <TidyToast tidy={tidy} />
         <ArchiveSelection ids={selectedIds} />
         <ArchiveToast />
+        {pickFrom && (
+          <Panel position="top-center" className="pick-hint" data-testid="link-pick">
+            <span role="status">{t('canvas.pick.hint')}</span>
+            <button
+              type="button"
+              aria-label={t('canvas.pick.cancel')}
+              title={t('canvas.pick.cancel')}
+              onClick={cancelPick}
+            >
+              ✕
+            </button>
+          </Panel>
+        )}
         {selectedHandoff && (
           <Panel position="top-center" className="edge-panel" data-testid="handoff-panel">
             <button

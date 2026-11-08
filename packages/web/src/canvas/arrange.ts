@@ -11,7 +11,7 @@
 //   後面的團隊只排還沒排過的成員、疊在下面。這一群的框一定會重疊（共用的卡同時在兩個框裡），和其他群不重疊。
 // - 整理畫布：每個團隊（群）一塊，依團隊順序（hub 回傳的順序，即建立順序）；沒有團隊的依專案（沒有專案就依資料夾）
 //   各一塊；已結束、沒有團隊的放最後一塊。區塊由左到右排，超過最大列寬就換列（shelf packing），
-//   區塊之間留 GAP_X 給團隊框標籤和交接線的字。整塊的左上角＝原本所有卡片的左上角。
+//   區塊之間留 GAP_X 給團隊框標籤和交接線的字；團隊框之後留更寬的 TEAM_BLOCK_GAP（P2 §4.2），玻璃框之間看得出分界。整塊的左上角＝原本所有卡片的左上角。
 import type { ResearchKind, TeamMember } from '@agent-board/protocol';
 import { memberKind } from '../team/research';
 import { CARD_H, CARD_W, GAP_X, GAP_Y, overlaps, type Rect } from './layout';
@@ -39,6 +39,11 @@ export interface ArrangeInput {
 export const MAX_COLS = 3;
 /** 區塊之間的距離：留得下團隊框標籤和交接線的字。 */
 export const BLOCK_GAP = GAP_X;
+/**
+ * 整理畫布時團隊框（群）後面的距離。P2 §4.2 要求團隊之間至少 48px 螢幕像素：
+ * 桌面寬度整理後全部顯示的倍率約 0.25（一列最寬 MAX_ROW_W），240 × 0.25 = 60px。
+ */
+export const TEAM_BLOCK_GAP = 240;
 /** 整理畫布時一列區塊最寬多少（約兩個三欄的團隊並排）。 */
 export const MAX_ROW_W = 5200;
 /** 整理團隊時新區塊外面要淨空多少：團隊框的留白＋標籤。 */
@@ -332,17 +337,22 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW = MAX_ROW_W): Map<str
   let x = 0;
   let y = 0;
   let rowH = 0;
+  // 這一列有沒有團隊框：有的話換列也留團隊的距離。
+  let rowTeam = false;
   for (const { block, pad } of blocks) {
     const w = block.w + 2 * pad;
     const h = block.h + 2 * pad;
+    const team = pad > 0;
     if (x > 0 && x + w > maxRowW) {
       x = 0;
-      y += rowH + BLOCK_GAP;
+      y += rowH + (rowTeam ? TEAM_BLOCK_GAP : BLOCK_GAP);
       rowH = 0;
+      rowTeam = false;
     }
     place(block, { x: origin.x + x + pad, y: origin.y + y + pad }, input.rects, next);
-    x += w + BLOCK_GAP;
+    x += w + (team ? TEAM_BLOCK_GAP : BLOCK_GAP);
     rowH = Math.max(rowH, h);
+    rowTeam ||= team;
   }
   return next;
 }
