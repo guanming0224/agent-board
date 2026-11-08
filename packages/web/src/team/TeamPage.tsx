@@ -1,6 +1,7 @@
 // 團隊面板（P2 §1.2）：畫布右側 420px，和收件匣互斥。#/team：團隊清單；#/team/<id>：工作台（DISPATCH §5.3-4）。
 // 手機（≤ 640px）是全螢幕頁，內容相同。
 import { useEffect, useRef, useState } from 'react';
+import { waitingSessions } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import {
@@ -12,16 +13,30 @@ import {
   useViewsUi,
 } from '../views';
 import { CloseButton, SidePanel } from '../views/Overlays';
+import { useCurrentZoneId, useZones } from '../zones';
 import { NewTeamForm } from './NewTeamForm';
 import { refreshTeams, teamColorVar, useTeams, useTeamSync } from './store';
 import { TeamWorkbench } from './TeamWorkbench';
 
 export const TEAM_WIDTH = 420;
+/** 展開（看任務板）時的寬度，和收件匣的寬版一樣。 */
+export const TEAM_WIDE_WIDTH = 760;
 
+/**
+ * 團隊清單模式（#/team）：列出目前工作區的團隊（名稱、成員數、等你數），可切「顯示全部工作區」（P2 §2.3）。
+ */
 function TeamList({ missing }: { missing: boolean }) {
   const t = useT();
   const teams = useTeams((s) => s.teams);
   const members = useTeams((s) => s.members);
+  const sessions = useBoard((s) => s.sessions);
+  const approvals = useBoard((s) => s.approvals);
+  const zones = useZones();
+  const current = useCurrentZoneId();
+  const [all, setAll] = useState(false);
+  const waitingIds = new Set(waitingSessions(sessions, approvals).map((s) => s.id));
+  const shown = all ? teams : teams.filter((team) => team.zoneId === current);
+  const zoneName = (id: string) => zones.find((z) => z.id === id)?.name ?? '';
   return (
     <div className="page team-page" data-testid="team-list">
       <h1>{t('team.title')}</h1>
@@ -31,27 +46,45 @@ function TeamList({ missing }: { missing: boolean }) {
         </p>
       )}
       <NewTeamForm />
-      {teams.length === 0 ? (
+      <label className="row team-list-all">
+        <input
+          type="checkbox"
+          checked={all}
+          onChange={(e) => setAll(e.target.checked)}
+          data-testid="team-list-all"
+        />
+        {t('team.list.allZones')}
+      </label>
+      {shown.length === 0 ? (
         <EmptyState text={t('team.empty')} />
       ) : (
         <ul className="team-list">
-          {teams.map((team) => (
-            <li key={team.id}>
-              <a
-                className="panel team-row"
-                href={`#/team/${encodeURIComponent(team.id)}`}
-                style={{ ['--team' as string]: teamColorVar(team.color) }}
-              >
-                <b>{team.name}</b>
-                <span className="sub">{team.goal || t('team.noGoal')}</span>
-                <span className="sub num">
-                  {t('team.memberCount', {
-                    n: members.filter((m) => m.teamId === team.id).length,
-                  })}
-                </span>
-              </a>
-            </li>
-          ))}
+          {shown.map((team) => {
+            const ids = members.filter((m) => m.teamId === team.id).map((m) => m.sessionId);
+            const waiting = ids.filter((id) => waitingIds.has(id)).length;
+            return (
+              <li key={team.id}>
+                <a
+                  className="panel team-row"
+                  href={`#/team/${encodeURIComponent(team.id)}`}
+                  style={{ ['--team' as string]: teamColorVar(team.color) }}
+                  data-testid={`team-row-${team.id}`}
+                >
+                  <b>{team.name}</b>
+                  <span className="sub">{team.goal || t('team.noGoal')}</span>
+                  <span className="sub num">{t('team.memberCount', { n: ids.length })}</span>
+                  {waiting > 0 && (
+                    <span className="num team-row-waiting">
+                      {t('team.list.waiting', { n: waiting })}
+                    </span>
+                  )}
+                  {all && (
+                    <span className="chip">{t('zones.chip', { name: zoneName(team.zoneId) })}</span>
+                  )}
+                </a>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
@@ -127,8 +160,13 @@ export function TeamContent({
 
 export function TeamDrawer({ teamId }: { teamId: string | null }) {
   const t = useT();
+  const wide = useViewsUi((s) => s.teamWide);
   return (
-    <SidePanel label={t('team.title')} width={TEAM_WIDTH} testId="team-panel">
+    <SidePanel
+      label={t('team.title')}
+      width={wide && teamId !== null ? TEAM_WIDE_WIDTH : TEAM_WIDTH}
+      testId="team-panel"
+    >
       <div className="panel-tools">
         <CloseButton onClose={closeRight} testId="team-close" />
       </div>

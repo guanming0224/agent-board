@@ -50,6 +50,7 @@ const session = (over: Partial<Session> & Pick<Session, 'id' | 'name' | 'machine
   readOnly: false,
   autoContinue: null,
   dispatchedBy: null,
+  zoneId: 'main',
   ...over,
 });
 

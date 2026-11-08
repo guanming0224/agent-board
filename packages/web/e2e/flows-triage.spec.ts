@@ -46,6 +46,7 @@ const session = (over: Partial<Session> & Pick<Session, 'id' | 'name'>): Session
   readOnly: false,
   autoContinue: null,
   dispatchedBy: null,
+  zoneId: 'main',
   ...over,
 });
 

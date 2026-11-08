@@ -3,6 +3,7 @@ import { ViewportPortal } from '@xyflow/react';
 import { useT } from '../shared/i18n';
 import { teamColorVar, useTeams } from '../team/store';
 import { teamHash } from '../views/overlay';
+import { TEAM_DRAG_TYPE, useZoneUi } from '../zones';
 import type { Rect } from './layout';
 import { canvasTeams, teamRect } from './teams';
 
@@ -39,11 +40,22 @@ export function TeamFrames({
             }}
           >
             <span>
-              {/* 點標籤打開右側的團隊面板（P2 §1.2）；框內空白處的點擊屬於項目二。 */}
+              {/*
+                點標籤打開右側的團隊面板（P2 §1.2）；框內空白處點一下也會開（CanvasPage 的 onPaneClick）。
+                標籤可以拖到頂部的工作區分頁上（P2 §2.3）：HTML 拖放，不經過 xyflow（nopan／nodrag）。
+              */}
               <a
                 className="team-open nopan nodrag"
                 href={teamHash(team.id)}
                 title={t('canvas.team.open', { name: team.name })}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData(TEAM_DRAG_TYPE, team.id);
+                  e.dataTransfer.setData('text/plain', team.name);
+                  e.dataTransfer.effectAllowed = 'move';
+                  useZoneUi.getState().setDragging(team.id);
+                }}
+                onDragEnd={() => useZoneUi.getState().setDragging(null)}
                 data-testid={`team-open-${team.id}`}
               >
                 {t('canvas.team.label', { name: team.name })}

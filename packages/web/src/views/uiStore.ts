@@ -30,6 +30,9 @@ interface ViewsUi {
   setInboxSort: (sort: InboxSort) => void;
   /** 只在這次切排序、不記住（舊網址 #/queue 轉過來時用）。 */
   showInboxSort: (sort: InboxSort) => void;
+  /** 團隊面板展開成寬版（看任務板用，P2 §2.3）。 */
+  teamWide: boolean;
+  setTeamWide: (wide: boolean) => void;
   /** 收件匣抽屜展開成寬版（看 diff 用）。 */
   inboxWide: boolean;
   setInboxWide: (wide: boolean) => void;
@@ -116,6 +119,8 @@ export const useViewsUi = create<ViewsUi>((set, get) => ({
     set({ inboxSort });
   },
   showInboxSort: (inboxSort) => set({ inboxSort }),
+  teamWide: false,
+  setTeamWide: (teamWide) => set({ teamWide }),
   inboxWide: false,
   setInboxWide: (inboxWide) => set({ inboxWide }),
   rightInset: 0,

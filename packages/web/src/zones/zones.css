@@ -1,0 +1,123 @@
+/* 工作區分頁（P2 §2.3）：頁首原分頁列的位置。選中＝白色 2px 底線（STYLE：強調色白）；等你數用 --you。 */
+.zone-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 0 16px;
+  min-width: 0;
+}
+.zone-tabs {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 2px;
+  min-width: 0;
+}
+.zone-tab-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.zone-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-control) var(--radius-control) 0 0;
+  background: transparent;
+  color: var(--fg-muted);
+  max-width: 16em;
+}
+.zone-tab:hover {
+  color: var(--fg);
+}
+.zone-tab[aria-selected='true'] {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+.zone-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zone-waiting {
+  color: var(--you);
+  font-weight: 650;
+}
+/* 拖曳團隊中：每個分頁都標成可以放；指到的那個實線框。 */
+.zone-tab.is-drop {
+  outline: 1px dashed var(--border-2);
+  outline-offset: -3px;
+}
+.zone-tab.is-over {
+  outline: 2px solid var(--accent);
+  background: var(--accent-bg);
+}
+.zone-add {
+  min-height: 30px;
+  min-width: 30px;
+  padding: 0 8px;
+  margin-bottom: 2px;
+}
+.zone-name-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+.zone-name-input input {
+  width: 12em;
+}
+.zone-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 14em;
+  max-width: 22em;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.zone-menu button {
+  justify-content: flex-start;
+  text-align: left;
+  display: flex;
+  gap: 8px;
+}
+.zone-menu .sub {
+  margin: 2px 4px;
+  font-size: 12.5px;
+}
+.zone-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.zone-select {
+  display: none;
+}
+/* 手機：分頁改成單一下拉。 */
+@media (max-width: 640px) {
+  .zone-tabs {
+    display: none;
+  }
+  .zone-select {
+    display: inline-flex;
+    padding-bottom: 6px;
+  }
+  .zone-select select {
+    min-height: 40px;
+    max-width: 70vw;
+  }
+}

@@ -76,6 +76,7 @@ const base: Session = {
   readOnly: false,
   autoContinue: null,
   dispatchedBy: null,
+  zoneId: 'main',
 };
 const at = (over: Partial<Session>): Session => ({ ...base, ...over });
 

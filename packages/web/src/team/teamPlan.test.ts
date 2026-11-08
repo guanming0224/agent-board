@@ -9,6 +9,8 @@ import {
   modesFor,
   presetRows,
   renameRows,
+  isReadOnlyRole,
+  ROLE_ABBR,
   ROLE_DEFAULT_MODE,
   rowUsesWorktree,
   changeKind,
@@ -109,6 +111,11 @@ describe('validatePlan', () => {
     expect(rowUsesWorktree({ role: 'worker' }, false)).toBe(false);
     expect(rowUsesWorktree({ role: 'lead' }, true)).toBe(false);
     expect(rowUsesWorktree({ role: 'reviewer' }, true)).toBe(false);
+    // 測試（Q5）：會寫測試檔，和成員一樣開自己的 worktree、不唯讀，預設每步問。
+    expect(rowUsesWorktree({ role: 'tester' }, true)).toBe(true);
+    expect(isReadOnlyRole('tester')).toBe(false);
+    expect(ROLE_DEFAULT_MODE.tester).toBe('default');
+    expect(ROLE_ABBR.tester).toBe('QA');
   });
 });
 
@@ -120,6 +127,7 @@ describe('runPlan', () => {
     doneCriteria: '',
     color: 'teal',
     contextMd: '',
+    zoneId: 'main',
   };
 
   function fakeBackend(failSession: string[] = [], failMember: string[] = []) {
@@ -351,4 +359,5 @@ const baseTeam: Team = {
   doneCriteria: '',
   color: 'teal',
   contextMd: '',
+  zoneId: 'main',
 };

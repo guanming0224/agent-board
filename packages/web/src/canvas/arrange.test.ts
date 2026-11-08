@@ -76,6 +76,7 @@ function frames(data: ArrangeInput, rects: ReadonlyMap<string, Rect>) {
       doneCriteria: '',
       color: '',
       contextMd: '',
+      zoneId: 'main',
     })),
     data.members,
   ).flatMap((team) => {

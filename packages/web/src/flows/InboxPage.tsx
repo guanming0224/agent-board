@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { MaskChip, useMaskText } from '../security';
 import { AutoContinueNote, WaitingBanner } from '../views';
+import { ZoneChip } from '../zones';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import {
@@ -317,6 +318,7 @@ function InboxItem({
         {session ? (
           <>
             <Callsign text={callsign(session, context.machines, context.projects)} />
+            <ZoneChip session={session} />
             <ModeChip mode={session.permissionMode} />
             <AutoContinueNote session={session} />
           </>

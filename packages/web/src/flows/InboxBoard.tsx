@@ -9,6 +9,7 @@ import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { statusCode } from '../shared/status';
 import { useViewsUi, type InboxSort } from '../views';
+import { ZoneChip } from '../zones';
 import { answerDecision, parseQuestions, useBlockedReason, useDecide } from './approvalParts';
 import {
   callsign,
@@ -474,6 +475,7 @@ function TriageRow({
         </div>
         <div className="row-sign">
           <Callsign text={callsign(session, machines, projects)} />
+          <ZoneChip session={session} />
         </div>
         {kind === 'danger' && approval?.matchedRule && (
           <div className="row-rule">

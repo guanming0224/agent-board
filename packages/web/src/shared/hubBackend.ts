@@ -1,6 +1,7 @@
 // 真後端：REST 走 routes 表，其餘走 /ws/client（CONTRACTS.md §6、§7）。登入後才連 WebSocket。
 import { HubToClient, routes, WS_PATHS } from '@agent-board/protocol';
 import type {
+  Broadcast,
   ClientToHub,
   ResourceSample,
   SessionEvent,
@@ -10,7 +11,7 @@ import type {
   RouteResponse,
   User,
 } from '@agent-board/protocol';
-import type { BoardBackend, BoardListener, BoardSnapshot } from './backend';
+import type { BoardBackend, BoardListener, BoardSnapshot, TeamChange } from './backend';
 import type { TerminalServerMessage, TerminalStream } from './terminal-contract';
 
 /** LoginPage 依這三個欄位決定訊息。 */
@@ -90,6 +91,7 @@ class HubConnection implements TerminalStream {
   private connectionListeners = new Set<(connected: boolean) => void>();
   private resourceListeners = new Set<(sample: ResourceSample) => void>();
   private eventListeners = new Set<(event: SessionEvent) => void>();
+  private teamListeners = new Set<(change: TeamChange) => void>();
   private terminalListeners = new Map<string, Set<(m: TerminalServerMessage) => void>>();
 
   start(): void {
@@ -116,6 +118,11 @@ class HubConnection implements TerminalStream {
     this.connectionListeners.add(listener);
     listener(this.ws?.readyState === WebSocket.OPEN);
     return () => this.connectionListeners.delete(listener);
+  }
+
+  watchTeamChanges(listener: (change: TeamChange) => void): () => void {
+    this.teamListeners.add(listener);
+    return () => this.teamListeners.delete(listener);
   }
 
   watchEvents(listener: (event: SessionEvent) => void): () => void {
@@ -193,7 +200,25 @@ class HubConnection implements TerminalStream {
           sessions: message.sessions,
           approvals: message.approvals,
           waitingLimit: message.waitingLimit,
+          zones: message.zones,
+          broadcasts: mergeAfterReconnect(this.state?.broadcasts ?? [], message.broadcasts),
+          pause: message.pause,
         });
+        return;
+      case 'board.pause':
+        return this.patch((s) => ({ ...s, pause: message.pause }));
+      case 'zone.list':
+        return this.patch((s) => ({ ...s, zones: message.zones }));
+      case 'broadcast.updated':
+        return this.patch((s) => ({
+          ...s,
+          broadcasts: upsert(s.broadcasts ?? [], message.broadcast),
+        }));
+      case 'team.updated':
+        this.teamListeners.forEach((l) => l({ team: message.team }));
+        return;
+      case 'team.removed':
+        this.teamListeners.forEach((l) => l({ removed: message.teamId }));
         return;
       case 'board.waitingLimit':
         return this.patch((s) => ({ ...s, waitingLimit: message.waitingLimit }));
@@ -251,6 +276,23 @@ class HubConnection implements TerminalStream {
   }
 }
 
+/**
+ * 重連時 hub 送來的群發清單：hub 重啟過的話，原本還在排隊的就不在裡面了（只在記憶體）。
+ * 那些對象標成「沒送出（hub 重啟）」留著給畫面交代，不默默消失（P2 §2.8）。
+ */
+export function mergeAfterReconnect(previous: Broadcast[], current: Broadcast[]): Broadcast[] {
+  const known = new Set(current.map((b) => b.id));
+  const lost = previous
+    .filter((b) => !known.has(b.id) && b.targets.some((t) => t.state === 'queued'))
+    .map((b) => ({
+      ...b,
+      targets: b.targets.map((t) =>
+        t.state === 'queued' ? { ...t, state: 'failed' as const, reason: 'hub_restarted' } : t,
+      ),
+    }));
+  return [...lost, ...current];
+}
+
 function upsert<T extends { id: string }>(list: T[], item: T): T[] {
   return list.some((x) => x.id === item.id)
     ? list.map((x) => (x.id === item.id ? item : x))
@@ -272,6 +314,7 @@ export function createHubBackend() {
     watchBoard: (listener) => hub.watchBoard(listener),
     watchConnection: (listener) => hub.watchConnection(listener),
     watchEvents: (listener) => hub.watchEvents(listener),
+    watchTeamChanges: (listener) => hub.watchTeamChanges(listener),
     watchResources: (listener) => hub.watchResources(listener),
 
     needsSetup: async () => (await call('authStatus')).needsSetup,
@@ -338,7 +381,7 @@ export function createHubBackend() {
     async saveLayouts(layouts) {
       await call('layoutsPut', { body: layouts });
     },
-    getNotes: (workspace) => call('notesList', { query: { workspace } }),
+    getNotes: (zoneId) => call('notesList', { query: { zoneId } }),
     getSettings: () => call('settingsGet'),
     updateSettings: (patch) => call('settingsUpdate', { body: patch }),
     pushVapidKey: async () => (await call('pushVapidKey')).publicKey,
@@ -385,6 +428,15 @@ export function createHubBackend() {
       await call('handoffRulesDelete', { params: { id } });
     },
     sessionEvents: (id) => call('sessionEvents', { params: { id } }),
+    broadcastToTeam: (id, text, targets) =>
+      call('teamBroadcast', { params: { id }, body: targets ? { text, targets } : { text } }),
+    cancelBroadcast: (id, sessionId) =>
+      call('broadcastCancel', { params: { id }, body: { sessionId } }),
+    createZone: (name) => call('zonesCreate', { body: { name } }),
+    renameZone: (id, name) => call('zonesUpdate', { params: { id }, body: { name } }),
+    async deleteZone(id) {
+      await call('zonesDelete', { params: { id } });
+    },
 
     // 設定頁以選用方式使用（flows/settingsParts.tsx 的 OptionalAdmin）
     listUsers: () => call('usersList'),

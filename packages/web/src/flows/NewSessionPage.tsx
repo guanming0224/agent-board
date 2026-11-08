@@ -4,6 +4,7 @@ import { AbsolutePath, ClaudeSessionId, PermissionMode } from '@agent-board/prot
 import type { Machine, Session, Settings } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
+import { currentZoneId } from '../zones';
 import { commandPreview } from './commandPreview';
 import {
   createErrorText,
@@ -237,6 +238,8 @@ export function NewSessionPage() {
         resumeClaudeSessionId: resume.trim() || null,
         firstPrompt: firstPrompt.trim() || null,
         readOnly: false,
+        // 新建 session 放在目前工作區（P2 §2.3）。
+        zoneId: currentZoneId(),
       });
       // 清掉名稱，避免連按建立出第二個一樣的 session。
       setName('');

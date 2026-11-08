@@ -22,6 +22,8 @@ const ROLE_KIND: Record<TeamMember['role'], ResearchKind> = {
   researcher: 'lr',
   worker: 'ex',
   reviewer: 'rv',
+  // 研究團隊沒有測試分工；萬一有測試成員，當成實驗（同樣會寫檔）。
+  tester: 'ex',
 };
 
 /** 成員實際的分工：存的 kind 和角色對得上才用；否則照角色推（worker 當實驗）。 */

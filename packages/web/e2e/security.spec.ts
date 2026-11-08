@@ -50,6 +50,7 @@ const session = (over: Partial<Session>): Session => ({
   readOnly: false,
   autoContinue: null,
   dispatchedBy: null,
+  zoneId: 'main',
   ...over,
 });
 
