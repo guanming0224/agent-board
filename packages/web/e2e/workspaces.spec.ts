@@ -459,23 +459,15 @@ test('@ 點名：選單可搜名稱與角色；只送給點到的，送出的文
 
 test('全部暫停中：群發照送，送出鈕旁提示「目前全部暫停中」', async ({ page }) => {
   await page.goto('/#/canvas');
-  await page.evaluate(async (url) => {
-    const { useBoard } = (await import(url)) as {
-      useBoard: { setState(patch: object): void };
-    };
-    useBoard.setState({
-      pause: {
-        paused: {
-          mode: 'finish_turn',
-          since: new Date().toISOString(),
-          by: null,
-          byName: null,
-          clearedOnRestart: 0,
-        },
-        held: { deliveries: 0, sessions: 0, sessionsWaiting: 0, autoContinues: 0 },
-      },
-    });
-  }, STORE);
+  // 用 fake backend 的 setPauseState（和 §3 前端同一套暫停狀態），之後的快照不會把它洗回沒暫停。
+  await fake(
+    page,
+    `backend.setPauseState({
+      paused: { mode: 'finish_turn', since: new Date().toISOString(), by: null, byName: null, clearedOnRestart: 0 },
+      held: { deliveries: 0, sessions: 0, sessionsWaiting: 0, autoContinues: 0 },
+    });`,
+  );
+  await expect(page.getByTestId('pause-strip')).toBeVisible();
   await page.goto(`/#/team/${TEAM}`);
   const panel = page.getByTestId('team-panel');
   await expect(panel.getByTestId('broadcast-paused')).toContainText('目前全部暫停中');
@@ -529,4 +521,25 @@ test('手機尺寸：工作區是下拉、帶等你數；團隊面板全螢幕�
   await phone.getByTestId('broadcast-input').fill('手機也能下指令');
   await phone.getByTestId('broadcast-send').click();
   await expect(phone.getByTestId('broadcast-result-s-tests')).toBeVisible();
+});
+
+test('底部指令列「群組」：開目前工作區的團隊清單；看某個團隊時按＝回清單，清單開著再按＝收起', async ({
+  page,
+}) => {
+  await page.goto('/#/canvas');
+  const groups = page.getByTestId('command-teams');
+  await groups.click();
+  await expect(page).toHaveURL(/#\/team$/);
+  await expect(page.getByTestId('team-list')).toBeVisible();
+  await expect(groups).toHaveAttribute('aria-pressed', 'true');
+  // 點一列進名單＋群發。
+  await page.getByTestId(`team-row-${TEAM}`).click();
+  await expect(page.getByTestId('team-panel').getByTestId('broadcast-input')).toBeVisible();
+  await expect(groups).toHaveAttribute('aria-pressed', 'false');
+  // 看團隊時按「群組」回清單，不是關掉。
+  await groups.click();
+  await expect(page).toHaveURL(/#\/team$/);
+  await expect(page.getByTestId('team-list')).toBeVisible();
+  await groups.click();
+  await expect(page.getByTestId('team-panel')).toHaveCount(0);
 });
