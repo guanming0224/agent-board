@@ -2408,7 +2408,12 @@ test.describe('疊加面板（P2 §1.6 驗收）', () => {
        useBoard.setState({ sessions: s.sessions.map((x) => x.id === 's-tests'
          ? { ...x, status: 'waiting_input', statusDetail: 'idle:start' } : x) });`,
     );
-    await expect(card(page, 's-tests').locator('.lamp')).toContainText('NEW');
+    // 剛開好的是 NEW 灰（不算等你，GM 2026-11-08 色彩決定）；收件匣不列，規則改在畫布卡片守著。
+    await expect(card(page, 's-tests').locator('.lamp')).toHaveText('◌NEW');
+    await expect(card(page, 's-tests').locator('.lamp')).toHaveCSS(
+      'background-color',
+      'rgb(154, 164, 178)',
+    );
     await page.getByTestId('inbox-button').click();
     await expect(page.getByTestId('queue-s-tests')).toHaveCount(0);
     const n = Number(await page.getByTestId('waiting-count').textContent());

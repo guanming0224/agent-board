@@ -74,13 +74,22 @@ interface Nav {
   nonce: number;
 }
 
-/** 舊網址換成新網址；有換就回 true（換完會再收到一次 hashchange）。 */
-function redirect(hash: string): boolean {
+/**
+ * 舊網址換成新網址（replace，不留歷史）。畫面不靠換網址送出的 hashchange 更新：呼叫端換完自己讀
+ * location.hash；畫面那邊遇到 redirect 也直接畫目標畫面（見 App 的 effective）。
+ */
+function redirect(hash: string): void {
   const { view } = resolve(hash, null);
-  if (view.kind !== 'redirect') return false;
-  if (view.inboxSort) useViewsUi.getState().setInboxSort(view.inboxSort);
+  if (view.kind !== 'redirect') return;
+  // 從 #/queue 來的這一次切到依組別；不改使用者記住的排序（Q1 的偏好只由排序鈕改）。
+  if (view.inboxSort) useViewsUi.getState().showInboxSort(view.inboxSort);
   replaceHash(view.to);
-  return true;
+}
+
+/** 舊網址直接當目標網址看：轉址事件沒送到也不會停在空白畫面。 */
+function effectiveHash(hash: string): string {
+  const { view } = resolve(hash, null);
+  return view.kind === 'redirect' ? view.to : hash;
 }
 
 function ModalContent({ kind }: { kind: ModalKind }) {
@@ -121,7 +130,7 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
       return (
         <PhonePage onBack={phoneBack} testId="phone-team">
           <div className="phone-team">
-            <TeamContent teamId={right.teamId} />
+            <TeamContent teamId={right.teamId} frameOnCanvas={false} />
           </div>
         </PhonePage>
       );
@@ -147,9 +156,10 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
 }
 
 export function App() {
+  // nav.hash 一律是轉址後的網址，所以畫面永遠不會是「轉址中」的空白。
   const [nav, setNav] = useState<Nav>(() => ({
-    hash: location.hash,
-    right: resolve(location.hash, null).right,
+    hash: effectiveHash(location.hash),
+    right: resolve(effectiveHash(location.hash), null).right,
     nonce: 0,
   }));
   const [checked, setChecked] = useState(isDemo);
@@ -160,17 +170,20 @@ export function App() {
     if (!location.hash && innerWidth <= PHONE_WIDTH) replaceHash('#/inbox');
     // 開頁的這一筆沒有「上一筆」：關面板時用 replace，不會上一頁跳出 app。
     markHistory(null);
+    // 先接 hashchange 再解析開頁的網址：開頁就是舊網址時，轉址送出的事件才有人接。
+    // 轉址那條路自己也更新畫面，不靠那個事件（正式版沒有 StrictMode 的重跑可以救）。
     const onChange = (e?: HashChangeEvent) => {
       if (e) markHistory(hashOf(e.oldURL));
-      if (redirect(location.hash)) return;
+      redirect(location.hash);
+      const hash = effectiveHash(location.hash);
       setNav((prev) => ({
-        hash: location.hash,
-        right: resolve(location.hash, prev.right).right,
+        hash,
+        right: resolve(hash, prev.right).right,
         nonce: prev.nonce + 1,
       }));
     };
-    onChange();
     addEventListener('hashchange', onChange);
+    onChange();
     return () => removeEventListener('hashchange', onChange);
   }, []);
 
@@ -247,9 +260,6 @@ export function App() {
       ) : (
         <OnboardingPage />
       );
-  } else if (view.kind === 'redirect') {
-    // 轉址中（下一個 hashchange 就會換成新網址）。
-    content = null;
   } else {
     content = <Board nav={nav} phone={phone} />;
   }

@@ -28,6 +28,8 @@ interface ViewsUi {
   /** 收件匣的排序（GM 2026-11-08 Q1）：預設依急迫，可切依組別；每台瀏覽器自己記。 */
   inboxSort: InboxSort;
   setInboxSort: (sort: InboxSort) => void;
+  /** 只在這次切排序、不記住（舊網址 #/queue 轉過來時用）。 */
+  showInboxSort: (sort: InboxSort) => void;
   /** 收件匣抽屜展開成寬版（看 diff 用）。 */
   inboxWide: boolean;
   setInboxWide: (wide: boolean) => void;
@@ -113,6 +115,7 @@ export const useViewsUi = create<ViewsUi>((set, get) => ({
     saveInboxSort(inboxSort);
     set({ inboxSort });
   },
+  showInboxSort: (inboxSort) => set({ inboxSort }),
   inboxWide: false,
   setInboxWide: (inboxWide) => set({ inboxWide }),
   rightInset: 0,

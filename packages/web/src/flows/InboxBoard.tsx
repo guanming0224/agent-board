@@ -358,6 +358,7 @@ function TriageRow({
   active,
   expanded,
   highlighted,
+  scrollKey,
   focused,
   disabledAll,
   onFocusRow,
@@ -370,6 +371,8 @@ function TriageRow({
   expanded: boolean;
   /** 從網址（推播）指到的這一項：高亮 2 秒。 */
   highlighted: boolean;
+  /** 網址每指到一次就變：同一個網址再送一次也重新捲到這一項。 */
+  scrollKey: number;
   /** 畫布上框出的卡（「下一個等我的」）也是這一項。 */
   focused: boolean;
   disabledAll: boolean;
@@ -394,7 +397,7 @@ function TriageRow({
     if (!highlighted && !focused) return;
     rowRef.current?.scrollIntoView({ block: highlighted ? 'center' : 'nearest' });
     if (highlighted) rowRef.current?.focus({ preventScroll: true });
-  }, [highlighted, focused]);
+  }, [highlighted, focused, scrollKey]);
 
   let actions;
   if (expanded) {
@@ -533,14 +536,14 @@ function SortSwitch({ sort, onSort }: { sort: InboxSort; onSort: (sort: InboxSor
 }
 
 /** 從網址（推播）指到的 session：展開、捲到、高亮 2 秒。同一個網址再送一次也要重新捲。 */
-function useHighlight(target: string | null, present: boolean) {
+function useHighlight(target: string | null, present: boolean, nonce: number) {
   const [lit, setLit] = useState<string | null>(null);
   useEffect(() => {
     if (!target || !present) return;
     setLit(target);
     const timer = setTimeout(() => setLit(null), 2000);
     return () => clearTimeout(timer);
-  }, [target, present]);
+  }, [target, present, nonce]);
   return lit;
 }
 
@@ -594,7 +597,17 @@ export function InboxBoard({
   const idle = notListed.filter((item) => item.kind === 'idle').length;
   const current = activeId !== null && order.includes(activeId) ? activeId : (order[0] ?? null);
   const targetPresent = target !== null && order.includes(target);
-  const lit = useHighlight(targetPresent ? target : null, targetPresent);
+  // 「還在不在等你」看沒篩過的清單：被團隊／機器篩選藏起來的不算處理完。
+  const targetWaiting = target !== null && all.some((item) => item.session.id === target);
+  const lit = useHighlight(targetPresent ? target : null, targetPresent, nonce);
+
+  // 網址指到的那一項還在等你、只是被篩選藏起來：清掉篩選，讓它列出來再捲過去。
+  useEffect(() => {
+    if (target && targetWaiting && !targetPresent) {
+      setTeamId(null);
+      setMachineId(null);
+    }
+  }, [target, targetWaiting, targetPresent, nonce]);
 
   // 網址指到的那一項：展開（推播點進來就能直接按允許）。同一個網址再送一次（nonce 變）也重來。
   useEffect(() => {
@@ -666,6 +679,7 @@ export function InboxBoard({
       active={item.session.id === current}
       expanded={item.session.id === expandedId}
       highlighted={item.session.id === lit}
+      scrollKey={item.session.id === lit ? nonce : 0}
       focused={item.session.id === focusId}
       disabledAll={settling || !connected}
       onFocusRow={setActiveId}
@@ -725,7 +739,7 @@ export function InboxBoard({
           )}
         </div>
       </div>
-      {target && !targetPresent && <TargetGone sessionId={target} />}
+      {target && !targetWaiting && <TargetGone sessionId={target} />}
       {quota + idle > 0 && (
         <p className="triage-note" data-testid="triage-note">
           {t('flows.inbox.notListed', {

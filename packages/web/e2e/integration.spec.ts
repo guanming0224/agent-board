@@ -291,6 +291,41 @@ test('危險指令：攔下、按兩次才放行', async ({ page }) => {
   await expectStatus(page.request, session.id, 'waiting_input');
 });
 
+test('正式版直接開舊網址（書籤、舊推播）：轉成新網址，畫面不是空白（P2 §1.4）', async ({
+  page,
+}) => {
+  // 正式版（vite build）沒有 StrictMode 的 effect 重跑：開頁就是舊網址時，轉址也要自己更新畫面。
+  await page.goto('/#/canvas');
+  await type(page, session.id, 'ask-permission');
+  await expectStatus(page.request, session.id, 'waiting_permission');
+
+  await page.goto(`/#/review/${session.id}`);
+  await expect(page).toHaveURL(new RegExp(`#/inbox/${session.id}$`));
+  await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+  await expect(page.getByTestId(`queue-${session.id}`)).toHaveClass(/targeted/);
+
+  // 舊的待處理：轉過來這次依組別，不改使用者記住的排序。
+  await page.goto('about:blank');
+  await page.goto('/#/queue');
+  await expect(page).toHaveURL(/#\/inbox$/);
+  await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+  await expect(page.getByTestId('inbox-sort-group')).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => localStorage.getItem('agent-board.inbox.sort'))).not.toBe(
+    'group',
+  );
+
+  await page.goto('about:blank');
+  await page.goto('/#/archive');
+  await expect(page).toHaveURL(/#\/settings\/archived$/);
+  await expect(page.getByTestId('modal')).toBeVisible();
+  await expect(page.locator('#s-archived')).toBeVisible();
+
+  // 收尾：放行這一筆，後面的測試從等你回覆開始。
+  await page.goto(`/#/inbox/${session.id}`);
+  await page.getByTestId('inbox-drawer').getByRole('button', { name: '允許一次' }).first().click();
+  await expectStatus(page.request, session.id, 'waiting_input');
+});
+
 test('關掉分頁再開，session 還在、畫面還原', async ({ page, context }) => {
   await page.goto('/#/canvas');
   const again = await context.newPage();

@@ -39,10 +39,16 @@ export function SidePanel({
   testId: string;
   children: ReactNode;
 }) {
+  // 視窗縮放時重算：窄到面板蓋住大半畫布時，聚焦卡片就不再讓開面板的寬度。
   useLayoutEffect(() => {
-    const narrow = innerWidth <= width + 120;
-    useViewsUi.getState().setRightInset(narrow ? 0 : width);
-    return () => useViewsUi.getState().setRightInset(0);
+    const query = matchMedia(`(max-width: ${width + 120}px)`);
+    const update = () => useViewsUi.getState().setRightInset(query.matches ? 0 : width);
+    update();
+    query.addEventListener('change', update);
+    return () => {
+      query.removeEventListener('change', update);
+      useViewsUi.getState().setRightInset(0);
+    };
   }, [width]);
   return (
     <aside

@@ -285,6 +285,8 @@ test.describe('收件匣（待處理＋審核中心合併）', () => {
     await open(page, 'queue', board());
     await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/inbox');
     await expect(page.getByTestId('inbox-sort-group')).toHaveAttribute('aria-pressed', 'true');
+    // 只有這次切到依組別，不蓋掉使用者記住的排序（Q1 的偏好只由排序鈕改）。
+    expect(await page.evaluate(() => localStorage.getItem('agent-board.inbox.sort'))).toBeNull();
     await expect
       .poll(() => rowIds(page, 'decide'))
       .toEqual(['queue-danger', 'queue-perm', 'queue-perm2', 'queue-plan']);
@@ -477,6 +479,34 @@ test.describe('收件匣（待處理＋審核中心合併）', () => {
     await expect(page.locator('.triage-row')).toHaveCount(2);
     await expect(page.getByTestId('queue-perm2')).toBeVisible();
     await expect(page.getByTestId('queue-ask')).toBeVisible();
+  });
+
+  test('推播指到被篩選藏起來的項目：清掉篩選、捲到並高亮，不說「已處理完」；同一則再點一次會重新高亮', async ({
+    page,
+  }) => {
+    await open(page, 'inbox', board());
+    await page.getByTestId('triage-filter-team').selectOption({ label: 'Alpha' });
+    await expect(page.getByTestId('queue-perm2')).toHaveCount(0);
+    const post = () =>
+      page.evaluate(() => {
+        navigator.serviceWorker.dispatchEvent(
+          new MessageEvent('message', {
+            data: { type: 'agent-board.open', url: `${location.origin}/#/inbox/perm2` },
+          }),
+        );
+      });
+    await post();
+    await expect(page).toHaveURL(/#\/inbox\/perm2$/);
+    const row = page.getByTestId('queue-perm2');
+    await expect(row).toHaveClass(/targeted/);
+    await expect(row).toBeInViewport();
+    await expect(page.getByTestId('triage-filter-team')).toHaveValue('');
+    await expect(page.getByTestId('inbox-target-gone')).toHaveCount(0);
+    // 高亮 2 秒後消失；同一則通知再點一次（網址沒變）要重新高亮、重新捲到。
+    await expect(row).not.toHaveClass(/targeted/, { timeout: 5_000 });
+    await post();
+    await expect(row).toHaveClass(/targeted/);
+    await expect(row).toBeInViewport();
   });
 });
 
