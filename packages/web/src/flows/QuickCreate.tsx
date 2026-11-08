@@ -57,7 +57,11 @@ export function QuickCreate({
   useEffect(() => setBrowsing(false), [machineId]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.defaultPrevented) onClose();
+      if (e.key === 'Escape' && !e.defaultPrevented) {
+        // 告訴 App 這個 Esc 已經用掉了（Esc 只關最上層）。
+        e.preventDefault();
+        onClose();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

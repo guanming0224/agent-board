@@ -275,14 +275,15 @@ test('縮放切換兩種卡片，外框不跳動；點兩下也會切換', async
   await expect(page.locator('[data-mode="terminal"]')).toHaveCount(0);
 });
 
-/** 用「從全尺寸頁回來」的路徑把畫布放在指定倍率：畫布重新掛載時直接套用，不經過按鈕的級距。 */
+/** 用「從全尺寸頁回來」的路徑把畫布放在指定倍率：畫布重新掛載時直接套用，不經過按鈕的級距。
+ * 畫布常駐（P2 §1），只有全尺寸終端機頁會卸載它。 */
 async function openCanvasAt(page: Page, zoom: number) {
   await openCanvas(page);
   await page.evaluate(
     async ({ url, z }) => {
       const { useViewsUi } = await import(/* @vite-ignore */ url);
       useViewsUi.getState().setCanvasReturn({ x: 40, y: 40, zoom: z });
-      location.hash = '#/queue';
+      location.hash = '#/terminal/none';
     },
     { url: '/src/views/uiStore.ts', z: zoom },
   );
@@ -611,13 +612,16 @@ test('側欄：機器與用量、失聯列、圖例；收合時退訂', async ({
   expect(reopened.on - reopened.off).toBe(1);
 });
 
-test('待處理清單：分組排序、危險指令置頂、點名稱跳到該卡', async ({ page }) => {
+test('收件匣（舊網址 #/queue）：依組別排序、危險指令置頂、「在畫布上看」跳到該卡且抽屜不關', async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/#/queue');
+  await expect(page).toHaveURL(/#\/inbox$/);
   const ids = () =>
     page.locator('.triage-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
-  // 要你決定（等最久的在前）→ 錯誤、卡住、額度（詳細的分組測試在 flows-triage.spec.ts）
-  await expect.poll(ids).toEqual(['queue-s-auth', 'queue-s-etl', 'queue-s-ml', 'queue-s-docs']);
+  // 要你決定（等最久的在前）→ 錯誤、卡住（詳細的分組測試在 flows-triage.spec.ts）。額度用完不算等你，不列。
+  await expect.poll(ids).toEqual(['queue-s-auth', 'queue-s-etl', 'queue-s-ml']);
   await expect(page.getByTestId('queue-s-auth')).toContainText('npm test -- auth');
   await expect(page.getByTestId('queue-s-auth')).toContainText(
     'demo-studio / project @ ab/fix-auth',
@@ -635,21 +639,31 @@ test('待處理清單：分組排序、危險指令置頂、點名稱跳到該�
        }],
      });`,
   );
-  await expect
-    .poll(ids)
-    .toEqual(['queue-s-tests', 'queue-s-auth', 'queue-s-etl', 'queue-s-ml', 'queue-s-docs']);
+  await expect.poll(ids).toEqual(['queue-s-tests', 'queue-s-auth', 'queue-s-etl', 'queue-s-ml']);
   await expect(page.getByTestId('queue-s-tests')).toContainText('命中危險指令清單');
   await expect(page.getByTestId('waiting-count')).toHaveText('4');
   await shot(page, 'queue-danger');
 
-  await page.getByTestId('queue-s-etl').getByRole('link', { name: 'Migrate data' }).click();
-  await expect(page).toHaveURL(/#\/canvas/);
+  await page.getByTestId('inbox-show-s-etl').click();
+  await expect(page).toHaveURL(/#\/inbox$/);
+  await expect(page.getByTestId('inbox-drawer')).toBeVisible();
   await expect(page.locator('.frame.spot')).toHaveAttribute('data-testid', 'card-s-etl');
   await expect(card(page, 's-etl')).toBeInViewport({ ratio: 0.9 });
+  // 卡片不被抽屜蓋住：放在抽屜左邊看得到的那一塊
+  const drawer = (await page.getByTestId('inbox-drawer').boundingBox())!;
+  // 鏡頭有 200ms 的移動動畫，等它停下來再量。
+  await expect
+    .poll(async () => {
+      const box = (await card(page, 's-etl').boundingBox())!;
+      return box.x + box.width <= drawer.x + 1;
+    })
+    .toBe(true);
   // 下一個從剛才點的那列接著走，危險指令的 s-tests 在循環的第一個
   await page.keyboard.press('n');
   await expect(page.locator('.frame.spot')).toHaveAttribute('data-testid', 'card-s-tests');
   await expect(card(page, 's-tests')).toContainText('⛔ 命中危險指令');
+  // 收件匣裡同一項跟著標出
+  await expect(page.getByTestId('queue-s-tests')).toHaveClass(/focused/);
 });
 
 test('中英文切換：固定用詞，英文不撐爆版面', async ({ page }) => {
@@ -670,7 +684,8 @@ test('中英文切換：固定用詞，英文不撐爆版面', async ({ page }) 
   await expect(card(page, 's-auth').locator('.age')).toContainText('waited 12m');
   await expect(card(page, 's-ml').locator('.chip.bypass')).toHaveText('Bypass permissions');
   await expect(page.getByTestId('rig-m-laptop')).toContainText('Offline');
-  await expect(page.getByRole('link', { name: 'Queue' })).toBeVisible();
+  await expect(page.getByTestId('inbox-button')).toContainText('Inbox');
+  await expect(page.getByTestId('settings-button')).toHaveAttribute('aria-label', 'Settings');
   await shot(page, 'overview-en');
 
   // 每張條的內容都收在條內：指令框與按鈕不被裁掉
@@ -687,7 +702,8 @@ test('中英文切換：固定用詞，英文不撐爆版面', async ({ page }) 
 });
 
 for (const width of [320, 375]) {
-  for (const route of ['canvas', 'queue']) {
+  // 手機的 #/queue 會轉成全螢幕收件匣（flows.spec 的手機收件匣測過），這裡只看畫布。
+  for (const route of ['canvas']) {
     test(`${width}px ${route} 沒有整頁水平捲軸`, async ({ page }) => {
       await page.setViewportSize({ width, height: 700 });
       await page.goto(`/#/${route}`);
@@ -713,7 +729,8 @@ for (const width of [320, 375]) {
 
 test.describe('四種狀態', () => {
   test('載入中', async ({ page }) => {
-    await page.goto('/#/queue');
+    // 畫布常駐：先到全尺寸終端機頁（唯一會卸載畫布的地方）再回來。
+    await page.goto('/#/terminal/none');
     await patchStore(page, `useBoard.getState().backend.getLayouts = () => new Promise(() => {});`);
     await page.evaluate(() => (location.hash = '#/canvas'));
     await expect(page.locator('[data-state="loading"]')).toBeVisible();
@@ -735,11 +752,13 @@ test.describe('四種狀態', () => {
     await expect(page.getByTestId('quick-create')).toHaveCount(0);
 
     await page.evaluate(() => (location.hash = '#/queue'));
-    await expect(page.locator('[data-state="empty"]')).toContainText('沒有等你的');
+    await expect(page.getByTestId('inbox-drawer').locator('[data-state="empty"]')).toContainText(
+      '沒有等你的',
+    );
   });
 
   test('錯誤：寫發生什麼與怎麼辦，重試成功後回到畫布', async ({ page }) => {
-    await page.goto('/#/queue');
+    await page.goto('/#/terminal/none');
     await patchStore(
       page,
       `const b = useBoard.getState().backend;
@@ -895,8 +914,18 @@ test.describe('在畫布上直接新增', () => {
     await expect(page).toHaveURL(/#\/canvas/);
     await page.getByTestId('quick-create').getByRole('link', { name: '完整表單' }).click();
     await expect(page).toHaveURL(/#\/new/);
-    // 離開畫布後頁首按鈕回到完整表單。
-    await page.evaluate(() => (location.hash = '#/queue'));
+    await expect(page.getByTestId('modal')).toBeVisible();
+    // 收件匣開著時畫布仍在底下：頁首按鈕照樣在畫布上原地打開。
+    await page.evaluate(() => (location.hash = '#/inbox'));
+    await page.getByRole('banner').getByRole('button', { name: '新增 session' }).click();
+    await expect(page.getByTestId('quick-create')).toBeVisible();
+    await expect(page).toHaveURL(/#\/inbox$/);
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('quick-create')).toHaveCount(0);
+    // Esc 只關最上層：快速建立關掉了，收件匣還在。
+    await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+    // 全尺寸終端機頁沒有畫布：頁首按鈕去完整表單。
+    await page.evaluate(() => (location.hash = '#/terminal/s-auth'));
     await page.getByRole('banner').getByRole('button', { name: '新增 session' }).click();
     await expect(page).toHaveURL(/#\/new/);
   });
@@ -1469,7 +1498,8 @@ test.describe('等你的數量與上限（GM 2026-11-06）', () => {
         await page.setViewportSize({ width, height: 700 });
         await page.goto(`/#/${route}`);
         await expect(page.locator('[data-state="loading"]')).toHaveCount(0);
-        if (route !== 'inbox') await expect(page.getByTestId('waiting-count')).toHaveText('3');
+        // 手機的 #/queue 轉成全螢幕收件匣（沒有 App 頁首）。
+        if (route === 'canvas') await expect(page.getByTestId('waiting-count')).toHaveText('3');
         await oneMore(page);
         await expect(page.getByTestId('waiting-banner')).toBeVisible();
         expect(await noOverflow(page)).toBe(true);
@@ -2588,5 +2618,295 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     expect(style.shadow).toBe('none');
     // 8% 團隊色底（不是透明的深色底）。
     expect(style.bg).toMatch(/0\.08\)$/);
+  });
+});
+
+test.describe('疊加面板（P2 §1.6 驗收）', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  const viewport = (page: Page) =>
+    page.locator('.react-flow__viewport').evaluate((el) => (el as HTMLElement).style.transform);
+
+  /** 記下終端機的訂閱與送出的訊息：畫布若被卸載重掛，訂閱數會變多。 */
+  async function watchTerminal(page: Page) {
+    await patchStore(
+      page,
+      `const t = useBoard.getState().backend.terminal;
+       window.__subs = 0; window.__sent = [];
+       const sub = t.subscribe.bind(t); const send = t.send.bind(t);
+       t.subscribe = (...a) => { window.__subs += 1; return sub(...a); };
+       t.send = (m) => { window.__sent.push(m); return send(m); };`,
+    );
+  }
+  const subs = (page: Page) => page.evaluate(() => (window as never as { __subs: number }).__subs);
+  const sent = (page: Page) =>
+    page.evaluate(
+      () =>
+        (window as never as { __sent: { type: string; data?: string; signal?: string }[] }).__sent,
+    );
+
+  test('1. 開關收件匣、團隊、設定：畫布位置與縮放不變，終端機不重新訂閱', async ({ page }) => {
+    await openCanvas(page);
+    await watchTerminal(page);
+    const auth = card(page, 's-auth');
+    await auth.locator('.tail').dblclick();
+    await expect(auth).toHaveAttribute('data-mode', 'terminal');
+    await expect(auth.locator('.xterm')).toBeVisible();
+    // 平移＋縮放到別的位置
+    await page.getByRole('button', { name: '放大' }).click();
+    const pane = (await page.locator('.react-flow__pane').boundingBox())!;
+    await page.mouse.move(pane.x + 60, pane.y + pane.height - 60);
+    await page.mouse.down();
+    await page.mouse.move(pane.x + 160, pane.y + pane.height - 120, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    const before = await viewport(page);
+    const subscribed = await subs(page);
+    expect(subscribed).toBeGreaterThan(0);
+
+    await page.getByTestId('inbox-button').click();
+    await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+    await page.getByTestId('inbox-close').click();
+    await expect(page.getByTestId('inbox-drawer')).toHaveCount(0);
+
+    await page.evaluate(() => (location.hash = '#/team'));
+    await expect(page.getByTestId('team-panel')).toBeVisible();
+    await page.getByTestId('team-close').click();
+    await expect(page.getByTestId('team-panel')).toHaveCount(0);
+
+    await page.getByTestId('settings-button').click();
+    await expect(page.getByTestId('modal')).toBeVisible();
+    await page.getByTestId('modal-close').click();
+    await expect(page.getByTestId('modal')).toHaveCount(0);
+
+    await expect(page).toHaveURL(/#\/canvas$/);
+    expect(await viewport(page)).toBe(before);
+    expect(await subs(page)).toBe(subscribed);
+    await expect(auth).toHaveAttribute('data-mode', 'terminal');
+  });
+
+  test('2. 直接開 #/inbox/<id>（PERM）：畫布在底、抽屜開著、那一項展開並高亮；允許一次後消失、抽屜還在', async ({
+    page,
+  }) => {
+    await page.goto('/#/inbox/s-auth');
+    await expect(card(page, 's-auth')).toBeVisible();
+    const drawer = page.getByTestId('inbox-drawer');
+    await expect(drawer).toBeVisible();
+    const row = page.getByTestId('queue-s-auth');
+    await expect(row).toHaveClass(/targeted/);
+    await expect(page.getByTestId('inbox-toggle-s-auth')).toHaveAttribute('aria-expanded', 'true');
+    await page.getByTestId('review-a-1').getByRole('button', { name: '允許一次' }).click();
+    await expect(row).toHaveCount(0);
+    await expect(drawer).toBeVisible();
+    await expect(page).toHaveURL(/#\/inbox\/s-auth$/);
+  });
+
+  test('3. 手機 390×844 開 #/inbox/<id>：全螢幕收件匣，那一項在可視範圍', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#/inbox/s-etl');
+    const item = page.getByTestId('inbox-a-2');
+    await expect(item).toBeInViewport();
+    await expect(item).toHaveClass(/targeted/);
+    await expect(page.locator('.react-flow')).toHaveCount(0);
+    await expect(page.getByTestId('inbox-drawer')).toHaveCount(0);
+  });
+
+  test('4. 推播訊息 agent-board.open：抽屜打開並捲到那一項，頁面沒有重新載入', async ({ page }) => {
+    await openCanvas(page);
+    await page.evaluate(() => Object.assign(window, { __sameLoad: true }));
+    const post = (id: string) =>
+      page.evaluate((target) => {
+        navigator.serviceWorker.dispatchEvent(
+          new MessageEvent('message', {
+            data: { type: 'agent-board.open', url: `${location.origin}/#/inbox/${target}` },
+          }),
+        );
+      }, id);
+    await post('s-auth');
+    await expect(page).toHaveURL(/#\/inbox\/s-auth$/);
+    await expect(page.getByTestId('queue-s-auth')).toHaveClass(/targeted/);
+    // 抽屜已開著，又來一則：捲到新的那一項
+    await post('s-ml');
+    await expect(page.getByTestId('queue-s-ml')).toHaveClass(/targeted/);
+    await expect(page.getByTestId('queue-s-ml')).toBeInViewport();
+    expect(
+      await page.evaluate(() => (window as never as { __sameLoad?: boolean }).__sameLoad),
+    ).toBe(true);
+  });
+
+  test('5. 舊網址 #/queue、#/review/<id> 轉成新網址，上一頁不會回到舊網址', async ({ page }) => {
+    await openCanvas(page);
+    await page.evaluate(() => (location.hash = '#/queue'));
+    await expect(page).toHaveURL(/#\/inbox$/);
+    await page.goBack();
+    await expect(page).toHaveURL(/#\/canvas$/);
+    await expect(page.getByTestId('inbox-drawer')).toHaveCount(0);
+    await page.evaluate(() => (location.hash = '#/review/s-auth'));
+    await expect(page).toHaveURL(/#\/inbox\/s-auth$/);
+    await page.goBack();
+    await expect(page).toHaveURL(/#\/canvas$/);
+    await page.goForward();
+    await expect(page).toHaveURL(/#\/inbox\/s-auth$/);
+    // #/archive（沒有 id）→ 設定的封存分類
+    await page.evaluate(() => (location.hash = '#/archive'));
+    await expect(page).toHaveURL(/#\/settings\/archived$/);
+    await expect(page.locator('#s-archived')).toBeVisible();
+  });
+
+  test('6. 焦點在終端機時 Esc 交給終端機；不在輸入元件時 Esc 關最上層', async ({ page }) => {
+    await openCanvas(page);
+    await watchTerminal(page);
+    const auth = card(page, 's-auth');
+    await auth.locator('.tail').dblclick();
+    await expect(auth.locator('.xterm')).toBeVisible();
+    await page.evaluate(() => (location.hash = '#/inbox'));
+    await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+    await auth.locator('.xterm').click();
+    await expect(auth.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+    expect(
+      (await sent(page)).some(
+        (m) =>
+          (m.type === 'terminal.input' && m.data?.includes('\x1b')) ||
+          (m.type === 'terminal.signal' && m.signal === 'escape'),
+      ),
+    ).toBe(true);
+    // I 在打字時也不觸發
+    await page.keyboard.press('i');
+    await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('inbox-drawer')).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/canvas$/);
+    // I 開關收件匣
+    await page.keyboard.press('i');
+    await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+    await page.keyboard.press('i');
+    await expect(page.getByTestId('inbox-drawer')).toHaveCount(0);
+  });
+
+  test('7＋10. 收件匣與團隊互斥；設定疊在上面、焦點鎖在設定裡，關設定後右側面板還在', async ({
+    page,
+  }) => {
+    await openCanvas(page);
+    await page.getByTestId('inbox-button').click();
+    await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+    await page.evaluate(() => (location.hash = '#/team'));
+    await expect(page.getByTestId('team-panel')).toBeVisible();
+    await expect(page.getByTestId('inbox-drawer')).toHaveCount(0);
+
+    await page.getByTestId('settings-button').click();
+    const modal = page.getByTestId('modal');
+    await expect(modal).toBeVisible();
+    await expect(page.getByTestId('team-panel')).toBeVisible();
+    for (let i = 0; i < 25; i += 1) {
+      await page.keyboard.press('Tab');
+      expect(
+        await page.evaluate(
+          () =>
+            document.querySelector('[data-testid="modal"]')?.contains(document.activeElement) ??
+            false,
+        ),
+      ).toBe(true);
+    }
+    for (let i = 0; i < 5; i += 1) {
+      await page.keyboard.press('Shift+Tab');
+      expect(
+        await page.evaluate(
+          () =>
+            document.querySelector('[data-testid="modal"]')?.contains(document.activeElement) ??
+            false,
+        ),
+      ).toBe(true);
+    }
+    // Esc 只關最上層（焦點在連結或按鈕上，不是輸入框）
+    await modal.getByRole('link', { name: '我的帳號' }).focus();
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+    await expect(page.getByTestId('team-panel')).toBeVisible();
+    await expect(page).toHaveURL(/#\/team$/);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('team-panel')).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/canvas$/);
+
+    // 點暗化背景也關設定
+    await page.getByTestId('settings-button').click();
+    await expect(modal).toBeVisible();
+    await page.getByTestId('modal-backdrop').click({ position: { x: 10, y: 450 } });
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('8. 收件匣不列 NEW；「等你 N」＝收件匣列數', async ({ page }) => {
+    await openCanvas(page);
+    await patchStore(
+      page,
+      `const s = useBoard.getState();
+       useBoard.setState({ sessions: s.sessions.map((x) => x.id === 's-tests'
+         ? { ...x, status: 'waiting_input', statusDetail: 'idle:start' } : x) });`,
+    );
+    // 剛開好的是 NEW 灰（不算等你，GM 2026-11-08 色彩決定）；收件匣不列，規則改在畫布卡片守著。
+    await expect(card(page, 's-tests').locator('.lamp')).toHaveText('◌NEW');
+    await expect(card(page, 's-tests').locator('.lamp')).toHaveCSS(
+      'background-color',
+      'rgb(154, 164, 178)',
+    );
+    await page.getByTestId('inbox-button').click();
+    await expect(page.getByTestId('queue-s-tests')).toHaveCount(0);
+    const n = Number(await page.getByTestId('waiting-count').textContent());
+    await expect(page.getByTestId('inbox-drawer').locator('.triage-row')).toHaveCount(n);
+    await expect(page.getByTestId('inbox-button').locator('b')).toHaveText(String(n));
+  });
+
+  test('9. 頁首沒有分頁列；原分頁的功能都還到得了', async ({ page }) => {
+    await openCanvas(page);
+    await expect(page.locator('nav.tabs')).toHaveCount(0);
+    await expect(page.getByRole('navigation', { name: '主要分頁' })).toHaveCount(0);
+    // 待處理、審核：收件匣（排序切換＋展開審核卡）
+    await page.getByTestId('inbox-button').click();
+    await expect(page.getByTestId('inbox-sort-group')).toBeVisible();
+    await page.getByTestId('inbox-toggle-s-auth').click();
+    await expect(page.getByTestId('review-a-1')).toBeVisible();
+    // 團隊清單、團隊詳細、找不到的團隊
+    await page.evaluate(() => (location.hash = '#/team'));
+    await expect(page.getByTestId('team-list')).toBeVisible();
+    await page
+      .getByTestId('team-panel')
+      .getByRole('link', { name: /登入重構/ })
+      .click();
+    await expect(page).toHaveURL(/#\/team\/team-demo-auth$/);
+    await expect(page.getByTestId('team-workbench')).toBeVisible();
+    await page.evaluate(() => (location.hash = '#/team/nope'));
+    await expect(page.getByTestId('team-not-found')).toHaveText('找不到這個團隊，可能已經被刪除。');
+    await expect(page.getByTestId('team-list')).toBeVisible();
+    // 設定各分類
+    await page.evaluate(() => (location.hash = '#/settings/notify'));
+    await expect(
+      page.getByRole('navigation', { name: '設定分類' }).getByRole('link', { name: '通知' }),
+    ).toHaveAttribute('aria-current', 'page');
+    // 新增 session（完整表單）
+    await page.evaluate(() => (location.hash = '#/new'));
+    await expect(
+      page.getByTestId('modal').getByRole('button', { name: '建立 session' }),
+    ).toBeVisible();
+  });
+
+  test('開團隊：畫布把成員框進看得到的地方（不被面板蓋住）', async ({ page }) => {
+    await openCanvas(page);
+    await page.evaluate(() => (location.hash = '#/team/team-demo-auth'));
+    await expect(page.getByTestId('team-workbench')).toBeVisible();
+    const panel = (await page.getByTestId('team-panel').boundingBox())!;
+    for (const id of ['s-auth', 's-tests']) {
+      await expect(card(page, id)).toBeInViewport();
+      await expect
+        .poll(async () => {
+          const b = (await card(page, id).boundingBox())!;
+          return b.x + b.width <= panel.x + 1;
+        })
+        .toBe(true);
+    }
   });
 });

@@ -322,7 +322,11 @@ test.describe('操作紀錄', () => {
     );
     const box = page.locator('#s-audit');
     await expect(box.getByTestId('audit-row').first()).toContainText(secret);
+    // 設定是模態次畫面，背後的頁首按不到：關掉設定、在頁首打開遮蔽，再回來看。
+    await page.getByTestId('modal-close').click();
+    await expect(page.getByTestId('modal')).toHaveCount(0);
     await page.getByRole('button', { name: /遮蔽/ }).first().click();
+    await page.evaluate(() => (location.hash = '#/settings/data'));
     await expect(box.getByTestId('audit-row').first()).not.toContainText(secret);
   });
 });

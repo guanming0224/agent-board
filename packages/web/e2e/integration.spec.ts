@@ -238,11 +238,13 @@ test('daemon 回報 repo 根目錄；新 session 選同 repo 的子資料夾時�
 });
 
 test('權限請求：網頁看到、按允許，決定真的回到 claude', async ({ page }) => {
-  await page.goto('/#/review');
+  // 收件匣是疊在畫布上的抽屜（P2 §1）；畫布上的卡也有同樣的字，限定在抽屜裡找。
+  await page.goto('/#/inbox');
+  const inbox = page.getByTestId('inbox-drawer');
   await type(page, session.id, 'ask-permission');
   await expectStatus(page.request, session.id, 'waiting_permission');
-  await expect(page.getByText('npm test').first()).toBeVisible();
-  await page.getByRole('button', { name: '允許一次' }).first().click();
+  await expect(inbox.getByText('npm test').first()).toBeVisible();
+  await inbox.getByRole('button', { name: '允許一次' }).first().click();
 
   await expect
     .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
@@ -251,12 +253,15 @@ test('權限請求：網頁看到、按允許，決定真的回到 claude', asyn
 });
 
 test('拒絕要填原因，原因真的回到 claude', async ({ page }) => {
-  await page.goto('/#/review');
+  await page.goto('/#/inbox');
+  const inbox = page.getByTestId('inbox-drawer');
   await type(page, session.id, 'ask-permission');
   await expectStatus(page.request, session.id, 'waiting_permission');
-  const reason = page.getByPlaceholder(/拒絕原因/).first();
+  // 展開那一列的審核卡（原審核中心）
+  await inbox.getByTestId(`inbox-toggle-${session.id}`).click();
+  const reason = inbox.getByPlaceholder(/拒絕原因/).first();
   await reason.fill('integration-deny-reason');
-  await page.getByRole('button', { name: '拒絕' }).first().click();
+  await inbox.getByRole('button', { name: '拒絕' }).first().click();
 
   await expect
     .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
@@ -264,15 +269,16 @@ test('拒絕要填原因，原因真的回到 claude', async ({ page }) => {
 });
 
 test('危險指令：攔下、按兩次才放行', async ({ page }) => {
-  await page.goto('/#/review');
+  await page.goto('/#/inbox');
+  const inbox = page.getByTestId('inbox-drawer');
   await type(page, session.id, 'danger');
-  await expect(page.getByText(/命中危險指令/).first()).toBeVisible({ timeout: 20_000 });
+  await expect(inbox.getByText(/命中危險指令/).first()).toBeVisible({ timeout: 20_000 });
   await expectStatus(page.request, session.id, 'waiting_permission');
-  const allow = page.getByRole('button', { name: '允許一次' }).first();
+  const allow = inbox.getByRole('button', { name: '允許一次' }).first();
   await allow.click();
   await page.waitForTimeout(500);
   expect(await readScreen(page, session.id)).not.toContain('"permissionDecision":"allow"');
-  await page
+  await inbox
     .getByRole('button', { name: /再按一次/ })
     .first()
     .click();
@@ -281,7 +287,42 @@ test('危險指令：攔下、按兩次才放行', async ({ page }) => {
     .toContain('"permissionDecision":"allow"');
   // 假 CLI 接著還會走一次 PermissionRequest，答掉才會結束這一輪
   await expectStatus(page.request, session.id, 'waiting_permission');
-  await page.getByRole('button', { name: '允許一次' }).first().click();
+  await inbox.getByRole('button', { name: '允許一次' }).first().click();
+  await expectStatus(page.request, session.id, 'waiting_input');
+});
+
+test('正式版直接開舊網址（書籤、舊推播）：轉成新網址，畫面不是空白（P2 §1.4）', async ({
+  page,
+}) => {
+  // 正式版（vite build）沒有 StrictMode 的 effect 重跑：開頁就是舊網址時，轉址也要自己更新畫面。
+  await page.goto('/#/canvas');
+  await type(page, session.id, 'ask-permission');
+  await expectStatus(page.request, session.id, 'waiting_permission');
+
+  await page.goto(`/#/review/${session.id}`);
+  await expect(page).toHaveURL(new RegExp(`#/inbox/${session.id}$`));
+  await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+  await expect(page.getByTestId(`queue-${session.id}`)).toHaveClass(/targeted/);
+
+  // 舊的待處理：轉過來這次依組別，不改使用者記住的排序。
+  await page.goto('about:blank');
+  await page.goto('/#/queue');
+  await expect(page).toHaveURL(/#\/inbox$/);
+  await expect(page.getByTestId('inbox-drawer')).toBeVisible();
+  await expect(page.getByTestId('inbox-sort-group')).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => localStorage.getItem('agent-board.inbox.sort'))).not.toBe(
+    'group',
+  );
+
+  await page.goto('about:blank');
+  await page.goto('/#/archive');
+  await expect(page).toHaveURL(/#\/settings\/archived$/);
+  await expect(page.getByTestId('modal')).toBeVisible();
+  await expect(page.locator('#s-archived')).toBeVisible();
+
+  // 收尾：放行這一筆，後面的測試從等你回覆開始。
+  await page.goto(`/#/inbox/${session.id}`);
+  await page.getByTestId('inbox-drawer').getByRole('button', { name: '允許一次' }).first().click();
   await expectStatus(page.request, session.id, 'waiting_input');
 });
 

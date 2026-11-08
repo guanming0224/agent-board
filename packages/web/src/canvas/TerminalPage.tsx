@@ -289,7 +289,7 @@ export function TerminalPage() {
 
   return (
     <div className={`shell${connected ? '' : ' is-stale'}`}>
-      <AppHeader tab="canvas" />
+      <AppHeader />
       {!connected && <StaleBanner />}
       <div className="board xpand">
         <SessionList currentId={sessionId} />

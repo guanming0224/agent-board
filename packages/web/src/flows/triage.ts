@@ -1,4 +1,4 @@
-// 待處理（#/queue）與審核中心（#/review）的分組、排序。純函式，畫面只負責畫。
+// 收件匣（#/inbox，原本的待處理與審核中心合併）的列、分組、排序。純函式，畫面只負責畫。
 // 「等你」的數量一律用 protocol attention.ts 的 waitingSessions，和頁首同一份定義。
 import {
   isIdleStart,
@@ -138,6 +138,36 @@ export function groupTriage(items: readonly TriageItem[]): Grouped<TriageGroup, 
   }));
 }
 
+/**
+ * 收件匣「依急迫」（GM 2026-11-08 Q1 預設）：⛔ 危險指令 → ERR（錯誤、卡住）→ PERM → PLAN／ASK，
+ * 同一級等最久的在前；和「下一個等我的」（N 鍵）同一個順序。只排算「等你」的列。
+ */
+const URGENCY: Record<TriageKind, number> = {
+  danger: 0,
+  error: 1,
+  stuck: 1,
+  permission: 2,
+  plan: 3,
+  question: 3,
+  reply: 3,
+  rate_limited: 9,
+  idle: 9,
+};
+
+export function urgencyOrder(items: readonly TriageItem[]): TriageItem[] {
+  return [...items].sort(
+    (a, b) => URGENCY[a.kind] - URGENCY[b.kind] || a.since.localeCompare(b.since),
+  );
+}
+
+/** 收件匣的列：只列算「等你」的（ASK、PERM、PLAN、ERR），和頁首「等你 N」一樣多；NEW、額度用完不列。 */
+export function inboxItems(
+  sessions: readonly Session[],
+  approvals: readonly Approval[],
+): TriageItem[] {
+  return triageItems(sessions, approvals).filter((item) => item.counted);
+}
+
 /** 篩選：團隊（成員的 session id）與機器。null 表示不篩。 */
 export function filterTriage(
   items: readonly TriageItem[],
@@ -173,34 +203,11 @@ export function contextLine(item: Pick<TriageItem, 'approval' | 'session'>): str
 const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim();
 const firstLine = (text: string) => oneLine(text.split('\n').find((line) => line.trim()) ?? text);
 
-/** 審核中心的分組：同一種決定放一起，危險指令最上面。 */
-export const REVIEW_GROUPS = ['danger', 'permission', 'plan', 'question', 'reply'] as const;
-export type ReviewGroup = (typeof REVIEW_GROUPS)[number];
+/** 審核卡的種類：同一種決定一句說明（審核卡上的「為什麼要你決定」）。 */
+export type ReviewGroup = 'danger' | 'permission' | 'plan' | 'question' | 'reply';
 
 export function reviewGroupOf(item: WorkItem): ReviewGroup {
   return item.approval ? item.approval.kind : 'reply';
-}
-
-/** 依組別分好、組內等最久的在前；空的組不列。 */
-export function groupReview(items: readonly WorkItem[]): Grouped<ReviewGroup, WorkItem>[] {
-  return REVIEW_GROUPS.map((group) => ({
-    group,
-    items: items
-      .filter((item) => reviewGroupOf(item) === group)
-      .sort((a, b) => a.since.localeCompare(b.since)),
-  })).filter((g) => g.items.length > 0);
-}
-
-/**
- * 審核中心要列的項目：有 approval 的，加上等你回覆（不是剛開好閒著）的 session。
- * 故障（✕ ⚠）沒有東西可審，留在待處理。
- */
-export function reviewItems(items: readonly WorkItem[]): WorkItem[] {
-  return items.filter(
-    (item) =>
-      item.approval !== null ||
-      (item.session?.status === 'waiting_input' && !isIdleStart(item.session)),
-  );
 }
 
 /**

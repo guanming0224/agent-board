@@ -3,21 +3,12 @@ import { chooseLocale } from '../flows/locale';
 import { MaskChip } from '../security';
 import { useLocale, useT, type Locale } from '../shared/i18n';
 import { useBoard } from '../shared/store';
+import { useOverlay, toggleInbox } from './overlayStore';
 import { nextInQueue, pendingQueue } from './queue';
 import { useViewsUi } from './uiStore';
 import { formatTokens, formatTokensFull, usageTotals } from './usage';
 import { useUsagePolling, useUsageStore } from './usageStore';
 import { useWaiting, WaitingBanner } from './waiting';
-
-export type TabName = 'canvas' | 'queue' | 'review' | 'team' | 'settings';
-
-const TABS: { name: TabName; labelKey: string; hash?: string }[] = [
-  { name: 'canvas', labelKey: 'views.tab.canvas', hash: '#/canvas' },
-  { name: 'queue', labelKey: 'views.tab.queue', hash: '#/queue' },
-  { name: 'review', labelKey: 'views.tab.review', hash: '#/review' },
-  { name: 'team', labelKey: 'views.tab.team', hash: '#/team' },
-  { name: 'settings', labelKey: 'views.tab.settings', hash: '#/settings' },
-];
 
 const LOCALES: { value: Locale; label: string }[] = [
   { value: 'zh-TW', label: '中' },
@@ -61,11 +52,17 @@ function UsageSummaryText() {
   );
 }
 
-export function AppHeader({ tab }: { tab: TabName }) {
+/**
+ * 頁首（P2 §1.2）：沒有分頁列。畫布是唯一主畫面，收件匣、團隊、設定都疊在畫布上，
+ * 從這裡的收件匣鈕、齒輪或網址打開。
+ */
+export function AppHeader() {
   const t = useT();
   const { sessions, approvals, machines, backend } = useBoard();
   const { locale } = useLocale();
   const focusSession = useViewsUi((s) => s.focusSession);
+  const inboxOpen = useOverlay((s) => s.right?.kind === 'inbox');
+  const settingsOpen = useOverlay((s) => s.modal === 'settings');
   const [announce, setAnnounce] = useState('');
   useUsagePolling();
   const queue = pendingQueue(sessions, approvals);
@@ -85,7 +82,8 @@ export function AppHeader({ tab }: { tab: TabName }) {
         n: queue.length,
       }),
     );
-    if (tab !== 'canvas') location.hash = '#/canvas';
+    // 面板開著也照常：畫布在底下，聚焦那張卡；收件匣裡同一項會跟著標出（P2 §1.2）。
+    // 在全尺寸終端機頁時，那一頁自己會回到畫布。
   };
 
   useEffect(() => {
@@ -172,25 +170,31 @@ export function AppHeader({ tab }: { tab: TabName }) {
         >
           {t('views.newSession')}
         </button>
+        <button
+          type="button"
+          className="inbox-btn"
+          aria-pressed={inboxOpen}
+          aria-label={t('views.inbox.aria', { n: waiting })}
+          title={t('views.inbox.title')}
+          onClick={toggleInbox}
+          data-testid="inbox-button"
+        >
+          {t('views.inbox.label')}
+          <b className="num">{waiting}</b>
+          <kbd>I</kbd>
+        </button>
+        <a
+          className="button icon gear"
+          href="#/settings"
+          aria-label={t('views.settings.aria')}
+          aria-current={settingsOpen ? 'page' : undefined}
+          title={t('views.settings.aria')}
+          data-testid="settings-button"
+        >
+          <span aria-hidden="true">⚙</span>
+        </a>
       </div>
       <WaitingBanner />
-      <nav className="tabs" aria-label={t('views.tab.nav')}>
-        {TABS.map((item) =>
-          item.hash ? (
-            <a
-              key={item.name}
-              href={item.hash}
-              aria-current={item.name === tab ? 'page' : undefined}
-            >
-              {t(item.labelKey)}
-            </a>
-          ) : (
-            <span key={item.name} className="off" title={t('views.tab.notYet')} aria-disabled>
-              {t(item.labelKey)}
-            </span>
-          ),
-        )}
-      </nav>
     </header>
   );
 }

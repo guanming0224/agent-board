@@ -1,4 +1,4 @@
-export { AppHeader, type TabName } from './AppHeader';
+export { AppHeader } from './AppHeader';
 export { PageShell } from './PageShell';
 export { Sidebar } from './Sidebar';
 export { EmptyState, ErrorState, LoadingState, StaleBanner } from './states';
@@ -22,3 +22,22 @@ export { errorText, useBoardLoad, useProjects, type LoadState } from './useBoard
 export { canResume, resumeErrorText, useResume } from './resume';
 export { useViewsUi } from './uiStore';
 export { AutoContinueNote, useWaiting, WaitingBanner } from './waiting';
+export { type InboxSort } from './uiStore';
+export {
+  cameFrom,
+  closeModal,
+  closeRight,
+  markHistory,
+  replaceHash,
+  toggleInbox,
+  useOverlay,
+} from './overlayStore';
+export {
+  inboxHash,
+  parseHash,
+  resolve,
+  rightHash,
+  teamHash,
+  type ModalKind,
+  type RightPanel,
+} from './overlay';

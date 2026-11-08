@@ -1,4 +1,4 @@
-// 待處理項目：審核中心與收件匣共用的清單與排序（STYLE.md §2-3）。
+// 待處理項目：收件匣的審核卡與手機收件匣共用的清單與排序（STYLE.md §2-3）。
 import type { Approval, Session, SessionStatus } from '@agent-board/protocol';
 import type { BoardSnapshot } from '../shared/backend';
 import { attentionQueue, codeRank, statusCode } from '../shared/status';

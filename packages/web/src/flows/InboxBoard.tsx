@@ -1,18 +1,23 @@
-// 待處理（#/queue）：可以一眼掃過的分組清單，常用動作直接在列上做（GM 2026-11-06）。
+// 收件匣（P2 §1.2）：原本的「待處理」與「審核中心」合併成右側抽屜。只列算「等你」的 session，
+// 每個 session 一列；常用動作直接在列上做，點列展開原本審核中心的審核卡（diff、指令全文、危險指令兩次確認）。
 // 動作全部沿用既有的後端行為：決定 approval、送進 session、標記完成、開終端機。
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { Approval, Project, Session, User } from '@agent-board/protocol';
 import { terminalHash } from '../canvas/terminalRoute';
 import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { useViewsUi } from '../views';
+import { statusCode } from '../shared/status';
+import { useViewsUi, type InboxSort } from '../views';
 import { answerDecision, parseQuestions, useBlockedReason, useDecide } from './approvalParts';
 import {
   callsign,
   Callsign,
+  Empty,
+  ErrorBox,
   errorText,
   handsClass,
+  Loading,
   ModeChip,
   Msg,
   useCurrentUser,
@@ -24,13 +29,18 @@ import {
   type Loaded,
   type Note,
 } from './common';
+import { DecisionHistory } from './DecisionHistory';
+import { SessionReviewCards } from './ReviewCards';
 import { StatusBadge } from './StatusBadge';
 import { summarizeTool } from './toolView';
 import {
   contextLine,
   filterTriage,
   groupTriage,
+  inboxItems,
+  keepSelection,
   triageItems,
+  urgencyOrder,
   type TriageGroup,
   type TriageItem,
 } from './triage';
@@ -62,10 +72,9 @@ function isTyping(target: EventTarget | null): boolean {
   );
 }
 
-/** 在畫布上框出這張卡（和原本點一列的行為一樣）。 */
-function openOnCanvas(id: string) {
+/** 在畫布上框出這張卡；抽屜不關（畫布在底下）。 */
+export function showOnCanvas(id: string) {
   useViewsUi.getState().focusSession(id);
-  location.hash = '#/canvas';
 }
 
 /** 必填的一段文字（拒絕原因、回覆）。空白不送，錯誤訊息緊貼按鈕。 */
@@ -328,19 +337,47 @@ interface RowContext {
   now: number;
 }
 
+/** 「在畫布上看」：聚焦那張卡，抽屜留著。 */
+function ShowOnCanvas({ sessionId }: { sessionId: string }) {
+  const t = useT();
+  return (
+    <button
+      type="button"
+      className="ghost"
+      onClick={() => showOnCanvas(sessionId)}
+      data-testid={`inbox-show-${sessionId}`}
+    >
+      {t('flows.inbox.showOnCanvas')}
+    </button>
+  );
+}
+
 function TriageRow({
   item,
   teamName,
   active,
+  expanded,
+  highlighted,
+  scrollKey,
+  focused,
   disabledAll,
   onFocusRow,
+  onToggle,
   context: { projects, me, now },
 }: {
   item: TriageItem;
   teamName: string | null;
   active: boolean;
+  expanded: boolean;
+  /** 從網址（推播）指到的這一項：高亮 2 秒。 */
+  highlighted: boolean;
+  /** 網址每指到一次就變：同一個網址再送一次也重新捲到這一項。 */
+  scrollKey: number;
+  /** 畫布上框出的卡（「下一個等我的」）也是這一項。 */
+  focused: boolean;
   disabledAll: boolean;
   onFocusRow: (id: string) => void;
+  onToggle: (id: string) => void;
   context: RowContext;
 }) {
   const t = useT();
@@ -353,16 +390,31 @@ function TriageRow({
   const gone = machine !== undefined && !machine.online;
   const context = contextLine(item);
   const tool = approval?.toolName && approval.kind !== 'question' ? approval.toolName : null;
+  const rowRef = useRef<HTMLLIElement>(null);
+
+  // 變成目標或被畫布框選時捲進來；之後的資料更新不再搶畫面。
+  useEffect(() => {
+    if (!highlighted && !focused) return;
+    rowRef.current?.scrollIntoView({ block: highlighted ? 'center' : 'nearest' });
+    if (highlighted) rowRef.current?.focus({ preventScroll: true });
+  }, [highlighted, focused, scrollKey]);
 
   let actions;
-  if (approval && (approval.kind === 'permission' || approval.kind === 'danger')) {
+  if (expanded) {
+    actions = null;
+  } else if (approval && (approval.kind === 'permission' || approval.kind === 'danger')) {
     actions = <PermissionActions approval={approval} session={session} disabled={disabled} />;
   } else if (kind === 'plan') {
     actions = (
       <div className="row-acts">
-        <a className="button primary" href={`#/review/${encodeURIComponent(session.id)}`}>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => onToggle(session.id)}
+          aria-expanded={false}
+        >
           {t('flows.triage.reviewPlan')}
-        </a>
+        </button>
         <TerminalLink session={session} />
       </div>
     );
@@ -380,7 +432,8 @@ function TriageRow({
 
   return (
     <li
-      className={`triage-row ${handsClass(session.permissionMode)}${kind === 'danger' ? ' is-danger' : ''}${gone ? ' gone' : ''}`}
+      ref={rowRef}
+      className={`triage-row ${handsClass(session.permissionMode)}${kind === 'danger' ? ' is-danger' : ''}${gone ? ' gone' : ''}${expanded ? ' expanded' : ''}${highlighted ? ' targeted' : ''}${focused ? ' focused' : ''}`}
       data-testid={`queue-${session.id}`}
       data-row-id={session.id}
       data-kind={kind}
@@ -389,33 +442,32 @@ function TriageRow({
       onKeyDown={(e) => {
         if (e.key === 'Enter' && e.target === e.currentTarget) {
           e.preventDefault();
-          openOnCanvas(session.id);
+          onToggle(session.id);
         }
       }}
       onClick={(e) => {
-        // 點列的空白處＝在畫布上打開；點按鈕、連結、輸入框照它們自己的行為。
+        // 點列的空白處＝展開或收起審核卡；點按鈕、連結、輸入框照它們自己的行為。
         if (
           (e.target as Element).closest(
-            'button, a, input, textarea, select, pre, .row-acts, .row-panel',
+            'button, a, input, textarea, select, pre, .row-acts, .row-panel, .session-reviews',
           )
         )
           return;
-        openOnCanvas(session.id);
+        onToggle(session.id);
       }}
     >
       <div className="row-main">
         <div className="row-top">
           <StatusBadge kind={kind} />
-          <a
-            className="row-name"
-            href="#/canvas"
-            onClick={(e) => {
-              e.preventDefault();
-              openOnCanvas(session.id);
-            }}
+          <button
+            type="button"
+            className="row-name link-button"
+            aria-expanded={expanded}
+            onClick={() => onToggle(session.id)}
+            data-testid={`inbox-toggle-${session.id}`}
           >
             {session.name}
-          </a>
+          </button>
           <WaitAge since={item.since} now={now} />
           {teamName && <span className="chip team-chip">{teamName}</span>}
           <ModeChip mode={session.permissionMode} />
@@ -428,7 +480,7 @@ function TriageRow({
             {t('flows.review.dangerHit')} <Callsign text={approval.matchedRule} />
           </div>
         )}
-        {context && (
+        {context && !expanded && (
           <div className="triage-context" title={mask(context)}>
             {tool && <b>{tool}</b>}
             <span className={approval?.toolInput?.['command'] ? 'mono' : undefined}>
@@ -436,40 +488,139 @@ function TriageRow({
             </span>
           </div>
         )}
-        {blocked && <p className="blocked">{blocked}</p>}
+        {blocked && !expanded && <p className="blocked">{blocked}</p>}
       </div>
       {actions}
+      {expanded && (
+        <SessionReviewCards sessionId={session.id} includeSession detail settling={disabledAll} />
+      )}
+      <div className="row-foot">
+        <ShowOnCanvas sessionId={session.id} />
+      </div>
     </li>
   );
 }
 
-/** 待處理頁的內容（頁首、側欄、載入狀態由畫布的 QueuePage 包）。 */
-export function QueueBoard({ teams }: { teams: readonly TeamOption[] }) {
+/** 網址指到的 session 已經不在等你：說明它現在的狀態，還是可以去畫布看。 */
+function TargetGone({ sessionId }: { sessionId: string }) {
+  const t = useT();
+  const session = useBoard((s) => s.sessions.find((x) => x.id === sessionId));
+  return (
+    <p className="blocked target-missing" role="status" data-testid="inbox-target-gone">
+      {session
+        ? t('flows.inbox.targetDone', { code: statusCode(session) })
+        : t('flows.inbox.targetUnknown')}{' '}
+      {session && <ShowOnCanvas sessionId={session.id} />}
+    </p>
+  );
+}
+
+/** 排序切換：依急迫（預設，和 N 鍵一致）｜依組別（原本待處理頁的分組）。 */
+function SortSwitch({ sort, onSort }: { sort: InboxSort; onSort: (sort: InboxSort) => void }) {
+  const t = useT();
+  return (
+    <div className="seg" role="group" aria-label={t('flows.inbox.sort')}>
+      {(['urgency', 'group'] as const).map((value) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={sort === value}
+          onClick={() => onSort(value)}
+          data-testid={`inbox-sort-${value}`}
+        >
+          {t(`flows.inbox.sort.${value}`)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** 從網址（推播）指到的 session：展開、捲到、高亮 2 秒。同一個網址再送一次也要重新捲。 */
+function useHighlight(target: string | null, present: boolean, nonce: number) {
+  const [lit, setLit] = useState<string | null>(null);
+  useEffect(() => {
+    if (!target || !present) return;
+    setLit(target);
+    const timer = setTimeout(() => setLit(null), 2000);
+    return () => clearTimeout(timer);
+  }, [target, present, nonce]);
+  return lit;
+}
+
+/**
+ * 收件匣的內容（抽屜的外框、關閉由呼叫端給）。
+ * target：網址 #/inbox/<sessionId> 指到的 session；nonce 每次網址指到時變，用來重新捲到同一項。
+ */
+export function InboxBoard({
+  teams,
+  target,
+  nonce = 0,
+  tools,
+}: {
+  teams: readonly TeamOption[];
+  target: string | null;
+  nonce?: number;
+  /** 標題列右邊要多放的東西（抽屜的展開、關閉鈕）。 */
+  tools?: ReactNode;
+}) {
   const t = useT();
   const { sessions, approvals, machines, connected } = useBoard();
+  const sort = useViewsUi((s) => s.inboxSort);
+  const setSort = useViewsUi((s) => s.setInboxSort);
+  const focusId = useViewsUi((s) => s.focusId);
   const [teamId, setTeamId] = useState<string | null>(null);
   const [machineId, setMachineId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const projects = useProjects();
   const me = useCurrentUser();
   const now = useNow();
   const context: RowContext = { projects: projects.data ?? [], me, now };
 
-  const all = useMemo(() => triageItems(sessions, approvals), [sessions, approvals]);
+  const all = useMemo(() => inboxItems(sessions, approvals), [sessions, approvals]);
+  const notListed = useMemo(
+    () => triageItems(sessions, approvals).filter((item) => !item.counted),
+    [sessions, approvals],
+  );
   const team = teams.find((x) => x.id === teamId) ?? null;
   const items = filterTriage(all, {
     teamMembers: team ? new Set(team.memberIds) : null,
     machineId,
   });
-  const groups = groupTriage(items);
-  const order = groups.flatMap((g) => g.items.map((item) => item.session.id));
-  // 處理完一列、下一列滑上來時，短暫停用按鈕，連點不會按到別人（同收件匣）。
+  const groups = sort === 'group' ? groupTriage(items).filter((g) => g.group !== 'other') : null;
+  const ordered = groups ? groups.flatMap((g) => g.items) : urgencyOrder(items);
+  const order = ordered.map((item) => item.session.id);
+  // 處理完一列、下一列滑上來時，短暫停用按鈕，連點不會按到別人（同手機收件匣）。
   const settling = useListSettling(order.join('|'));
-  const counted = all.filter((item) => item.counted).length;
-  const quota = all.filter((item) => !item.counted && item.kind === 'rate_limited').length;
-  const idle = all.filter((item) => !item.counted && item.kind === 'idle').length;
+  const quota = notListed.filter((item) => item.kind === 'rate_limited').length;
+  const idle = notListed.filter((item) => item.kind === 'idle').length;
   const current = activeId !== null && order.includes(activeId) ? activeId : (order[0] ?? null);
+  const targetPresent = target !== null && order.includes(target);
+  // 「還在不在等你」看沒篩過的清單：被團隊／機器篩選藏起來的不算處理完。
+  const targetWaiting = target !== null && all.some((item) => item.session.id === target);
+  const lit = useHighlight(targetPresent ? target : null, targetPresent, nonce);
+
+  // 網址指到的那一項還在等你、只是被篩選藏起來：清掉篩選，讓它列出來再捲過去。
+  useEffect(() => {
+    if (target && targetWaiting && !targetPresent) {
+      setTeamId(null);
+      setMachineId(null);
+    }
+  }, [target, targetWaiting, targetPresent, nonce]);
+
+  // 網址指到的那一項：展開（推播點進來就能直接按允許）。同一個網址再送一次（nonce 變）也重來。
+  useEffect(() => {
+    if (target && targetPresent) setExpandedId(target);
+  }, [target, targetPresent, nonce]);
+
+  // 展開的那一項處理掉之後，展開原本位置的下一項（和原本審核中心「處理完選下一項」一樣）。
+  const previous = useRef(order);
+  const kept = expandedId === null ? null : keepSelection(previous.current, order, expandedId);
+  useEffect(() => {
+    previous.current = order;
+    if (kept !== expandedId) setExpandedId(kept);
+  });
 
   const teamOf = (id: string) => teams.find((x) => x.memberIds.includes(id))?.name ?? null;
 
@@ -501,7 +652,7 @@ export function QueueBoard({ teams }: { teams: readonly TeamOption[] }) {
     }
   };
 
-  // 焦點還不在清單裡（剛進頁面）時，j／k 也能開始移動。
+  // 焦點還不在清單裡（剛打開抽屜）時，j／k 也能開始移動。畫布、終端機、輸入框裡的按鍵不搶。
   useEffect(() => {
     const onDocKey = (e: globalThis.KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
@@ -516,20 +667,41 @@ export function QueueBoard({ teams }: { teams: readonly TeamOption[] }) {
     return () => removeEventListener('keydown', onDocKey);
   });
 
+  const toggle = (id: string) => setExpandedId((open) => (open === id ? null : id));
+
   const machineOptions = machines.filter((m) => all.some((i) => i.session.machineId === m.id));
 
+  const row = (item: TriageItem) => (
+    <TriageRow
+      key={item.session.id}
+      item={item}
+      teamName={teamOf(item.session.id)}
+      active={item.session.id === current}
+      expanded={item.session.id === expandedId}
+      highlighted={item.session.id === lit}
+      scrollKey={item.session.id === lit ? nonce : 0}
+      focused={item.session.id === focusId}
+      disabledAll={settling || !connected}
+      onFocusRow={setActiveId}
+      onToggle={toggle}
+      context={context}
+    />
+  );
+
   return (
-    <div className="flows triage" data-testid="triage">
+    <div className={`flows triage inbox${connected ? '' : ' is-stale'}`} data-testid="triage">
       <header className="triage-head">
-        <h1>{t('flows.triage.title')}</h1>
-        <span
-          className={`waiting${counted === 0 ? ' none' : ''}`}
-          aria-label={t('flows.waiting.aria', { n: counted })}
-          data-testid="triage-waiting"
-        >
-          <span>{t('label.waiting')}</span>
-          <b className="num">{counted}</b>
-        </span>
+        <h1>{t('flows.inbox.title')}</h1>
+        <span className="spacer" />
+        {tools}
+      </header>
+      {!connected && (
+        <div className="stale-line" role="alert" data-testid="inbox-stale">
+          {t('flows.stale')}
+        </div>
+      )}
+      <div className="triage-tools">
+        <SortSwitch sort={sort} onSort={setSort} />
         <div className="triage-filters">
           {teams.length > 0 && (
             <label>
@@ -566,58 +738,73 @@ export function QueueBoard({ teams }: { teams: readonly TeamOption[] }) {
             </label>
           )}
         </div>
-      </header>
-      <p className="triage-note" data-testid="triage-note">
-        {t('flows.triage.countNote')}
-        {quota + idle > 0 && (
-          <>
-            {' '}
-            {t('flows.triage.notCounted', {
-              list: [
-                quota > 0 ? t('flows.triage.notCounted.quota', { n: quota }) : null,
-                idle > 0 ? t('flows.triage.notCounted.idle', { n: idle }) : null,
-              ]
-                .filter(Boolean)
-                .join(t('flows.triage.listSep')),
-            })}
-          </>
-        )}
-      </p>
-      <p className="triage-keys">{t('flows.triage.keys')}</p>
-      <div ref={listRef} className="triage-groups" onKeyDown={onKey}>
-        {groups.map(({ group, items: rows }) => (
-          <section
-            key={group}
-            className={`triage-group g-${group}`}
-            aria-labelledby={`triage-${group}`}
-            data-testid={`triage-group-${group}`}
-          >
-            <h2 id={`triage-${group}`}>
-              {t(GROUP_TITLE[group])}
-              <span className="count num" data-testid={`triage-count-${group}`}>
-                {rows.length}
-              </span>
-            </h2>
-            {rows.length === 0 ? (
-              <p className="group-empty">{t(GROUP_EMPTY[group])}</p>
+      </div>
+      {target && !targetWaiting && <TargetGone sessionId={target} />}
+      {quota + idle > 0 && (
+        <p className="triage-note" data-testid="triage-note">
+          {t('flows.inbox.notListed', {
+            list: [
+              quota > 0 ? t('flows.triage.notCounted.quota', { n: quota }) : null,
+              idle > 0 ? t('flows.triage.notCounted.idle', { n: idle }) : null,
+            ]
+              .filter(Boolean)
+              .join(t('flows.triage.listSep')),
+          })}
+        </p>
+      )}
+      {projects.error && (
+        <ErrorBox
+          what={t('flows.error.projects', { error: projects.error })}
+          how={t('flows.error.projectsHow')}
+          onRetry={projects.reload}
+        />
+      )}
+      {/* 呼號要有專案名稱才算數（按允許前先確認呼號）：專案清單還沒讀到時先不列。 */}
+      {projects.loading && !projects.data ? (
+        <Loading />
+      ) : all.length === 0 ? (
+        <Empty
+          title={t('flows.waiting.none')}
+          next={
+            <>
+              {t('flows.inbox.emptyNextDesk')} <a href="#/new">{t('flows.new.title')}</a>
+            </>
+          }
+        />
+      ) : (
+        <>
+          <p className="triage-keys">{t('flows.inbox.keys')}</p>
+          <div ref={listRef} className="triage-groups" onKeyDown={onKey}>
+            {groups ? (
+              groups.map(({ group, items: rows }) => (
+                <section
+                  key={group}
+                  className={`triage-group g-${group}`}
+                  aria-labelledby={`triage-${group}`}
+                  data-testid={`triage-group-${group}`}
+                >
+                  <h2 id={`triage-${group}`}>
+                    {t(GROUP_TITLE[group])}
+                    <span className="count num" data-testid={`triage-count-${group}`}>
+                      {rows.length}
+                    </span>
+                  </h2>
+                  {rows.length === 0 ? (
+                    <p className="group-empty">{t(GROUP_EMPTY[group])}</p>
+                  ) : (
+                    <ol className="triage-list">{rows.map(row)}</ol>
+                  )}
+                </section>
+              ))
             ) : (
-              <ol className="triage-list">
-                {rows.map((item) => (
-                  <TriageRow
-                    key={item.session.id}
-                    item={item}
-                    teamName={teamOf(item.session.id)}
-                    active={item.session.id === current}
-                    disabledAll={settling || !connected}
-                    onFocusRow={setActiveId}
-                    context={context}
-                  />
-                ))}
+              <ol className="triage-list" data-testid="inbox-urgency">
+                {ordered.map(row)}
               </ol>
             )}
-          </section>
-        ))}
-      </div>
+          </div>
+        </>
+      )}
+      <DecisionHistory me={me} />
     </div>
   );
 }

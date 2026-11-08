@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import type { Settings } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { ErrorBox, Loading, Page, useCurrentUser, useLoad } from './common';
+import { ErrorBox, Loading, Page, scrollPageTop, useCurrentUser, useLoad } from './common';
 import { LanguageSection, PushDeviceSection, SignedInSection } from './AccountSettings';
 import { ArchivedSection } from './ArchivedSection';
 import { AuditSection } from './AuditSection';
@@ -135,7 +135,7 @@ export function SettingsPage() {
       firstCategory.current = false;
       return;
     }
-    if (!target.section) scrollTo(0, 0);
+    if (!target.section) scrollPageTop();
   }, [current, target.section]);
   useScrollToSection(target.section, ready, current);
 

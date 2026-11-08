@@ -96,7 +96,13 @@ export function registerServiceWorker(): void {
     const data = event.data as { type?: unknown; url?: unknown } | null;
     if (data?.type !== OPEN_MESSAGE || typeof data.url !== 'string') return;
     const url = new URL(data.url, location.href);
-    if (url.origin === location.origin) location.hash = url.hash;
+    if (url.origin !== location.origin) return;
+    // 同一則通知點第二次：網址沒變，瀏覽器不會送 hashchange；自己送一次，收件匣才會重新捲到那一項。
+    if (location.hash === url.hash) {
+      dispatchEvent(
+        new HashChangeEvent('hashchange', { oldURL: location.href, newURL: location.href }),
+      );
+    } else location.hash = url.hash;
   });
   navigator.serviceWorker.register(SERVICE_WORKER_URL).catch(() => {
     // 註冊失敗只影響推播；設定頁開推播時會再試一次並顯示原因。

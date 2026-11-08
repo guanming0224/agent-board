@@ -47,7 +47,11 @@ export function CardMenu({
   useEffect(() => {
     box.current?.querySelector('button')?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        // 告訴 App 這個 Esc 已經用掉了（Esc 只關最上層）。
+        e.preventDefault();
+        onClose();
+      }
     };
     // 點卡片外面就收起來；點「⋯」本身由按鈕自己切換。
     const onDown = (e: PointerEvent) => {

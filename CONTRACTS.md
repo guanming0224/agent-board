@@ -259,8 +259,8 @@ client 看得到側欄時送 `resources.watch: true`。hub 有任何 watcher 才
 | `src/shared/terminal-contract.ts` | `TerminalViewProps`                                                                  |
 | `src/shared/styles/tokens.css`    | 設計 token                                                                           |
 | `src/terminal/index.ts`           | E 匯出 `TerminalView`                                                                |
-| `src/canvas/index.ts`             | D 匯出 `CanvasPage`、`QueuePage`                                                     |
-| `src/flows/index.ts`              | F 匯出 `NewSessionPage`、`ReviewPage`、`InboxPage`、`SettingsPage`、`OnboardingPage` |
+| `src/canvas/index.ts`             | D 匯出 `CanvasPage`、`InboxDrawer`、`TerminalPage`                                   |
+| `src/flows/index.ts`              | F 匯出 `NewSessionPage`、`InboxBoard`、`InboxPage`、`SettingsPage`、`OnboardingPage` |
 
 **視覺規格：`docs/design/STYLE.md`（必讀）**，範例 `docs/design/style-sample.html`。token 都在 `tokens.css`，元件裡不寫死色碼。重點：顏色只回答「球在誰手上」、每張卡有放手線與模式晶片、xterm 內不疊任何東西、整個介面只有 diff 能出現綠色。
 

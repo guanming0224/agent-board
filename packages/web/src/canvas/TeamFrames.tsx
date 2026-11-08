@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { ViewportPortal } from '@xyflow/react';
 import { useT } from '../shared/i18n';
 import { teamColorVar, useTeams } from '../team/store';
+import { teamHash } from '../views/overlay';
 import type { Rect } from './layout';
 import { canvasTeams, teamRect } from './teams';
 
@@ -38,7 +39,15 @@ export function TeamFrames({
             }}
           >
             <span>
-              {t('canvas.team.label', { name: team.name })}
+              {/* 點標籤打開右側的團隊面板（P2 §1.2）；框內空白處的點擊屬於項目二。 */}
+              <a
+                className="team-open nopan nodrag"
+                href={teamHash(team.id)}
+                title={t('canvas.team.open', { name: team.name })}
+                data-testid={`team-open-${team.id}`}
+              >
+                {t('canvas.team.label', { name: team.name })}
+              </a>
               {onTidy && (
                 // 框本身不吃滑鼠（拖曳畫布要穿過去），只有按鈕吃；nopan／nodrag 讓 xyflow 不把按下當成拖曳。
                 <button

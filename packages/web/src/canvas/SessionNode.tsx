@@ -22,6 +22,7 @@ import {
   ContextUsage,
   dangerApproval,
   handsClass,
+  inboxHash,
   Lamp,
   ModeChip,
   ReadOnlyChip,
@@ -63,7 +64,8 @@ function Actions({
   const connected = useBoard((s) => s.connected);
   const danger = useBoard((s) => dangerApproval(s.approvals, session.id));
   const [msg, setMsg] = useState('');
-  const openReview = () => (location.hash = `#/review/${session.id}`);
+  // 收件匣抽屜打開並展開這一項（畫布留在底下）。
+  const openReview = () => (location.hash = inboxHash(session.id));
 
   let body = null;
   if (danger || session.status === 'waiting_permission') {

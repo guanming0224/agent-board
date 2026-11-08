@@ -1,4 +1,4 @@
-// 審核中心底下「最近的決定」：讀 audit_log 的 approval.decide（hub 只讓 owner 讀，所以成員看到說明）。
+// 收件匣底下「最近的決定」：讀 audit_log 的 approval.decide（hub 只讓 owner 讀，所以成員看到說明）。
 // 收合時不讀；每次打開重讀一次。
 import { useState } from 'react';
 import type { AuditEntry, User } from '@agent-board/protocol';

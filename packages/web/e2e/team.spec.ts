@@ -46,11 +46,15 @@ async function openWorkbench(page: Page) {
 
 const task = (page: Page, title: string) => page.locator('.task', { hasText: title });
 
-test('分頁列的團隊可以點，清單列出團隊，新建後進工作台', async ({ page }) => {
+test('畫布上的團隊標籤打開右側團隊面板；#/team 是清單，新建後進工作台', async ({ page }) => {
   await page.goto('/#/canvas');
-  await page.getByRole('link', { name: '團隊' }).click();
+  // 分頁列拿掉了（P2 §1）：點畫布上的團隊框標籤打開那個團隊
+  await page.getByTestId('team-open-team-demo-auth').click();
+  await expect(page).toHaveURL(/#\/team\/team-demo-auth$/);
+  await expect(page.getByTestId('team-panel').getByTestId('team-workbench')).toBeVisible();
+  await page.getByRole('link', { name: /回團隊清單/ }).click();
   await expect(page).toHaveURL(/#\/team$/);
-  await expect(page.getByRole('link', { name: '團隊' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByTestId('team-panel')).toBeVisible();
   await expect(page.locator('.team-row')).toContainText('登入重構');
   await expect(page.locator('.team-row')).toContainText('2 位成員');
   await shot(page, 'team-list');
@@ -66,11 +70,11 @@ test('分頁列的團隊可以點，清單列出團隊，新建後進工作台',
   ).toHaveAttribute('aria-pressed', 'true');
 });
 
-test('找不到的團隊不會當機，可以回清單', async ({ page }) => {
+test('找不到的團隊不會當機：開清單並寫一行「找不到這個團隊」', async ({ page }) => {
   await page.goto('/#/team/nope');
-  await expect(page.getByText('找不到這個團隊')).toBeVisible();
-  await page.getByRole('button', { name: '回團隊清單' }).click();
-  await expect(page).toHaveURL(/#\/team$/);
+  await expect(page.getByTestId('team-not-found')).toContainText('找不到這個團隊');
+  await expect(page.getByTestId('team-list')).toBeVisible();
+  await expect(page.locator('.team-row')).toContainText('登入重構');
 });
 
 test('目標與完成條件可編輯，重新輪詢不蓋掉草稿', async ({ page }) => {
@@ -206,7 +210,8 @@ test('建立團隊時一起開各角色的 session：標準組合 LD + 2 BD + RV
   await expect(page.getByLabel('第 1 位的 session 名稱')).toHaveValue('Move-LD');
   await expect(page.getByLabel('第 2 位的 session 名稱')).toHaveValue('builder-a');
 
-  for (const width of [1024, 640]) {
+  // 團隊面板在桌面固定 420px 寬；≤ 640px 是手機全螢幕頁（另一個畫面，切過去表單會重來），這裡量桌面最窄的 641px。
+  for (const width of [1024, 641]) {
     await page.setViewportSize({ width, height: 900 });
     const overflow = await page.evaluate(() => {
       const main = document.querySelector('.team-page')!;

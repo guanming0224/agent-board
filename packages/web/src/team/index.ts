@@ -1,1 +1,1 @@
-export { TeamPage } from './TeamPage';
+export { TeamContent, TeamDrawer } from './TeamPage';

@@ -215,6 +215,7 @@ function Flow({
   const clearFocus = useViewsUi((s) => s.clearFocus);
   const focusId = useViewsUi((s) => s.focusId);
   const pendingFocus = useViewsUi((s) => s.pendingFocus);
+  const pendingTeamFocus = useViewsUi((s) => s.pendingTeamFocus);
   const flow = useReactFlow();
   const initialized = useNodesInitialized();
   const host = useRef<HTMLDivElement>(null);
@@ -503,6 +504,7 @@ function Flow({
     if (selectedEdges.size === 0) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || isTyping(e.target)) return;
+      e.preventDefault();
       setSelectedEdges(new Set());
     };
     window.addEventListener('keydown', onKey);
@@ -683,23 +685,48 @@ function Flow({
   const fitted = useRef(false);
   useEffect(() => {
     if (!initialized) return;
-    const target = useViewsUi.getState().takePendingFocus();
+    const ui = useViewsUi.getState();
+    const target = ui.takePendingFocus();
+    const team = target ? null : ui.takePendingTeamFocus();
+    // 右側面板蓋住的寬度：卡要放在看得到的那一塊中央（面板開著時「下一個」「在畫布上看」照常可用）。
+    const inset = ui.rightInset;
+    const box = host.current?.getBoundingClientRect();
     if (target) {
       const node = cardsRef.current.find((n) => n.id === target);
       if (node) {
         const r = rectOf(node);
-        const box = host.current?.getBoundingClientRect();
-        const fit = box ? fitCardZoom(r, box.width, box.height) : 0.5;
+        const fit = box ? fitCardZoom(r, Math.max(1, box.width - inset), box.height) : 0.5;
         // 放大不超過一張卡能完整看見的程度，已經比這更大就維持目前縮放。
         const zoom = Math.max(flow.getZoom(), Math.min(0.5, fit));
-        void flow.setCenter(r.x + r.w / 2, r.y + r.h / 2, { zoom, duration: motion() });
+        void flow.setCenter(r.x + r.w / 2 + inset / 2 / zoom, r.y + r.h / 2, {
+          zoom,
+          duration: motion(),
+        });
+      }
+    } else if (team) {
+      // 開團隊面板：把成員（團隊框）整個框進看得到的那一塊。
+      const rects = cardsRef.current.filter((n) => team.includes(n.id)).map(rectOf);
+      if (rects.length > 0 && box) {
+        const x = Math.min(...rects.map((r) => r.x));
+        const y = Math.min(...rects.map((r) => r.y));
+        const w = Math.max(...rects.map((r) => r.x + r.w)) - x;
+        const h = Math.max(...rects.map((r) => r.y + r.h)) - y;
+        const usable = Math.max(1, box.width - inset);
+        const zoom = Math.min(
+          1,
+          Math.max(0.05, Math.min((usable * 0.85) / w, (box.height * 0.85) / h)),
+        );
+        void flow.setCenter(x + w / 2 + inset / 2 / zoom, y + h / 2, {
+          zoom,
+          duration: motion(),
+        });
       }
     } else if (!fitted.current && !returnViewport) {
       void flow.fitView({ ...FIT_OPTIONS, duration: 0 });
     }
     fitted.current = true;
     useViewsUi.getState().setCanvasReturn(null);
-  }, [initialized, pendingFocus, flow, returnViewport]);
+  }, [initialized, pendingFocus, pendingTeamFocus, flow, returnViewport]);
 
   const minimapColor = (node: Node) => {
     const session = useBoard.getState().sessions.find((s) => s.id === node.id);
@@ -889,5 +916,5 @@ export function CanvasPage() {
     );
   }
 
-  return <PageShell tab="canvas">{body}</PageShell>;
+  return <PageShell>{body}</PageShell>;
 }
