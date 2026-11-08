@@ -10,6 +10,7 @@ import {
   SettingsPage,
 } from './flows';
 import { applyAccountLocale } from './flows/locale';
+import { markBooted } from './shared/boot';
 import { isDemo, useBoard } from './shared/store';
 import { TeamPage } from './team';
 import { AppHeader, type TabName } from './views';
@@ -107,6 +108,11 @@ export function App() {
       cancelled = true;
     };
   }, [backend]);
+
+  // 確認完登入、要畫第一個畫面了：告訴開機檢查不用跳說明（flows/pwa/boot-check.js）。
+  useEffect(() => {
+    if (checked) markBooted();
+  }, [checked]);
 
   if (!checked) return null;
 

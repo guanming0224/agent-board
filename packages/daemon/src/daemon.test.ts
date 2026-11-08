@@ -1144,14 +1144,14 @@ describe('hook 與 approval（走真的 socket）', () => {
     });
   });
 
-  it('hook 程式離開 → approval.resolved by timeout；PTY 結束 → 等待中的 approval 被取消', async () => {
+  it('hook 程式離開（終端機已回答）→ approval.resolved by terminal；PTY 結束 → 等待中的 approval 被取消', async () => {
     const other = await HookClient.connect(h.daemons[0]?.hookSocketPath as string);
     void other.request('s1', 'PermissionRequest', { tool_name: 'Edit' });
     const first = await h.hub.waitFor('approval.requested');
     other.close();
     await h.hub.waitFor(
       'approval.resolved',
-      (m) => m.approvalId === first.approval.id && m.by === 'timeout',
+      (m) => m.approvalId === first.approval.id && m.by === 'terminal',
     );
 
     const pending = client.request('s1', 'PreToolUse', {
