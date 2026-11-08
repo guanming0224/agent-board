@@ -3,12 +3,13 @@
 import { needsAttention, type Approval, type Session } from './models';
 
 /**
- * daemon 在 `SessionStart`（startup／resume）把 session 標成 waiting_input 時的 detail：
- * session 剛開好或剛接回，沒有新的回覆，只是閒著。舊版 daemon 不帶，這時照舊算「等你」。
+ * daemon 在 `SessionStart`（source=startup）把 session 標成 waiting_input 時的 detail：
+ * session 剛開好，沒有新的回覆，只是閒著（畫面上的 NEW）。source=resume（重新接回）不帶，算在等你
+ * （GM 2026-11-08）。舊版 daemon 不帶，這時照舊算「等你」。
  */
 export const IDLE_START_DETAIL = 'idle:start';
 
-/** 剛開好或剛接回、什麼都還沒做的 waiting_input：不算在等你（沒有新東西要看）。 */
+/** 剛開好、什麼都還沒做的 waiting_input：不算在等你（沒有新東西要看）。 */
 export const isIdleStart = (session: Pick<Session, 'status' | 'statusDetail'>): boolean =>
   session.status === 'waiting_input' && session.statusDetail === IDLE_START_DETAIL;
 

@@ -129,8 +129,9 @@ test('從卡片打開全尺寸：xterm 填滿、resize 送出、Esc、切換、�
   await shot(page, 'full-zh');
   // 其他 session 在旁邊，有狀態燈；目前這個標成選中。
   await expect(page.getByTestId('full-item-s-tests')).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByTestId('full-item-s-auth').locator('.lamp')).toHaveText('◆等你允許');
-  await expect(page.getByTestId('full-item-s-web').locator('.lamp')).toHaveText('⊘失聯');
+  // 狀態代碼＋說明（GM 2026-11-08）。
+  await expect(page.getByTestId('full-item-s-auth').locator('.lamp')).toHaveText('◆PERM等你允許');
+  await expect(page.getByTestId('full-item-s-web').locator('.lamp')).toHaveText('⊘OFF失聯');
 
   // Esc 中斷
   await full.getByRole('button', { name: 'Esc 中斷' }).click();
@@ -173,11 +174,22 @@ test('網址重新載入停在同一個 session；待決的 approval 可以直�
   await shot(page, 'full-approval');
   await review.getByRole('button', { name: '允許一次' }).click();
   await expect(review).toHaveCount(0);
-  await expect(full.locator('.head .lamp')).toHaveText('●工作中');
+  await expect(full.locator('.head .lamp')).toHaveText('●RUN');
+  await expect(full.locator('.head .lamp')).toHaveAttribute('title', 'RUN：工作中');
 
   // 直接開網址進來沒有記下的鏡頭：回畫布時框出這張卡。
   await page.getByTestId('full-back').click();
   await expect(card(page, 's-auth')).toHaveClass(/spot/);
+});
+
+test('失聯（OFF）的展開卡是代碼色虛線框', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/#/terminal/s-web');
+  const full = page.getByTestId('full-s-web');
+  await expect(full).toBeVisible();
+  await expect(full).toHaveClass(/c-off/);
+  await expect(full).toHaveCSS('outline-style', 'dashed');
+  await expect(full).toHaveCSS('outline-color', 'rgb(110, 118, 129)');
 });
 
 test('找不到或已封存的 session 寫下一步', async ({ page }) => {

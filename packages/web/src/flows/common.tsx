@@ -1,17 +1,10 @@
 // flows 各畫面共用的小元件與 hook。狀態語意一律從 shared/status.ts 取。
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type {
-  Machine,
-  PermissionMode,
-  Project,
-  Session,
-  SessionStatus,
-  User,
-} from '@agent-board/protocol';
+import type { Machine, PermissionMode, Project, Session, User } from '@agent-board/protocol';
 import { isSessionDeleting } from '../shared/backend';
 import { useLocale, useT } from '../shared/i18n';
-import { HANDS_LINE, STATUS_VISUAL } from '../shared/status';
+import { HANDS_LINE } from '../shared/status';
 import { useBoard } from '../shared/store';
 
 export type T = ReturnType<typeof useT>;
@@ -63,16 +56,8 @@ export function ModeChip({ mode }: { mode: PermissionMode }) {
 /** 放手線的 class；元件本身要有 `position: relative`（`.card`、`.inbox-item` 已有）。 */
 export const handsClass = (mode: PermissionMode) => `hands-${HANDS_LINE[mode]}`;
 
-export function Lamp({ status }: { status: SessionStatus }) {
-  const t = useT();
-  const visual = STATUS_VISUAL[status];
-  return (
-    <span className={`lamp l-${visual.holder} s-${status}`}>
-      <i aria-hidden="true">{visual.glyph}</i>
-      {t(visual.labelKey)}
-    </span>
-  );
-}
+/** 狀態燈只有一份（views/session.tsx，狀態代碼見 shared/status.ts 的 statusCode）。 */
+export { Lamp } from '../views/session';
 
 /** 每 15 秒重畫一次，相對時間才會往前走。 */
 export function useNow(): number {

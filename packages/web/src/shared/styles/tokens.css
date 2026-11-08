@@ -22,7 +22,7 @@
   --you: #f2b33d;
   --fault: #f0665f;
   --agent: #4aa3ff;
-  --quota: #e58be0;
+  --quota: #9b6bff; /* 和 QUOTA 代碼同色：額度相關一律用它 */
   --idle: #c9d1d9;
 
   /*
@@ -41,20 +41,20 @@
   --idle-tint: var(--surface-2);
 
   /*
-   * 每個狀態自己的顏色（GM 2026-11-08：同組狀態要分得出來）。外觀（實心／描邊／淡）仍照「球在誰手上」，
-   * 顏色則每個狀態不同。沒有綠色（綠只給 diff，規則一）。實心的六色上面都放深色字（--on-solid）。用法見 shared/styles/status.css 的 .s-<status>。
+   * 狀態代碼的顏色（GM 2026-11-08，STYLE.md 規則一）：一個代碼一個顏色，色相拉開。代碼由 shared/status.ts 的
+   * statusCode 決定，樣式在 shared/styles/status.css 的 .c-<code>。綠色只給 DONE（和 diff）。
+   * 實心徽章上放深色字（--on-solid）；OFF 太暗，用淺色字。
    */
-  --s-waiting_permission: #ff9a3c;
-  --s-waiting_input: #ffe14d;
-  --s-plan_review: #3dd5e0;
-  --s-error: #f0665f;
-  --s-stuck: #d4a373;
-  --s-running: #4aa3ff;
-  --s-starting: #8b8cff;
-  --s-queued: #ff7eb6;
-  --s-rate_limited: #e58be0;
-  --s-done: #f2f5f8;
-  --s-offline: #8b949e;
+  --c-new: #9aa4b2;
+  --c-run: #4aa3ff;
+  --c-ask: #ffe14d;
+  --c-perm: #ff4fd8;
+  --c-plan: #3dd5e0;
+  --c-err: #f0665f;
+  --c-quota: #9b6bff;
+  --c-que: #d4a373;
+  --c-done: #46c26a;
+  --c-off: #6e7681;
   --on-solid: #14100a;
 
   /* 只在 diff 區塊使用，一定配 + − */

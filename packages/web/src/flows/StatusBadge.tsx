@@ -1,19 +1,21 @@
-// 待處理與審核中心清單列上的狀態徽章。符號與文字集中在這裡；樣式和畫布卡片、側欄圖例共用
-// shared/styles/status.css 的 .lamp.badge.l-<holder>（GM 2026-11-06 統一狀態樣式）。
+// 待處理與審核中心清單列上的狀態徽章：英文狀態代碼＋符號（GM 2026-11-08）。畫法和畫布卡片、側欄圖例
+// 共用 views/session.tsx 的 CodeChip（樣式在 shared/styles/status.css）。
 import type { SessionStatus } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
-import { STATUS_VISUAL, type BallHolder } from '../shared/status';
+import { statusCode, statusLabelKey, STATUS_VISUAL, type StatusCode } from '../shared/status';
+import { CodeChip } from '../views/session';
 import type { ReviewGroup, TriageKind } from './triage';
 
 type BadgeKind = TriageKind | ReviewGroup;
 
-/** 不是 session 狀態本身的徽章：危險指令、提問、剛開好。其他照 STATUS_VISUAL。 */
-const SPECIAL: Partial<
-  Record<BadgeKind, { glyph: string; holder: BallHolder; color: string; key: string }>
-> = {
-  danger: { glyph: '⛔', holder: 'fault', color: 'danger', key: 'flows.badge.danger' },
-  question: { glyph: '◇', holder: 'you', color: 'question', key: 'flows.badge.question' },
-  idle: { glyph: '◇', holder: 'idle', color: 'fresh', key: 'flows.badge.idle' },
+/**
+ * 不是 session 狀態本身的徽章：危險指令（是一種權限請求，PERM）、提問（ASK）、剛開好（NEW）。
+ * 其他照 session 狀態算代碼。
+ */
+const SPECIAL: Partial<Record<BadgeKind, { glyph: string; code: StatusCode; key: string }>> = {
+  danger: { glyph: '⛔', code: 'PERM', key: 'flows.badge.danger' },
+  question: { glyph: '◇', code: 'ASK', key: 'flows.badge.question' },
+  idle: { glyph: '◌', code: 'NEW', key: 'flows.badge.idle' },
 };
 
 const STATUS_OF: Partial<Record<BadgeKind, SessionStatus>> = {
@@ -28,17 +30,23 @@ const STATUS_OF: Partial<Record<BadgeKind, SessionStatus>> = {
 export function StatusBadge({ kind }: { kind: BadgeKind }) {
   const t = useT();
   const special = SPECIAL[kind];
-  const visual = special
-    ? { glyph: special.glyph, holder: special.holder, color: special.color, label: t(special.key) }
-    : (() => {
-        const status = STATUS_OF[kind] ?? 'waiting_input';
-        const v = STATUS_VISUAL[status];
-        return { glyph: v.glyph, holder: v.holder, color: status, label: t(v.labelKey) };
-      })();
-  return (
-    <span className={`lamp badge l-${visual.holder} s-${visual.color}`} data-kind={kind}>
-      <i aria-hidden="true">{visual.glyph}</i>
-      {visual.label}
-    </span>
+  const status = STATUS_OF[kind] ?? 'waiting_input';
+  const session = { status, statusDetail: null };
+  return special ? (
+    <CodeChip
+      code={special.code}
+      glyph={special.glyph}
+      label={t(special.key)}
+      badge
+      data={{ 'data-kind': kind }}
+    />
+  ) : (
+    <CodeChip
+      code={statusCode(session)}
+      glyph={STATUS_VISUAL[status].glyph}
+      label={t(statusLabelKey(session))}
+      badge
+      data={{ 'data-kind': kind }}
+    />
   );
 }

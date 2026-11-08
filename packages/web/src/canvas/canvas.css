@@ -65,11 +65,6 @@
 .strip .sign {
   margin-top: -4px;
 }
-.strip.you,
-.termcard.you,
-.queue-item.you {
-  border: 2px solid var(--you);
-}
 .gone {
   opacity: 0.45;
   background-image: var(--hatch);
@@ -663,9 +658,23 @@ input.cmd:disabled {
 }
 
 /*
- * 卡片頂端的狀態帶（GM 2026-11-06）：標題列整條上狀態的淡底，上緣 4px 狀態色，左邊是實心狀態徽章。
- * 等你、故障的卡外面多一圈慢慢呼吸的光（減少動態時是靜止的一圈）。光圈畫在 .frame::after，只動 opacity。
+ * 卡片的狀態色（GM 2026-11-08）：邊框、標題色帶、呼吸光圈都用狀態代碼的顏色（--st／--sc，shared/styles/status.css）。
+ * 標題列就是狀態帶：整條上代碼色的淡底，上緣 4px 代碼色，左邊是實心代碼徽章。
+ * 算「等你」的四種（ASK、PERM、PLAN、ERR，.waits）框 2px，外面多一圈慢慢呼吸的光（減少動態時是靜止的一圈）；
+ * 其他 1px。OFF 是虛線框加斜紋。光圈畫在 .frame::after，只動 opacity。
  */
+.strip.st-code,
+.termcard.st-code {
+  border: 1px solid var(--st);
+}
+.strip.waits,
+.termcard.waits {
+  border-width: 2px;
+}
+.strip.c-off,
+.termcard.c-off {
+  border-style: dashed;
+}
 .strip > .head,
 .termcard > header > .head {
   align-items: center;
@@ -679,10 +688,6 @@ input.cmd:disabled {
 .termcard > header > .head {
   margin: -10px -10px 0 -14px;
   padding: 5px 10px 5px 14px;
-}
-.strip.st-fault,
-.termcard.st-fault {
-  border: 2px solid var(--fault);
 }
 /* 縮小時（螢幕上的倍率 = --z × --strip-scale 小於 1）狀態徽章與名稱跟著放大，維持看得清楚；有上限，不撐破卡片。 */
 .strip > .head {
@@ -698,25 +703,21 @@ input.cmd:disabled {
 .strip > .head .age {
   font-size: calc(12px * min(var(--head-k), 1.8));
 }
-.strip.st-you > .head .age,
-.termcard.st-you .head .age {
-  color: var(--you);
+.strip.waits > .head .age,
+.termcard.waits .head .age {
+  color: var(--st);
   font-weight: 600;
 }
 .frame::after {
   content: '';
   position: absolute;
   inset: calc(-5px / var(--z, 1));
-  border: calc(3px / var(--z, 1)) solid var(--you);
+  border: calc(3px / var(--z, 1)) solid var(--sc, var(--border-2));
   border-radius: calc(var(--radius-card) + 5px / var(--z, 1));
   opacity: 0;
   pointer-events: none;
 }
-.frame[data-holder='fault']::after {
-  border-color: var(--fault);
-}
-.frame[data-holder='you']::after,
-.frame[data-holder='fault']::after {
+.frame[data-waits='true']::after {
   animation: needs-you 2.4s ease-in-out infinite;
 }
 @keyframes needs-you {
@@ -729,8 +730,7 @@ input.cmd:disabled {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .frame[data-holder='you']::after,
-  .frame[data-holder='fault']::after {
+  .frame[data-waits='true']::after {
     animation: none;
     opacity: 0.5;
   }

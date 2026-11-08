@@ -75,7 +75,10 @@ test('摘要條內容與規格：放手線、晶片、呼號、失聯、等你�
   await shot(page, 'overview-zh');
 
   const auth = card(page, 's-auth');
-  await expect(auth.locator('.lamp')).toHaveText('◆等你允許');
+  // 狀態代碼（GM 2026-11-08）：卡上是符號＋英文代碼，完整說明在提示框與 aria-label。
+  await expect(auth.locator('.lamp')).toHaveText('◆PERM');
+  await expect(auth.locator('.lamp')).toHaveAttribute('title', 'PERM：等你允許');
+  await expect(auth.getByRole('img', { name: 'PERM：等你允許' })).toBeVisible();
   await expect(auth.locator('.age')).toContainText('等了 12 分');
   await expect(auth.locator('.callsign')).toHaveText('demo-studio / project @ ab/fix-auth');
   await expect(auth.locator('.chip.mode')).toHaveText('default');
@@ -84,27 +87,34 @@ test('摘要條內容與規格：放手線、晶片、呼號、失聯、等你�
   await expect(auth.getByRole('button', { name: '檢視並決定' })).toBeVisible();
   await expect(auth.getByRole('textbox')).toBeVisible();
 
-  // 狀態徽章：實心膠囊、深色字；工作中是淡底描邊（GM 2026-11-06）。
+  // 狀態徽章：實心膠囊、深色字，每個代碼一個顏色（GM 2026-11-08）：PERM 洋紅。
   await expect(auth.locator('.lamp')).toHaveClass(/\bbadge\b/);
-  // 每個狀態自己的顏色（GM 2026-11-08）：等你允許是橘色。
-  await expect(auth.locator('.lamp')).toHaveCSS('background-color', 'rgb(255, 154, 60)');
-  // 卡住是棕色（錯誤才是紅）；外框仍是故障共用的紅框。
+  await expect(auth.locator('.lamp')).toHaveCSS('background-color', 'rgb(255, 79, 216)');
+  // 卡住和錯誤同一個代碼 ERR（紅），提示框分辨是哪一種。
+  await expect(card(page, 's-ml').locator('.lamp')).toHaveText('⚠ERR');
+  await expect(card(page, 's-ml').locator('.lamp')).toHaveAttribute('title', 'ERR：卡住');
   await expect(card(page, 's-ml').locator('.lamp')).toHaveCSS(
     'background-color',
-    'rgb(212, 163, 115)',
+    'rgb(240, 102, 95)',
   );
-  await expect(card(page, 's-tests').locator('.lamp')).not.toHaveCSS(
+  // 工作中是 RUN 藍。
+  await expect(card(page, 's-tests').locator('.lamp')).toHaveText('●RUN');
+  await expect(card(page, 's-tests').locator('.lamp')).toHaveCSS(
     'background-color',
     'rgb(74, 163, 255)',
   );
-  // 標題列是狀態帶：上緣 4px 狀態色。
+  // 標題列是狀態帶：上緣 4px 代碼色。
   await expect(auth.locator('.strip > .head')).toHaveCSS('border-top-width', '4px');
-  await expect(auth.locator('.strip > .head')).toHaveCSS('border-top-color', 'rgb(255, 154, 60)');
+  await expect(auth.locator('.strip > .head')).toHaveCSS('border-top-color', 'rgb(255, 79, 216)');
 
-  // 等你的卡 2px 琥珀框；其他 1px。外框經過 scale，看 computed 的邏輯值。
+  // 邊框跟代碼同色（GM 2026-11-08）：算等你的 2px，其他 1px。外框經過 scale，看 computed 的邏輯值。
   await expect(auth.locator('.strip')).toHaveCSS('border-top-width', '2px');
-  await expect(auth.locator('.strip')).toHaveCSS('border-top-color', 'rgb(242, 179, 61)');
+  await expect(auth.locator('.strip')).toHaveCSS('border-top-color', 'rgb(255, 79, 216)');
   await expect(card(page, 's-tests').locator('.strip')).toHaveCSS('border-top-width', '1px');
+  await expect(card(page, 's-tests').locator('.strip')).toHaveCSS(
+    'border-top-color',
+    'rgb(74, 163, 255)',
+  );
 
   // 放手線
   const lineOf = (id: string) =>
@@ -120,30 +130,41 @@ test('摘要條內容與規格：放手線、晶片、呼號、失聯、等你�
   expect(await lineOf('s-ml')).toBe('solid 5px rgb(240, 102, 95)');
   await expect(card(page, 's-ml').locator('.chip.bypass')).toHaveText('略過權限');
 
-  // 失聯：斜紋、45%、最後讀到時間、不能送指令
+  // 失聯：OFF 深灰虛線框、斜紋、45%、最後讀到時間、不能送指令
   const gone = card(page, 's-web').locator('.strip');
+  await expect(gone.locator('.lamp')).toHaveText('⊘OFF');
+  await expect(gone).toHaveCSS('border-top-style', 'dashed');
+  await expect(gone).toHaveCSS('border-top-color', 'rgb(110, 118, 129)');
   await expect(gone).toHaveCSS('opacity', '0.45');
   await expect(gone).toHaveCSS('background-image', /repeating-linear-gradient/);
   await expect(gone.locator('.age')).toContainText(/最後讀到 \d\d:\d\d/);
   await expect(gone.getByRole('textbox')).toHaveCount(0);
 
-  // 整個介面沒有綠色：掃所有元素算出來的顏色
-  const greens = await page.evaluate(() => {
+  expect(await findGreenOutsideDone(page)).toEqual([]);
+});
+
+/**
+ * 綠色只給 DONE（GM 2026-11-08 取消「整個介面沒有綠色」）：DONE 的徽章／狀態燈，以及 DONE 卡的邊框與狀態帶。
+ * 掃所有元素算出來的顏色，其他地方出現綠色就列出來。
+ */
+const findGreenOutsideDone = (page: Page) =>
+  page.evaluate(() => {
     const isGreen = (c: string) => {
       const m = c.match(/rgba?\((\d+), (\d+), (\d+)/);
       if (!m) return false;
       const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
       return g > 90 && g > r * 1.3 && g > b * 1.3;
     };
+    const doneStatus = (el: Element) =>
+      el.closest('.lamp.c-done') !== null ||
+      el.matches('.c-done, .c-done > .head, .c-done > header > .head');
     return [...document.querySelectorAll('.shell *')].flatMap((el) => {
       const s = getComputedStyle(el);
-      return [s.color, s.backgroundColor, s.borderTopColor].some(isGreen)
+      return [s.color, s.backgroundColor, s.borderTopColor].some(isGreen) && !doneStatus(el)
         ? [el.className || el.tagName]
         : [];
     });
   });
-  expect(greens).toEqual([]);
-});
 
 test('拖曳後重新載入，位置還原', async ({ page }) => {
   await openCanvas(page);
@@ -378,8 +399,9 @@ test('沒有等你的：主角換成文字，按鈕停用', async ({ page }) => 
   await expect(page.getByTestId('waiting-count')).toHaveCount(0);
   await expect(page.getByTestId('next-up')).toBeDisabled();
   await shot(page, 'all-running-quiet');
-  // 靜止時要安靜：沒有任何琥珀框
-  await expect(page.locator('.strip.you')).toHaveCount(0);
+  // 靜止時要安靜：沒有任何「等你」的粗框與光圈
+  await expect(page.locator('.strip.waits')).toHaveCount(0);
+  await expect(page.locator('.frame[data-waits]')).toHaveCount(0);
 });
 
 test('送指令：呼叫 sendPrompt、清空輸入、狀態跟著變', async ({ page }) => {
@@ -413,7 +435,8 @@ test('送指令：呼叫 sendPrompt、清空輸入、狀態跟著變', async ({ 
   ]);
   await expect(input).toHaveValue('');
   await expect(card(page, 's-auth').getByRole('status')).toHaveText('已送出');
-  await expect(card(page, 's-auth').locator('.lamp')).toHaveText('●工作中');
+  await expect(card(page, 's-auth').locator('.lamp')).toHaveText('●RUN');
+  await expect(card(page, 's-auth').locator('.lamp')).toHaveAttribute('title', 'RUN：工作中');
 });
 
 test('原生對話框在等決定時，摘要卡輸入框不送字，改指向核准按鈕', async ({ page }) => {
@@ -536,23 +559,43 @@ test('側欄：機器與用量、失聯列、圖例；收合時退訂', async ({
   await expect(page.getByTestId('rig-m-laptop').getByRole('meter')).toHaveCount(0);
   // GPU 64% ≥ 60% 用琥珀
   await expect(page.getByRole('meter', { name: 'demo-gpu GPU' })).toHaveClass(/\bw\b/);
-  for (const glyph of ['◆', '◇', '▣', '✕', '⚠', '●', '◌', '⋯', '⧖', '✓', '⊘']) {
-    await expect(sidebar.locator('.legend b', { hasText: glyph })).toHaveCount(1);
-  }
-  // 圖例分三組，和卡片同一套徽章，右邊是目前幾個。
+  // 圖例：10 個狀態代碼（GM 2026-11-08），徽章是代碼、旁邊是中文說明，分三組，右邊是目前幾個。
   await expect(sidebar.locator('.legend-group h4')).toHaveText(['需要你', '進行中', '其他']);
-  await expect(sidebar.locator('.g-needsYou .lamp.badge')).toHaveCount(5);
-  await expect(page.getByTestId('legend-waiting_permission')).toContainText('等你允許1');
-  await expect(page.getByTestId('legend-error').locator('.legend-n')).toHaveCount(0);
-  // 每個狀態顏色都不一樣（GM 2026-11-08）：比對每顆徽章的 底色＋字色＋框色。
-  const looks = await sidebar.locator('.legend-badges .lamp.badge').evaluateAll((els) =>
-    els.map((el) => {
-      const c = getComputedStyle(el);
-      return [c.backgroundColor, c.color, c.borderTopColor].join(' ');
-    }),
-  );
-  expect(looks).toHaveLength(11);
-  expect(new Set(looks).size).toBe(11);
+  await expect(sidebar.locator('.legend-codes .lamp.badge .code')).toHaveText([
+    'PERM',
+    'ASK',
+    'PLAN',
+    'ERR',
+    'NEW',
+    'RUN',
+    'QUE',
+    'QUOTA',
+    'DONE',
+    'OFF',
+  ]);
+  await expect(sidebar.locator('.g-needsYou .lamp.badge')).toHaveCount(4);
+  await expect(page.getByTestId('legend-PERM')).toHaveText('◆PERM等你允許（最急）1');
+  await expect(page.getByTestId('legend-ERR')).toContainText('錯誤或卡住');
+  // 假資料有一個卡住的 session：ERR 算 1；錯誤和卡住同一個代碼。
+  await expect(page.getByTestId('legend-ERR').locator('.legend-n')).toHaveText('1');
+  await expect(page.getByTestId('legend-ASK').locator('.legend-n')).toHaveCount(0);
+  // 每個代碼的顏色都不一樣，而且是 GM 指定的色值。
+  const colors = await sidebar
+    .locator('.legend-codes .lamp.badge')
+    .evaluateAll((els) => els.map((el) => getComputedStyle(el).backgroundColor));
+  expect(colors).toEqual([
+    'rgb(255, 79, 216)',
+    'rgb(255, 225, 77)',
+    'rgb(61, 213, 224)',
+    'rgb(240, 102, 95)',
+    'rgb(154, 164, 178)',
+    'rgb(74, 163, 255)',
+    'rgb(212, 163, 115)',
+    'rgb(155, 107, 255)',
+    'rgb(70, 194, 106)',
+    'rgb(110, 118, 129)',
+  ]);
+  expect(new Set(colors).size).toBe(10);
   await expect(sidebar.locator('.hands-sample')).toHaveCount(5);
 
   await page.getByTestId('side-toggle').click();
@@ -619,7 +662,11 @@ test('中英文切換：固定用詞，英文不撐爆版面', async ({ page }) 
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect(page.getByTestId('next-up')).toContainText('Next up');
   await expect(page.locator('.waiting')).toContainText('Waiting on you');
-  await expect(card(page, 's-auth').locator('.lamp')).toContainText('Needs approval');
+  await expect(card(page, 's-auth').locator('.lamp')).toHaveText('◆PERM');
+  await expect(card(page, 's-auth').locator('.lamp')).toHaveAttribute(
+    'title',
+    'PERM: Needs approval',
+  );
   await expect(card(page, 's-auth').locator('.age')).toContainText('waited 12m');
   await expect(card(page, 's-ml').locator('.chip.bypass')).toHaveText('Bypass permissions');
   await expect(page.getByTestId('rig-m-laptop')).toContainText('Offline');
@@ -1288,13 +1335,41 @@ test.describe('等你的數量與上限（GM 2026-11-06）', () => {
       page,
       `useBoard.getState().backend.patchSession('s-tests', { status: 'waiting_input', statusDetail: 'idle:start' });`,
     );
-    await expect(card(page, 's-tests').locator('.lamp')).toContainText('等你回覆');
+    // 剛開好、還沒下指令：NEW 灰，不算等你，也沒有粗框與光圈（GM 2026-11-08）。
+    const tests = card(page, 's-tests');
+    await expect(tests.locator('.lamp')).toHaveText('◌NEW');
+    await expect(tests.locator('.lamp')).toHaveAttribute('title', 'NEW：剛開好，還沒下指令');
+    await expect(tests.locator('.lamp')).toHaveCSS('background-color', 'rgb(154, 164, 178)');
+    await expect(tests.locator('.strip')).toHaveCSS('border-top-color', 'rgb(154, 164, 178)');
+    await expect(tests.locator('.strip')).toHaveCSS('border-top-width', '1px');
+    await expect(tests).not.toHaveAttribute('data-waits', 'true');
     await expect(page.getByTestId('waiting-count')).toHaveText('3');
+    // 「下一個等我的」也跳過 NEW：連按一輪多一次，只巡過原本三張。
+    const spot = () =>
+      page.locator('.frame.spot').evaluateAll((els) => els[0]?.getAttribute('data-testid') ?? null);
+    const visit = async (times: number) => {
+      const seen: string[] = [];
+      for (let i = 0; i < times; i += 1) {
+        const before = await spot();
+        await page.getByTestId('next-up').click();
+        await expect.poll(spot).not.toBe(before);
+        seen.push((await spot())!);
+      }
+      return seen;
+    };
+    const round = await visit(4);
+    expect(round).not.toContain('card-s-tests');
+    expect(new Set(round)).toEqual(new Set(['card-s-ml', 'card-s-auth', 'card-s-etl']));
     await patchStore(
       page,
       `useBoard.getState().backend.patchSession('s-tests', { statusDetail: null });`,
     );
+    // 做完一回合（detail 清掉）才是 ASK 黃，算等你。
+    await expect(tests.locator('.lamp')).toHaveText('◇ASK');
+    await expect(tests.locator('.strip')).toHaveCSS('border-top-color', 'rgb(255, 225, 77)');
     await expect(page.getByTestId('waiting-count')).toHaveText('4');
+    // 變成 ASK 之後才進入輪替。
+    expect(await visit(4)).toContain('card-s-tests');
     await page.getByTestId('waiting-link').click();
     await expect(page).toHaveURL(/#\/inbox$/);
   });
@@ -1864,17 +1939,99 @@ test.describe('狀態一眼看得出來（GM 2026-11-06）', () => {
       return { name: s.animationName, opacity: s.opacity };
     });
 
-  test('等你、故障的卡外圈慢慢呼吸；工作中的不動；故障 2px 紅框', async ({ page }) => {
+  test('等你、故障的卡外圈慢慢呼吸（光圈是代碼色）；工作中的不動；故障 2px 紅框', async ({
+    page,
+  }) => {
     await openCanvas(page);
     expect((await ring(page, 's-auth')).name).toBe('needs-you');
     expect((await ring(page, 's-ml')).name).toBe('needs-you');
     expect(await ring(page, 's-tests')).toEqual({ name: 'none', opacity: '0' });
-    await expect(card(page, 's-ml')).toHaveAttribute('data-holder', 'fault');
+    const ringColor = (id: string) =>
+      card(page, id).evaluate((el) => getComputedStyle(el, '::after').borderTopColor);
+    expect(await ringColor('s-auth')).toBe('rgb(255, 79, 216)');
+    expect(await ringColor('s-etl')).toBe('rgb(61, 213, 224)');
+    await expect(card(page, 's-ml')).toHaveAttribute('data-code', 'ERR');
+    await expect(card(page, 's-ml')).toHaveAttribute('data-waits', 'true');
     await expect(card(page, 's-ml').locator('.strip')).toHaveCSS('border-top-width', '2px');
     await expect(card(page, 's-ml').locator('.strip')).toHaveCSS(
       'border-top-color',
       'rgb(240, 102, 95)',
     );
+  });
+
+  test('狀態代碼（GM 2026-11-08）：每張卡的邊框色等於代碼色；DONE 是綠色且只有它能用綠', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    // 有一張結束的卡（DONE），也有剛開好的（NEW）。
+    await patchStore(
+      page,
+      `const b = useBoard.getState().backend;
+       b.setSessionStatus('s-docs', 'done');
+       b.patchSession('s-tests', { status: 'waiting_input', statusDetail: 'idle:start' });`,
+    );
+    await expect(card(page, 's-docs').locator('.lamp')).toHaveText('✓DONE');
+    await expect(card(page, 's-docs').locator('.lamp')).toHaveCSS(
+      'background-color',
+      'rgb(70, 194, 106)',
+    );
+    const expected: Record<string, string> = {
+      NEW: 'rgb(154, 164, 178)',
+      RUN: 'rgb(74, 163, 255)',
+      ASK: 'rgb(255, 225, 77)',
+      PERM: 'rgb(255, 79, 216)',
+      PLAN: 'rgb(61, 213, 224)',
+      ERR: 'rgb(240, 102, 95)',
+      QUOTA: 'rgb(155, 107, 255)',
+      QUE: 'rgb(212, 163, 115)',
+      DONE: 'rgb(70, 194, 106)',
+      OFF: 'rgb(110, 118, 129)',
+    };
+    const collect = () =>
+      page.locator('.frame[data-code]').evaluateAll((els) =>
+        els.map((el) => {
+          const article = el.querySelector('article')!;
+          const badge = el.querySelector('.head .lamp.badge')!;
+          return {
+            code: el.getAttribute('data-code')!,
+            border: getComputedStyle(article).borderTopColor,
+            badge: getComputedStyle(badge).backgroundColor,
+            badgeCode: badge.querySelector('.code')!.textContent,
+          };
+        }),
+      );
+    const first = await collect();
+    expect(first.map((c) => c.code).sort()).toEqual(
+      ['DONE', 'ERR', 'NEW', 'OFF', 'PERM', 'PLAN'].sort(),
+    );
+    expect(await findGreenOutsideDone(page)).toEqual([]);
+    // 第二輪把四張卡換成其餘四個代碼（RUN、ASK、QUOTA、QUE），10 個代碼都要畫過一次。
+    await patchStore(
+      page,
+      `const b = useBoard.getState().backend;
+       b.setSessionStatus('s-docs', 'rate_limited');
+       b.patchSession('s-tests', { status: 'running', statusDetail: null });
+       b.setSessionStatus('s-etl', 'queued');
+       b.patchSession('s-ml', { status: 'waiting_input', statusDetail: null });`,
+    );
+    await expect(card(page, 's-etl').locator('.head .lamp .code')).toHaveText('QUE');
+    await expect(card(page, 's-ml').locator('.head .lamp .code')).toHaveText('ASK');
+    const second = await collect();
+    expect(second.map((c) => c.code).sort()).toEqual(
+      ['ASK', 'OFF', 'PERM', 'QUE', 'QUOTA', 'RUN'].sort(),
+    );
+    const cards = [...first, ...second];
+    expect(new Set(cards.map((c) => c.code))).toEqual(new Set(Object.keys(expected)));
+    for (const c of cards) {
+      expect(c, c.code).toEqual({
+        code: c.code,
+        border: expected[c.code],
+        badge: expected[c.code],
+        badgeCode: c.code,
+      });
+    }
+    expect(await findGreenOutsideDone(page)).toEqual([]);
   });
 
   test('減少動態：外圈靜止', async ({ page }) => {
@@ -1891,7 +2048,7 @@ test.describe('狀態一眼看得出來（GM 2026-11-06）', () => {
     }
     expect(await zoomLevel(page)).toBeLessThan(30);
     const lamp = (await card(page, 's-auth').locator('.lamp').boundingBox())!;
-    // 符號＋「等你允許」在螢幕上至少約 11px 高。
+    // 符號＋代碼在螢幕上至少約 11px 高。
     expect(lamp.height).toBeGreaterThanOrEqual(11);
     await shot(page, 'status-zoomed-out');
   });

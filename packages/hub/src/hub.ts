@@ -1390,7 +1390,14 @@ export class Hub {
     };
     this.store.updateSession(next);
     if (status !== session.status) {
-      this.addEvent(session.id, 'status', { from: session.status, to: status, reason });
+      // 狀態歷史也存 detail（舊資料頁要分得出 NEW 與 ASK，GM 2026-11-08）。
+      this.addEvent(session.id, 'status', {
+        from: session.status,
+        fromDetail: session.statusDetail,
+        to: status,
+        detail,
+        reason,
+      });
     }
     this.afterChange(session, next, notify);
     return next;

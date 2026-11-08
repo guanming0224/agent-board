@@ -777,6 +777,7 @@ export class Daemon {
       onStatusChange: (change) =>
         this.emitEvent(sessionId, 'status', {
           from: change.from,
+          fromDetail: change.fromDetail ?? null,
           to: change.to,
           reason: change.reason,
           detail: change.detail,
