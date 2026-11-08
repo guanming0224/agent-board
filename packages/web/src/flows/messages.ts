@@ -407,6 +407,11 @@ export const zhTW: Record<string, string> = {
   'flows.audit.act.settings.update': '修改設定',
   'flows.audit.act.audit.export': '匯出操作紀錄',
   'flows.audit.act.audit.retention': '到期紀錄封存',
+  'flows.audit.act.board.pause': '全部暫停',
+  'flows.audit.act.board.resume': '全部繼續',
+  'flows.audit.act.board.held': '暫停中攔下送字',
+  'flows.audit.act.board.held_cleared': 'hub 重啟清掉排隊',
+  'flows.audit.act.board.interrupt_skipped': '立刻中斷沒送 Esc（狀態已不是 RUN）',
 
   'flows.template.none': '還沒有範本',
   'flows.template.noneNext': '到新增 session 填好後按「存成範本」',
@@ -1103,6 +1108,11 @@ export const en: Record<string, string> = {
   'flows.audit.act.settings.update': 'Settings changed',
   'flows.audit.act.audit.export': 'Audit log exported',
   'flows.audit.act.audit.retention': 'Expired entries archived',
+  'flows.audit.act.board.pause': 'Paused all',
+  'flows.audit.act.board.resume': 'Resumed all',
+  'flows.audit.act.board.held': 'Held while paused',
+  'flows.audit.act.board.held_cleared': 'Queue cleared by hub restart',
+  'flows.audit.act.board.interrupt_skipped': 'Interrupt skipped (no longer RUN)',
 
   'flows.template.none': 'No templates yet',
   'flows.template.noneNext': 'Fill in New session, then press "Save template"',

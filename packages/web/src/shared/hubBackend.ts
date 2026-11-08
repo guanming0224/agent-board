@@ -1,6 +1,7 @@
 // 真後端：REST 走 routes 表，其餘走 /ws/client（CONTRACTS.md §6、§7）。登入後才連 WebSocket。
 import { HubToClient, routes, WS_PATHS } from '@agent-board/protocol';
 import type {
+  BoardPauseState,
   Broadcast,
   ClientToHub,
   ResourceSample,
@@ -195,6 +196,7 @@ class HubConnection implements TerminalStream {
   private handle(message: HubToClient): void {
     switch (message.type) {
       case 'board.state':
+        this.pauseSeq++;
         this.publish({
           machines: message.machines,
           sessions: message.sessions,
@@ -206,6 +208,7 @@ class HubConnection implements TerminalStream {
         });
         return;
       case 'board.pause':
+        this.pauseSeq++;
         return this.patch((s) => ({ ...s, pause: message.pause }));
       case 'zone.list':
         return this.patch((s) => ({ ...s, zones: message.zones }));
@@ -264,6 +267,18 @@ class HubConnection implements TerminalStream {
       default:
         return;
     }
+  }
+
+  /**
+   * 收到幾次 hub 推來的暫停狀態（board.state／board.pause）。REST 回應只在送出後這個數字沒變
+   * （WebSocket 還沒到）時才當後備套用；WebSocket 已經更新過就不拿較舊的 REST 回應蓋掉。
+   */
+  pauseSeq = 0;
+
+  /** REST 回來的暫停狀態：只在 seq 之後 WebSocket 還沒推過新狀態時套上。 */
+  setPauseIfUnchanged(seq: number, pause: BoardPauseState): void {
+    if (this.pauseSeq !== seq) return;
+    this.patch((s) => ({ ...s, pause }));
   }
 
   private patch(update: (state: BoardSnapshot) => BoardSnapshot): void {
@@ -353,6 +368,18 @@ export function createHubBackend() {
         () => hub.send({ type: 'terminal.input', sessionId, data: '\r' }),
         PROMPT_ENTER_DELAY_MS,
       );
+    },
+    async pauseBoard(mode) {
+      const seq = hub.pauseSeq;
+      const result = await call('boardPause', { body: { mode } });
+      hub.setPauseIfUnchanged(seq, result.state);
+      return result;
+    },
+    async resumeBoard() {
+      const seq = hub.pauseSeq;
+      const result = await call('boardResume');
+      hub.setPauseIfUnchanged(seq, result.state);
+      return result;
     },
     async decideApproval(approval, decision) {
       const sent = hub.send({

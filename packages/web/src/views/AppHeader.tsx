@@ -161,7 +161,9 @@ export function AppHeader() {
             </button>
           ))}
         </div>
+        {/* 桌面畫布的「新增 session」在底部指令列（P2 §3.3），這顆只在手機與全尺寸終端機頁出現（views.css）。 */}
         <button
+          className="header-new"
           onClick={() => {
             // 在畫布上就原地打開快速建立，其他頁面去完整表單。
             const open = useViewsUi.getState().openQuickCreate;

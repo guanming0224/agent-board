@@ -7,11 +7,15 @@ import {
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   handoffRuleProblem,
+  NOT_PAUSED,
   zoneMoveShift,
 } from '@agent-board/protocol';
 import type {
   Approval,
   AuditEntry,
+  BoardHeld,
+  BoardInterruptResult,
+  BoardPauseState,
   HandoffRule,
   Layout,
   Machine,
@@ -413,6 +417,11 @@ export interface FakeBackendControls {
       maxRounds?: number;
     },
   ): void;
+  /**
+   * 模擬 hub 推來的暫停狀態（別的瀏覽器按了暫停、hub 重啟清掉排隊、排隊數變化…）。
+   * 只改畫面看到的狀態；假後端自己的排隊交接不受影響。
+   */
+  setPauseState(pause: BoardPauseState): void;
 }
 
 /** 假隊長的回覆，請隊長拆解在 demo 模式下也能走完。帶 role 的照縮寫指派，最後一項沒標。 */
@@ -556,6 +565,21 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       )
       .filter((e) => !filter.from || e.at >= filter.from)
       .filter((e) => !filter.to || e.at <= filter.to);
+  // 全部暫停（P2 項目三）：和 hub 一樣，暫停中交接只排入不送，繼續時才放出。
+  let pause: BoardPauseState = structuredClone(NOT_PAUSED);
+  /** 暫停中被擋下的交接（繼續時照順序送達）。 */
+  const heldHandoffs: { from: string; to: string; summary: string }[] = [];
+  const queuedSessions = () =>
+    state.sessions.filter((x) => !x.archived && x.endedAt === null && x.status === 'queued');
+  const heldNow = (): BoardHeld => ({
+    deliveries: heldHandoffs.length,
+    sessions: queuedSessions().filter(machineOnline).length,
+    sessionsWaiting: queuedSessions().filter((x) => !machineOnline(x)).length,
+    autoContinues: 0,
+  });
+  const refreshPause = () => {
+    pause = { ...pause, held: heldNow() };
+  };
   let accountLocale: User['locale'] = demoUser.locale;
   let password = DEMO_PASSWORD;
   const visible = (): BoardSnapshot => ({
@@ -564,6 +588,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     waitingLimit: settings.notifications.waitingLimit,
     zones,
     broadcasts,
+    pause,
   });
   /** 假的送字：打進終端機、對象開始工作。 */
   const typeInto = (s: Session, text: string) => {
@@ -869,6 +894,82 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       publish();
       return result;
     },
+    async pauseBoard(mode) {
+      const interrupted: BoardInterruptResult[] = [];
+      if (mode === 'interrupt') {
+        for (const x of state.sessions) {
+          if (x.archived || x.endedAt !== null) continue;
+          // demo 的失聯 session（s-web）斷線前在跑：和 hub 一樣列為「沒送到：失聯」。
+          if (x.status === 'offline') {
+            interrupted.push({ sessionId: x.id, name: x.name, result: 'offline' });
+          } else if (x.status === 'running') {
+            interrupted.push({ sessionId: x.id, name: x.name, result: 'requested' });
+            // Esc 中斷回合：回到等輸入（Q8：之後不自動送「繼續」）。
+            x.status = 'waiting_input';
+            terminal.emit(x.id, '\r\n[Interrupted by user]\r\n');
+            // 和 hub 一樣：daemon 確認送出 Esc 的每個 session 各記一筆 terminal.signal（規格 §3.6 第 5 條）。
+            audit.unshift({
+              id: crypto.randomUUID(),
+              userId: demoUser.id,
+              sessionId: x.id,
+              action: 'terminal.signal',
+              detail: 'escape',
+              at: new Date().toISOString(),
+            });
+          }
+        }
+      }
+      pause = {
+        paused: {
+          mode,
+          since: pause.paused?.since ?? new Date().toISOString(),
+          by: demoUser.id,
+          byName: demoUser.name,
+          clearedOnRestart: pause.paused?.clearedOnRestart ?? 0,
+        },
+        held: heldNow(),
+      };
+      audit.unshift({
+        id: crypto.randomUUID(),
+        userId: demoUser.id,
+        sessionId: null,
+        action: 'board.pause',
+        detail: JSON.stringify({ mode, interrupted }),
+        at: new Date().toISOString(),
+      });
+      publish();
+      return { state: pause, interrupted };
+    },
+    async resumeBoard() {
+      if (!pause.paused) return { state: pause, released: heldNow() };
+      const released = { ...pause.held };
+      pause = { paused: null, held: heldNow() };
+      // 放出排隊的交接（只解除閘門，不對被中斷的 session 送「繼續」，Q8）。
+      for (const h of heldHandoffs.splice(0)) {
+        terminal.emit(h.to, `[Handoff] Summary: ${h.summary}\r\n`);
+        addEvent(h.to, 'handoff.delivered', {
+          ruleId: null,
+          fromSessionId: h.from,
+          toSessionId: h.to,
+          summary: h.summary,
+        });
+      }
+      refreshPause();
+      audit.unshift({
+        id: crypto.randomUUID(),
+        userId: demoUser.id,
+        sessionId: null,
+        action: 'board.resume',
+        detail: JSON.stringify({ released }),
+        at: new Date().toISOString(),
+      });
+      publish();
+      return { state: pause, released };
+    },
+    setPauseState(next) {
+      pause = structuredClone(next);
+      publish();
+    },
     sendPrompt(sessionId, text) {
       terminal.emit(sessionId, `${text}\r\n`);
       find(sessionId).status = 'running';
@@ -923,6 +1024,13 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         ...(reason === undefined ? {} : { reason }),
         ...rounds,
       });
+      // 全部暫停中：排入但不送（board.held），繼續時才送達。
+      if (reason === undefined && pause.paused) {
+        heldHandoffs.push({ from: fromSessionId, to: toSessionId, summary });
+        refreshPause();
+        publish();
+        return;
+      }
       // 和 hub 一樣：送達記在目標上。queuedOnly 模擬目標還在忙、只排入。
       if (reason === undefined && !options.queuedOnly) {
         addEvent(toSessionId, 'handoff.delivered', {
@@ -1087,7 +1195,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         by: demoUser.id,
         byName: demoUser.name,
         at: now,
-        boardPaused: false,
+        boardPaused: pause.paused !== null,
         targets: chosen.map((s) => {
           const gone = s.archived || s.endedAt !== null || s.status === 'done';
           const ready = !gone && s.status === 'waiting_input' && !busy.has(s.id);

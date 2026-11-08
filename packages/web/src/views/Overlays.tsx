@@ -2,6 +2,7 @@
 // 內容由各功能自己畫；這裡只管位置、關閉、焦點。
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { useT } from '../shared/i18n';
+import { PauseStrip } from './pause';
 import { useViewsUi } from './uiStore';
 import './messages';
 
@@ -147,10 +148,14 @@ export function PhonePage({
   const t = useT();
   return (
     <div className="phone-page" data-testid={testId}>
-      <div className="phone-back">
-        <button type="button" onClick={onBack} data-testid="phone-back">
-          ← {t('views.panel.back')}
-        </button>
+      <div className="phone-top">
+        <div className="phone-back">
+          <button type="button" onClick={onBack} data-testid="phone-back">
+            ← {t('views.panel.back')}
+          </button>
+        </div>
+        {/* 暫停中每一頁都要看得到（規格 §3.3）：手機的團隊、設定、新增全螢幕頁也放一份，捲動時跟著頂端。 */}
+        <PauseStrip />
       </div>
       {children}
     </div>
