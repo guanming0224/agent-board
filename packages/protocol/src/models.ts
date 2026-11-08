@@ -127,6 +127,8 @@ export type Zone = z.infer<typeof Zone>;
 /** schema v9 升級時建立的預設工作區（Q3：名稱「主要」）；舊資料全部歸進去。 */
 export const DEFAULT_ZONE_ID = 'main';
 export const DEFAULT_ZONE_NAME = '主要';
+/** 畫布座標存在這個版面組（layouts.workspace）；工作區只是顯示篩選，不分版面組。 */
+export const CANVAS_LAYOUT_SET = 'default';
 export type Project = z.infer<typeof Project>;
 
 /**

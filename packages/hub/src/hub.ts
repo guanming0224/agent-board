@@ -12,7 +12,8 @@ import {
   waitingSessions,
   AbsolutePath,
   ClaudeSessionId,
-  DEFAULT_ZONE_ID,
+  CANVAS_LAYOUT_SET,
+  zoneMoveShift,
   SessionSpec,
   type Approval,
   type AutoContinue,
@@ -40,6 +41,7 @@ import {
   type UsageSummary,
   type User,
   type Zone,
+  type ZoneNotEmpty,
 } from '@agent-board/protocol';
 import type { z } from 'zod';
 import { buildSummary, DEFAULT_WINDOWS, NotifyCoalescer, type SummaryItem } from './attention';
@@ -1071,7 +1073,7 @@ export class Hub {
     userId: string | null,
     dispatchedBy: string | null,
   ): Session {
-    const { machineId, zoneId = DEFAULT_ZONE_ID, ...spec } = input;
+    const { machineId, zoneId = this.store.defaultZoneId(), ...spec } = input;
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     this.requireZone(zoneId);
     if (!this.daemonFor(machineId)) throw conflict('machine_offline', 'Machine is offline');
@@ -1353,6 +1355,8 @@ export class Hub {
     user: User,
   ): Session {
     let session = this.requireSession(id);
+    // 單獨 session 真的換了工作區（是團隊成員時這欄被忽略，卡片不會動）：存好之後排到目標工作區右側空白。
+    let placeInZone: string | null = null;
     if (patch.zoneId !== undefined) {
       this.requireZone(patch.zoneId);
       if (patch.zoneId !== session.zoneId) {
@@ -1362,6 +1366,7 @@ export class Hub {
           'session.zone',
           JSON.stringify({ from: session.zoneId, to: patch.zoneId }),
         );
+        if (this.store.teamsOfSession(id).length === 0) placeInZone = patch.zoneId;
       }
     }
     const { markDone, archived, ...fields } = patch;
@@ -1375,6 +1380,7 @@ export class Hub {
       Object.entries(fields).filter(([, value]) => value !== undefined),
     );
     if (Object.keys(defined).length > 0) session = this.updateFields(session, defined);
+    if (placeInZone !== null) this.placeInZone([id], placeInZone);
     if (markDone && session.status !== 'done') {
       this.audit(user.id, id, 'session.mark_done', '');
       // 使用者親自判定完成，接下來的交接不算上一條鏈的延續。
@@ -1636,6 +1642,12 @@ export class Hub {
       );
     }
     this.store.upsertTeam(next);
+    if (next.zoneId !== current.zoneId) {
+      this.placeInZone(
+        this.store.listTeamMembers(id).map((m) => m.sessionId),
+        next.zoneId,
+      );
+    }
     this.broadcastTeam(id);
     if (Boolean(current.taskAuto) !== Boolean(next.taskAuto)) {
       this.audit(
@@ -1665,6 +1677,52 @@ export class Hub {
     if (this.store.teamsOfSession(sessionId).length > 0) return;
     this.store.setSessionZone(sessionId, team.zoneId);
     this.broadcastSession(sessionId);
+  }
+
+  /** session 實際所在的工作區：團隊成員跟著團隊（在幾個團隊時取名稱排序第一個），否則看自己的。 */
+  private effectiveZones(): Map<string, string> {
+    const teamZone = new Map<string, string>();
+    const teams = [...this.store.listTeams()].sort((a, b) => a.name.localeCompare(b.name));
+    for (const team of teams) {
+      for (const m of this.store.listTeamMembers(team.id)) {
+        if (!teamZone.has(m.sessionId)) teamZone.set(m.sessionId, team.zoneId);
+      }
+    }
+    const out = new Map<string, string>();
+    for (const s of this.store.listSessions()) {
+      if (!s.archived) out.set(s.id, teamZone.get(s.id) ?? s.zoneId);
+    }
+    return out;
+  }
+
+  /**
+   * 移入工作區時排到目標工作區現有內容的右側空白（P2 §2.3、§2.8 必要規則：座標共用，不能疊在別人上面）。
+   * 在 hub 做，所以不管從哪裡移（手機團隊面板、沒開畫布的瀏覽器、API），每個使用者存的版面都會排好。
+   * 開著畫布的瀏覽器自己也會照同一個規則（zoneMoveShift）排一次再存回來，結果一樣。
+   * 目標工作區沒有別的卡就不動。
+   */
+  private placeInZone(sessionIds: readonly string[], zoneId: string): void {
+    this.guarded('zone placement', () => {
+      const zones = this.effectiveZones();
+      const moving = new Set(sessionIds.filter((sid) => zones.has(sid)));
+      if (moving.size === 0) return;
+      for (const userId of this.store.layoutUserIds(CANVAS_LAYOUT_SET)) {
+        const rows = this.store.listLayouts(userId, CANVAS_LAYOUT_SET);
+        const group = rows.filter((r) => moving.has(r.sessionId));
+        const others = rows.filter(
+          (r) => !moving.has(r.sessionId) && zones.get(r.sessionId) === zoneId,
+        );
+        const shift = zoneMoveShift(group, others);
+        if (!shift) continue;
+        this.store.shiftLayouts(
+          userId,
+          CANVAS_LAYOUT_SET,
+          group.map((r) => r.sessionId),
+          shift.dx,
+          shift.dy,
+        );
+      }
+    });
   }
 
   // ── 群發（P2 項目二）─────────────────────────────────
@@ -1714,9 +1772,13 @@ export class Hub {
     if (zones.length <= 1) throw conflict('last_zone', 'The last workspace cannot be deleted');
     const { teams, sessions } = this.store.zoneContents(id);
     if (teams > 0 || sessions > 0) {
-      throw conflict(
+      const detail: ZoneNotEmpty = { teams, sessions };
+      throw new HttpError(
+        409,
         'zone_not_empty',
         `Move ${teams} team(s) and ${sessions} session(s) to another workspace first (teams=${teams}, sessions=${sessions})`,
+        undefined,
+        detail,
       );
     }
     const fallback = zones.find((z) => z.id !== id)!;
@@ -1724,8 +1786,15 @@ export class Hub {
       .listSessions()
       .filter((s) => s.zoneId === id)
       .map((s) => s.id);
+    // 便利貼不擋刪除（規格只看團隊與單獨 session），但會搬走：audit 記下搬了幾張、搬到哪裡。
+    const movedNotes = this.store.countNotes(id);
     this.store.deleteZone(id, fallback.id);
-    this.audit(user.id, null, 'zone.delete', JSON.stringify({ id, name: zone.name }));
+    this.audit(
+      user.id,
+      null,
+      'zone.delete',
+      JSON.stringify({ id, name: zone.name, movedNotes, movedTo: fallback.id }),
+    );
     for (const sessionId of moved) this.broadcastSession(sessionId);
     this.broadcastZones();
   }

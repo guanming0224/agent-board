@@ -54,6 +54,9 @@ interface ZoneUi {
   saveViewport(zoneId: string, viewport: ZoneViewport): void;
   notice: MoveNotice | null;
   showNotice(zoneId: string, zoneName: string): void;
+  /** 移動失敗（例如拖到分頁上放開但 PATCH 失敗）：提示列改成錯誤。 */
+  moveError: string | null;
+  showMoveError(detail: string): void;
   clearNotice(): void;
   /** 正在拖曳的團隊（拖到分頁上放開＝移過去）。 */
   dragging: string | null;
@@ -74,8 +77,11 @@ export const useZoneUi = create<ZoneUi>((set) => ({
       return { viewports };
     }),
   notice: null,
-  showNotice: (zoneId, zoneName) => set({ notice: { key: Date.now(), zoneId, zoneName } }),
-  clearNotice: () => set({ notice: null }),
+  showNotice: (zoneId, zoneName) =>
+    set({ notice: { key: Date.now(), zoneId, zoneName }, moveError: null }),
+  moveError: null,
+  showMoveError: (moveError) => set({ moveError, notice: null }),
+  clearNotice: () => set({ notice: null, moveError: null }),
   dragging: null,
   setDragging: (dragging) => set({ dragging }),
 }));

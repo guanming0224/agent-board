@@ -515,7 +515,53 @@ function usePhone(): boolean {
 }
 
 /**
- * 收合的區塊。預設收起；打開哪些每台瀏覽器自己記。手機不展開（任務板等要大畫面），只寫「回電腦處理」。
+ * 手機上的「回電腦處理」（§2.4）：按了複製這個團隊頁的連結，拿到電腦上打開；
+ * 複製不了（沒有剪貼簿權限、非 https）就直接把網址秀出來讓 GM 自己選取。
+ */
+function DesktopLink() {
+  const t = useT();
+  const [state, setState] = useState<'idle' | 'copied' | 'manual'>('idle');
+  const url = location.href;
+  const copy = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error('no clipboard');
+      await navigator.clipboard.writeText(url);
+      setState('copied');
+    } catch {
+      setState('manual');
+    }
+  };
+  return (
+    <span className="fold-desktop">
+      <button
+        type="button"
+        className="link"
+        onClick={() => void copy()}
+        data-testid="fold-desktop-link"
+      >
+        {t('team.fold.desktopOnly')}
+      </button>
+      {state === 'copied' && (
+        <span className="sub" role="status">
+          {t('team.fold.copied')}
+        </span>
+      )}
+      {state === 'manual' && (
+        <input
+          className="fold-url"
+          readOnly
+          value={url}
+          aria-label={t('team.fold.url')}
+          onFocus={(e) => e.currentTarget.select()}
+          data-testid="fold-desktop-url"
+        />
+      )}
+    </span>
+  );
+}
+
+/**
+ * 收合的區塊。預設收起；打開哪些每台瀏覽器自己記。手機不展開（任務板等要大畫面），給「回電腦處理」連結。
  */
 function Fold({
   id,
@@ -528,13 +574,12 @@ function Fold({
   phone: boolean;
   children: React.ReactNode;
 }) {
-  const t = useT();
   const [open, setOpen] = useState(() => readFolds().includes(id));
   if (phone) {
     return (
       <div className="fold fold-phone" data-testid={`fold-${id}`}>
         <span>{title}</span>
-        <span className="sub">{t('team.fold.desktopOnly')}</span>
+        <DesktopLink />
       </div>
     );
   }

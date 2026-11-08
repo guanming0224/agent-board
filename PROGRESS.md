@@ -110,4 +110,5 @@ GM 決定先自用，尚未公開發布。步驟、驗證結果與缺口在上�
 - 團隊面板：名單（狀態代碼、角色可改、時間、點列聚焦）、原工作台區塊收合、寬版、底部群發（不確認、@ 點名、每列結果、排隊可取消、全部暫停中照送並提示）。群發走 hub 的 `SafeDelivery`（`manual`，不受暫停擋）。
 - 角色加「測試」（tester）：可寫、預設 `default`、開 worktree、可被派任務、不當審查、MCP 可開。
 - 測試：單元 1601（protocol 42、web 356、hub 469、hook 91、daemon 643）；e2e canvas 94、flows 146、team 49（含新的 workspaces 13）、expanded 7、integration 15、team-integration 9、account-integration 5、resize-integration 2、push 4、security 14、terminal 18，全過。
-- 未驗證：真 claude、手機實機、iPhone 拖曳（不支援，手機用下拉）、多個使用者各自版面下的「移入時排右側」（只在移動當下開著畫布的裝置上排）。
+- 未驗證：真 claude、手機實機、iPhone 拖曳（不支援，手機用下拉）。
+- 審查後修正（同分支）：名單每列列出所有還在排隊的群發（不只最新一則），各自能取消；`@審查`／`@RV`／`@reviewer` 直接打角色點名（名稱優先，同角色多位全點）；「移入時排右側」改由 hub 排每個使用者存好的版面（手機、沒開畫布也排）；「更多」裡的工作區可右鍵／長按改名刪除、可放團隊，拖經「更多」自動展開；拖放失敗顯示「沒移過去」；沒帶工作區時用排第一個的（「主要」可被刪）；`zone_not_empty` 帶結構化 `detail`；刪工作區時搬走的便利貼寫進 audit；拆解提示 `QA (tester)`；團隊第一次讀不到時畫布顯示錯誤＋再試一次，不照 session 自己的 zoneId 畫；手機「回電腦處理」可按（複製這頁連結，複製不了就秀網址）。修正後測試：單元 1605（protocol 42、web 358、hub 471、hook 91、daemon 643）；e2e team 53（含 workspaces 17）、canvas 94、flows 146、expanded 7、integration 15、team-integration 9、account-integration 5、resize-integration 2、push 4、security 14、terminal 18，全過。

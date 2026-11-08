@@ -24,6 +24,8 @@ registerMessages('zh-TW', {
   'canvas.minimap': '小地圖',
   'canvas.team.label': '團隊・{name}',
   'canvas.error.teams': '讀不到團隊：{detail}。團隊框和交接線暫時不顯示。',
+  'canvas.error.teamsFirst':
+    '讀不到團隊：{detail}。不知道每張卡屬於哪個工作區，先不畫畫布。確認 hub 有在跑，再按「再試一次」。',
   'canvas.handoff.on_done': '完成時交接',
   'canvas.handoff.on_file': '改到檔案時交接',
   'canvas.handoff.on_fail': '失敗時交接',
@@ -206,6 +208,8 @@ registerMessages('en', {
   'canvas.team.label': 'Team: {name}',
   'canvas.error.teams':
     'Could not read teams: {detail}. Team frames and handoff lines are hidden for now.',
+  'canvas.error.teamsFirst':
+    'Could not read teams: {detail}. Without them the board cannot tell which workspace each card is in, so it is not drawn yet. Check that the hub is running, then press "Try again".',
   'canvas.handoff.on_file': 'Hand off on file change',
   'canvas.handoff.on_fail': 'Hand off on failure',
   'canvas.handoff.on_marker': 'Hand off when the reply has the marker',

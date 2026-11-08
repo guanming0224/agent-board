@@ -456,9 +456,15 @@
   color: var(--fg-muted);
   font-size: 12.5px;
 }
-.roster-result {
+.roster-results {
   grid-area: result;
   justify-self: end;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.roster-result {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -467,6 +473,13 @@
 }
 .roster-result.is-sent {
   color: var(--fg);
+}
+.roster-result-text {
+  color: var(--fg-muted);
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .roster-result .link {
   min-height: 0;
@@ -491,8 +504,23 @@
 .fold-phone {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 10px 4px;
+}
+.fold-desktop {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+.fold-url {
+  width: 100%;
+  min-width: 0;
+  font-size: 12.5px;
 }
 .broadcast {
   position: sticky;

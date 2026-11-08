@@ -587,6 +587,8 @@ registerMessages('zh-TW', {
   'team.fold.handoff': '交接規則',
   'team.fold.goal': '目標與 context',
   'team.fold.desktopOnly': '回電腦處理',
+  'team.fold.copied': '已複製這頁的連結，在電腦上打開',
+  'team.fold.url': '這頁的連結',
   'team.zone.label': '工作區',
   'team.wide.on': '展開',
   'team.wide.off': '收窄',
@@ -607,6 +609,7 @@ registerMessages('zh-TW', {
   'team.broadcast.result.failed.not_waiting': '沒送出：打字後狀態變了，沒按 Enter',
   'team.broadcast.result.failed.hub_restarted': '沒送出（hub 重啟）',
   'team.broadcast.cancel': '取消',
+  'team.broadcast.cancelOf': '取消排隊中的「{text}」',
   'team.list.allZones': '顯示全部工作區',
   'team.list.waiting': '等你 {n}',
 });
@@ -623,6 +626,8 @@ registerMessages('en', {
   'team.fold.handoff': 'Handoff rules',
   'team.fold.goal': 'Goal and context',
   'team.fold.desktopOnly': 'Use a computer for this',
+  'team.fold.copied': 'Link to this page copied; open it on a computer',
+  'team.fold.url': 'Link to this page',
   'team.zone.label': 'Workspace',
   'team.wide.on': 'Widen',
   'team.wide.off': 'Narrow',
@@ -644,6 +649,7 @@ registerMessages('en', {
   'team.broadcast.result.failed.not_waiting': 'Not sent: state changed before Enter',
   'team.broadcast.result.failed.hub_restarted': 'Not sent (hub restarted)',
   'team.broadcast.cancel': 'Cancel',
+  'team.broadcast.cancelOf': 'Cancel queued "{text}"',
   'team.list.allZones': 'Show all workspaces',
   'team.list.waiting': '{n} waiting',
 });

@@ -19,7 +19,7 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { Layout, Session } from '@agent-board/protocol';
+import { zoneMoveShift, type Layout, type Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { codeClass, statusCode } from '../shared/status';
 import { useBoard } from '../shared/store';
@@ -65,7 +65,7 @@ import {
 import { TidyPanel, TidyToast, useTidy, type TidyState } from './tidy';
 import { SessionNode, TERMINAL_ZOOM, type SessionNodeType } from './SessionNode';
 import { TeamFrames } from './TeamFrames';
-import { canvasTeams, groupHandoffs, TEAM_PADDING, teamForHandoff, teamRect } from './teams';
+import { canvasTeams, groupHandoffs, teamForHandoff, teamRect } from './teams';
 import { teamHash } from '../views/overlay';
 import { useCurrentZoneId, useSessionZones, useZoneUi } from '../zones';
 import './canvas.css';
@@ -78,8 +78,6 @@ const edgeTypes = { handoff: HandoffEdge };
 /** 「全部顯示」不跨過 xterm 門檻，總覽一定是摘要條。 */
 const FIT_OPTIONS = { padding: 0.06, maxZoom: TERMINAL_ZOOM - 0.05, minZoom: 0.05 };
 const SAVE_DEBOUNCE_MS = 400;
-/** 團隊移到別的工作區時，和那裡現有內容之間的間距（畫布 px，同整理畫布時團隊之間）。 */
-const ZONE_GAP = 240;
 /** 平移、縮放停下來多久才把團隊框的模糊放回去（連續滾輪縮放時不反覆切換）。 */
 const MOVE_SETTLE_MS = 120;
 /** 拖線把手在卡片上緣往下 28px（canvas.css .ab-handle）：線從這裡出發。 */
@@ -748,14 +746,10 @@ function Flow({
         const others = next
           .filter((n) => !moving.has(n.id) && zoneMap.get(n.id) === zone)
           .map(rectOf);
-        if (group.length === 0 || others.length === 0) continue;
-        const left = Math.min(...group.map((r) => r.x));
-        const top = Math.min(...group.map((r) => r.y));
-        // 團隊框外緣再加一段間距（和整理畫布時團隊之間一樣，240 畫布 px）。
-        const right = Math.max(...others.map((r) => r.x + r.w)) + TEAM_PADDING * 2 + ZONE_GAP;
-        const minY = Math.min(...others.map((r) => r.y));
-        const dx = right - left;
-        const dy = minY - top;
+        // 和 hub 排存好的版面用同一個規則（團隊框外緣再加 240 畫布 px，同整理畫布時團隊之間）。
+        const shift = zoneMoveShift(group, others);
+        if (!shift) continue;
+        const { dx, dy } = shift;
         next = next.map((n) =>
           moving.has(n.id) ? { ...n, position: { x: n.position.x + dx, y: n.position.y + dy } } : n,
         );
@@ -1010,13 +1004,16 @@ export function CanvasPage() {
   const t = useT();
   const board = useBoardLoad();
   const { state: layouts, retry } = useLayouts();
-  useTeamSync();
+  const teamSync = useTeamSync();
   // 團隊還沒讀到時不知道誰屬於哪個工作區（成員跟著團隊）：先等，別的工作區的卡才不會先畫出來、訂閱終端機。
-  // 讀失敗就照 session 自己的工作區畫（畫布上方另有團隊讀取失敗的提示）。
-  // 只等第一次：之後重讀（例如按「重試」）不能把整張畫布卸載。
+  // 第一次就讀失敗：顯示錯誤＋再試一次，不畫卡片（成員自己的 zoneId 被忽略，照它畫會畫錯工作區）。
+  // 只等第一次讀到：之後重讀失敗（保留舊資料）或按「重試」不能把整張畫布卸載。
   const teamsSeen = useRef(false);
-  const teamsLoading = useTeams((s) => s.status === 'loading') && !teamsSeen.current;
-  if (!teamsLoading) teamsSeen.current = true;
+  const teamStatus = useTeams((s) => s.status);
+  const teamDetail = useTeams((s) => s.detail);
+  if (teamStatus === 'ready') teamsSeen.current = true;
+  const teamsLoading = !teamsSeen.current && teamStatus === 'loading';
+  const teamsFailed = !teamsSeen.current && teamStatus === 'error';
   const sessions = useBoard().sessions.filter((s) => !s.archived);
 
   let body;
@@ -1027,6 +1024,13 @@ export function CanvasPage() {
   } else if (layouts.status === 'error') {
     body = (
       <ErrorState text={t('canvas.error.layout', { detail: layouts.detail })} onRetry={retry} />
+    );
+  } else if (teamsFailed) {
+    body = (
+      <ErrorState
+        text={t('canvas.error.teamsFirst', { detail: teamDetail ?? '' })}
+        onRetry={teamSync.retry}
+      />
     );
   } else if (board.status === 'loading' || layouts.status === 'loading' || teamsLoading) {
     body = <LoadingState />;

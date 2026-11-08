@@ -5,6 +5,7 @@ import {
   AutoContinue,
   BoardPause,
   DEFAULT_WAITING_LIMIT,
+  DEFAULT_ZONE_ID,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   DispatchWork,
@@ -806,6 +807,30 @@ export class Store {
     })();
   }
 
+  /** 在這個版面組存過座標的使用者。 */
+  layoutUserIds(workspace: string): string[] {
+    const rows = this.db
+      .prepare('SELECT DISTINCT user_id FROM layouts WHERE workspace = ? ORDER BY user_id')
+      .all(workspace) as { user_id: string }[];
+    return rows.map((r) => r.user_id);
+  }
+
+  /** 把幾張卡一起平移（工作區移入時排到右側空白）。 */
+  shiftLayouts(
+    userId: string,
+    workspace: string,
+    sessionIds: readonly string[],
+    dx: number,
+    dy: number,
+  ): void {
+    const update = this.db.prepare(
+      'UPDATE layouts SET x = x + ?, y = y + ? WHERE user_id = ? AND workspace = ? AND session_id = ?',
+    );
+    this.db.transaction(() => {
+      for (const id of sessionIds) update.run(dx, dy, userId, workspace, id);
+    })();
+  }
+
   // ── 便利貼 ───────────────────────────────────────────
   listNotes(zoneId: string): Note[] {
     const rows = this.db.prepare('SELECT * FROM notes WHERE zone_id = ?').all(zoneId) as NoteRow[];
@@ -844,6 +869,22 @@ export class Store {
       createdAt: r.created_at,
       position: r.position,
     }));
+  }
+
+  /**
+   * 沒指定工作區時用哪一個：排第一個的工作區。「主要」只要不是最後一個就能刪，所以不能寫死它的 id。
+   * 至少一定有一個（最後一個不能刪）。
+   */
+  defaultZoneId(): string {
+    return this.listZones()[0]?.id ?? DEFAULT_ZONE_ID;
+  }
+
+  countNotes(zoneId: string): number {
+    return (
+      this.db.prepare('SELECT count(*) AS n FROM notes WHERE zone_id = ?').get(zoneId) as {
+        n: number;
+      }
+    ).n;
   }
 
   getZone(id: string): Zone | null {

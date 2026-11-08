@@ -2,7 +2,6 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
-  DEFAULT_ZONE_ID,
   handoffRuleProblem,
   isReadOnlyMember,
   routes,
@@ -435,7 +434,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
         id: randomUUID(),
         ...ctx.body,
         taskAuto: ctx.body.taskAuto ?? false,
-        zoneId: ctx.body.zoneId ?? DEFAULT_ZONE_ID,
+        // 沒帶＝排第一個的工作區（「主要」可能已經被刪掉）。
+        zoneId: ctx.body.zoneId ?? store.defaultZoneId(),
       };
       if (!store.getZone(team.zoneId))
         throw new HttpError(400, 'unknown_zone', 'Unknown workspace');

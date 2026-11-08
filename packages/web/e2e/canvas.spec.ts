@@ -2541,9 +2541,35 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     await expect(page.getByTestId('quick-create')).toHaveCount(0);
 
     // 只點一下（沒有拖動）框內空白處：打開這個團隊的面板（P2 §1.2、§4.4 驗收 6 後半，項目二完成後）。
+    // 點本身不能讓畫面動、也不能讓團隊框的模糊拿掉再放回（不閃）：在面板打開（hash 變）之前，
+    // data-moving 一次都沒出現、viewport 和點之前一樣。面板打開之後依 §1 的 #/team/<id> 規則聚焦團隊框，那是另一回事。
+    const clickVp = await viewport(page);
+    await page.evaluate(() => {
+      const el = document.querySelector('.canvas')!;
+      const vp = document.querySelector<HTMLElement>('.react-flow__viewport')!;
+      const w = window as never as { __movingBeforeOpen: number; __vpAtOpen: string | null };
+      const start = location.hash;
+      w.__movingBeforeOpen = 0;
+      w.__vpAtOpen = null;
+      new MutationObserver(() => {
+        if (el.hasAttribute('data-moving') && location.hash === start) w.__movingBeforeOpen += 1;
+      }).observe(el, { attributes: true, attributeFilter: ['data-moving'] });
+      // 每一格記下面板打開（hash 變）之前最後看到的 viewport。
+      const watch = () => {
+        if (location.hash !== start) return;
+        w.__vpAtOpen = vp.style.transform;
+        requestAnimationFrame(watch);
+      };
+      watch();
+    });
     const moved = (await page.locator('.team').first().boundingBox())!;
     await page.mouse.click(moved.x + moved.width - 12, moved.y + 12);
     await expect(page).toHaveURL(/#\/team\/team-demo-auth$/);
+    const atOpen = await page.evaluate(() => {
+      const w = window as never as { __movingBeforeOpen: number; __vpAtOpen: string | null };
+      return { moving: w.__movingBeforeOpen, vp: w.__vpAtOpen };
+    });
+    expect(atOpen).toEqual({ moving: 0, vp: clickVp });
     await expect(page.getByTestId('team-panel')).toBeVisible();
     expect(await position(page, 's-auth')).toBe(cardBefore);
   });

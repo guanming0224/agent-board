@@ -97,6 +97,37 @@
   margin: 2px 4px;
   font-size: 12.5px;
 }
+/* 「更多」清單裡的一項：整列可點、可放團隊；右鍵選單開在右邊。 */
+.zone-tab-wrap.is-item {
+  display: flex;
+}
+.zone-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+  text-align: left;
+}
+.zone-item[aria-current='true'] {
+  color: var(--fg);
+  font-weight: 600;
+}
+.zone-item.is-drop {
+  outline: 1px dashed var(--border-2);
+  outline-offset: -3px;
+}
+.zone-item.is-over {
+  outline: 2px solid var(--accent);
+  background: var(--accent-bg);
+}
+.zone-tab-wrap.is-item > .zone-menu {
+  top: 0;
+  left: 100%;
+}
+.zone-notice.is-error {
+  color: var(--c-err);
+}
 .zone-notice {
   display: inline-flex;
   align-items: center;

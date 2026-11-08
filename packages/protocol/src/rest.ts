@@ -72,8 +72,19 @@ export const AuditQuery = z.object({
 });
 export type AuditQuery = z.infer<typeof AuditQuery>;
 
-export const ApiError = z.object({ code: z.string(), message: z.string() });
+export const ApiError = z.object({
+  code: z.string(),
+  message: z.string(),
+  /** 給程式讀的補充資料（例如 zone_not_empty 的 ZoneNotEmpty）；大多數錯誤沒有。 */
+  detail: z.record(z.string(), z.unknown()).optional(),
+});
 export type ApiError = z.infer<typeof ApiError>;
+/** 刪除非空工作區（409 zone_not_empty）的 detail：擋住刪除的團隊數、單獨 session 數（P2 §2.5）。 */
+export const ZoneNotEmpty = z.object({
+  teams: z.number().int().nonnegative(),
+  sessions: z.number().int().nonnegative(),
+});
+export type ZoneNotEmpty = z.infer<typeof ZoneNotEmpty>;
 
 /**
  * 修改設定的 body：只改有帶的鍵。`Settings` 頂層有預設值的欄位（autoContinue、dispatch）在這裡拿掉預設，
@@ -226,7 +237,7 @@ export const routes = {
     method: 'POST',
     path: '/api/sessions',
     auth: 'user',
-    /** zoneId：放在哪個工作區（P2 §2：新建 session 放在目前工作區）；沒帶＝預設工作區。 */
+    /** zoneId：放在哪個工作區（P2 §2：新建 session 放在目前工作區）；沒帶＝排第一個的工作區。 */
     body: SessionSpec.extend({ machineId: Id, zoneId: Id.optional() }),
     response: Session,
   }),
@@ -388,7 +399,7 @@ export const routes = {
   }),
 
   // 工作區（P2 項目二）：全 hub 共用，一般使用者可改。刪除只在沒有團隊、也沒有單獨 session 時可以：
-  // 非空回 409 zone_not_empty（message 帶數量，另見 ZoneNotEmpty），最後一個回 409 last_zone。
+  // 非空回 409 zone_not_empty（ApiError.detail 是 ZoneNotEmpty：團隊數、session 數），最後一個回 409 last_zone。
   zonesList: route({ method: 'GET', path: '/api/zones', auth: 'user', response: z.array(Zone) }),
   zonesCreate: route({
     method: 'POST',
@@ -412,7 +423,7 @@ export const routes = {
     method: 'POST',
     path: '/api/teams',
     auth: 'user',
-    /** zoneId 沒帶＝預設工作區。 */
+    /** zoneId 沒帶＝排第一個的工作區。 */
     body: Team.omit({ id: true, zoneId: true }).extend({ zoneId: Id.optional() }),
     response: Team,
   }),

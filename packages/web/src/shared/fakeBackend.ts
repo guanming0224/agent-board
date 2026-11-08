@@ -1,11 +1,13 @@
 // 假資料後端：只給 demo 模式（?demo=1）與測試使用，正式資料庫一開始是空的（DISPATCH §1.2）。
 import {
   AUDIT_SYSTEM_USER,
+  CANVAS_LAYOUT_SET,
   DEFAULT_ZONE_ID,
   DEFAULT_ZONE_NAME,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   handoffRuleProblem,
+  zoneMoveShift,
 } from '@agent-board/protocol';
 import type {
   Approval,
@@ -30,6 +32,7 @@ import type {
   Zone,
   Broadcast,
 } from '@agent-board/protocol';
+import { zoneOfSession } from '../zones/model';
 import type { AuditFilter, BoardBackend, BoardListener, BoardSnapshot } from './backend';
 import type { TerminalServerMessage, TerminalStream } from './terminal-contract';
 import { DECOMPOSE_PROMPT_START } from './decomposePrompt';
@@ -521,6 +524,25 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   const terminal = new FakeTerminalStream();
   let settings = defaultSettings;
   let layouts: Layout[] = [];
+  /** 和 hub 相同：移進工作區的卡排到目標工作區現有內容的右側空白（存好的版面，畫布沒開也排）。 */
+  const placeInZone = (ids: readonly string[], zoneId: string) => {
+    const zoneOf = (id: string) => {
+      const s = state.sessions.find((x) => x.id === id);
+      return s && !s.archived ? zoneOfSession(s, teams, members) : null;
+    };
+    const moving = new Set(ids);
+    const rows = layouts.filter((l) => l.workspace === CANVAS_LAYOUT_SET);
+    const shift = zoneMoveShift(
+      rows.filter((l) => moving.has(l.sessionId) && zoneOf(l.sessionId) !== null),
+      rows.filter((l) => !moving.has(l.sessionId) && zoneOf(l.sessionId) === zoneId),
+    );
+    if (!shift) return;
+    layouts = layouts.map((l) =>
+      l.workspace === CANVAS_LAYOUT_SET && moving.has(l.sessionId)
+        ? { ...l, x: l.x + shift.dx, y: l.y + shift.dy }
+        : l,
+    );
+  };
   const templates: Template[] = [];
   const audit = demoAudit();
   const matchAudit = (filter: AuditFilter) =>
@@ -705,7 +727,9 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         if (!zones.some((z) => z.id === patch.zoneId)) {
           throw apiError(400, 'unknown_zone', 'Unknown workspace');
         }
+        const moved = s.zoneId !== patch.zoneId && !members.some((m) => m.sessionId === id);
         s.zoneId = patch.zoneId;
+        if (moved) placeInZone([id], patch.zoneId);
       }
       if (patch.archived === true && !s.archived) {
         // 和 hub 相同（CONTRACTS §9.1）：還沒結束的先停掉，相關交接規則全部關掉。
@@ -1002,7 +1026,16 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       if (patch.zoneId && !zones.some((z) => z.id === patch.zoneId)) {
         throw apiError(400, 'unknown_zone', 'Unknown workspace');
       }
-      return Object.assign(findIn(teams, id, 'team'), patch);
+      const team = findIn(teams, id, 'team');
+      const moved = patch.zoneId !== undefined && patch.zoneId !== team.zoneId;
+      Object.assign(team, patch);
+      if (moved) {
+        placeInZone(
+          members.filter((m) => m.teamId === id).map((m) => m.sessionId),
+          team.zoneId,
+        );
+      }
+      return team;
     },
     async deleteTeam(id) {
       // 和 hub 一樣：成員留在團隊原本的工作區。

@@ -170,6 +170,105 @@ test('刪除：非空的工作區按鈕停用並寫數量；清空後可刪；�
   await expect(tab(page, 'agent-board')).toBeVisible();
 });
 
+test('超過 6 個收進「更多」：裡面的工作區也能右鍵改名、刪除，拖團隊經過「更多」會展開、可以放', async ({
+  page,
+}) => {
+  await page.goto('/#/canvas');
+  for (const name of ['B', 'C', 'D', 'E', 'F']) await addZone(page, name);
+  await page.getByTestId('zone-add').click();
+  await page.getByTestId('zone-add-input').fill('第七');
+  await page.getByTestId('zone-add-input').press('Enter');
+  // 第 7 個收在「更多」：按鈕寫目前工作區的名稱。
+  await expect(page.locator('[role="tab"][data-zone-name]')).toHaveCount(6);
+  await expect(page.getByTestId('zone-more')).toContainText('第七');
+
+  // 拖團隊框標籤：經過「更多」自動展開，放在裡面的「第七」上。
+  await tab(page, '主要').click();
+  await expect(card(page, 's-auth')).toBeVisible();
+  await page.getByTestId(`team-open-${TEAM}`).hover();
+  await page.mouse.down();
+  await page.getByTestId('zone-more').hover();
+  await expect(page.getByTestId('zone-more-menu')).toBeVisible();
+  await tab(page, '第七').hover();
+  await page.mouse.up();
+  await expect(page.getByTestId('zone-notice')).toContainText('已移到「第七」');
+  await expect(card(page, 's-auth')).toHaveCount(0);
+
+  // 右鍵改名（「更多」裡的項目）。
+  await page.getByTestId('zone-more').click();
+  await tab(page, '第七').click({ button: 'right' });
+  await expect(page.getByTestId('zone-menu')).toBeVisible();
+  await page.getByTestId('zone-rename').click();
+  await page.getByTestId('zone-rename-input').fill('交易');
+  await page.getByTestId('zone-rename-input').press('Enter');
+  await expect(tab(page, '交易')).toBeVisible();
+
+  // 有團隊：刪除停用並寫數量。團隊移回「主要」後可刪。
+  await tab(page, '交易').click({ button: 'right' });
+  await expect(page.getByTestId('zone-delete')).toBeDisabled();
+  await expect(page.getByTestId('zone-delete-blocked')).toContainText('先把 1 個團隊');
+  await page.keyboard.press('Escape');
+  await page.goto(`/#/team/${TEAM}`);
+  await page.getByTestId('team-zone-select').selectOption({ label: '主要' });
+  await page.goto('/#/canvas');
+  await page.getByTestId('zone-more').click();
+  await tab(page, '交易').click({ button: 'right' });
+  await expect(page.getByTestId('zone-delete')).toBeEnabled();
+  await page.getByTestId('zone-delete').click();
+  await expect(page.getByTestId('zone-more')).toHaveCount(0);
+  await expect(page.locator('[role="tab"][data-zone-name]')).toHaveCount(6);
+});
+
+test('拖到分頁上但移動失敗：提示列顯示「沒移過去」，不默默吞掉', async ({ page }) => {
+  await page.goto('/#/canvas');
+  await addZone(page, 'B');
+  await tab(page, '主要').click();
+  await fake(
+    page,
+    `backend.updateTeam = async () => { throw Object.assign(new Error('Unknown workspace'), { code: 'unknown_zone' }); };`,
+  );
+  await page.getByTestId(`team-open-${TEAM}`).dragTo(tab(page, 'B'));
+  await expect(page.getByTestId('zone-move-error')).toContainText('沒移過去');
+  await expect(card(page, 's-auth')).toBeVisible();
+});
+
+test('手機用團隊面板下拉移動（畫布沒掛著）：回到桌機畫布，移過去的團隊排在目標工作區右側、不重疊', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/#/team/${TEAM}`);
+  await expect(page.getByTestId('phone-team')).toBeVisible();
+  await expect(page.locator('.react-flow')).toHaveCount(0);
+  // B 已經有一張卡（s-etl），存好的版面上和團隊 X 的成員疊在同一個位置（座標共用）。
+  await fake(
+    page,
+    `const zone = await backend.createZone('B');
+     await backend.updateSession('s-etl', { zoneId: zone.id });
+     const all = (await backend.getLayouts('default'));
+     const rect = (sessionId, x, y) => ({ workspace: 'default', sessionId, x, y, w: 640, h: 420 });
+     await backend.saveLayouts([
+       ...all.filter((l) => !['s-etl', 's-auth', 's-tests'].includes(l.sessionId)),
+       rect('s-etl', 0, 0),
+       rect('s-auth', 0, 0),
+       rect('s-tests', 700, 0),
+     ]);`,
+  );
+  await page.getByTestId('team-zone-select').selectOption({ label: 'B' });
+  await expect(page.getByTestId('team-zone-select')).toHaveValue(/.+/);
+  await expect(page.locator('.react-flow')).toHaveCount(0);
+
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/#/canvas');
+  await tab(page, 'B').click();
+  await expect(card(page, 's-etl')).toBeVisible();
+  await expect(card(page, 's-auth')).toBeVisible();
+  const etl = await boxOf(page, 's-etl');
+  for (const id of ['s-auth', 's-tests']) {
+    const b = await boxOf(page, id);
+    expect(b.x, `${id} 在 s-etl 右邊`).toBeGreaterThan(etl.x + etl.width);
+  }
+});
+
 test('點團隊框：右側出現面板，名單列數＝成員數，每列狀態代碼和卡片一致；點列聚焦卡片、面板不關', async ({
   page,
 }) => {
@@ -271,6 +370,51 @@ test('群發給 4 個成員（ASK、RUN、PERM、NEW）：不跳確認；ASK、N
   await expect(result('s-auth')).toHaveAttribute('data-state', 'cancelled');
 });
 
+test('連送兩則給 RUN 成員：兩則排隊都看得到、各自能取消', async ({ page }) => {
+  await page.goto(`/#/team/${TEAM}`);
+  const panel = page.getByTestId('team-panel');
+  const input = panel.getByTestId('broadcast-input');
+  // s-tests 是 RUN：兩則都排隊。
+  await input.fill('第一則');
+  await input.press('Enter');
+  await expect(panel.getByTestId('broadcast-result-s-tests')).toHaveAttribute(
+    'data-state',
+    'queued',
+  );
+  await input.fill('第二則');
+  await input.press('Enter');
+  const latest = panel.getByTestId('broadcast-result-s-tests');
+  const earlier = panel.getByTestId('broadcast-earlier-s-tests');
+  await expect(latest).toHaveAttribute('data-state', 'queued');
+  await expect(earlier).toHaveCount(1);
+  await expect(earlier).toHaveAttribute('data-state', 'queued');
+  await expect(earlier).toContainText('第一則');
+  // 取消較早那則：只剩最新一則在排隊。
+  await panel.getByTestId('broadcast-cancel-earlier-s-tests').click();
+  await expect(earlier).toHaveCount(0);
+  await expect(latest).toHaveAttribute('data-state', 'queued');
+  await panel.getByTestId('broadcast-cancel-s-tests').click();
+  await expect(latest).toHaveAttribute('data-state', 'cancelled');
+  const states = await page.evaluate(async (url) => {
+    const { useBoard } = (await import(url)) as {
+      useBoard: {
+        getState(): {
+          broadcasts: { text: string; targets: { sessionId: string; state: string }[] }[];
+        };
+      };
+    };
+    return useBoard
+      .getState()
+      .broadcasts.map((b) => [b.text, b.targets.find((t) => t.sessionId === 's-tests')?.state]);
+  }, STORE);
+  expect(states).toEqual(
+    expect.arrayContaining([
+      ['第一則', 'cancelled'],
+      ['第二則', 'cancelled'],
+    ]),
+  );
+});
+
 test('@ 點名：選單可搜名稱與角色；只送給點到的，送出的文字拿掉 @名稱；不是本團隊的名稱停用送出鈕', async ({
   page,
 }) => {
@@ -296,6 +440,17 @@ test('@ 點名：選單可搜名稱與角色；只送給點到的，送出的文
   await expect(panel.getByTestId('broadcast-result-s-auth')).toHaveCount(0);
   expect(await page.evaluate(() => (window as never as { __calls: unknown[] }).__calls)).toEqual([
     [TEAM, '再看一次', ['s-tests']],
+  ]);
+  // 直接打角色名稱點名（§2.1「@審查 這版再看一次」）：送給這個角色的成員。
+  await panel.getByTestId('roster-role-s-auth').selectOption('reviewer');
+  await expect(panel.getByTestId('roster-role-s-auth')).toHaveValue('reviewer');
+  await input.fill('@審查 這版再看一次');
+  await expect(panel.getByTestId('broadcast-send')).toContainText('送給 Fix login');
+  await input.press('Enter');
+  await expect(input).toHaveValue('');
+  expect(await page.evaluate(() => (window as never as { __calls: unknown[] }).__calls)).toEqual([
+    [TEAM, '再看一次', ['s-tests']],
+    [TEAM, '這版再看一次', ['s-auth']],
   ]);
   await input.fill('@nobody 看一下');
   await expect(panel.getByTestId('broadcast-send')).toBeDisabled();
@@ -363,6 +518,14 @@ test('手機尺寸：工作區是下拉、帶等你數；團隊面板全螢幕�
   const phone = page.getByTestId('phone-team');
   await expect(phone.getByTestId('team-roster')).toBeVisible();
   await expect(phone.getByTestId('fold-tasks')).toContainText('回電腦處理');
+  // 「回電腦處理」是可以按的：複製這頁連結；複製不了就把網址秀出來。
+  await phone.getByTestId('fold-tasks').getByTestId('fold-desktop-link').click();
+  await expect(
+    phone
+      .getByTestId('fold-tasks')
+      .getByText('已複製這頁的連結')
+      .or(phone.getByTestId('fold-tasks').getByTestId('fold-desktop-url')),
+  ).toBeVisible();
   await phone.getByTestId('broadcast-input').fill('手機也能下指令');
   await phone.getByTestId('broadcast-send').click();
   await expect(phone.getByTestId('broadcast-result-s-tests')).toBeVisible();

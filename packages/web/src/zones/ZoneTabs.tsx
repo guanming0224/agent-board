@@ -152,16 +152,34 @@ function ZoneMenu({
   );
 }
 
+/** 把團隊放到某個工作區上（分頁或「更多」裡的項目）。失敗要讓 GM 知道（PATCH 400、網路斷線）。 */
+function dropTeam(teamId: string, zoneId: string): void {
+  useZoneUi.getState().setDragging(null);
+  moveTeamToZone(teamId, zoneId).catch((e: unknown) =>
+    useZoneUi.getState().showMoveError(errorText(e)),
+  );
+}
+
+/**
+ * 一個工作區：頂部分頁，或「更多」清單裡的一項（item）。兩種都能點選、右鍵（觸控長按）改名或刪除、
+ * 當團隊的拖放目標（§2.3 的右鍵選單不分是否收在「更多」裡）。
+ */
 function ZoneTab({
   zone,
   current,
   waiting,
   isLast,
+  item = false,
+  onChosen,
 }: {
   zone: Zone;
   current: boolean;
   waiting: number;
   isLast: boolean;
+  /** 「更多」清單裡的一項。 */
+  item?: boolean;
+  /** 點選或放下團隊之後（「更多」要收起來）。 */
+  onChosen?: () => void;
 }) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
@@ -194,14 +212,15 @@ function ZoneTab({
   }
 
   return (
-    <span className="zone-tab-wrap">
+    <span className={`zone-tab-wrap${item ? ' is-item' : ''}`}>
       <button
         type="button"
-        role="tab"
-        aria-selected={current}
-        className={`zone-tab${over ? ' is-over' : ''}${dragging ? ' is-drop' : ''}`}
+        role={item ? 'menuitem' : 'tab'}
+        aria-selected={item ? undefined : current}
+        aria-current={item && current ? 'true' : undefined}
+        className={`${item ? 'zone-item' : 'zone-tab'}${over ? ' is-over' : ''}${dragging ? ' is-drop' : ''}`}
         title={t('zones.tab.hint')}
-        data-testid={`zone-tab-${zone.id}`}
+        data-testid={item ? `zone-more-${zone.id}` : `zone-tab-${zone.id}`}
         data-zone-name={zone.name}
         onClick={() => {
           // 長按開了選單：這次放開不算點。
@@ -210,6 +229,7 @@ function ZoneTab({
             return;
           }
           setCurrent(zone.id);
+          onChosen?.();
         }}
         onContextMenu={(e) => {
           e.preventDefault();
@@ -239,8 +259,8 @@ function ZoneTab({
           const teamId = e.dataTransfer.getData(TEAM_DRAG_TYPE);
           if (!teamId) return;
           e.preventDefault();
-          useZoneUi.getState().setDragging(null);
-          void moveTeamToZone(teamId, zone.id).catch(() => undefined);
+          dropTeam(teamId, zone.id);
+          onChosen?.();
         }}
       >
         <span className="zone-tab-name">{zone.name}</span>
@@ -269,29 +289,53 @@ function ZoneTab({
   );
 }
 
-/** 「更多 ▾」：超過 VISIBLE_TABS 個的工作區。目前工作區在裡面時按鈕寫它的名稱。 */
+/**
+ * 「更多 ▾」：超過 VISIBLE_TABS 個的工作區。目前工作區在裡面時按鈕寫它的名稱。
+ * 清單裡每一項和分頁一樣能右鍵改名、刪除，也能放團隊；拖著團隊經過「更多」會自動展開清單。
+ */
 function MoreZones({
   zones,
   current,
   waiting,
+  isLast,
 }: {
   zones: Zone[];
   current: string;
   waiting: Map<string, number>;
+  isLast: boolean;
 }) {
   const t = useT();
-  const setCurrent = useZoneUi((s) => s.setCurrent);
   const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
   const active = zones.find((z) => z.id === current);
   const total = zones.reduce((n, z) => n + (waiting.get(z.id) ?? 0), 0);
+  useEffect(() => {
+    if (!open) return;
+    // 點清單外面或按 Esc 收起來（右鍵選單、改名輸入框都在清單裡面；改名時的 Esc 只取消改名）。
+    const away = (e: PointerEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !(e.target instanceof HTMLInputElement)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('pointerdown', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
   return (
-    <span className="zone-tab-wrap">
+    <span className="zone-tab-wrap" ref={box}>
       <button
         type="button"
         className="zone-tab zone-more"
         aria-expanded={open}
         aria-selected={active !== undefined}
         onClick={() => setOpen((v) => !v)}
+        onDragEnter={(e) => {
+          if (e.dataTransfer.types.includes(TEAM_DRAG_TYPE)) setOpen(true);
+        }}
         data-testid="zone-more"
       >
         <span className="zone-tab-name">{active ? active.name : t('zones.more')}</span>
@@ -299,24 +343,17 @@ function MoreZones({
         <span aria-hidden="true"> ▾</span>
       </button>
       {open && (
-        <div className="zone-menu" role="menu" data-testid="zone-more-menu">
+        <div className="zone-menu zone-more-menu" role="menu" data-testid="zone-more-menu">
           {zones.map((z) => (
-            <button
+            <ZoneTab
               key={z.id}
-              type="button"
-              role="menuitem"
-              aria-current={z.id === current ? 'true' : undefined}
-              onClick={() => {
-                setCurrent(z.id);
-                setOpen(false);
-              }}
-              data-testid={`zone-more-${z.id}`}
-            >
-              {z.name}
-              {(waiting.get(z.id) ?? 0) > 0 && (
-                <b className="zone-waiting num">{waiting.get(z.id)}</b>
-              )}
-            </button>
+              zone={z}
+              current={z.id === current}
+              waiting={waiting.get(z.id) ?? 0}
+              isLast={isLast}
+              item
+              onChosen={() => setOpen(false)}
+            />
           ))}
         </div>
       )}
@@ -347,7 +384,9 @@ export function ZoneTabs() {
             isLast={zones.length <= 1}
           />
         ))}
-        {rest.length > 0 && <MoreZones zones={rest} current={current} waiting={waiting} />}
+        {rest.length > 0 && (
+          <MoreZones zones={rest} current={current} waiting={waiting} isLast={zones.length <= 1} />
+        )}
         {adding ? (
           <NameInput
             initial=""
@@ -400,6 +439,7 @@ export function ZoneTabs() {
 function MoveNoticeLine() {
   const t = useT();
   const notice = useZoneUi((s) => s.notice);
+  const moveError = useZoneUi((s) => s.moveError);
   const clear = useZoneUi((s) => s.clearNotice);
   const setCurrent = useZoneUi((s) => s.setCurrent);
   useEffect(() => {
@@ -407,6 +447,17 @@ function MoveNoticeLine() {
     const timer = window.setTimeout(clear, 8000);
     return () => window.clearTimeout(timer);
   }, [notice, clear]);
+  if (moveError) {
+    // 沒移過去：留著直到 GM 關掉或下一次移動（不自動消失，免得錯過）。
+    return (
+      <span className="zone-notice is-error" role="alert" data-testid="zone-move-error">
+        {t('zones.moveFailed', { detail: moveError })}
+        <button type="button" onClick={clear} aria-label={t('zones.notice.close')}>
+          ✕
+        </button>
+      </span>
+    );
+  }
   if (!notice) return null;
   return (
     <span className="zone-notice" role="status" data-testid="zone-notice">

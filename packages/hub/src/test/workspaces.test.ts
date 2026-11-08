@@ -152,6 +152,7 @@ describe('工作區', () => {
     expect(blocked.status).toBe(409);
     expect(blocked.body.code).toBe('zone_not_empty');
     expect(blocked.body.message).toContain('teams=1, sessions=1');
+    expect(blocked.body.detail).toEqual({ teams: 1, sessions: 1 });
 
     await hub.api('PATCH', `/api/teams/${t}`, { cookie: b.cookie, body: { zoneId: 'main' } });
     await hub.api('PATCH', `/api/sessions/${solo}`, { cookie: b.cookie, body: { zoneId: 'main' } });
@@ -197,6 +198,91 @@ describe('工作區', () => {
     expect(get(a2)?.zoneId).toBe('main');
     await hub.api('DELETE', `/api/teams/${t}/members/${a2}`, { cookie: b.cookie });
     expect(get(a2)?.zoneId).toBe(zone);
+  });
+
+  it('移入工作區排到目標工作區右側空白：hub 直接改存好的版面（沒開畫布、手機移動也排）', async () => {
+    const b = await board();
+    const zone = (await hub.api('POST', '/api/zones', { cookie: b.cookie, body: { name: 'B' } }))
+      .body.id as string;
+    // B 原有：單獨 session 一張，和團隊 X 的位置重疊（座標共用）。
+    const there = await start(b, 'there', 'waiting_input', zone);
+    const x1 = await start(b, 'x1');
+    const x2 = await start(b, 'x2');
+    const solo = await start(b, 'solo');
+    const t = await team(b, [
+      [x1, 'lead'],
+      [x2, 'worker'],
+    ]);
+    const rect = (sessionId: string, x: number, y: number) => ({
+      workspace: 'default',
+      sessionId,
+      x,
+      y,
+      w: 600,
+      h: 400,
+    });
+    const put = await hub.api('PUT', '/api/layouts', {
+      cookie: b.cookie,
+      body: [
+        rect(there, 0, 100),
+        rect(x1, 50, 0),
+        rect(x2, 700, 0),
+        rect(solo, 0, 2000),
+        { ...rect(x1, 9, 9), workspace: 'default.previous' },
+      ],
+    });
+    expect(put.status).toBe(200);
+    const layouts = async (workspace = 'default') =>
+      Object.fromEntries(
+        (
+          (await hub.api('GET', `/api/layouts?workspace=${workspace}`, { cookie: b.cookie }))
+            .body as { sessionId: string; x: number; y: number }[]
+        ).map((l) => [l.sessionId, { x: l.x, y: l.y }]),
+      );
+
+    await hub.api('PATCH', `/api/teams/${t}`, { cookie: b.cookie, body: { zoneId: zone } });
+    // B 最右邊 600，＋ 304 間距；上緣對齊 B 的 100。整個團隊一起平移（相對位置不變）。
+    let after = await layouts();
+    expect(after[x1]).toEqual({ x: 904, y: 100 });
+    expect(after[x2]).toEqual({ x: 1554, y: 100 });
+    expect(after[there]).toEqual({ x: 0, y: 100 });
+    expect(after[solo]).toEqual({ x: 0, y: 2000 });
+    // 「上一次擺設」不動。
+    expect((await layouts('default.previous'))[x1]).toEqual({ x: 9, y: 9 });
+
+    // 單獨 session 移過去：排在 B（現在含團隊 X）最右邊再往右。
+    await hub.api('PATCH', `/api/sessions/${solo}`, { cookie: b.cookie, body: { zoneId: zone } });
+    after = await layouts();
+    expect(after[solo]).toEqual({ x: 1554 + 600 + 304, y: 100 });
+
+    // 移回空的「主要」：沒有別的卡，不動。
+    await hub.api('PATCH', `/api/sessions/${solo}`, { cookie: b.cookie, body: { zoneId: 'main' } });
+    expect((await layouts())[solo]).toEqual({ x: 1554 + 600 + 304, y: 100 });
+  });
+
+  it('「主要」刪掉後，沒帶工作區的建立放到排第一個的工作區；刪除時便利貼搬家寫進 audit', async () => {
+    const b = await board();
+    const zone = (await hub.api('POST', '/api/zones', { cookie: b.cookie, body: { name: 'B' } }))
+      .body.id as string;
+    const note = await hub.api('POST', '/api/notes', {
+      cookie: b.cookie,
+      body: { zoneId: 'main', x: 0, y: 0, text: 'n', color: 'yellow' },
+    });
+    expect(note.status).toBe(200);
+    expect((await hub.api('DELETE', '/api/zones/main', { cookie: b.cookie })).status).toBe(200);
+    expect(JSON.parse(auditRows('zone.delete')[0]!.detail)).toMatchObject({
+      id: 'main',
+      movedNotes: 1,
+      movedTo: zone,
+    });
+    const s = await start(b, 'later');
+    expect(get(s)?.zoneId).toBe(zone);
+    const created = await hub.api('POST', '/api/teams', {
+      cookie: b.cookie,
+      body: { name: 'T2', goal: '', doneCriteria: '', color: 'teal', contextMd: '' },
+    });
+    expect(created.status).toBe(200);
+    expect(created.body.zoneId).toBe(zone);
   });
 
   it('board.state 帶工作區清單', async () => {

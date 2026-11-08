@@ -21,6 +21,11 @@ export function sortRoster<T extends { role: TeamMember['role']; name: string }>
 export interface MentionCandidate {
   id: string;
   name: string;
+  /**
+   * 這位成員的角色可以怎麼叫（中文名稱、縮寫、英文代碼，例如「審查」「RV」「reviewer」）。
+   * `@審查` 比對不到成員名稱時，改拿角色比：團隊裡這個角色有幾位就點名幾位（§2.1「@審查 這版再看一次」）。
+   */
+  roles?: readonly string[];
 }
 
 export interface ParsedCommand {
@@ -36,10 +41,22 @@ const isSpace = (ch: string | undefined) => ch === undefined || /\s/.test(ch);
 
 /**
  * 解析指令框：`@` 只在開頭或空白後面才算點名。名稱可能有空白（session 名稱），所以由長到短比對成員名稱，
- * 名稱後面要接空白或結尾。比對不到的取到下一個空白為止，當成「不是本團隊成員」。
+ * 名稱後面要接空白或結尾。比對不到名稱時再比角色（`@審查`、`@RV`、`@reviewer`）：這個角色的成員全部點名。
+ * 都比對不到的取到下一個空白為止，當成「不是本團隊成員」。
  */
 export function parseCommand(input: string, members: readonly MentionCandidate[]): ParsedCommand {
   const byLength = [...members].sort((a, b) => b.name.length - a.name.length);
+  // 角色別名 → 這個角色的成員（依名單順序）。由長到短比對，避免短的別名搶先。
+  const roleMap = new Map<string, string[]>();
+  for (const m of members) {
+    for (const alias of new Set((m.roles ?? []).map((r) => r.toLowerCase()))) {
+      if (alias === '') continue;
+      roleMap.set(alias, [...(roleMap.get(alias) ?? []), m.id]);
+    }
+  }
+  const aliases = [...roleMap.keys()].sort((a, b) => b.length - a.length);
+  const startsWithWord = (rest: string, word: string) =>
+    rest.toLowerCase().startsWith(word.toLowerCase()) && isSpace(rest[word.length]);
   const targets: string[] = [];
   const unknown: string[] = [];
   let text = '';
@@ -48,12 +65,16 @@ export function parseCommand(input: string, members: readonly MentionCandidate[]
     const ch = input[i]!;
     if (ch === '@' && isSpace(input[i - 1])) {
       const rest = input.slice(i + 1);
-      const hit = byLength.find(
-        (m) => rest.toLowerCase().startsWith(m.name.toLowerCase()) && isSpace(rest[m.name.length]),
-      );
+      const hit = byLength.find((m) => startsWithWord(rest, m.name));
       if (hit) {
         if (!targets.includes(hit.id)) targets.push(hit.id);
         i += 1 + hit.name.length;
+        continue;
+      }
+      const role = aliases.find((a) => startsWithWord(rest, a));
+      if (role) {
+        for (const id of roleMap.get(role)!) if (!targets.includes(id)) targets.push(id);
+        i += 1 + role.length;
         continue;
       }
       const token = /^\S+/.exec(rest)?.[0];

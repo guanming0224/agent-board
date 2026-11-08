@@ -20,23 +20,32 @@ export interface RosterRow {
   session: Session;
 }
 
-/** 這個團隊最新的一則群發（任何人送的）。 */
-function useLatestBroadcast(teamId: string): Broadcast | null {
+/** 這個團隊的群發（任何人送的），舊的在前。 */
+function useTeamBroadcasts(teamId: string): Broadcast[] {
   const broadcasts = useBoard((s) => s.broadcasts);
-  return useMemo(() => {
-    const mine = (broadcasts ?? []).filter((b) => b.teamId === teamId);
-    return mine.length > 0 ? mine.reduce((a, b) => (b.at >= a.at ? b : a)) : null;
-  }, [broadcasts, teamId]);
+  return useMemo(
+    () =>
+      (broadcasts ?? [])
+        .filter((b) => b.teamId === teamId)
+        .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)),
+    [broadcasts, teamId],
+  );
 }
+
+/** 列上顯示的文字摘要（排隊中的舊群發要讓 GM 認得是哪一則）。 */
+const snippet = (text: string) => (text.length > 24 ? `${text.slice(0, 24)}…` : text);
 
 function TargetResult({
   broadcast,
   target,
   session,
+  earlier = false,
 }: {
   broadcast: Broadcast;
   target: BroadcastTarget;
   session: Session | undefined;
+  /** 不是最新一則、但還在排隊的群發（§2.8：排隊中的一定要看得到、能取消）。 */
+  earlier?: boolean;
 }) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
@@ -71,10 +80,14 @@ function TargetResult({
   return (
     <span
       className={`roster-result is-${target.state}`}
-      data-testid={`broadcast-result-${target.sessionId}`}
+      data-testid={
+        earlier ? `broadcast-earlier-${target.sessionId}` : `broadcast-result-${target.sessionId}`
+      }
+      data-broadcast={broadcast.id}
       data-state={target.state}
-      title={new Date(target.at).toLocaleString()}
+      title={`${broadcast.text}\n${new Date(target.at).toLocaleString()}`}
     >
+      {earlier && <q className="roster-result-text">{snippet(broadcast.text)}</q>}
       {text}
       {target.state === 'queued' && (
         <button
@@ -86,7 +99,12 @@ function TargetResult({
               .cancelBroadcast(broadcast.id, target.sessionId)
               .catch((err: unknown) => setError(errorText(err)));
           }}
-          data-testid={`broadcast-cancel-${target.sessionId}`}
+          aria-label={t('team.broadcast.cancelOf', { text: snippet(broadcast.text) })}
+          data-testid={
+            earlier
+              ? `broadcast-cancel-earlier-${target.sessionId}`
+              : `broadcast-cancel-${target.sessionId}`
+          }
         >
           {t('team.broadcast.cancel')}
         </button>
@@ -103,7 +121,7 @@ function TargetResult({
 export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
-  const latest = useLatestBroadcast(team.id);
+  const broadcasts = useTeamBroadcasts(team.id);
   const [error, setError] = useState<string | null>(null);
   const sorted = sortRoster(rows.map((r) => ({ ...r, role: r.member.role, name: r.session.name })));
 
@@ -131,7 +149,12 @@ export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
       ) : (
         <ul className="roster-list">
           {sorted.map(({ member, session }) => {
-            const target = latest?.targets.find((x) => x.sessionId === session.id);
+            // 最新一則有點到這位：顯示它的結果；更早、還在排隊的每一則另外列出來，各自能取消。
+            const mine = broadcasts.flatMap((b) =>
+              b.targets.filter((x) => x.sessionId === session.id).map((x) => ({ b, x })),
+            );
+            const latest = mine.at(-1);
+            const queuedEarlier = mine.slice(0, -1).filter(({ x }) => x.state === 'queued');
             return (
               <li
                 key={session.id}
@@ -168,8 +191,15 @@ export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
                 <span className="roster-age">
                   <Age session={session} />
                 </span>
-                {latest && target && (
-                  <TargetResult broadcast={latest} target={target} session={session} />
+                {(latest || queuedEarlier.length > 0) && (
+                  <span className="roster-results">
+                    {queuedEarlier.map(({ b, x }) => (
+                      <TargetResult key={b.id} broadcast={b} target={x} session={session} earlier />
+                    ))}
+                    {latest && (
+                      <TargetResult broadcast={latest.b} target={latest.x} session={session} />
+                    )}
+                  </span>
                 )}
               </li>
             );
@@ -208,7 +238,11 @@ export function BroadcastBox({ team, rows }: { team: Team; rows: RosterRow[] }) 
   }, [value]);
 
   const live = rows.filter((r) => !r.session.archived);
-  const candidates = live.map((r) => ({ id: r.session.id, name: r.session.name }));
+  const candidates = live.map((r) => ({
+    id: r.session.id,
+    name: r.session.name,
+    roles: [t(`team.role.${r.member.role}`), ROLE_ABBR[r.member.role], r.member.role],
+  }));
   const parsed = parseCommand(value, candidates);
   const mention = activeMention(value, caret);
   const options = mention

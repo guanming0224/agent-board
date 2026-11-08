@@ -36,6 +36,26 @@ describe('parseCommand（群發 @ 點名）', () => {
     expect(parseCommand('@nobody 看一下', members).unknown).toEqual(['nobody']);
   });
 
+  it('@角色（中文、縮寫、英文代碼）點名這個角色的成員；有好幾位就全部點名；名稱優先於角色', () => {
+    const team = [
+      { id: 'a', name: 'tw-lead', roles: ['隊長', 'LD', 'lead'] },
+      { id: 'b', name: 'tw-review', roles: ['審查', 'RV', 'reviewer'] },
+      { id: 'w1', name: 'tw-impl-1', roles: ['成員', 'BD', 'worker'] },
+      { id: 'w2', name: 'tw-impl-2', roles: ['成員', 'BD', 'worker'] },
+      { id: 'n', name: 'RV', roles: ['測試', 'QA', 'tester'] },
+    ];
+    expect(parseCommand('@審查 這版再看一次', team)).toEqual({
+      text: '這版再看一次',
+      targets: ['b'],
+      unknown: [],
+    });
+    expect(parseCommand('@reviewer 再看', team).targets).toEqual(['b']);
+    expect(parseCommand('@bd 跑測試', team).targets).toEqual(['w1', 'w2']);
+    // 有成員剛好叫「RV」：名稱優先。
+    expect(parseCommand('@rv 看', team).targets).toEqual(['n']);
+    expect(parseCommand('@研究 看', team).unknown).toEqual(['研究']);
+  });
+
   it('信箱、字中間的 @ 不算點名；名稱要完整（tw-reviewer 不是 tw-review）', () => {
     expect(parseCommand('寄到 a@b.c', members)).toMatchObject({ targets: [], unknown: [] });
     expect(parseCommand('@tw-reviewer hi', members).unknown).toEqual(['tw-reviewer']);
