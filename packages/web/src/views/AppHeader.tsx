@@ -69,7 +69,7 @@ export function AppHeader({ tab }: { tab: TabName }) {
   const [announce, setAnnounce] = useState('');
   useUsagePolling();
   const queue = pendingQueue(sessions, approvals);
-  // 頁首的數字：真的在等你的（剛開好、閒著的不算；protocol attention.ts）。「下一個」照舊巡所有待處理的。
+  // 頁首的數字：真的在等你的（剛開好的 NEW 不算；protocol attention.ts）。「下一個」巡 pendingQueue，同樣不含 NEW。
   const { count: waiting } = useWaiting();
   const online = machines.filter((m) => m.online).length;
   const off = machines.length - online;

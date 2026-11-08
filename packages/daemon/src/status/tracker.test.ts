@@ -260,6 +260,18 @@ describe('createStatusTracker', () => {
       expect(last()).toMatchObject({ to: 'waiting_input', detail: null });
     });
 
+    it('狀態變化帶著變化前的 detail（舊資料頁的狀態歷史分得出 NEW 與 ASK）', () => {
+      tracker.onHook('SessionStart', payload('SessionStart', { source: 'startup' }));
+      expect(last()).toMatchObject({ from: 'starting', fromDetail: null });
+      tracker.onHook('UserPromptSubmit', payload('UserPromptSubmit'));
+      expect(last()).toMatchObject({
+        from: 'waiting_input',
+        fromDetail: IDLE_START_DETAIL,
+        to: 'running',
+        detail: null,
+      });
+    });
+
     it('閒著時 idle_prompt 不改 detail（還是沒有新東西）', () => {
       tracker.onHook('SessionStart', payload('SessionStart', { source: 'startup' }));
       tracker.onHook('Notification', notification('idle_prompt'));

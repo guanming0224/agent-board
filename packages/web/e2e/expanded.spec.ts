@@ -182,6 +182,16 @@ test('網址重新載入停在同一個 session；待決的 approval 可以直�
   await expect(card(page, 's-auth')).toHaveClass(/spot/);
 });
 
+test('失聯（OFF）的展開卡是代碼色虛線框', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/#/terminal/s-web');
+  const full = page.getByTestId('full-s-web');
+  await expect(full).toBeVisible();
+  await expect(full).toHaveClass(/c-off/);
+  await expect(full).toHaveCSS('outline-style', 'dashed');
+  await expect(full).toHaveCSS('outline-color', 'rgb(110, 118, 129)');
+});
+
 test('找不到或已封存的 session 寫下一步', async ({ page }) => {
   await page.goto('/#/terminal/nope');
   await expect(page.locator('[data-state="empty"]')).toContainText('找不到這個 session');

@@ -100,7 +100,14 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
 
   function transition(to: SessionStatus, reason: string, detail: string | null): void {
     if (to === status) return;
-    const change: StatusChange = { from: status, to, reason, detail, at: now() };
+    const change: StatusChange = {
+      from: status,
+      fromDetail: statusDetail,
+      to,
+      reason,
+      detail,
+      at: now(),
+    };
     status = to;
     statusDetail = detail;
     statusAt = change.at;
@@ -240,6 +247,7 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     statusDetail = line;
     options.onChange({
       from: status,
+      fromDetail: statusDetail,
       to: status,
       reason: 'output:rate-limit',
       detail: line,

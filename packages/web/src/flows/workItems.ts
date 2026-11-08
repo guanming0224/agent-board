@@ -1,7 +1,7 @@
 // 待處理項目：審核中心與收件匣共用的清單與排序（STYLE.md §2-3）。
 import type { Approval, Session, SessionStatus } from '@agent-board/protocol';
 import type { BoardSnapshot } from '../shared/backend';
-import { attentionQueue, codeRank, statusCode, STATUS_VISUAL } from '../shared/status';
+import { attentionQueue, codeRank, statusCode } from '../shared/status';
 
 export interface WorkItem {
   key: string;
@@ -51,4 +51,6 @@ export function workItems(board: Pick<BoardSnapshot, 'sessions' | 'approvals'>):
   );
 }
 
-export const isFault = (item: WorkItem) => STATUS_VISUAL[item.status].holder === 'fault';
+/** 故障（錯誤或卡住）：走狀態代碼，和其他地方同一個判斷。 */
+export const isFault = (item: WorkItem) =>
+  statusCode({ status: item.status, statusDetail: null }) === 'ERR';

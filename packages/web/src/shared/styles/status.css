@@ -67,6 +67,10 @@
 .lamp:not(.badge) {
   color: var(--sc, var(--idle));
 }
+/* OFF 的深灰在深色底上只有 3.87:1，字改混一點前景色（6.69:1）；底色 #6e7681 不動（GM 指定）。 */
+.lamp.c-off:not(.badge) {
+  color: color-mix(in srgb, var(--c-off) 70%, var(--fg));
+}
 .lamp:not(.badge) .lamp-label {
   color: var(--muted);
   font-weight: 500;

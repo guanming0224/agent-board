@@ -8,6 +8,8 @@ export interface StatusChange {
   /** 例如 `hook:Stop`、`output:rate-limit`、`timer:stuck`，寫進 session_events。 */
   reason: string;
   detail: string | null;
+  /** 變化前的 statusDetail（狀態歷史要分得出 NEW 與 ASK）；舊的測試替身可以不給。 */
+  fromDetail?: string | null;
   at: Date;
 }
 

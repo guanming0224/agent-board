@@ -395,7 +395,9 @@ test.describe('舊資料頁', () => {
     await open(
       page,
       'archive/s-old-api',
-      `backend.addSessionEvent('s-old-api', 'status', { from: 'running', to: 'waiting_input', reason: 'stop_hook' });
+      `backend.addSessionEvent('s-old-api', 'status', { from: 'starting', to: 'waiting_input', detail: 'idle:start', reason: 'hook:SessionStart:startup' });
+       backend.addSessionEvent('s-old-api', 'status', { from: 'waiting_input', fromDetail: 'idle:start', to: 'running', detail: null, reason: 'hook:UserPromptSubmit' });
+       backend.addSessionEvent('s-old-api', 'status', { from: 'running', to: 'waiting_input', reason: 'stop_hook' });
        backend.addSessionEvent('s-old-api', 'status', { from: 'waiting_input', to: 'done', reason: 'user_marked_done' });`,
     );
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Old API refactor');
@@ -408,9 +410,17 @@ test.describe('舊資料頁', () => {
     await expect(info.getByRole('button', { name: '複製' })).toBeVisible();
 
     const history = page.locator('.archive-history li');
-    await expect(history).toHaveCount(2);
-    await expect(history.nth(1)).toContainText('◇ASK等你回覆');
-    await expect(history.nth(1)).toContainText('✓DONE完成');
+    await expect(history).toHaveCount(4);
+    // 剛開好那一筆存了 detail：顯示 NEW，不是 ASK（GM 2026-11-08）。
+    await expect(history.nth(0).locator('.lamp').last()).toHaveAttribute(
+      'data-status',
+      'waiting_input',
+    );
+    await expect(history.nth(0).locator('.lamp .code').last()).toHaveText('NEW');
+    await expect(history.nth(1).locator('.lamp .code').first()).toHaveText('NEW');
+    await expect(history.nth(1).locator('.lamp .code').last()).toHaveText('RUN');
+    await expect(history.nth(3)).toContainText('◇ASK等你回覆');
+    await expect(history.nth(3)).toContainText('✓DONE完成');
 
     await expect(page.getByTestId('transcript-count')).toHaveText('共 230 則');
     const entries = page.getByTestId('transcript-entry');

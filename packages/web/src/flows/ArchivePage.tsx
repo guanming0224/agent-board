@@ -119,16 +119,20 @@ function History({ session }: { session: Session }) {
           {changes.map((e) => {
             const from = e.payload.from;
             const reason = typeof e.payload.reason === 'string' ? e.payload.reason : null;
+            // hub 從 2026-11-08 起也存 detail；舊事件沒有，就當 null。
+            const str = (v: unknown) => (typeof v === 'string' ? v : null);
+            const fromDetail = str(e.payload.fromDetail);
+            const detail = str(e.payload.detail);
             return (
               <li key={e.id}>
                 <span className="sub num">{time(e.at)}</span>
                 {isStatus(from) && (
                   <>
-                    <Lamp status={from} />
+                    <Lamp status={from} detail={fromDetail} />
                     <span aria-hidden="true">→</span>
                   </>
                 )}
-                <Lamp status={e.payload.to as Session['status']} />
+                <Lamp status={e.payload.to as Session['status']} detail={detail} />
                 {reason && <span className="sub mono">{reason}</span>}
               </li>
             );

@@ -1344,6 +1344,22 @@ test.describe('等你的數量與上限（GM 2026-11-06）', () => {
     await expect(tests.locator('.strip')).toHaveCSS('border-top-width', '1px');
     await expect(tests).not.toHaveAttribute('data-waits', 'true');
     await expect(page.getByTestId('waiting-count')).toHaveText('3');
+    // 「下一個等我的」也跳過 NEW：連按一輪多一次，只巡過原本三張。
+    const spot = () =>
+      page.locator('.frame.spot').evaluateAll((els) => els[0]?.getAttribute('data-testid') ?? null);
+    const visit = async (times: number) => {
+      const seen: string[] = [];
+      for (let i = 0; i < times; i += 1) {
+        const before = await spot();
+        await page.getByTestId('next-up').click();
+        await expect.poll(spot).not.toBe(before);
+        seen.push((await spot())!);
+      }
+      return seen;
+    };
+    const round = await visit(4);
+    expect(round).not.toContain('card-s-tests');
+    expect(new Set(round)).toEqual(new Set(['card-s-ml', 'card-s-auth', 'card-s-etl']));
     await patchStore(
       page,
       `useBoard.getState().backend.patchSession('s-tests', { statusDetail: null });`,
@@ -1352,6 +1368,8 @@ test.describe('等你的數量與上限（GM 2026-11-06）', () => {
     await expect(tests.locator('.lamp')).toHaveText('◇ASK');
     await expect(tests.locator('.strip')).toHaveCSS('border-top-color', 'rgb(255, 225, 77)');
     await expect(page.getByTestId('waiting-count')).toHaveText('4');
+    // 變成 ASK 之後才進入輪替。
+    expect(await visit(4)).toContain('card-s-tests');
     await page.getByTestId('waiting-link').click();
     await expect(page).toHaveURL(/#\/inbox$/);
   });
@@ -1970,21 +1988,41 @@ test.describe('狀態一眼看得出來（GM 2026-11-06）', () => {
       DONE: 'rgb(70, 194, 106)',
       OFF: 'rgb(110, 118, 129)',
     };
-    const cards = await page.locator('.frame[data-code]').evaluateAll((els) =>
-      els.map((el) => {
-        const article = el.querySelector('article')!;
-        const badge = el.querySelector('.head .lamp.badge')!;
-        return {
-          code: el.getAttribute('data-code')!,
-          border: getComputedStyle(article).borderTopColor,
-          badge: getComputedStyle(badge).backgroundColor,
-          badgeCode: badge.querySelector('.code')!.textContent,
-        };
-      }),
-    );
-    expect(cards.map((c) => c.code).sort()).toEqual(
+    const collect = () =>
+      page.locator('.frame[data-code]').evaluateAll((els) =>
+        els.map((el) => {
+          const article = el.querySelector('article')!;
+          const badge = el.querySelector('.head .lamp.badge')!;
+          return {
+            code: el.getAttribute('data-code')!,
+            border: getComputedStyle(article).borderTopColor,
+            badge: getComputedStyle(badge).backgroundColor,
+            badgeCode: badge.querySelector('.code')!.textContent,
+          };
+        }),
+      );
+    const first = await collect();
+    expect(first.map((c) => c.code).sort()).toEqual(
       ['DONE', 'ERR', 'NEW', 'OFF', 'PERM', 'PLAN'].sort(),
     );
+    expect(await findGreenOutsideDone(page)).toEqual([]);
+    // 第二輪把四張卡換成其餘四個代碼（RUN、ASK、QUOTA、QUE），10 個代碼都要畫過一次。
+    await patchStore(
+      page,
+      `const b = useBoard.getState().backend;
+       b.setSessionStatus('s-docs', 'rate_limited');
+       b.patchSession('s-tests', { status: 'running', statusDetail: null });
+       b.setSessionStatus('s-etl', 'queued');
+       b.patchSession('s-ml', { status: 'waiting_input', statusDetail: null });`,
+    );
+    await expect(card(page, 's-etl').locator('.head .lamp .code')).toHaveText('QUE');
+    await expect(card(page, 's-ml').locator('.head .lamp .code')).toHaveText('ASK');
+    const second = await collect();
+    expect(second.map((c) => c.code).sort()).toEqual(
+      ['ASK', 'OFF', 'PERM', 'QUE', 'QUOTA', 'RUN'].sort(),
+    );
+    const cards = [...first, ...second];
+    expect(new Set(cards.map((c) => c.code))).toEqual(new Set(Object.keys(expected)));
     for (const c of cards) {
       expect(c, c.code).toEqual({
         code: c.code,

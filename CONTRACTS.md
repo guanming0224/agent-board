@@ -327,7 +327,7 @@ hub 用資料庫裡的路徑組 `SessionLocator` 送 `session.inspect`，等 `se
 
 - `sessionWaitsForUser`：沒封存、狀態是收件匣的範圍（`ATTENTION_STATUSES`：等你允許、回覆、審計畫、錯誤、卡住），**但不含 `statusDetail === 'idle:start'` 的 `waiting_input`**（daemon 在 `SessionStart` startup 時標的：剛開好，沒有新回覆；畫面上的代碼是 NEW。resume 重新接回不標，算「等你」，GM 2026-11-08）。做完一回合（`Stop`）detail 就變回 null，算「等你」；`idle_prompt` 不改 detail。信任對話框（detail `trust`）算。舊版 daemon 不標，照舊算。
 - `waitingSessions(sessions, approvals)`：上面這些，加上有還沒決定的 approval 的 session（危險指令命中時常常還是 `running`），每個 session 只算一次。
-- 收件匣、「下一個等我的」的清單**沒有改**（閒著的 `waiting_input` 照樣列出、照樣可回覆）；只有數量、上限與推播用這個定義。
+- 收件匣、「下一個等我的」、待處理順序（web `shared/status.ts` 的 `attentionQueue`）也只算 ASK、PERM、PLAN、ERR，剛開好（NEW）不列（GM 2026-11-08）；剛開好的 session 只出現在待處理頁的「其他」組（triage kind `idle`）。數量、上限與推播用上面這個定義。
 - `rate_limited` 不在範圍裡（和收件匣一樣）。
 
 ### 10.2 合併通知（`Settings.notifications.coalesce`，預設開）

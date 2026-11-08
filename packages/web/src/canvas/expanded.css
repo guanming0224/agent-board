@@ -66,6 +66,12 @@
 .xpand-card.waits {
   box-shadow: inset 0 0 0 2px var(--st);
 }
+/* OFF：inset box-shadow 畫不出虛線，改用 outline 畫 1px 虛線框（規格第 3 點）。 */
+.xpand-card.c-off {
+  box-shadow: none;
+  outline: 1px dashed var(--st);
+  outline-offset: -1px;
+}
 .xpand-card > header {
   flex-shrink: 0;
 }
