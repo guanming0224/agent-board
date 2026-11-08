@@ -29,6 +29,7 @@ import {
   DispatchedByChip,
   useViewsUi,
 } from '../views';
+import { HeldFirstPrompt } from '../team/HeldFirstPrompt';
 import { CardMenu, MenuButton, RenameInput } from './CardMenu';
 import { CommandInput } from './CommandInput';
 import { DoneHint } from './DoneHint';
@@ -284,6 +285,8 @@ export function SessionNode({
             <CardHead session={session} menu />
             <div className="term-acts">
               <Actions session={session} isTerminal onOpenTerminal={() => {}} inputRef={inputRef} />
+              {/* 全部暫停中套用 Preset 時留下的隊長第一個指令（P3 §2.3，GM 按了才送）。 */}
+              <HeldFirstPrompt sessionId={session.id} />
               <button className="nodrag" onClick={openFull} data-testid="open-full">
                 {t('canvas.act.full')}
               </button>
@@ -327,6 +330,7 @@ export function SessionNode({
             <ContextUsage tokens={session.contextTokens} window={session.contextWindow} />
           )}
           <DoneHint session={session} />
+          <HeldFirstPrompt sessionId={session.id} />
           <Actions
             session={session}
             isTerminal={false}

@@ -9,7 +9,13 @@ import {
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   DispatchWork,
+  EMPTY_PROGRESS_FIELDS,
+  ProgressFieldRevisions,
+  ProgressFields,
   Settings,
+  ZERO_FIELD_REVISIONS,
+  type ProgressOwner,
+  type ProgressSource,
   TaskAuto,
   type AuditEntry,
   type HandoffRule,
@@ -53,6 +59,7 @@ const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   },
   autoContinue: false,
   dispatch: true,
+  memory: true,
 });
 
 interface UserRow {
@@ -311,6 +318,91 @@ function auditWhere(filter: AuditFilter): { clause: string; args: (string | numb
     args.push(filter.to);
   }
   return { clause: where.length > 0 ? `WHERE ${where.join(' AND ')}` : '', args };
+}
+
+/** 資料庫裡的一張進度卡（不含自動事實；名稱讀取時才查）。 */
+export interface StoredProgress {
+  id: string;
+  teamId: string | null;
+  sessionId: string | null;
+  fields: ProgressFields;
+  revision: number;
+  locked: boolean;
+  updatedAt: string | null;
+  updatedByKind: 'user' | 'session' | null;
+  updatedById: string | null;
+  fieldRevisions: ProgressFieldRevisions;
+}
+
+export interface StoredProgressRevision {
+  revision: number;
+  fields: ProgressFields;
+  byKind: 'user' | 'session';
+  byId: string | null;
+  source: ProgressSource;
+  at: string;
+}
+
+interface ProgressRow {
+  id: string;
+  team_id: string | null;
+  session_id: string | null;
+  status: string;
+  next: string;
+  blockers: string;
+  gm_notes: string;
+  revision: number;
+  locked: number;
+  updated_at: string | null;
+  updated_by_kind: 'user' | 'session' | null;
+  updated_by_id: string | null;
+  field_revisions: string;
+}
+
+interface ProgressRevisionRow {
+  revision: number;
+  fields: string;
+  by_kind: 'user' | 'session';
+  by_id: string | null;
+  source: ProgressSource;
+  at: string;
+}
+
+function toProgress(r: ProgressRow): StoredProgress {
+  // 舊版或手改的 JSON 缺欄位：當成 0（沒改過），三方比對最多多擋一次，不會默默覆蓋。
+  const parsed = ProgressFieldRevisions.partial().safeParse(safeJson(r.field_revisions));
+  return {
+    id: r.id,
+    teamId: r.team_id,
+    sessionId: r.session_id,
+    fields: { status: r.status, next: r.next, blockers: r.blockers, gmNotes: r.gm_notes },
+    revision: r.revision,
+    locked: r.locked === 1,
+    updatedAt: r.updated_at,
+    updatedByKind: r.updated_by_kind,
+    updatedById: r.updated_by_id,
+    fieldRevisions: { ...ZERO_FIELD_REVISIONS, ...(parsed.success ? parsed.data : {}) },
+  };
+}
+
+function toProgressRevision(r: ProgressRevisionRow): StoredProgressRevision {
+  const parsed = ProgressFields.partial().safeParse(safeJson(r.fields));
+  return {
+    revision: r.revision,
+    fields: { ...EMPTY_PROGRESS_FIELDS, ...(parsed.success ? parsed.data : {}) },
+    byKind: r.by_kind,
+    byId: r.by_id,
+    source: r.source,
+    at: r.at,
+  };
+}
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 export class Store {
@@ -1124,6 +1216,131 @@ export class Store {
 
   deleteRule(id: string): boolean {
     return this.db.prepare('DELETE FROM handoff_rules WHERE id = ?').run(id).changes === 1;
+  }
+
+  // ── 進度卡（P3 項目一，schema v10）────────────────────
+  /** 一張卡（沒有自動事實；事實由 progress.ts 算）。owner 是團隊或單獨 session。 */
+  getProgress(owner: ProgressOwner): StoredProgress | null {
+    const row = (
+      'teamId' in owner
+        ? this.db.prepare('SELECT * FROM progress_cards WHERE team_id = ?').get(owner.teamId)
+        : this.db.prepare('SELECT * FROM progress_cards WHERE session_id = ?').get(owner.sessionId)
+    ) as ProgressRow | undefined;
+    return row ? toProgress(row) : null;
+  }
+
+  listProgress(): StoredProgress[] {
+    const rows = this.db
+      .prepare('SELECT * FROM progress_cards ORDER BY updated_at DESC, rowid')
+      .all() as ProgressRow[];
+    return rows.map(toProgress);
+  }
+
+  /** 新增或整張改寫（id 已存在就改）。 */
+  saveProgress(card: StoredProgress): void {
+    this.db
+      .prepare(
+        `INSERT INTO progress_cards (id, team_id, session_id, status, next, blockers, gm_notes, revision,
+           locked, updated_at, updated_by_kind, updated_by_id, field_revisions)
+         VALUES (@id, @teamId, @sessionId, @status, @next, @blockers, @gmNotes, @revision, @locked,
+           @updatedAt, @updatedByKind, @updatedById, @fieldRevisions)
+         ON CONFLICT (id) DO UPDATE SET status = @status, next = @next, blockers = @blockers,
+           gm_notes = @gmNotes, revision = @revision, locked = @locked, updated_at = @updatedAt,
+           updated_by_kind = @updatedByKind, updated_by_id = @updatedById,
+           field_revisions = @fieldRevisions`,
+      )
+      .run({
+        id: card.id,
+        teamId: card.teamId,
+        sessionId: card.sessionId,
+        ...card.fields,
+        revision: card.revision,
+        locked: card.locked ? 1 : 0,
+        updatedAt: card.updatedAt,
+        updatedByKind: card.updatedByKind,
+        updatedById: card.updatedById,
+        fieldRevisions: JSON.stringify(card.fieldRevisions),
+      });
+  }
+
+  /** 加一版歷史，並把這張卡的歷史修剪到最新 keep 版。 */
+  addProgressRevision(cardId: string, entry: StoredProgressRevision, keep: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO progress_revisions (id, card_id, revision, fields, by_kind, by_id, source, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        cardId,
+        entry.revision,
+        JSON.stringify(entry.fields),
+        entry.byKind,
+        entry.byId,
+        entry.source,
+        entry.at,
+      );
+    this.db
+      .prepare(
+        `DELETE FROM progress_revisions WHERE card_id = ? AND revision NOT IN (
+           SELECT revision FROM progress_revisions WHERE card_id = ? ORDER BY revision DESC LIMIT ?
+         )`,
+      )
+      .run(cardId, cardId, keep);
+  }
+
+  /** 新到舊。 */
+  listProgressRevisions(cardId: string): StoredProgressRevision[] {
+    const rows = this.db
+      .prepare('SELECT * FROM progress_revisions WHERE card_id = ? ORDER BY revision DESC')
+      .all(cardId) as ProgressRevisionRow[];
+    return rows.map(toProgressRevision);
+  }
+
+  getProgressRevision(cardId: string, revision: number): StoredProgressRevision | null {
+    const row = this.db
+      .prepare('SELECT * FROM progress_revisions WHERE card_id = ? AND revision = ?')
+      .get(cardId, revision) as ProgressRevisionRow | undefined;
+    return row ? toProgressRevision(row) : null;
+  }
+
+  /** 這些 session 在 since 之後的 file.changed 路徑（新到舊，含重複；呼叫端去重）。 */
+  recentFileEvents(
+    sessionIds: readonly string[],
+    since: string,
+    limit: number,
+  ): { sessionId: string; path: string }[] {
+    if (sessionIds.length === 0) return [];
+    const marks = sessionIds.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `SELECT session_id, payload FROM session_events
+         WHERE session_id IN (${marks}) AND type = 'file.changed' AND at >= ?
+         ORDER BY at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(...sessionIds, since, limit) as { session_id: string; payload: string }[];
+    return rows.flatMap((r) => {
+      const path = (JSON.parse(r.payload) as { path?: unknown }).path;
+      return typeof path === 'string' ? [{ sessionId: r.session_id, path }] : [];
+    });
+  }
+
+  /**
+   * 這些 session 在 after 之後最後一次回合結束（hook Stop）的時間；沒有是 null。
+   * 每個 session 各查一次：沿 (session_id, at) 索引從最新倒著找、有下限、找到第一筆就停，不掃整段歷史。
+   */
+  lastStopAt(sessionIds: readonly string[], after: string): string | null {
+    const query = this.db.prepare(
+      `SELECT at FROM session_events
+       WHERE session_id = ? AND at > ? AND type = 'hook' AND json_extract(payload, '$.event') = 'Stop'
+       ORDER BY at DESC LIMIT 1`,
+    );
+    let latest: string | null = null;
+    for (const id of sessionIds) {
+      const row = query.get(id, after) as { at: string } | undefined;
+      if (row && (latest === null || row.at > latest)) latest = row.at;
+    }
+    return latest;
   }
 
   // ── 稽核 ─────────────────────────────────────────────

@@ -30,6 +30,10 @@ describe('parseSettingsHash', () => {
       category: 'sessions',
       section: 'stuck',
     });
+    expect(parseSettingsHash('#/settings/presets')).toEqual({
+      category: 'presets',
+      section: null,
+    });
     expect(parseSettingsHash('#/settings/users')).toEqual({
       category: 'machines',
       section: 'users',
@@ -62,7 +66,8 @@ describe('visibleCategories', () => {
   });
 
   it('成員與還在讀身分時看不到通知、安全', () => {
-    const shared = ['account', 'sessions', 'machines', 'data'];
+    // Presets（P3 項目二）是 auth user，成員（手機）也能改名、刪除、套用。
+    const shared = ['account', 'sessions', 'presets', 'machines', 'data'];
     expect(visibleCategories('member')).toEqual(shared);
     expect(visibleCategories('loading')).toEqual(shared);
   });

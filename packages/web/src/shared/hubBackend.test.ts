@@ -125,6 +125,8 @@ describe('hubBackend 全部暫停', () => {
 const broadcast = (id: string, states: Broadcast['targets'][number]['state'][]): Broadcast => ({
   id,
   teamId: 't',
+  kind: 'team',
+  cardKey: null,
   text: 'hi',
   mentioned: false,
   by: null,

@@ -1,7 +1,7 @@
 // 新建團隊：名稱、顏色、目標，選一個成員組合就一起開各角色的 session（GM 2026-11-06）。
 // 「只建團隊」保留原本的行為。團隊類型：程式開發（原本的組合）／學術研究（依研究階段組隊）。
 import { useEffect, useRef, useState } from 'react';
-import type { ResearchPhase } from '@agent-board/protocol';
+import type { ResearchPhase, TeamPresetConfigInput } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { currentZoneId } from '../zones';
@@ -9,6 +9,8 @@ import { errorText } from '../views';
 import { ActionMessage, ColorPicker, useAction } from './common';
 import { createRules, ROUND_OPTIONS, TWO_WAY_DEFAULT_ROUNDS } from './handoffRules';
 import { PlaceFields, PlanRowsEditor, usePlanPlace } from './PlanEditor';
+import { planRowsToPreset, rulesToPreset } from './presetPlan';
+import { SavePresetDialog } from './PresetSave';
 import { planHasPair, researchPairRules } from './research';
 import { runPlan, type RowStep } from './runPlan';
 import { refreshTeams, TEAM_COLORS } from './store';
@@ -51,6 +53,8 @@ export function NewTeamForm() {
     refreshFailed: boolean;
   } | null>(null);
   const { busy, message, run } = useAction();
+  /** 「存成 Preset」對話框（P3 §2.3：不建立團隊，只存目前表單）。 */
+  const [savingPreset, setSavingPreset] = useState<TeamPresetConfigInput | null>(null);
   /** 連按兩下也只送一次（busy 要等下一次 render 才生效）。 */
   const submitting = useRef(false);
   /** 使用者中途離開這頁：進度照跑，但不再把他拉回工作台。 */
@@ -91,6 +95,33 @@ export function NewTeamForm() {
     setTeamType(type);
     if (type === 'research') pickPhase(phase);
     else pickPreset(preset);
+  };
+
+  /** 目前表單 → Preset 內容。研究團隊勾了雙向交接：規則照列序號存（套用時建，和這裡一樣先關著）。 */
+  const presetConfig = (): TeamPresetConfigInput => {
+    const keys = new Map(rows.map((r) => [r.key, r.key]));
+    const pairRules = offerPair && pair ? researchPairRules(rows, keys, pairRounds) : null;
+    return {
+      teamType,
+      phase: research ? phase : null,
+      color,
+      goal: goal.trim(),
+      doneCriteria: '',
+      contextMd: research ? t('team.research.contextTemplate') : '',
+      placement: {
+        machineId: place.machineId,
+        cwd: place.cwd.trim(),
+        projectId: place.projectId || null,
+      },
+      rows: planRowsToPreset(rows, name),
+      handoffRules: pairRules
+        ? rulesToPreset(
+            pairRules,
+            rows.map((r) => r.key),
+          ).rules
+        : [],
+      taskAuto: false,
+    };
   };
 
   const create = () => {
@@ -296,6 +327,17 @@ export function NewTeamForm() {
             {withSessions ? t('team.new.createWith', { n: rows.length }) : t('team.new.create')}
           </button>
         )}
+        {!created && (
+          <button
+            type="button"
+            disabled={busy || !withSessions || formError !== null}
+            title={withSessions ? t('team.preset.saveFormHint') : t('team.preset.noMembers')}
+            onClick={() => setSavingPreset(presetConfig())}
+            data-testid="new-team-save-preset"
+          >
+            {t('team.preset.saveAs')}
+          </button>
+        )}
         {tried && formError && !created && (
           <span className="msg err" role="alert" data-testid="new-team-error">
             {formError}
@@ -318,6 +360,13 @@ export function NewTeamForm() {
                   detail: pairResult.detail,
                 })}
         </p>
+      )}
+      {savingPreset && (
+        <SavePresetDialog
+          defaultName={name.trim()}
+          config={savingPreset}
+          onClose={() => setSavingPreset(null)}
+        />
       )}
       {created && (created.failed > 0 || created.refreshFailed) && (
         <div className="alert you-alert" role="alert" data-testid="new-team-partial">

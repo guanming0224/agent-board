@@ -4,7 +4,7 @@ import { MaskChip } from '../security';
 import { ZoneTabs } from '../zones';
 import { useLocale, useT, type Locale } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { useOverlay, toggleInbox } from './overlayStore';
+import { openSearch, useOverlay, toggleInbox } from './overlayStore';
 import { nextInQueue, pendingQueue } from './queue';
 import { useViewsUi } from './uiStore';
 import { formatTokens, formatTokensFull, usageTotals } from './usage';
@@ -64,6 +64,7 @@ export function AppHeader() {
   const focusSession = useViewsUi((s) => s.focusSession);
   const inboxOpen = useOverlay((s) => s.right?.kind === 'inbox');
   const settingsOpen = useOverlay((s) => s.modal === 'settings');
+  const searchOpen = useOverlay((s) => s.modal === 'search');
   const [announce, setAnnounce] = useState('');
   useUsagePolling();
   const queue = pendingQueue(sessions, approvals);
@@ -172,6 +173,20 @@ export function AppHeader() {
           }}
         >
           {t('views.newSession')}
+        </button>
+        {/* 全域搜尋（P3 §3.3）：收件匣鈕左邊；⌘K／Ctrl+K 或 / 也能開。 */}
+        <button
+          type="button"
+          className="search-btn"
+          aria-pressed={searchOpen}
+          aria-label={t('views.search.aria')}
+          title={t('views.search.title')}
+          onClick={openSearch}
+          data-testid="search-button"
+        >
+          <span aria-hidden="true">⌕</span>
+          <span className="search-btn-label">{t('views.search.label')}</span>
+          <kbd>⌘K</kbd>
         </button>
         <button
           type="button"

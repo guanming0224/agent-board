@@ -11,7 +11,8 @@
 //   後面的團隊只排還沒排過的成員、疊在下面。這一群的框一定會重疊（共用的卡同時在兩個框裡），和其他群不重疊。
 // - 整理畫布：每個團隊（群）一塊，依團隊順序（hub 回傳的順序，即建立順序）；沒有團隊的依專案（沒有專案就依資料夾）
 //   各一塊；已結束、沒有團隊的放最後一塊。區塊由左到右排，超過最大列寬就換列（shelf packing），
-//   區塊之間留 GAP_X 給團隊框標籤和交接線的字；團隊框之後留更寬的 TEAM_BLOCK_GAP（P2 §4.2），玻璃框之間看得出分界。整塊的左上角＝原本所有卡片的左上角。
+//   區塊之間留 GAP_X 給團隊框標籤和交接線的字；團隊框之後留更寬的 TEAM_BLOCK_GAP（P2 §4.2），玻璃框之間看得出分界；
+//   團隊框右邊另外預留進度卡的寬度 PROGRESS_RESERVE（P3 §1.5）。整塊的左上角＝原本所有卡片的左上角。
 import type { ResearchKind, TeamMember } from '@agent-board/protocol';
 import { memberKind } from '../team/research';
 import { CARD_H, CARD_W, GAP_X, GAP_Y, overlaps, type Rect } from './layout';
@@ -24,6 +25,8 @@ export interface ArrangeSession {
   cwd: string;
   /** 已結束（endedAt 有值）。沒有團隊的排在最後一塊。 */
   ended: boolean;
+  /** 沒有團隊、寫過進度卡（P3）：卡片畫在右側，整理時自己一塊並預留 PROGRESS_RESERVE。 */
+  progress?: boolean;
 }
 
 export interface ArrangeInput {
@@ -44,6 +47,11 @@ export const BLOCK_GAP = GAP_X;
  * 整理後移鏡頭時縮放不低於 TIDY_FIT_MIN_ZOOM（240 × 0.2 = 48），全部放不下就留給捲動（手機尤其如此）。
  */
 export const TEAM_BLOCK_GAP = 240;
+/**
+ * 團隊框右側預留給進度卡的寬度（畫布 px，P3 §1.5）：卡寬 280＋和框之間 16。進度卡不是節點、不參與排列，
+ * 但整理畫布時團隊框右邊多留這麼多，卡片才不會壓到右邊的團隊或卡。
+ */
+export const PROGRESS_RESERVE = 280 + 16;
 /** 一鍵整理後團隊之間至少要有的螢幕像素（P2 §4.2）。 */
 export const TEAM_GAP_SCREEN = 48;
 /** 整理畫布後「全部顯示」的最小縮放：TEAM_BLOCK_GAP 在畫面上至少 TEAM_GAP_SCREEN。 */
@@ -320,7 +328,8 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW = MAX_ROW_W): Map<str
   if (ids.length === 0) return next;
   const sessions = new Map(input.sessions.map((s) => [s.id, s]));
   const cell = cellOf(ids, input.rects);
-  const blocks: { block: Block; pad: number }[] = [];
+  /** reserve：區塊右邊預留進度卡的寬度（團隊框、寫過卡的單獨 session）。 */
+  const blocks: { block: Block; pad: number; reserve: boolean }[] = [];
 
   const used = new Set<string>();
   for (const group of clusters(input.teams, input.members)) {
@@ -330,7 +339,9 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW = MAX_ROW_W): Map<str
       for (const id of rows.flat()) used.add(id);
       if (rows.length > 0) parts.push(gridBlock(rows, cell));
     }
-    if (parts.length > 0) blocks.push({ block: stack(parts, BLOCK_GAP), pad: TEAM_PADDING });
+    if (parts.length > 0) {
+      blocks.push({ block: stack(parts, BLOCK_GAP), pad: TEAM_PADDING, reserve: true });
+    }
   }
 
   // 沒有團隊的：依專案，沒有專案就依資料夾；已結束的另成最後一塊。
@@ -338,6 +349,8 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW = MAX_ROW_W): Map<str
   const rest = ids.filter((id) => !used.has(id));
   const groups = new Map<string, string[]>();
   const ended: string[] = [];
+  // 寫過進度卡的單獨 session：各自一塊（在同組的格子裡，右邊的卡會被進度卡蓋住）。
+  const withCard = new Map<string, string[]>();
   for (const id of rest) {
     const s = sessions.get(id);
     if (s?.ended) {
@@ -346,12 +359,25 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW = MAX_ROW_W): Map<str
     }
     // 專案在前（1:），資料夾在後（2:）。
     const key = s?.projectId ? `1:${s.projectId}` : `2:${s?.cwd ?? ''}`;
-    groups.set(key, [...(groups.get(key) ?? []), id]);
+    if (s?.progress) withCard.set(key, [...(withCard.get(key) ?? []), id]);
+    else groups.set(key, [...(groups.get(key) ?? []), id]);
   }
-  const loose = [...groups.keys()].sort(compareText).map((key) => groups.get(key)!);
-  if (ended.length > 0) loose.push(ended);
-  for (const group of loose) {
-    blocks.push({ block: gridBlock(chunk([...group].sort(byName)), cell), pad: 0 });
+  // 同組的：一般的一塊在前，寫過卡的接在後面各一塊。
+  for (const key of [...new Set([...groups.keys(), ...withCard.keys()])].sort(compareText)) {
+    const group = groups.get(key);
+    if (group) {
+      blocks.push({
+        block: gridBlock(chunk([...group].sort(byName)), cell),
+        pad: 0,
+        reserve: false,
+      });
+    }
+    for (const id of [...(withCard.get(key) ?? [])].sort(byName)) {
+      blocks.push({ block: gridBlock([[id]], cell), pad: 0, reserve: true });
+    }
+  }
+  if (ended.length > 0) {
+    blocks.push({ block: gridBlock(chunk([...ended].sort(byName)), cell), pad: 0, reserve: false });
   }
 
   // 由左到右、超過列寬換列。
@@ -361,10 +387,11 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW = MAX_ROW_W): Map<str
   let rowH = 0;
   // 這一列有沒有團隊框：有的話換列也留團隊的距離。
   let rowTeam = false;
-  for (const { block, pad } of blocks) {
-    const w = block.w + 2 * pad;
-    const h = block.h + 2 * pad;
+  for (const { block, pad, reserve } of blocks) {
     const team = pad > 0;
+    // 右邊還有進度卡（P3）：當成區塊的一部分，換列判斷與下一塊的位置都算進去。
+    const w = block.w + 2 * pad + (reserve ? PROGRESS_RESERVE : 0);
+    const h = block.h + 2 * pad;
     if (x > 0 && x + w > maxRowW) {
       x = 0;
       y += rowH + (rowTeam ? TEAM_BLOCK_GAP : BLOCK_GAP);

@@ -29,6 +29,12 @@ const PersistedState = z.object({
    * 第一次接回的 session 全都不會掛上（2026-11-06 上架時遇到）。
    */
   dispatch: z.boolean().default(true),
+  /**
+   * 上次 hub.welcome 的 `memory`（進度卡工具，P3 項目一）。和 dispatch 不同，預設關：只有 hub 明確送過
+   * `memory: true` 才當開。新 daemon 搭舊 hub 時，舊 hub 不認得進度卡工具、會直接丟掉呼叫（Claude 要等逾時）；
+   * 代價是 daemon 第一次升級、還沒收到新 hub 的 welcome 前接回的 session 不掛進度卡工具（下次開或重啟就有）。
+   */
+  memory: z.boolean().default(false),
   sessions: z.array(PersistedSession),
   /** 已結束但結果還沒送到 hub 的 session。hello 只列活著的，hub 只能靠這個知道結果。 */
   endedRuntimes: z.array(SessionRuntime).default([]),
@@ -42,6 +48,7 @@ export class SessionStore {
     dangerRules: null,
     stuckMinutes: null,
     dispatch: true,
+    memory: false,
     sessions: [],
     endedRuntimes: [],
   };
@@ -96,10 +103,20 @@ export class SessionStore {
     return this.state.dispatch;
   }
 
-  setHubSettings(dangerRules: string[], stuckMinutes: number, dispatch: boolean): void {
+  get memory(): boolean {
+    return this.state.memory;
+  }
+
+  setHubSettings(
+    dangerRules: string[],
+    stuckMinutes: number,
+    dispatch: boolean,
+    memory: boolean,
+  ): void {
     this.state.dangerRules = dangerRules;
     this.state.stuckMinutes = stuckMinutes;
     this.state.dispatch = dispatch;
+    this.state.memory = memory;
     this.save();
   }
 

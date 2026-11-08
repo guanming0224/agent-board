@@ -71,11 +71,14 @@ export function ModalLayer({
   label,
   onClose,
   testId,
+  className,
   children,
 }: {
   label: string;
   onClose: () => void;
   testId: string;
+  /** 加在框上的 class（例如搜尋視窗用較小的尺寸）。 */
+  className?: string;
   children: ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -118,7 +121,7 @@ export function ModalLayer({
     >
       <div
         ref={box}
-        className="modal-box"
+        className={className ? `modal-box ${className}` : 'modal-box'}
         role="dialog"
         aria-modal="true"
         aria-label={label}

@@ -1,15 +1,34 @@
-// 派工工具（CONTRACTS §11）：daemon 給每個 claude 產生 `--mcp-config` 設定檔與密鑰檔。
+// agent-board 工具（派工 CONTRACTS §11、進度卡 §14）：daemon 給每個 claude 產生 `--mcp-config` 設定檔與密鑰檔。
 // 密鑰只在 0600 的檔案裡（資料夾 0700）：不在 argv（ps 看得到）、不在 claude 的環境變數（Bash 工具讀得到）、
 // 不在 MCP 設定檔本身（/mcp 畫面可能顯示 env）。MCP server 從 AGENT_BOARD_MCP_SECRET_FILE 讀。
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DISPATCH_MCP_SERVER, DispatchTool, HOOK_ENV, MCP_ENV } from '@agent-board/protocol';
+import {
+  DISPATCH_MCP_SERVER,
+  DispatchTool,
+  HOOK_ENV,
+  MCP_ENV,
+  MemoryTool,
+  type AgentBoardTool,
+} from '@agent-board/protocol';
 
-/** 工具全名，daemon 用 `--allowedTools` 事先允許（只有這四個，不放寬別的工具）。 */
-export const DISPATCH_TOOL_NAMES: readonly string[] = DispatchTool.options.map(
-  (tool) => `mcp__${DISPATCH_MCP_SERVER}__${tool}`,
-);
+/** 工具全名（`mcp__agent-board__<tool>`）：daemon 用 `--allowedTools` 事先允許，只列 agent-board 自己的工具。 */
+export const toolFullName = (tool: AgentBoardTool): string =>
+  `mcp__${DISPATCH_MCP_SERVER}__${tool}`;
+
+/** 派工的四個工具全名（`Settings.dispatch` 開著時）。 */
+export const DISPATCH_TOOL_NAMES: readonly string[] = DispatchTool.options.map(toolFullName);
+/** 進度卡的兩個工具全名（`Settings.memory` 開著時，P3 項目一）。 */
+export const MEMORY_TOOL_NAMES: readonly string[] = MemoryTool.options.map(toolFullName);
+
+/** 依設定決定這次開 PTY 掛哪些工具（短名稱）：派工 4 個、進度卡 2 個，只列開著的。 */
+export function enabledTools(settings: { dispatch: boolean; memory: boolean }): AgentBoardTool[] {
+  return [
+    ...(settings.dispatch ? DispatchTool.options : []),
+    ...(settings.memory ? MemoryTool.options : []),
+  ];
+}
 
 export interface McpServerCommand {
   /** node 執行檔（daemon 自己的 process.execPath）。 */
@@ -39,6 +58,7 @@ export function writeMcpFiles(
   sessionId: string,
   server: McpServerCommand,
   socketPath: string,
+  tools: readonly AgentBoardTool[],
 ): McpLaunch {
   const dir = mcpDir(dataDir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -57,6 +77,8 @@ export function writeMcpFiles(
           [HOOK_ENV.sessionId]: sessionId,
           [HOOK_ENV.socket]: socketPath,
           [MCP_ENV.secretFile]: secretPath,
+          // MCP server 的 tools/list 只列、tools/call 只接受這些（設定關著的工具不出現）。
+          [MCP_ENV.tools]: tools.join(','),
         },
       },
     },

@@ -15,6 +15,7 @@ import {
   useViewsUi,
 } from '../views';
 import { moveTeamToZone, useZones } from '../zones';
+import { ProgressCardView } from '../progress/ProgressCard';
 import { BroadcastBox, Roster } from './Roster';
 import {
   ActionMessage,
@@ -25,6 +26,8 @@ import {
   useDraft,
 } from './common';
 import { AddMembers } from './AddMembers';
+import { TeamHeldFirstPrompts } from './HeldFirstPrompt';
+import { SaveTeamPreset } from './PresetSettings';
 import { HandoffPanel } from './HandoffPanel';
 import { PhasePanel } from './PhasePanel';
 import { kindLabel } from './PlanEditor';
@@ -417,11 +420,15 @@ export function TeamWorkbench({ team }: { team: Team }) {
         <span className="spacer" />
         <ZonePicker team={team} />
         {!phone && <WideToggle />}
+        <SaveTeamPreset team={team} records={records} />
       </div>
+      <TeamHeldFirstPrompts teamId={team.id} />
       <div className="row team-head-controls">
         <TeamControls team={team} members={members} />
       </div>
       <ActionMessage message={message} />
+      {/* 進度卡（P3 項目一 §1.5）：名單上方，同畫布展開樣式；手機與桌面一致。 */}
+      <TeamProgress team={team} />
       {/* 名單（P2 §2.3）：狀態代碼、名稱、角色、時間；點列＝畫布聚焦那張卡。 */}
       <Roster team={team} rows={records} />
       {/* 工作台原本的區塊收合呈現，點開在面板內展開；手機上只給「回電腦處理」。 */}
@@ -485,6 +492,23 @@ export function TeamWorkbench({ team }: { team: Team }) {
         />
       </div>
       <BroadcastBox team={team} rows={records} />
+    </div>
+  );
+}
+
+/** 團隊面板的進度卡：預設展開（面板就是來看這個團隊的），可收合。 */
+function TeamProgress({ team }: { team: Team }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="team-progress">
+      <ProgressCardView
+        owner={{ teamId: team.id }}
+        name={team.name}
+        variant="panel"
+        expanded={open}
+        onExpandedChange={setOpen}
+        testId="team-progress"
+      />
     </div>
   );
 }

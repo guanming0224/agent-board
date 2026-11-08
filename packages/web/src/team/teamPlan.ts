@@ -93,6 +93,13 @@ export interface PlanRow {
   nameEdited: boolean;
   name: string;
   mode: PermissionMode;
+  /** 模型；沒有（或 null）＝預設。內建組合不設，Preset 的列（P3 項目二）才會帶。 */
+  model?: string | null;
+  /**
+   * 這列要不要開 worktree；沒有（或 null）＝依角色規則（`rowUsesWorktree`）。Preset 存的是存檔當時的實際狀況。
+   * 不是 git 的資料夾一律開不了。
+   */
+  worktree?: boolean | null;
 }
 
 let nextKey = 0;
@@ -204,7 +211,14 @@ export function changeKind(
   return renameRows(
     rows.map((r) =>
       r.key === key
-        ? { ...r, kind, role: kindRole(kind), mode: ROLE_DEFAULT_MODE[kindRole(kind)] }
+        ? {
+            ...r,
+            kind,
+            role: kindRole(kind),
+            mode: ROLE_DEFAULT_MODE[kindRole(kind)],
+            // Preset 列指定過的 worktree 是舊角色的狀況：換分工就回到依角色規則。
+            ...(r.worktree != null ? { worktree: null } : {}),
+          }
         : r,
     ),
     teamName,
@@ -217,16 +231,16 @@ export const changeRole = changeKind;
 
 /**
  * 每一列的資料夾：隊長用主資料夾；BD 與測試（QA，會寫測試檔，Q5）各自開 worktree（是 git 才開得了）；
- * 研究、審查共用主資料夾。
+ * 研究、審查共用主資料夾。列自己指定了（Preset 的 `useWorktree`）就照它，但不是 git 一樣開不了。
  */
-export const rowUsesWorktree = (row: Pick<PlanRow, 'role'>, gitOk: boolean) =>
-  (row.role === 'worker' || row.role === 'tester') && gitOk;
+export const rowUsesWorktree = (row: Pick<PlanRow, 'role' | 'worktree'>, gitOk: boolean) =>
+  (row.worktree ?? (row.role === 'worker' || row.role === 'tester')) && gitOk;
 
 /** 研究、審查一律開成唯讀 session（daemon 拿掉改檔工具），才能和隊長共用主資料夾。 */
 export const isReadOnlyRole = (role: Role) => (READ_ONLY_ROLES as readonly Role[]).includes(role);
 
 /** 會改檔案、而且留在主資料夾的列（沒有自己的 worktree）。 */
-export const sharesMainAsWriter = (row: Pick<PlanRow, 'role'>, gitOk: boolean) =>
+export const sharesMainAsWriter = (row: Pick<PlanRow, 'role' | 'worktree'>, gitOk: boolean) =>
   !rowUsesWorktree(row, gitOk) && !isReadOnlyRole(row.role);
 
 export type PlanError = 'leadCount' | 'emptyName' | 'duplicateName' | 'sharedWriters' | null;

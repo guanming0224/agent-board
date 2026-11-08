@@ -72,7 +72,8 @@ const CALL_SITES = new Set([
   'packages/daemon/src/hookServer.ts node-network',
   // hook：只連 daemon 的本機 socket
   'packages/hook/src/cli.ts node-network',
-  // 派工 MCP server：只連 daemon 的本機 socket，把 Claude 的工具呼叫原樣轉過去（2026-11-06 審查）
+  // agent-board MCP server：只連 daemon 的本機 socket，把 Claude 的工具呼叫原樣轉過去
+  // （派工 2026-11-06 審查；進度卡 get_progress／update_progress 2026-11-08 加入，同一條路，P3 項目一）
   'packages/hook/src/mcp.ts node-network',
   // hub：推播、交接規則、IP 判斷
   'packages/hub/src/push.ts web-push',
@@ -108,8 +109,9 @@ const CLAUDE_FLAGS = new Set([
   '--disallowedTools',
   '--model',
   '--name',
-  // 派工工具（2026-11-06 審查）：掛 daemon 產生的 MCP 設定檔（本機 MCP server，只連 daemon 的 socket），
-  // 並事先允許那四個工具；不加 --strict-mcp-config，也不放寬其他工具。仍是互動模式。
+  // agent-board 工具（派工 2026-11-06 審查、進度卡 2026-11-08）：掛 daemon 產生的 MCP 設定檔（本機 MCP server，
+  // 只連 daemon 的 socket），並事先允許開著的那幾個工具（最多 6 個，見 AGENT_BOARD_TOOLS）；
+  // 不加 --strict-mcp-config，也不放寬其他工具。仍是互動模式。
   '--mcp-config',
   '--allowedTools',
   '--version',
@@ -190,6 +192,45 @@ for (const file of ['packages/daemon/src/session.ts', 'packages/daemon/src/resou
 for (const file of sources.filter((f) => rel(f).startsWith('packages/daemon/'))) {
   if (/'(-p|--print)'/.test(readFileSync(file, 'utf8'))) {
     problems.push(`${rel(file)}：出現 -p／--print，daemon 不能用非互動模式跑 claude`);
+  }
+}
+
+// 3b. `--allowedTools` 只能列 agent-board 自己的工具（docs/no-llm-review.md「什麼會打破這個保證」）。
+// 工具清單的唯一來源是 protocol 的 DispatchTool＋MemoryTool；daemon 一律用 mcp__<server>__<tool> 組全名。
+const AGENT_BOARD_TOOLS = [
+  'list_members',
+  'spawn_member',
+  'send_task',
+  'get_result',
+  'get_progress',
+  'update_progress',
+];
+{
+  const enumOf = (file, name) => {
+    const text = readFileSync(join(root, file), 'utf8');
+    const match = new RegExp(`export const ${name} = z\\.enum\\(\\[([^\\]]*)\\]\\)`).exec(text);
+    if (!match) {
+      problems.push(`${file}：找不到 ${name}，無法確認 --allowedTools 的工具清單`);
+      return [];
+    }
+    return [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  };
+  const tools = [
+    ...enumOf('packages/protocol/src/models.ts', 'DispatchTool'),
+    ...enumOf('packages/protocol/src/progress.ts', 'MemoryTool'),
+  ];
+  if (JSON.stringify(tools) !== JSON.stringify(AGENT_BOARD_TOOLS)) {
+    problems.push(
+      `agent-board 工具變成 ${tools.join(', ')}：--allowedTools 會跟著放寬，審查後更新 AGENT_BOARD_TOOLS 與 docs/no-llm-review.md`,
+    );
+  }
+  const mcpFiles = readFileSync(join(root, 'packages/daemon/src/mcpFiles.ts'), 'utf8');
+  if (!mcpFiles.includes('`mcp__${DISPATCH_MCP_SERVER}__${tool}`')) {
+    problems.push('packages/daemon/src/mcpFiles.ts：--allowedTools 的工具全名不是 mcp__agent-board__<tool>');
+  }
+  const daemon = readFileSync(join(root, 'packages/daemon/src/daemon.ts'), 'utf8');
+  if (!/allowedTools: tools\.map\(toolFullName\)/.test(daemon)) {
+    problems.push('packages/daemon/src/daemon.ts：--allowedTools 不是由 enabledTools 的 agent-board 工具組成');
   }
 }
 

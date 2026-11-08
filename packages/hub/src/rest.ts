@@ -27,6 +27,7 @@ import { assertBindableHost } from './config';
 import { conflict, HttpError, notFound } from './errors';
 import type { Hub } from './hub';
 import { isAllowedPushEndpoint, isValidClockTime, type VapidKeys } from './push';
+import { QuickSearch } from './search';
 import type { Store } from './store';
 import { worktreeConflicts } from './worktree';
 
@@ -111,6 +112,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
   const { store, hub, passwordParams, now } = deps;
   const nowMs = () => now().getTime();
   const nowIso = () => now().toISOString();
+  const quickSearch = new QuickSearch(store, { now: nowMs });
 
   const loginAccount = new RateLimiter(deps.loginLimit.perAccount, LIMIT_WINDOW_MS, nowMs);
   const loginIp = new RateLimiter(deps.loginLimit.perIp, LIMIT_WINDOW_MS, nowMs);
@@ -420,6 +422,15 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       return ok;
     },
 
+    teamPresetsList: () => hub.presets.list(),
+    teamPresetsCreate: (ctx) => hub.presets.create(ctx.body, ctx.user),
+    teamPresetsUpdate: (ctx) => hub.presets.update(param(ctx), ctx.body, ctx.user),
+    teamPresetsDelete: (ctx) => {
+      hub.presets.delete(param(ctx), ctx.user);
+      return ok;
+    },
+    teamPresetsUsed: (ctx) => hub.presets.used(param(ctx), ctx.body, ctx.user),
+
     zonesList: () => store.listZones(),
     zonesCreate: (ctx) => hub.createZone(ctx.body.name, ctx.user),
     zonesUpdate: (ctx) => hub.renameZone(param(ctx), ctx.body.name, ctx.user),
@@ -540,6 +551,25 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       return ok;
     },
 
+    // 進度卡（P3 項目一）：團隊卡與單獨 session 的卡同一套。
+    progressList: (ctx) => hub.progress.list(ctx.query),
+    progressTeamGet: (ctx) => hub.progress.card({ teamId: param(ctx) }),
+    progressTeamPut: (ctx) => hub.progress.write({ teamId: param(ctx) }, ctx.body, ctx.user),
+    progressTeamRevisions: (ctx) => hub.progress.revisions({ teamId: param(ctx) }),
+    progressTeamRestore: (ctx) =>
+      hub.progress.restore({ teamId: param(ctx) }, ctx.body.revision, ctx.user),
+    progressTeamDeliver: (ctx) =>
+      hub.progress.deliver({ teamId: param(ctx) }, ctx.body.sessionId, ctx.user),
+    progressSessionGet: (ctx) => hub.progress.card({ sessionId: param(ctx) }),
+    progressSessionPut: (ctx) => hub.progress.write({ sessionId: param(ctx) }, ctx.body, ctx.user),
+    progressSessionRevisions: (ctx) => hub.progress.revisions({ sessionId: param(ctx) }),
+    progressSessionRestore: (ctx) =>
+      hub.progress.restore({ sessionId: param(ctx) }, ctx.body.revision, ctx.user),
+    progressSessionDeliver: (ctx) =>
+      hub.progress.deliver({ sessionId: param(ctx) }, ctx.body.sessionId, ctx.user),
+    progressAskUpdate: (ctx) => hub.progress.askUpdate(param(ctx), ctx.user),
+
+    search: (ctx) => quickSearch.search(ctx.query, ctx.user),
     auditList: (ctx) => store.listAudit(ctx.query),
     auditExport: (ctx) => {
       // 匯出畫面上篩選的結果；沒有筆數上限。detail 記下用了哪些條件，事後才知道匯出的是哪一份。

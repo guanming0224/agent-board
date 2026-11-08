@@ -2366,10 +2366,23 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
       const hint = page.getByTestId('link-pick');
       await expect(hint).toBeVisible();
       // 第二列中間那張卡下方的空白（離卡夠遠，觸控的點擊校正不會吸到卡上）。
+      // 團隊框右邊的進度卡與變寬的底部指令列（P3 加了 Memory）也佔畫面：碰到就往右移到它外面。
       const docs = (await card(page, 's-docs').boundingBox())!;
       const blankY = docs.y + docs.height + 40;
       expect(blankY).toBeLessThan(768 - 40);
-      await page.touchscreen.tap(docs.x + docs.width / 2, blankY);
+      let blankX = docs.x + docs.width / 2;
+      for (const a of await page.locator('.progress-anchor, [data-testid="command-bar"]').all()) {
+        const box = (await a.boundingBox())!;
+        if (
+          blankX >= box.x - 40 &&
+          blankX <= box.x + box.width + 40 &&
+          blankY >= box.y - 40 &&
+          blankY <= box.y + box.height + 40
+        ) {
+          blankX = box.x + box.width + 60;
+        }
+      }
+      await page.touchscreen.tap(blankX, blankY);
       await expect(hint).toHaveCount(0);
       expect(await rules(page)).toEqual(before);
 
@@ -2944,19 +2957,20 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
   const strip = (page: Page) => page.getByTestId('pause-strip');
   const lamp = (page: Page, id: string) => card(page, id).locator('.lamp');
 
-  test('指令列：新增 session、群組、全部暫停、全部繼續；沒有 Presets、Memory；沒暫停時「全部繼續」停用', async ({
+  test('指令列：新增 session、群組、Presets、Memory、全部暫停、全部繼續；沒暫停時「全部繼續」停用', async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openCanvas(page);
+    // P3 項目二上線 Presets（docs/p3-spec.md §1.5 的底部列順序）；Memory 隨項目一上線。
     await expect(bar(page).getByRole('button')).toHaveText([
       /新增 session/,
       '群組',
+      'Presets',
+      'Memory',
       /全部暫停/,
       /全部繼續/,
     ]);
-    await expect(bar(page)).not.toContainText('Presets');
-    await expect(bar(page)).not.toContainText('Memory');
     await expect(page.getByTestId('resume-button')).toBeDisabled();
     await expect(page.getByTestId('pause-button')).toHaveAttribute('aria-pressed', 'false');
     await expect(strip(page)).toHaveCount(0);
@@ -3138,7 +3152,25 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
     const barBox = (await bar(page).boundingBox())!;
     expect(barBox.x).toBeGreaterThanOrEqual(0);
     expect(barBox.x + barBox.width).toBeLessThanOrEqual(1024);
+    // P3 整合：Presets 在 Memory 前面（docs/p3-spec.md §1.5），兩顆都在、沒被擠掉。
+    await expect(bar(page).getByRole('button')).toHaveText([
+      /New session/,
+      'Teams',
+      'Presets',
+      'Memory',
+      /.+/,
+      /.+/,
+    ]);
     await shot(page, 'command-bar-en');
+    // 最窄的桌面寬度（手機版以上）：指令列換行但不超出畫面、頁面不橫向捲動。
+    await page.setViewportSize({ width: 700, height: 900 });
+    await expect(page.getByTestId('command-memory')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      700,
+    );
+    const narrow = (await bar(page).boundingBox())!;
+    expect(narrow.x).toBeGreaterThanOrEqual(0);
+    expect(narrow.x + narrow.width).toBeLessThanOrEqual(700);
   });
 
   test('手機收件匣：暫停狀態列與兩顆大按鈕，可暫停、繼續；立刻中斷同樣按兩次；沒有底部指令列', async ({

@@ -585,6 +585,28 @@ kbd {
   z-index: 20;
   flex-shrink: 0;
 }
+.top .search-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+.top .search-btn[aria-pressed='true'] {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+/* 手機用收件匣頂部的搜尋鈕（§3.4）。頁首放不下時只留圖示（說明在 title 與 aria-label），頁首不換行。 */
+@media (max-width: 1280px) {
+  .top .search-btn {
+    justify-content: center;
+    min-width: 36px;
+    padding: 0 8px;
+  }
+  .top .search-btn .search-btn-label,
+  .top .search-btn kbd {
+    display: none;
+  }
+}
 .top .inbox-btn {
   display: inline-flex;
   align-items: center;

@@ -18,6 +18,8 @@ export class FakeHub {
   stuckMinutes = 7;
   /** hub.welcome 的 dispatch（派工工具）；undefined＝舊版 hub，不送這個欄位。 */
   dispatch: boolean | undefined = undefined;
+  /** hub.welcome 的 memory（進度卡工具，P3 項目一）；undefined＝舊版 hub，不送這個欄位。 */
+  memory: boolean | undefined = undefined;
   private wss!: WebSocketServer;
   private socket: WebSocket | null = null;
   private waiters: { predicate: Predicate; resolve: (m: DaemonToHub) => void }[] = [];
@@ -63,6 +65,7 @@ export class FakeHub {
           dangerRules: this.dangerRules,
           stuckMinutes: this.stuckMinutes,
           ...(this.dispatch === undefined ? {} : { dispatch: this.dispatch }),
+          ...(this.memory === undefined ? {} : { memory: this.memory }),
         } satisfies HubToDaemon),
       );
     }

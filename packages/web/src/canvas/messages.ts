@@ -142,6 +142,7 @@ registerMessages('zh-TW', {
   'canvas.size.other':
     '這個終端機的尺寸由另一個畫面決定，這裡縮放顯示。在終端機裡點一下或打字，就改用這個畫面的大小。',
   'canvas.menu.aria': '{name} 的更多動作',
+  'canvas.menu.progress': '進度卡',
   'canvas.menu.rename': '重新命名',
   'canvas.menu.renameAria': '新名稱',
   'canvas.menu.renameFailed': '沒改名：{detail}',
@@ -333,6 +334,7 @@ registerMessages('en', {
   'canvas.size.other':
     "Another screen sets this terminal's size, so it is scaled to fit here. Click or type in the terminal to use this screen's size.",
   'canvas.menu.aria': 'More actions for {name}',
+  'canvas.menu.progress': 'Progress card',
   'canvas.menu.rename': 'Rename',
   'canvas.menu.renameAria': 'New name',
   'canvas.menu.renameFailed': 'Not renamed: {detail}',

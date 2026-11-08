@@ -1,0 +1,443 @@
+/*
+ * 進度卡與 Memory（P3 項目一）。母規範卡片：--surface、圓角 12、1px --border。
+ * 不用任何狀態色或團隊色當底（STYLE「靜止時要安靜」）；久未更新用 ⚠ 符號＋--fg-muted，不用顏色表達。
+ */
+.progress-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  color: var(--fg);
+  text-align: left;
+  font-weight: 400;
+  white-space: normal;
+}
+.progress-card.on-canvas {
+  width: 280px;
+}
+.progress-card .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.progress-card .spacer {
+  flex: 1 1 auto;
+}
+.progress-card .faint {
+  color: var(--faint);
+  font-size: 12.5px;
+}
+.progress-card .mono,
+.progress-card code,
+.progress-card pre {
+  font-family: var(--font-mono);
+}
+.progress-card button.link {
+  min-height: 0;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+}
+
+/* 收合：一行「下一步」＋相對時間 */
+button.progress-collapsed,
+button.progress-tiny {
+  flex-direction: row;
+  align-items: center;
+  min-height: 40px;
+  cursor: pointer;
+}
+.progress-collapsed .progress-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.progress-tag {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.progress-age {
+  flex: none;
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.progress-age.stale {
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+button.progress-tiny {
+  width: auto;
+  gap: 6px;
+}
+button.progress-add {
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* 展開 */
+.progress-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.progress-head .progress-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+.progress-head .progress-title b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.progress-locked,
+.progress-notice {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  font-size: 12.5px;
+}
+.progress-fields {
+  display: grid;
+  gap: 8px;
+}
+.progress-field h4,
+.progress-facts h4,
+.progress-history h4,
+.progress-conflict h4 {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.progress-field.f-gmNotes {
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-2);
+}
+.progress-card .md p,
+.progress-card .md ul {
+  margin: 0 0 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.progress-card .md ul {
+  padding-left: 18px;
+}
+.progress-card .md code {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-size: 12px;
+}
+.progress-facts ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.progress-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.progress-actions button,
+.progress-edit-actions button,
+.progress-deliver button,
+.progress-conflict button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+.progress-ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.progress-card .chip.cost {
+  border-color: var(--quota);
+  color: var(--quota);
+}
+.progress-deliver {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+.progress-deliver p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.progress-sent {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.progress-card .msg {
+  margin: 0;
+  font-size: 12.5px;
+}
+.progress-card .msg.err,
+.progress-count.err {
+  color: var(--fault);
+}
+
+/* 編輯 */
+.progress-editor {
+  display: grid;
+  gap: 8px;
+}
+.progress-input {
+  display: grid;
+  gap: 2px;
+}
+.progress-input label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.progress-input textarea {
+  width: 100%;
+  min-height: 52px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 var(--font-sans);
+  resize: vertical;
+}
+.progress-input textarea[aria-invalid='true'] {
+  border-color: var(--fault);
+}
+.progress-count {
+  justify-self: end;
+  color: var(--faint);
+  font-size: 11px;
+}
+.progress-conflict {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--you);
+  border-radius: var(--radius-control);
+}
+.progress-conflict p {
+  margin: 0;
+  font-size: 12.5px;
+}
+.progress-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.progress-sides h5 {
+  margin: 0;
+  color: var(--faint);
+  font-size: 11px;
+}
+.progress-sides pre {
+  margin: 0;
+  padding: 6px;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.progress-sides pre.before {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+.progress-diff {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 0;
+}
+.progress-diff dt {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.progress-diff dd {
+  margin: 0;
+}
+
+/* 歷史 */
+.progress-history {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.progress-history ol {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  font-size: 12.5px;
+}
+
+/* 畫布上的一層：蓋在節點上面（卡片要點得到），本身不吃滑鼠，拖畫布照樣穿過去。 */
+.progress-layer {
+  position: absolute;
+  inset: 0;
+  /* 節點之上、xyflow 面板（小地圖、縮放、整理，z-index 5）之下 */
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+.progress-viewport {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+/* 畫布上：團隊框右上角外側（ViewportPortal 內，畫布 px）。展開時反向縮放回螢幕大小，縮小時也讀得到。 */
+.progress-anchor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 4;
+  transform-origin: 0 0;
+  pointer-events: auto;
+}
+.progress-anchor.expanded {
+  z-index: 6;
+}
+.progress-anchor .progress-card.on-canvas.progress-expanded {
+  width: 360px;
+  max-height: 80vh;
+  overflow: auto;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+}
+
+/* 手機：按鈕至少 56px、衝突比對上下排列（§1.6） */
+@media (max-width: 640px) {
+  .progress-card button,
+  .progress-card select {
+    min-height: 56px;
+  }
+  .progress-card button.link {
+    min-height: 44px;
+  }
+  .progress-sides {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Memory 面板 */
+.memory-page {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+.memory-page h1 {
+  margin: 0;
+  font-size: 18px;
+}
+.memory-scope {
+  display: inline-flex;
+  gap: 0;
+}
+.memory-scope button[aria-pressed='true'] {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+.memory-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.memory-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  text-align: left;
+  font-weight: 400;
+  white-space: normal;
+}
+.memory-row b {
+  font-size: 13.5px;
+}
+.memory-row .line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.memory-row .sub {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* 收件匣：呼號下一行淡色「下一步：…」 */
+.inbox-progress {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  font-size: 12.5px;
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 640px) {
+  .inbox-progress {
+    min-height: 44px;
+  }
+}

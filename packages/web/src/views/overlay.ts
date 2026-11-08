@@ -1,11 +1,15 @@
 // 畫布常駐＋疊加層的網址規則（P2 規格 §1.4）。純函式，App 與測試共用。
-// 畫布永遠在底下；右側一次一個面板（收件匣或團隊，互斥）；設定、封存細節、完整新增表單是置中次畫面，
+// 畫布永遠在底下；右側一次一個面板（收件匣、團隊或 Memory，互斥）；設定、封存細節、完整新增表單是置中次畫面，
 // 可疊在右側面板之上（關掉後右側面板還在）。
 
 export type RightPanel =
-  { kind: 'inbox'; target: string | null } | { kind: 'team'; teamId: string | null };
+  | { kind: 'inbox'; target: string | null }
+  | { kind: 'team'; teamId: string | null }
+  /** Memory（進度卡一覽，P3 項目一）。 */
+  | { kind: 'memory' };
 
-export type ModalKind = 'settings' | 'archive' | 'new';
+/** search：全域搜尋（P3 §3）。桌面是置中次畫面，手機是全螢幕頁 `#/search`（網址可帶 `?q=`）。 */
+export type ModalKind = 'settings' | 'archive' | 'new' | 'search';
 
 export type RouteView =
   /** 不疊在畫布上的整頁：全尺寸終端機、登入、首次引導（規格 §1.4 不變）。 */
@@ -27,7 +31,8 @@ function part(raw: string | undefined): string | null {
 
 /** 解析 `#/<頁>/<參數>`。不認得的一律當畫布。 */
 export function parseHash(hash: string): RouteView {
-  const [name = '', raw] = hash.replace(/^#\/?/, '').split('/');
+  // `?` 之後是頁面自己的參數（例如 #/search?q=…），不影響畫面種類。
+  const [name = '', raw] = (hash.replace(/^#\/?/, '').split('?')[0] ?? '').split('/');
   const param = part(raw);
   switch (name) {
     case 'terminal':
@@ -43,6 +48,8 @@ export function parseHash(hash: string): RouteView {
       return { kind: 'board', right: { kind: 'inbox', target: param }, modal: null };
     case 'team':
       return { kind: 'board', right: { kind: 'team', teamId: param }, modal: null };
+    case 'memory':
+      return { kind: 'board', right: { kind: 'memory' }, modal: null };
     case 'settings':
       return { kind: 'board', right: 'keep', modal: 'settings' };
     case 'archive':
@@ -52,6 +59,8 @@ export function parseHash(hash: string): RouteView {
         : { kind: 'redirect', to: '#/settings/archived' };
     case 'new':
       return { kind: 'board', right: 'keep', modal: 'new' };
+    case 'search':
+      return { kind: 'board', right: 'keep', modal: 'search' };
     default:
       return { kind: 'board', right: null, modal: null };
   }
@@ -60,12 +69,30 @@ export function parseHash(hash: string): RouteView {
 export const inboxHash = (sessionId?: string | null) =>
   sessionId ? `#/inbox/${encodeURIComponent(sessionId)}` : '#/inbox';
 
+export const MEMORY_HASH = '#/memory';
+
+/** 全域搜尋；q 有給就帶在網址上（手機可分享的深連結）。 */
+export const searchHash = (q?: string | null) =>
+  q ? `#/search?q=${encodeURIComponent(q)}` : '#/search';
+
+/** `#/search?q=…` 的查詢字；沒有或解不開是空字串。 */
+export function searchQueryOf(hash: string): string {
+  const query = hash.split('?')[1];
+  if (!query) return '';
+  try {
+    return new URLSearchParams(query).get('q') ?? '';
+  } catch {
+    return '';
+  }
+}
+
 export const teamHash = (teamId?: string | null) =>
   teamId ? `#/team/${encodeURIComponent(teamId)}` : '#/team';
 
 /** 右側面板對應的網址；沒有面板就是畫布。關設定時回到這裡。 */
 export function rightHash(right: RightPanel | null): string {
   if (!right) return '#/canvas';
+  if (right.kind === 'memory') return MEMORY_HASH;
   return right.kind === 'inbox' ? '#/inbox' : teamHash(right.teamId);
 }
 

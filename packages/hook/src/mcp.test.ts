@@ -8,16 +8,21 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  AgentBoardTool,
   DISPATCH_MCP_SERVER,
   DISPATCH_ROLES,
   DispatchTool,
   HOOK_ENV,
   MCP_ENV,
   McpRequest,
+  MemoryTool,
 } from '@agent-board/protocol';
 import {
+  DISPATCH_TOOLS,
   MCP_SECRET_FILE_ENV,
   MCP_SERVER_NAME,
+  MCP_TOOLS_ENV,
+  MEMORY_TOOLS,
   SESSION_ID_ENV,
   SOCKET_ENV,
 } from './mcp-constants.ts';
@@ -113,7 +118,10 @@ function startServer(env: Record<string, string>): Server_ {
   };
 }
 
-async function configured(answer: Parameters<typeof startDaemon>[0]): Promise<Server_> {
+async function configured(
+  answer: Parameters<typeof startDaemon>[0],
+  extra: Record<string, string> = {},
+): Promise<Server_> {
   const socket = await startDaemon(answer);
   const secretFile = join(dir, 'k.key');
   await writeFile(secretFile, `${SECRET}\n`, { mode: 0o600 });
@@ -121,7 +129,18 @@ async function configured(answer: Parameters<typeof startDaemon>[0]): Promise<Se
     [SESSION_ID_ENV]: 'session-1',
     [SOCKET_ENV]: socket,
     [MCP_SECRET_FILE_ENV]: secretFile,
+    ...extra,
   });
+}
+
+async function listed(server: Server_, id: number) {
+  server.send({ id, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+  const init = (await server.reply(id)).result as { instructions: string };
+  server.send({ id: id + 1, method: 'tools/list' });
+  const { tools } = (await server.reply(id + 1)).result as {
+    tools: { name: string; inputSchema: { required?: string[]; properties?: object } }[];
+  };
+  return { instructions: init.instructions, tools };
 }
 
 describe('agent-board-mcp', () => {
@@ -130,6 +149,64 @@ describe('agent-board-mcp', () => {
     expect(SOCKET_ENV).toBe(HOOK_ENV.socket);
     expect(MCP_SECRET_FILE_ENV).toBe(MCP_ENV.secretFile);
     expect(MCP_SERVER_NAME).toBe(DISPATCH_MCP_SERVER);
+    expect(MCP_TOOLS_ENV).toBe(MCP_ENV.tools);
+    expect([...DISPATCH_TOOLS]).toEqual(DispatchTool.options);
+    expect([...MEMORY_TOOLS]).toEqual(MemoryTool.options);
+  });
+
+  it('進度卡（P3）：只列、只接受 daemon 給的工具；instructions 依掛了什麼加對應的句子', async () => {
+    const all = await configured(() => ({ ok: true, text: '{}' }), {
+      [MCP_TOOLS_ENV]: AgentBoardTool.options.join(','),
+    });
+    const both = await listed(all, 1);
+    expect(both.tools.map((t) => t.name)).toEqual(AgentBoardTool.options);
+    expect(both.instructions).toContain('delegate work');
+    expect(both.instructions).toContain('first read the team progress card with get_progress');
+    expect(both.instructions).toContain("gmNotes are the user's fixed rules");
+    expect(both.tools.find((t) => t.name === 'update_progress')!.inputSchema.required).toEqual([
+      'baseRevision',
+    ]);
+    // update_progress 的參數不含 gmNotes（agent 不能改 GM 備註）。
+    expect(
+      Object.keys(both.tools.find((t) => t.name === 'update_progress')!.inputSchema.properties!),
+    ).toEqual(['baseRevision', 'status', 'next', 'blockers', 'team']);
+    child!.kill();
+    await new Promise<void>((resolve) => (daemon ? daemon.close(() => resolve()) : resolve()));
+    daemon = null;
+
+    // 只開進度卡：派工工具不出現、也呼叫不了；進度卡工具原樣轉給 daemon。
+    const memoryOnly = await configured(() => ({ ok: true, text: '{"revision":0}' }), {
+      [MCP_TOOLS_ENV]: 'get_progress,update_progress,not_a_tool',
+    });
+    const only = await listed(memoryOnly, 1);
+    expect(only.tools.map((t) => t.name)).toEqual(['get_progress', 'update_progress']);
+    expect(only.instructions).not.toContain('delegate work');
+    expect(only.instructions).toContain('get_progress');
+    memoryOnly.send({
+      id: 5,
+      method: 'tools/call',
+      params: { name: 'list_members', arguments: {} },
+    });
+    expect(((await memoryOnly.reply(5)).error as { code: number }).code).toBe(-32602);
+    memoryOnly.send({
+      id: 6,
+      method: 'tools/call',
+      params: { name: 'update_progress', arguments: { baseRevision: 0, next: 'x' } },
+    });
+    expect((await memoryOnly.reply(6)).result).toEqual({
+      content: [{ type: 'text', text: '{"revision":0}' }],
+      isError: false,
+    });
+    expect(requests.map((r) => [r.tool, r.args])).toEqual([
+      ['update_progress', { baseRevision: 0, next: 'x' }],
+    ]);
+  });
+
+  it('舊版 daemon（沒給工具清單）：照舊只有派工的四個', async () => {
+    const server = await configured(() => null);
+    const { tools, instructions } = await listed(server, 1);
+    expect(tools.map((t) => t.name)).toEqual(DispatchTool.options);
+    expect(instructions).not.toContain('get_progress');
   });
 
   it('initialize 協商版本、tools/list 列出四個工具，通知不回', async () => {

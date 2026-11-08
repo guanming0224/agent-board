@@ -1,8 +1,11 @@
 // 真後端：REST 走 routes 表，其餘走 /ws/client（CONTRACTS.md §6、§7）。登入後才連 WebSocket。
 import { HubToClient, routes, WS_PATHS } from '@agent-board/protocol';
+import { progressOwnerKey, progressOwnerOf } from '@agent-board/protocol';
 import type {
   BoardPauseState,
   Broadcast,
+  ProgressCard,
+  ProgressOwner,
   ClientToHub,
   ResourceSample,
   SessionEvent,
@@ -22,6 +25,8 @@ export class ApiRequestError extends Error {
     readonly code: string,
     message: string,
     readonly retryAfterSeconds?: number,
+    /** ApiError.detail（例如 progress_conflict 的 ProgressConflict）。 */
+    readonly detail?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -66,6 +71,7 @@ async function request<N extends RouteName>(
     const error = (await res.json().catch(() => null)) as {
       code?: string;
       message?: string;
+      detail?: Record<string, unknown>;
     } | null;
     const retry = Number(res.headers.get('retry-after'));
     // 登入過期：回登入頁。登入本身的 401 由 LoginPage 顯示。
@@ -75,6 +81,7 @@ async function request<N extends RouteName>(
       error?.code ?? 'request_failed',
       error?.message ?? `HTTP ${res.status}`,
       Number.isFinite(retry) && retry > 0 ? retry : undefined,
+      error?.detail,
     );
   }
   return res;
@@ -205,13 +212,19 @@ class HubConnection implements TerminalStream {
           zones: message.zones,
           broadcasts: mergeAfterReconnect(this.state?.broadcasts ?? [], message.broadcasts),
           pause: message.pause,
+          progress: message.progress,
+          presets: message.presets,
         });
         return;
       case 'board.pause':
         this.pauseSeq++;
         return this.patch((s) => ({ ...s, pause: message.pause }));
+      case 'progress.updated':
+        return this.patch((s) => ({ ...s, progress: upsertCard(s.progress ?? [], message.card) }));
       case 'zone.list':
         return this.patch((s) => ({ ...s, zones: message.zones }));
+      case 'preset.list':
+        return this.patch((s) => ({ ...s, presets: message.presets }));
       case 'broadcast.updated':
         return this.patch((s) => ({
           ...s,
@@ -281,6 +294,13 @@ class HubConnection implements TerminalStream {
     this.patch((s) => ({ ...s, pause }));
   }
 
+  /** REST 寫入的回應：WebSocket 的 progress.updated 還沒到也先套上（較舊的不蓋較新的）。 */
+  applyCard(card: ProgressCard): void {
+    const clean = { ...card };
+    delete clean.merged;
+    this.patch((s) => ({ ...s, progress: upsertCard(s.progress ?? [], clean) }));
+  }
+
   private patch(update: (state: BoardSnapshot) => BoardSnapshot): void {
     if (this.state) this.publish(update(this.state));
   }
@@ -307,6 +327,22 @@ export function mergeAfterReconnect(previous: Broadcast[], current: Broadcast[])
     }));
   return [...lost, ...current];
 }
+
+/** 同一個擁有者只有一張卡；較舊的版本不蓋掉較新的（REST 回應與 WS 推送可能前後顛倒）。 */
+export function upsertCard(list: ProgressCard[], card: ProgressCard): ProgressCard[] {
+  const key = progressOwnerKey(progressOwnerOf(card));
+  const index = list.findIndex((c) => progressOwnerKey(progressOwnerOf(c)) === key);
+  if (index === -1) return [...list, card];
+  const current = list[index]!;
+  // 同一版只有鎖定可能不同（鎖定不加版本）：一樣接受新的。
+  if (current.revision > card.revision) return list;
+  return list.map((c, i) => (i === index ? card : c));
+}
+
+const progressPath = (owner: ProgressOwner) =>
+  'teamId' in owner
+    ? ({ team: true, id: owner.teamId } as const)
+    : ({ team: false, id: owner.sessionId } as const);
 
 function upsert<T extends { id: string }>(list: T[], item: T): T[] {
   return list.some((x) => x.id === item.id)
@@ -359,6 +395,15 @@ export function createHubBackend() {
     resumeSession: (id) => call('sessionsResume', { params: { id } }),
     listArchivedSessions: () => call('sessionsList', { query: { archived: 'true' } }),
     inspectSession: (id) => call('sessionInspect', { params: { id } }),
+    search: ({ archived, mask, zoneId, ...rest }) =>
+      call('search', {
+        query: {
+          ...rest,
+          ...(zoneId === undefined ? {} : { zoneId }),
+          archived: archived ? '1' : '0',
+          mask: mask ? '1' : '0',
+        },
+      }),
     sessionTranscript: (id, query) => call('sessionTranscript', { params: { id }, query }),
     deleteSession: async (id, options) =>
       (await call('sessionsDelete', { params: { id }, body: options })).result,
@@ -459,11 +504,52 @@ export function createHubBackend() {
       call('teamBroadcast', { params: { id }, body: targets ? { text, targets } : { text } }),
     cancelBroadcast: (id, sessionId) =>
       call('broadcastCancel', { params: { id }, body: { sessionId } }),
+    getProgress(owner) {
+      const { team, id } = progressPath(owner);
+      return call(team ? 'progressTeamGet' : 'progressSessionGet', { params: { id } });
+    },
+    async saveProgress(owner, body) {
+      const { team, id } = progressPath(owner);
+      const card = await call(team ? 'progressTeamPut' : 'progressSessionPut', {
+        params: { id },
+        body,
+      });
+      hub.applyCard(card);
+      return card;
+    },
+    progressRevisions(owner) {
+      const { team, id } = progressPath(owner);
+      return call(team ? 'progressTeamRevisions' : 'progressSessionRevisions', { params: { id } });
+    },
+    async restoreProgress(owner, revision) {
+      const { team, id } = progressPath(owner);
+      const card = await call(team ? 'progressTeamRestore' : 'progressSessionRestore', {
+        params: { id },
+        body: { revision },
+      });
+      hub.applyCard(card);
+      return card;
+    },
+    deliverProgress(owner, sessionId) {
+      const { team, id } = progressPath(owner);
+      return call(team ? 'progressTeamDeliver' : 'progressSessionDeliver', {
+        params: { id },
+        body: { sessionId },
+      });
+    },
+    askProgressUpdate: (teamId) => call('progressAskUpdate', { params: { id: teamId } }),
     createZone: (name) => call('zonesCreate', { body: { name } }),
     renameZone: (id, name) => call('zonesUpdate', { params: { id }, body: { name } }),
     async deleteZone(id) {
       await call('zonesDelete', { params: { id } });
     },
+    listTeamPresets: () => call('teamPresetsList'),
+    createTeamPreset: (input) => call('teamPresetsCreate', { body: input }),
+    updateTeamPreset: (id, patch) => call('teamPresetsUpdate', { params: { id }, body: patch }),
+    async deleteTeamPreset(id) {
+      await call('teamPresetsDelete', { params: { id } });
+    },
+    teamPresetUsed: (id, result) => call('teamPresetsUsed', { params: { id }, body: result }),
 
     // 設定頁以選用方式使用（flows/settingsParts.tsx 的 OptionalAdmin）
     listUsers: () => call('usersList'),

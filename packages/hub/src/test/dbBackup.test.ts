@@ -58,7 +58,7 @@ const backups = () => readdirSync(dir).filter((name) => name.includes('.bak-'));
 
 describe('backup before schema upgrade', () => {
   it('backs up an older database (0600, opens, still the old version) before migrating, and logs the path', () => {
-    expect(SCHEMA_VERSION).toBe(9);
+    expect(SCHEMA_VERSION).toBe(10);
     const path = join(dir, 'hub.db');
     makeV7(path);
     const lines: string[] = [];
@@ -327,7 +327,8 @@ describe('schema v9：工作區', () => {
     before.close();
 
     const db = openDatabase(path, { log: () => undefined, now: NOW });
-    expect(db.pragma('user_version', { simple: true })).toBe(9);
+    // v8 一路升到最新版（v9 工作區之後還有 v10）。
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     expect(backups()).toEqual([`hub.db.bak-${STAMP}-v8`]);
     const store = new Store(db, '127.0.0.1');
     const zones = store.listZones();
@@ -390,5 +391,193 @@ describe('schema v9：工作區', () => {
     expect(store.deleteZone('b', 'main')).toBe(true);
     expect(store.getSession('s13')?.zoneId).toBe('main');
     db.close();
+  });
+});
+
+// P3 整合：三個項目的 v10 片段併成同一個 migration（只升一次）。
+describe('schema v10：P3 只有一個 migration', () => {
+  it('MIGRATIONS 長度 10；v9 升一次就有進度卡、Presets、搜尋索引全部', () => {
+    expect(MIGRATIONS).toHaveLength(10);
+    expect(SCHEMA_VERSION).toBe(10);
+    const path = join(dir, 'hub.db');
+    makeAt(path, 9).close();
+    const db = openDatabase(path, { log: () => undefined, now: NOW });
+    expect(db.pragma('user_version', { simple: true })).toBe(10);
+    expect(backups()).toEqual([`hub.db.bak-${STAMP}-v9`]);
+    const names = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE name IN ('progress_cards', 'progress_revisions', 'team_presets', 'team_presets_position', 'session_events_type') ORDER BY name",
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+    expect(names).toEqual([
+      'progress_cards',
+      'progress_revisions',
+      'session_events_type',
+      'team_presets',
+      'team_presets_position',
+    ]);
+    db.close();
+  });
+});
+
+// P3 項目一：v9 → v10 進度卡。從只跑到 v9 的真實結構開始，放進和驗收條件一樣多的東西（6 團隊、13 session）。
+describe('schema v10：進度卡', () => {
+  const T = '2026-11-08T00:00:00.000Z';
+
+  function makeV9WithData(path: string): void {
+    const db = makeAt(path, 9);
+    db.exec(`
+      INSERT INTO users (id, name, password_hash, role, locale) VALUES ('u', 'gm', 'h', 'owner', 'zh-TW');
+      INSERT INTO machines (id, name, os, token_hash, capabilities) VALUES ('m', 'm', 'darwin', 'h', '{}');
+      INSERT INTO zones (id, name, created_at, position) VALUES ('z2', '研究', '${T}', 1);
+    `);
+    const session = db.prepare(
+      `INSERT INTO sessions (id, machine_id, name, cwd, permission_mode, status, status_since, created_at, archived, zone_id)
+       VALUES (?, 'm', ?, '/r', 'default', 'waiting_input', ?, ?, ?, ?)`,
+    );
+    const layout = db.prepare(
+      `INSERT INTO layouts (id, user_id, workspace, session_id, x, y, w, h) VALUES (?, 'u', 'default', ?, ?, ?, 680, 640)`,
+    );
+    for (let i = 1; i <= 13; i++) {
+      session.run(`s${i}`, `name-${i}`, T, T, i === 13 ? 1 : 0, i > 10 ? 'z2' : 'main');
+      layout.run(`l${i}`, `s${i}`, i * 820, (i % 3) * 712);
+    }
+    const team = db.prepare(
+      `INSERT INTO teams (id, name, goal, done_criteria, color, context_md, zone_id) VALUES (?, ?, 'g', '', 'teal', 'ctx', ?)`,
+    );
+    const member = db.prepare(
+      'INSERT INTO team_members (team_id, session_id, role) VALUES (?, ?, ?)',
+    );
+    for (let t = 1; t <= 6; t++) {
+      team.run(`t${t}`, `team-${t}`, t === 6 ? 'z2' : 'main');
+      member.run(`t${t}`, `s${t * 2 - 1}`, 'lead');
+      member.run(`t${t}`, `s${t * 2}`, 'worker');
+    }
+    db.exec(`
+      INSERT INTO tasks (id, team_id, title, "column", number) VALUES ('k1', 't1', 'A', 'done', 1);
+      INSERT INTO session_events (id, session_id, type, payload, at) VALUES ('e1', 's1', 'hook', '{"event":"Stop"}', '${T}');
+      INSERT INTO audit_log (id, user_id, session_id, action, detail, at) VALUES ('a1', 'u', 's1', 'x', '', '${T}');
+    `);
+    db.close();
+  }
+
+  it('升級前寫 -v9 備份；progress_cards、progress_revisions 存在且為空；舊資料與畫布座標不變', () => {
+    const path = join(dir, 'hub.db');
+    makeV9WithData(path);
+    const before = new Database(path, { readonly: true });
+    const layoutsBefore = before.prepare('SELECT * FROM layouts ORDER BY id').all();
+    const teamsBefore = before.prepare('SELECT * FROM teams ORDER BY id').all();
+    const sessionsBefore = before.prepare('SELECT * FROM sessions ORDER BY id').all();
+    before.close();
+
+    const db = openDatabase(path, { log: () => undefined, now: NOW });
+    expect(db.pragma('user_version', { simple: true })).toBe(10);
+    expect(backups()).toEqual([`hub.db.bak-${STAMP}-v9`]);
+    for (const table of ['progress_cards', 'progress_revisions']) {
+      expect((db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(0);
+    }
+    expect(db.prepare('SELECT * FROM layouts ORDER BY id').all()).toEqual(layoutsBefore);
+    expect(db.prepare('SELECT * FROM teams ORDER BY id').all()).toEqual(teamsBefore);
+    expect(db.prepare('SELECT * FROM sessions ORDER BY id').all()).toEqual(sessionsBefore);
+    const store = new Store(db, '127.0.0.1');
+    expect(store.listTeams()).toHaveLength(6);
+    expect(store.listSessions()).toHaveLength(13);
+    expect(store.listZones().map((z) => z.id)).toEqual(['main', 'z2']);
+    expect(store.listTasks('t1')).toHaveLength(1);
+    expect(store.listProgress()).toEqual([]);
+    expect(store.getProgress({ teamId: 't1' })).toBeNull();
+    db.close();
+
+    // 降級演練：-v9 備份是 v9 hub 讀得了的那一份，裡面沒有進度卡表。
+    expect(latestBackup(path, 9)).toBe(join(dir, `hub.db.bak-${STAMP}-v9`));
+    const saved = new Database(join(dir, `hub.db.bak-${STAMP}-v9`), { readonly: true });
+    expect(saved.pragma('user_version', { simple: true })).toBe(9);
+    expect(
+      saved.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'progress_%'").all(),
+    ).toEqual([]);
+    saved.close();
+  });
+
+  it('卡片剛好屬於團隊或 session 其中一個、各自唯一；團隊或 session 刪掉時卡片與歷史一起刪', () => {
+    const path = join(dir, 'hub.db');
+    makeV9WithData(path);
+    const db = openDatabase(path, { log: () => undefined, now: NOW });
+    const insert = db.prepare(
+      'INSERT INTO progress_cards (id, team_id, session_id) VALUES (?, ?, ?)',
+    );
+    expect(() => insert.run('both', 't1', 's1')).toThrow(/CHECK/);
+    expect(() => insert.run('none', null, null)).toThrow(/CHECK/);
+    insert.run('c1', 't1', null);
+    insert.run('c2', null, 's13');
+    expect(() => insert.run('dup', 't1', null)).toThrow(/UNIQUE/);
+    expect(() => insert.run('ghost', 'nope', null)).toThrow(/FOREIGN KEY/);
+    const revision = db.prepare(
+      "INSERT INTO progress_revisions (id, card_id, revision, fields, by_kind, source, at) VALUES (?, ?, ?, '{}', 'user', 'web', ?)",
+    );
+    revision.run('r1', 'c1', 1, T);
+    revision.run('r2', 'c2', 1, T);
+    expect(() => revision.run('r1b', 'c1', 1, T)).toThrow(/UNIQUE/);
+    db.prepare("DELETE FROM teams WHERE id = 't1'").run();
+    db.prepare("DELETE FROM sessions WHERE id = 's13'").run();
+    expect(db.prepare('SELECT count(*) AS n FROM progress_cards').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT count(*) AS n FROM progress_revisions').get()).toEqual({ n: 0 });
+    // audit 保留。
+    expect(db.prepare('SELECT count(*) AS n FROM audit_log').get()).toEqual({ n: 1 });
+    db.close();
+  });
+});
+
+// P3 ③a 全域搜尋：v9 → v10 加 session_events(type, at) 索引。從只跑到 v9 的真實結構開始，舊資料原封不動。
+describe('schema v10：全域搜尋的事件索引', () => {
+  const T = '2026-11-08T00:00:00.000Z';
+
+  function makeV9WithEvents(path: string): void {
+    const db = makeAt(path, 9);
+    db.exec(`
+      INSERT INTO users (id, name, password_hash, role, locale) VALUES ('u', 'gm', 'h', 'owner', 'zh-TW');
+      INSERT INTO machines (id, name, os, token_hash, capabilities) VALUES ('m', 'm', 'darwin', 'h', '{}');
+      INSERT INTO sessions (id, machine_id, name, cwd, permission_mode, status, status_since, created_at, archived)
+        VALUES ('s1', 'm', 'tw-impl-1', '/r', 'default', 'running', '${T}', '${T}', 0);
+    `);
+    const event = db.prepare(
+      'INSERT INTO session_events (id, session_id, type, payload, at) VALUES (?, ?, ?, ?, ?)',
+    );
+    for (let i = 0; i < 30; i++) {
+      event.run(`e${i}`, 's1', i % 2 ? 'file.changed' : 'hook', `{"path":"/r/f${i}.py"}`, T);
+    }
+    db.close();
+  }
+
+  it('升級前寫 -v9 備份；索引建好、查詢用得到；事件一筆不少', () => {
+    const path = join(dir, 'hub.db');
+    makeV9WithEvents(path);
+    const db = openDatabase(path, { log: () => undefined, now: NOW });
+    expect(db.pragma('user_version', { simple: true })).toBe(10);
+    expect(backups()).toEqual([`hub.db.bak-${STAMP}-v9`]);
+    const index = db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'session_events_type'",
+      )
+      .get() as { sql: string } | undefined;
+    expect(index?.sql).toMatch(/session_events\(type, at\)/);
+    const plan = db
+      .prepare(
+        "EXPLAIN QUERY PLAN SELECT * FROM session_events WHERE type = 'file.changed' AND at >= ?",
+      )
+      .all(T) as { detail: string }[];
+    expect(plan.map((p) => p.detail).join(' ')).toMatch(/session_events_type/);
+    expect((db.prepare('SELECT count(*) AS n FROM session_events').get() as { n: number }).n).toBe(
+      30,
+    );
+    const store = new Store(db, '127.0.0.1');
+    expect(store.listEvents('s1')).toHaveLength(30);
+    expect(store.getSession('s1')?.name).toBe('tw-impl-1');
+    db.close();
+
+    const saved = new Database(join(dir, `hub.db.bak-${STAMP}-v9`), { readonly: true });
+    expect(saved.pragma('user_version', { simple: true })).toBe(9);
+    saved.close();
   });
 });

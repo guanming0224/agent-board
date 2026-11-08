@@ -1718,6 +1718,8 @@ test.describe('設定', () => {
       '我的帳號',
       '通知',
       'Session 與額度',
+      // P3 項目二：團隊 Presets 的管理（內容由 team 資料夾註冊）。
+      'Presets（團隊組合）',
       '安全',
       '機器與使用者',
       '資料與紀錄',
@@ -1748,9 +1750,13 @@ test.describe('設定', () => {
     await expect(page.locator('#s-quota')).toBeVisible();
     await expect(page.locator('#s-stuck')).toContainText('幾分鐘沒輸出算卡住');
     await expect(page.locator('#s-security')).toHaveCount(0);
+    // Tab 到下一個分類（P3 起「Session 與額度」下一個是 Presets）。
     await page.keyboard.press('Tab');
     await page.keyboard.press('Enter');
-    await expect(nav.getByRole('link', { name: '安全' })).toHaveAttribute('aria-current', 'page');
+    await expect(nav.getByRole('link', { name: 'Presets（團隊組合）' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
   });
 
   test('深連結：網址帶分類或舊的區塊 id，都落到對的分類與位置', async ({ page }) => {
@@ -1839,6 +1845,8 @@ test.describe('設定', () => {
     await expect(nav.getByRole('link')).toHaveText([
       '我的帳號',
       'Session 與額度',
+      // Presets 是 auth user：成員（手機）也能套用、改名、刪除。
+      'Presets（團隊組合）',
       '機器與使用者',
       '資料與紀錄',
     ]);
@@ -1952,7 +1960,7 @@ test.describe('設定', () => {
       await open(page, 'settings/security');
       const nav = page.getByRole('navigation', { name: '設定分類' });
       const links = nav.getByRole('link');
-      await expect(links).toHaveCount(6);
+      await expect(links).toHaveCount(7);
       for (const link of await links.all()) {
         const box = (await link.boundingBox())!;
         expect(box.x).toBeGreaterThanOrEqual(15);

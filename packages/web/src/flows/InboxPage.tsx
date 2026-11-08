@@ -1,4 +1,5 @@
 // 手機 PWA 收件匣：只列待處理項目，大按鈕；複雜操作回電腦（DISPATCH §5.3-6）。
+import { InboxProgressHint } from '../progress/InboxHint';
 import { useEffect, useRef, useState } from 'react';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { MaskChip, useMaskText } from '../security';
@@ -326,6 +327,8 @@ function InboxItem({
           <Callsign text={t('flows.review.unknownSession')} />
         )}
       </div>
+      {/* 屬於有進度卡的團隊：呼號下一行淡色「下一步：…」，點了展開整張卡（P3 §1.6）。 */}
+      {session && <InboxProgressHint session={session} />}
       <div className="head">
         <Lamp status={item.status} />
         {session && <span className="title">{session.name}</span>}
@@ -365,6 +368,16 @@ export function InboxPage() {
         <span className="waiting-slot">
           <Waiting count={items.length} />
         </span>
+        {/* 全域搜尋（P3 §3.4）：手機的入口在收件匣頂部，開全螢幕搜尋頁。 */}
+        <a
+          className="button icon inbox-search"
+          href="#/search"
+          aria-label={t('flows.inbox.search')}
+          title={t('flows.inbox.search')}
+          data-testid="inbox-search"
+        >
+          <span aria-hidden="true">⌕</span>
+        </a>
         <MaskChip />
       </header>
       <WaitingBanner />

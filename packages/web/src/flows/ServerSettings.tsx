@@ -538,6 +538,31 @@ export function DispatchSection({ form }: { form: ServerSettingsForm }) {
 }
 
 /**
+ * 讓 session 讀寫進度卡（MCP 工具 get_progress／update_progress，P3 項目一）：預設開。
+ * 工具本身不花額度、不會自己動（Claude 呼叫才有作用），所以不標 ◈。關掉後新開或接續的 session 不掛這兩個工具。
+ */
+export function MemorySection({ form }: { form: ServerSettingsForm }) {
+  const t = useT();
+  const { draft, patch } = form;
+  return (
+    <Section id="memory" title={t('flows.settings.memory')} dirty={form.isDirty('memory')}>
+      <div className="field">
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="memory-toggle"
+            checked={draft.memory}
+            onChange={(e) => patch({ memory: e.target.checked })}
+          />
+          {t('flows.memory.label')}
+        </label>
+        <p className="hint">{t('flows.memory.hint')}</p>
+      </div>
+    </Section>
+  );
+}
+
+/**
  * 唯一的儲存按鈕：一次存三個分類的修改。
  * 有欄位不合法而且不在眼前這個分類時，先切過去，使用者才看得到哪裡標紅。
  */

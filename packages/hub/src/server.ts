@@ -41,7 +41,8 @@ export interface HubOptions {
   webDir?: string | null;
   passwordParams?: PasswordParams;
   pushTransport?: PushTransport;
-  logger?: boolean;
+  /** true 印到 stdout；給 stream 時寫到那裡（測試攔日誌用）。 */
+  logger?: boolean | { stream: { write(line: string): void } };
   now?: () => Date;
   timing?: Partial<Timing>;
   loginLimit?: { perAccount: number; perIp: number };
@@ -58,6 +59,18 @@ export interface RunningHub {
   listen(): Promise<{ host: string; port: number; url: string }>;
   close(): Promise<void>;
 }
+
+/**
+ * 請求日誌只記路徑、不記查詢字串：`GET /api/search?q=…` 的查詢字可能是 GM 貼上的金鑰（§3.5、D9 金鑰不落地），
+ * 其他路由的查詢參數也沒有要留在日誌裡的。
+ */
+export const LOG_SERIALIZERS = {
+  req: (req: { method: string; url: string; ip?: string }) => ({
+    method: req.method,
+    url: req.url.split('?')[0],
+    remoteAddress: req.ip,
+  }),
+};
 
 /** 瀏覽器貼上的大段文字要過得來，但不能無上限。 */
 const CLIENT_MAX_PAYLOAD = 4 * 1024 * 1024;
@@ -101,7 +114,12 @@ export function createHub(options: HubOptions): RunningHub {
   const vapid = store.ensureVapidKeys(generateVapidKeys);
 
   const app = Fastify({
-    logger: options.logger ?? false,
+    logger: options.logger
+      ? {
+          serializers: LOG_SERIALIZERS,
+          ...(typeof options.logger === 'object' ? { stream: options.logger.stream } : {}),
+        }
+      : false,
     // tailscale serve 等反向代理在本機；只有來自 loopback 的 X-Forwarded-For 才可信，限速才分得出來源。
     trustProxy: 'loopback',
     bodyLimit: 1024 * 1024,

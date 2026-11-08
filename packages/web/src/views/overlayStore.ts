@@ -1,6 +1,13 @@
 // 疊加層的狀態（App 依網址寫入）與開關的動作。頁首、收件匣、團隊面板都從這裡開關，不各自改網址規則。
 import { create } from 'zustand';
-import { closeStep, inboxHash, type ModalKind, type RightPanel } from './overlay';
+import {
+  closeStep,
+  inboxHash,
+  MEMORY_HASH,
+  searchHash,
+  type ModalKind,
+  type RightPanel,
+} from './overlay';
 
 interface OverlayState {
   right: RightPanel | null;
@@ -54,4 +61,16 @@ export function closeRight(): void {
 export function toggleInbox(): void {
   if (useOverlay.getState().right?.kind === 'inbox') closeRight();
   else location.hash = inboxHash();
+}
+
+/** 底部列「Memory」：開著就收，沒開就打開（右側一次一個面板）。 */
+export function toggleMemory(): void {
+  if (useOverlay.getState().right?.kind === 'memory') closeRight();
+  else location.hash = MEMORY_HASH;
+}
+
+/** ⌘K／Ctrl+K、`/`、頁首搜尋鈕：打開全域搜尋（已經開著就不動，搜尋框自己會拿回焦點）。 */
+export function openSearch(): void {
+  if (useOverlay.getState().modal === 'search') return;
+  location.hash = searchHash();
 }

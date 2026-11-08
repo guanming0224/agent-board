@@ -1,6 +1,7 @@
 // WebSocket 訊息。兩條通道：/ws/daemon（機器 token）、/ws/client（登入 cookie）。
 // 每則都是一個 JSON 物件，以 `type` 區分。
 import { z } from 'zod';
+import { TeamPreset } from './presets';
 import {
   Approval,
   BoardPauseState,
@@ -10,7 +11,6 @@ import {
   ClaudeSessionId,
   DEFAULT_WAITING_LIMIT,
   NOT_PAUSED,
-  DispatchTool,
   PurgeOptions,
   PurgeResult,
   SessionInspect,
@@ -28,6 +28,7 @@ import {
   SessionStatus,
   UsageSummary,
 } from './models';
+import { AgentBoardTool, ProgressCard } from './progress';
 
 export const WS_PATHS = { daemon: '/ws/daemon', client: '/ws/client' } as const;
 
@@ -35,6 +36,11 @@ export const WS_PATHS = { daemon: '/ws/daemon', client: '/ws/client' } as const;
 export const DAEMON_FEATURES = {
   /** 認得 `terminal.signal.onlyIfStatus`，並回 `terminal.signalResult`（全部暫停「立刻中斷」用）。 */
   signalGuard: 'signal.onlyIfStatus',
+  /**
+   * 認得 `hub.welcome.memory`，會掛進度卡工具（get_progress／update_progress，P3 項目一）。
+   * 舊版 daemon 沒有這個旗標：照舊只掛派工工具（hub 不需要知道每個 session 掛了什麼）。
+   */
+  memory: 'mcp.memory',
 } as const;
 
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);
@@ -216,14 +222,14 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     error: z.string().nullable(),
   }),
   /**
-   * session 裡的 Claude 呼叫了派工工具（CONTRACTS §11）。daemon 已用該 session 的密鑰驗過是它本人；
+   * session 裡的 Claude 呼叫了 agent-board 工具（派工 CONTRACTS §11、進度卡 §14）。daemon 已用該 session 的密鑰驗過是它本人；
    * 能不能做（團隊、上限、權限）由 hub 判斷，回 `dispatch.reply`。
    */
   z.object({
     type: z.literal('dispatch.request'),
     requestId: Id,
     sessionId: Id,
-    tool: DispatchTool,
+    tool: AgentBoardTool,
     args: z.record(z.string(), z.unknown()),
   }),
 ]);
@@ -238,6 +244,8 @@ export const HubToDaemon = z.discriminatedUnion('type', [
     stuckMinutes: z.number().int().positive(),
     /** `Settings.dispatch`：新開的 claude 要不要掛派工工具。舊版 hub 不送 → 不掛（它也不認得派工請求）。 */
     dispatch: z.boolean().optional(),
+    /** `Settings.memory`：新開的 claude 要不要掛進度卡工具（P3 項目一）。舊版 hub 不送 → 不掛。 */
+    memory: z.boolean().optional(),
   }),
   z.object({ type: z.literal('session.create'), requestId: Id, sessionId: Id, spec: SessionSpec }),
   z.object({ type: z.literal('session.stop'), sessionId: Id }),
@@ -336,7 +344,15 @@ export const HubToClient = z.discriminatedUnion('type', [
     zones: z.array(Zone).default([]),
     /** hub 記憶體裡的群發（hub 重啟就清空）。 */
     broadcasts: z.array(Broadcast).default([]),
+    /** 進度卡（P3 項目一，含自動事實）。只有寫過的卡；舊版 hub 不送＝空。 */
+    progress: z.array(ProgressCard).default([]),
+    /** 團隊 Presets（P3 項目二），照 position 排。舊版 hub 不送＝空。 */
+    presets: z.array(TeamPreset).default([]),
   }),
+  /** 進度卡寫入、鎖定、還原：整張卡推給每個 client（1 秒內更新）。 */
+  z.object({ type: z.literal('progress.updated'), card: ProgressCard }),
+  /** 團隊 Presets 清單變了（建立、改名、修改、排序、刪除、套用後的最後使用時間）：整份推給每個 client。 */
+  z.object({ type: z.literal('preset.list'), presets: z.array(TeamPreset) }),
   /** 工作區清單變了（建立、改名、刪除）：整份推給每個 client。 */
   z.object({ type: z.literal('zone.list'), zones: z.array(Zone) }),
   /** 團隊建立或改了（含換工作區）：推給每個 client，不等輪詢。 */

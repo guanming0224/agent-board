@@ -6,8 +6,20 @@ import {
   DEFAULT_ZONE_NAME,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
+  cleanProgressText,
+  emptyProgressCard,
+  EMPTY_PROGRESS_FACTS,
   handoffRuleProblem,
   NOT_PAUSED,
+  overLimit,
+  planProgressWrite,
+  PROGRESS_ASK_UPDATE_PROMPT,
+  PROGRESS_FIELDS,
+  PROGRESS_HISTORY_KEEP,
+  progressLine,
+  progressOwnerKey,
+  progressOwnerOf,
+  TeamPresetConfig,
   zoneMoveShift,
 } from '@agent-board/protocol';
 import type {
@@ -29,17 +41,27 @@ import type {
   Task,
   Team,
   TeamMember,
+  TeamPreset,
   Template,
   TranscriptEntry,
   UsageSummary,
   User,
   Zone,
   Broadcast,
+  ProgressActor,
+  ProgressCard,
+  ProgressConflict,
+  ProgressFacts,
+  ProgressFields,
+  ProgressOwner,
+  ProgressRevision,
+  ProgressWrite,
 } from '@agent-board/protocol';
 import { zoneOfSession } from '../zones/model';
 import type { AuditFilter, BoardBackend, BoardListener, BoardSnapshot } from './backend';
 import type { TerminalServerMessage, TerminalStream } from './terminal-contract';
 import { DECOMPOSE_PROMPT_START } from './decomposePrompt';
+import { fakeSearch } from './fakeSearch';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -280,8 +302,12 @@ function demoTranscript(): TranscriptEntry[] {
 }
 
 /** 和 hub 一樣的錯誤形狀（status、code），畫面才能分辨。 */
-const apiError = (status: number, code: string, message: string) =>
-  Object.assign(new Error(message), { status, code });
+const apiError = (
+  status: number,
+  code: string,
+  message: string,
+  detail?: Record<string, unknown>,
+) => Object.assign(new Error(message), { status, code, ...(detail ? { detail } : {}) });
 
 /** 假 PTY：訂閱時送快照，之後每秒一行輸出；輸入會回顯。 */
 export class FakeTerminalStream implements TerminalStream {
@@ -372,6 +398,46 @@ function demoAudit(): AuditEntry[] {
   ];
 }
 
+/**
+ * 全域搜尋的範例資料（檔案改動、每回合最後回覆）。只給搜尋用，不放進 sessionEvents：
+ * 請隊長拆解、交接動畫讀的事件維持原狀。含一把假金鑰，遮蔽模式的畫面測試用。
+ */
+export const DEMO_SEARCH_KEY = 'sk-ant-demo03-demoDEMOdemoDEMOdemo0000';
+function demoSearchEvents(): SessionEvent[] {
+  const event = (
+    sessionId: string,
+    minutes: number,
+    type: string,
+    payload: Record<string, unknown>,
+  ): SessionEvent => ({
+    id: crypto.randomUUID(),
+    sessionId,
+    type,
+    payload,
+    at: minutesAgo(minutes),
+  });
+  const reply = (sessionId: string, minutes: number, text: string) =>
+    event(sessionId, minutes, 'hook', { event: 'Stop', last_assistant_message: text });
+  return [
+    event('s-tests', 3, 'file.changed', {
+      path: '/home/demo/.agent-board-wt/auth-tests/src/risk.py',
+    }),
+    event('s-tests', 5, 'file.changed', {
+      path: '/home/demo/.agent-board-wt/auth-tests/src/risk.py',
+    }),
+    event('s-tests', 8, 'file.changed', {
+      path: '/home/demo/.agent-board-wt/auth-tests/tests/auth.test.ts',
+    }),
+    event('s-docs', 26 * 60, 'file.changed', { path: '/home/demo/project/src/risk.py' }),
+    event('s-auth', 15, 'file.changed', {
+      path: '/home/demo/.agent-board-wt/fix-auth/src/login.ts',
+    }),
+    reply('s-etl', 30, '已把手續費 0.1425 寫進設定，下一步回補資料。'),
+    reply('s-ml', 50, '手續費改成 0.1425 之後重新訓練；loss 降到 0.41。'),
+    reply('s-docs', 70, `部署設定用的 token: ${DEMO_SEARCH_KEY}，已寫進 .env。`),
+  ];
+}
+
 const csvCell = (value: string | null) => `"${(value ?? '').replaceAll('"', '""')}"`;
 
 const defaultSettings: Settings = {
@@ -387,6 +453,7 @@ const defaultSettings: Settings = {
   notifications: { enabled: true, quietHours: null, coalesce: true, waitingLimit: 3 },
   autoContinue: false,
   dispatch: true,
+  memory: true,
 };
 
 /** 測試可以改掉 demoReply，模擬隊長回了無法解析的內容。 */
@@ -422,6 +489,20 @@ export interface FakeBackendControls {
    * 只改畫面看到的狀態；假後端自己的排隊交接不受影響。
    */
   setPauseState(pause: BoardPauseState): void;
+  /**
+   * 模擬 session 裡的 Claude 呼叫 update_progress（P3 項目一）：和 hub 同一套三方比對、鎖定規則。
+   * 回傳 hub 會給 Claude 的結果代碼（ok／progress_conflict／card_locked）。
+   */
+  agentProgress(
+    owner: ProgressOwner,
+    sessionId: string,
+    write: { baseRevision: number } & Partial<Omit<ProgressFields, 'gmNotes'>>,
+  ): 'ok' | 'progress_conflict' | 'card_locked';
+  /** 測試用：改卡片的自動事實（例如最後一次回合結束的時間）與更新時間。 */
+  patchProgress(
+    owner: ProgressOwner,
+    patch: Partial<Pick<ProgressCard, 'updatedAt'>> & { facts?: Partial<ProgressFacts> },
+  ): void;
 }
 
 /** 假隊長的回覆，請隊長拆解在 demo 模式下也能走完。帶 role 的照縮寫指派，最後一項沒標。 */
@@ -466,6 +547,13 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   ];
   /** 群發（和 hub 一樣只在對象等輸入時送，其他排隊；GM 親手下的，不看暫停）。 */
   let broadcasts: Broadcast[] = [];
+  /** 進度卡（和 hub 同一套規則：protocol/progress.ts）：擁有者鍵 → 卡片與歷史。 */
+  const progress = new Map<string, { card: ProgressCard; history: ProgressRevision[] }>();
+  /** 團隊 Presets（P3 項目二）：和 hub 一樣一開始是空的，照 position 排。 */
+  let presets: TeamPreset[] = [];
+  const renumberPresets = (list: TeamPreset[]) => list.map((p, i) => ({ ...p, position: i }));
+  const presetNameTaken = (name: string, except?: string) =>
+    presets.some((p) => p.id !== except && p.name.toLowerCase() === name.trim().toLowerCase());
   const members: TeamMember[] = [
     { teamId: 'team-demo-auth', sessionId: 's-tests', role: 'lead' },
     { teamId: 'team-demo-auth', sessionId: 's-auth', role: 'worker' },
@@ -509,6 +597,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     },
   ];
   const events: SessionEvent[] = [];
+  const searchEvents = demoSearchEvents();
   const eventListeners = new Set<(event: SessionEvent) => void>();
   const addEvent = (sessionId: string, type: string, payload: Record<string, unknown>) => {
     const event = {
@@ -589,6 +678,8 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     zones,
     broadcasts,
     pause,
+    progress: [...progress.values()].map((p) => ({ ...p.card, facts: factsOf(p.card) })),
+    presets,
   });
   /** 假的送字：打進終端機、對象開始工作。 */
   const typeInto = (s: Session, text: string) => {
@@ -617,6 +708,177 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     }
   };
   const publish = () => listeners.forEach((l) => l(visible()));
+  /** 群發與進度卡送字共用（和 hub 的 BroadcastEngine.start 一樣：等輸入的送出，其他排隊）。 */
+  const startBroadcast = (
+    head: Pick<Broadcast, 'teamId' | 'kind' | 'cardKey' | 'text' | 'mentioned'>,
+    chosen: Session[],
+    action: string,
+  ): Broadcast => {
+    const now = new Date().toISOString();
+    const busy = new Set<string>();
+    const broadcast: Broadcast = {
+      id: crypto.randomUUID(),
+      ...head,
+      by: demoUser.id,
+      byName: demoUser.name,
+      at: now,
+      boardPaused: pause.paused !== null,
+      targets: chosen.map((s) => {
+        const gone = s.archived || s.endedAt !== null || s.status === 'done';
+        const ready = !gone && s.status === 'waiting_input' && !busy.has(s.id);
+        if (ready) {
+          typeInto(s, head.text);
+          busy.add(s.id);
+        }
+        return {
+          sessionId: s.id,
+          name: s.name,
+          state: gone ? 'skipped' : ready ? 'sent' : 'queued',
+          reason: gone ? (s.archived ? 'archived' : 'ended') : null,
+          at: now,
+        };
+      }),
+    };
+    broadcasts = [...broadcasts, broadcast];
+    for (const t of broadcast.targets) {
+      audit.unshift({
+        id: crypto.randomUUID(),
+        userId: demoUser.id,
+        sessionId: t.sessionId,
+        action,
+        detail: JSON.stringify({
+          teamId: head.teamId,
+          broadcastId: broadcast.id,
+          text: head.text,
+          state: t.state,
+        }),
+        at: now,
+      });
+    }
+    publish();
+    return broadcast;
+  };
+  const userActor: ProgressActor = { kind: 'user', id: demoUser.id, name: demoUser.name };
+  /** 和 hub 相同的自動事實（假資料：任務板、成員狀態；檔案改動與回合結束由測試用 patchProgress 給）。 */
+  const factOverrides = new Map<string, Partial<ProgressFacts>>();
+  const factsOf = (card: Pick<ProgressCard, 'teamId' | 'sessionId'>): ProgressFacts => {
+    const owner = progressOwnerOf(card);
+    const ids =
+      'teamId' in owner
+        ? members.filter((m) => m.teamId === owner.teamId).map((m) => m.sessionId)
+        : [owner.sessionId];
+    const teamTasks = 'teamId' in owner ? tasks.filter((t) => t.teamId === owner.teamId) : null;
+    const team = 'teamId' in owner ? teams.find((t) => t.id === owner.teamId) : undefined;
+    return {
+      ...EMPTY_PROGRESS_FACTS,
+      teamName: team?.name ?? null,
+      tasks: teamTasks && {
+        done: teamTasks.filter((t) => t.column === 'done').length,
+        total: teamTasks.length,
+        doing: teamTasks.filter((t) => t.column === 'doing').map((t) => `#${t.number} ${t.title}`),
+      },
+      phase: team?.phase ?? null,
+      members: ids.flatMap((id) => {
+        const s = state.sessions.find((x) => x.id === id);
+        return s && !s.archived
+          ? [
+              {
+                sessionId: s.id,
+                name: s.name,
+                role:
+                  'teamId' in owner
+                    ? (members.find((m) => m.teamId === owner.teamId && m.sessionId === id)?.role ??
+                      null)
+                    : null,
+                status: s.status,
+                statusDetail: s.statusDetail,
+                ended: s.endedAt !== null,
+              },
+            ]
+          : [];
+      }),
+      ...factOverrides.get(progressOwnerKey(owner)),
+    };
+  };
+  const progressCard = (owner: ProgressOwner): ProgressCard => {
+    const found = progress.get(progressOwnerKey(owner));
+    return found
+      ? { ...found.card, facts: factsOf(found.card) }
+      : emptyProgressCard(owner, factsOf(emptyProgressCard(owner)));
+  };
+  /** 和 hub 的 ProgressEngine.writeCore 同一套：清理 → 上限 → 鎖定（只擋 agent）→ 三方比對 → 寫入、歷史 50 版。 */
+  const writeProgress = (
+    owner: ProgressOwner,
+    write: ProgressWrite,
+    by: ProgressActor,
+    source: ProgressRevision['source'],
+  ): ProgressCard => {
+    const key = progressOwnerKey(owner);
+    const entry = progress.get(key) ?? { card: emptyProgressCard(owner), history: [] };
+    const current = entry.card;
+    const patch: Partial<ProgressFields> = {};
+    for (const f of PROGRESS_FIELDS) {
+      const value = write[f];
+      if (value !== undefined) patch[f] = cleanProgressText(value);
+    }
+    const tooLong = overLimit(patch);
+    if (tooLong.length > 0)
+      throw apiError(400, 'field_too_long', `Too long: ${tooLong.join(', ')}`);
+    if (by.kind === 'session' && current.locked) throw apiError(409, 'card_locked', 'Locked');
+    if (write.baseRevision > current.revision) throw apiError(400, 'invalid_revision', 'Ahead');
+    const plan = planProgressWrite(current, write.baseRevision, patch);
+    if (plan.conflicts.length > 0) {
+      const conflict: ProgressConflict = {
+        card: progressCard(owner),
+        fields: plan.conflicts.map((field) => {
+          const last = entry.history.find((r) => r.revision === current.fieldRevisions[field]);
+          return {
+            field,
+            base:
+              write.baseRevision === 0
+                ? ''
+                : (entry.history.find((r) => r.revision === write.baseRevision)?.fields[field] ??
+                  null),
+            current: current[field],
+            by: last?.by ?? null,
+          };
+        }),
+      };
+      throw apiError(409, 'progress_conflict', 'Conflict', conflict as never);
+    }
+    let next: ProgressCard = { ...current };
+    if (by.kind === 'user' && write.locked !== undefined) next.locked = write.locked;
+    if (plan.changed.length > 0) {
+      const revision = current.revision + 1;
+      const now = new Date().toISOString();
+      const fieldRevisions = { ...current.fieldRevisions };
+      for (const f of plan.changed) fieldRevisions[f] = revision;
+      next = {
+        ...next,
+        ...patch,
+        id: current.id ?? crypto.randomUUID(),
+        revision,
+        fieldRevisions,
+        updatedAt: now,
+        updatedBy: by,
+      };
+      const fields = {
+        status: next.status,
+        next: next.next,
+        blockers: next.blockers,
+        gmNotes: next.gmNotes,
+      };
+      entry.history = [{ revision, fields, by, source, at: now }, ...entry.history].slice(
+        0,
+        PROGRESS_HISTORY_KEEP,
+      );
+    } else if (next.id === null) {
+      next.id = crypto.randomUUID();
+    }
+    progress.set(key, { ...entry, card: next });
+    publish();
+    return { ...next, facts: factsOf(next), ...(plan.merged ? { merged: true } : {}) };
+  };
   const machineOnline = (s: Session) =>
     state.machines.find((m) => m.id === s.machineId)?.online ?? false;
   const hooksShared = (s: Session) =>
@@ -742,6 +1004,17 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         zoneId: input.zoneId ?? DEFAULT_ZONE_ID,
       });
       state.sessions = [...state.sessions, created];
+      // 和 hub 相同：第一個指令也是送進終端機的輸入，記一筆 terminal.input。
+      if (input.firstPrompt !== null) {
+        audit.unshift({
+          id: crypto.randomUUID(),
+          userId: demoUser.id,
+          sessionId: created.id,
+          action: 'terminal.input',
+          detail: input.firstPrompt,
+          at: new Date().toISOString(),
+        });
+      }
       publish();
       return created;
     },
@@ -1059,14 +1332,20 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       templates.push(t);
       return t;
     },
-    browseDirectory: async (_machineId, path) => ({
-      path,
-      entries: [
-        { name: 'project', isDir: true, isGitRepo: true },
-        { name: 'notes', isDir: true, isGitRepo: false },
-        ...(madeDirs.get(path) ?? []).map((name) => ({ name, isDir: true, isGitRepo: false })),
-      ],
-    }),
+    browseDirectory: async (_machineId, path) => {
+      // 假的「資料夾不存在」：路徑裡有 does-not-exist（和 daemon 讀不到資料夾一樣回 fs_error）。
+      if (path.includes('does-not-exist')) {
+        throw apiError(400, 'fs_error', `ENOENT: no such file or directory, scandir '${path}'`);
+      }
+      return {
+        path,
+        entries: [
+          { name: 'project', isDir: true, isGitRepo: true },
+          { name: 'notes', isDir: true, isGitRepo: false },
+          ...(madeDirs.get(path) ?? []).map((name) => ({ name, isDir: true, isGitRepo: false })),
+        ],
+      };
+    },
     async makeDirectory(_machineId, parent, name) {
       const list = madeDirs.get(parent) ?? [];
       if (list.includes(name) || ['project', 'notes'].includes(name)) {
@@ -1180,51 +1459,96 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       const ids = members.filter((m) => m.teamId === teamId).map((m) => m.sessionId);
       const strangers = (targets ?? []).filter((id) => !ids.includes(id));
       if (strangers.length > 0) throw apiError(400, 'not_member', 'Not members of this team');
-      const now = new Date().toISOString();
       const chosen = (targets ?? ids).flatMap((id) => {
         const s = state.sessions.find((x) => x.id === id);
         return s && (targets !== undefined || !s.archived) ? [s] : [];
       });
       if (chosen.length === 0) throw apiError(400, 'no_targets', 'No members to send to');
-      const busy = new Set<string>();
-      const broadcast: Broadcast = {
-        id: crypto.randomUUID(),
-        teamId,
-        text,
-        mentioned: targets !== undefined,
-        by: demoUser.id,
-        byName: demoUser.name,
-        at: now,
-        boardPaused: pause.paused !== null,
-        targets: chosen.map((s) => {
-          const gone = s.archived || s.endedAt !== null || s.status === 'done';
-          const ready = !gone && s.status === 'waiting_input' && !busy.has(s.id);
-          if (ready) {
-            typeInto(s, text);
-            busy.add(s.id);
-          }
-          return {
-            sessionId: s.id,
-            name: s.name,
-            state: gone ? 'skipped' : ready ? 'sent' : 'queued',
-            reason: gone ? (s.archived ? 'archived' : 'ended') : null,
-            at: now,
-          };
-        }),
-      };
-      broadcasts = [...broadcasts, broadcast];
-      for (const t of broadcast.targets) {
-        audit.unshift({
-          id: crypto.randomUUID(),
-          userId: demoUser.id,
-          sessionId: t.sessionId,
-          action: 'team.broadcast',
-          detail: JSON.stringify({ teamId, broadcastId: broadcast.id, text, state: t.state }),
-          at: now,
-        });
+      return startBroadcast(
+        { teamId, kind: 'team', cardKey: null, text, mentioned: targets !== undefined },
+        chosen,
+        'team.broadcast',
+      );
+    },
+    async getProgress(owner) {
+      return progressCard(owner);
+    },
+    async saveProgress(owner, body) {
+      return writeProgress(owner, body, userActor, 'web');
+    },
+    async progressRevisions(owner) {
+      return progress.get(progressOwnerKey(owner))?.history ?? [];
+    },
+    async restoreProgress(owner, revision) {
+      const entry = progress.get(progressOwnerKey(owner));
+      const old = entry?.history.find((r) => r.revision === revision);
+      if (!entry || !old) throw apiError(404, 'not_found', 'Progress revision not found');
+      return writeProgress(
+        owner,
+        { ...old.fields, baseRevision: entry.card.revision },
+        userActor,
+        'restore',
+      );
+    },
+    async deliverProgress(owner, sessionId) {
+      const target = state.sessions.find((x) => x.id === sessionId);
+      if (!target) throw apiError(404, 'not_found', 'Session not found');
+      const card = progressCard(owner);
+      const name =
+        'teamId' in owner
+          ? (teams.find((t) => t.id === owner.teamId)?.name ?? '')
+          : (state.sessions.find((x) => x.id === owner.sessionId)?.name ?? '');
+      const line = progressLine(name, card);
+      if (line === null) throw apiError(400, 'progress_empty', 'Nothing to send');
+      return startBroadcast(
+        {
+          teamId: 'teamId' in owner ? owner.teamId : null,
+          kind: 'progress',
+          cardKey: progressOwnerKey(owner),
+          text: line,
+          mentioned: true,
+        },
+        [target],
+        'progress.deliver',
+      );
+    },
+    async askProgressUpdate(teamId) {
+      const lead = members
+        .filter((m) => m.teamId === teamId && m.role === 'lead')
+        .map((m) => state.sessions.find((x) => x.id === m.sessionId))
+        .find((x) => x && !x.archived);
+      if (!lead) throw apiError(400, 'no_lead', 'This team has no lead');
+      return startBroadcast(
+        {
+          teamId,
+          kind: 'ask_update',
+          cardKey: progressOwnerKey({ teamId }),
+          text: PROGRESS_ASK_UPDATE_PROMPT,
+          mentioned: true,
+        },
+        [lead],
+        'progress.ask_update',
+      );
+    },
+    agentProgress(owner, sessionId, write) {
+      const s = find(sessionId);
+      try {
+        writeProgress(owner, write, { kind: 'session', id: s.id, name: s.name }, 'mcp');
+        return 'ok';
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        if (code === 'progress_conflict' || code === 'card_locked') return code;
+        throw e;
+      }
+    },
+    patchProgress(owner, patch) {
+      const key = progressOwnerKey(owner);
+      if (patch.facts) factOverrides.set(key, { ...factOverrides.get(key), ...patch.facts });
+      const entry = progress.get(key);
+      if (entry && patch.updatedAt !== undefined) {
+        entry.card = { ...entry.card, updatedAt: patch.updatedAt };
       }
       publish();
-      return broadcast;
     },
     async cancelBroadcast(broadcastId, sessionId) {
       const b = findIn(broadcasts, broadcastId, 'broadcast');
@@ -1273,6 +1597,70 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       const fallback = zones[0]!.id;
       for (const s of state.sessions) if (s.zoneId === id) s.zoneId = fallback;
       publish();
+    },
+    listTeamPresets: async () => presets.map((p) => structuredClone(p)),
+    async createTeamPreset({ name, config, position }) {
+      if (presetNameTaken(name)) {
+        throw apiError(409, 'preset_name_taken', `A preset named "${name.trim()}" already exists`);
+      }
+      const now = new Date().toISOString();
+      const preset: TeamPreset = {
+        id: crypto.randomUUID(),
+        name: name.trim(),
+        config: TeamPresetConfig.parse(config),
+        position: presets.length,
+        createdAt: now,
+        updatedAt: now,
+        lastUsedAt: null,
+      };
+      const list = [...presets];
+      list.splice(Math.min(position ?? list.length, list.length), 0, preset);
+      presets = renumberPresets(list);
+      publish();
+      return presets.find((p) => p.id === preset.id)!;
+    },
+    async updateTeamPreset(id, patch) {
+      const current = findIn(presets, id, 'preset');
+      if (patch.name !== undefined && presetNameTaken(patch.name, id)) {
+        throw apiError(
+          409,
+          'preset_name_taken',
+          `A preset named "${patch.name.trim()}" already exists`,
+        );
+      }
+      const next: TeamPreset = {
+        ...current,
+        ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
+        ...(patch.config !== undefined ? { config: TeamPresetConfig.parse(patch.config) } : {}),
+        updatedAt: new Date().toISOString(),
+      };
+      const list = presets.filter((p) => p.id !== id);
+      list.splice(Math.min(patch.position ?? current.position, list.length), 0, next);
+      presets = renumberPresets(list);
+      publish();
+      return presets.find((p) => p.id === id)!;
+    },
+    async deleteTeamPreset(id) {
+      findIn(presets, id, 'preset');
+      presets = renumberPresets(presets.filter((p) => p.id !== id));
+      publish();
+    },
+    async teamPresetUsed(id, result) {
+      const preset = findIn(presets, id, 'preset');
+      const now = new Date().toISOString();
+      if (result.created > 0) {
+        presets = presets.map((p) => (p.id === id ? { ...p, lastUsedAt: now } : p));
+      }
+      audit.unshift({
+        id: crypto.randomUUID(),
+        userId: demoUser.id,
+        sessionId: null,
+        action: 'preset.apply',
+        detail: JSON.stringify({ presetId: id, name: preset.name, ...result }),
+        at: now,
+      });
+      publish();
+      return presets.find((p) => p.id === id)!;
     },
     listTasks: async (teamId) => tasks.filter((x) => x.teamId === teamId).map((x) => ({ ...x })),
     async createTask(teamId, input) {
@@ -1326,5 +1714,17 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       removeFrom(rules, (x) => x.id === id);
     },
     sessionEvents: async (sessionId) => events.filter((x) => x.sessionId === sessionId),
+    search: async (query) =>
+      fakeSearch(query, {
+        sessions: state.sessions,
+        events: [...searchEvents, ...events],
+        teams,
+        members,
+        tasks,
+        audit,
+        progress: [...progress.values()].map((p) => p.card),
+        role: demoUser.role,
+        now: Date.now(),
+      }),
   };
 }

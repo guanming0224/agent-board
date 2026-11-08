@@ -1,4 +1,5 @@
-// 卡片標題列的「⋯」：重新命名、建立交接線（P2 §4.2）、移到工作區（單獨 session，P2 §2.3 Q11）、接續（已結束才有）、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
+// 卡片標題列的「⋯」：重新命名、建立交接線（P2 §4.2）、移到工作區（單獨 session，P2 §2.3 Q11）、
+// 進度卡（單獨 session，P3）、接續（已結束才有）、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
@@ -8,6 +9,7 @@ import { requestArchive } from './archive';
 import { useTeams } from '../team/store';
 import { moveSessionToZone, useCurrentZoneId, useZones } from '../zones';
 import { useLinkPick } from './linkPick';
+import { useProgressUi } from '../progress/uiStore';
 
 /**
  * 「移到工作區 ▸」：只有單獨 session（不屬於任何團隊）有；團隊成員跟著團隊，要在團隊面板改。
@@ -87,6 +89,26 @@ export function MenuButton({
   );
 }
 
+/** 「進度卡」：單獨 session 才有（團隊成員看團隊的卡），在卡片右側展開它自己的進度卡（P3 §1.2-D1）。 */
+function ProgressItem({ session, onClose }: { session: Session; onClose: () => void }) {
+  const t = useT();
+  const inTeam = useTeams((s) => s.members.some((m) => m.sessionId === session.id));
+  if (inTeam) return null;
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={() => {
+        onClose();
+        useProgressUi.getState().setExpanded(`session:${session.id}`);
+      }}
+      data-testid="card-progress"
+    >
+      {t('canvas.menu.progress')}
+    </button>
+  );
+}
+
 export function CardMenu({
   session,
   onRename,
@@ -145,6 +167,7 @@ export function CardMenu({
         {t('canvas.menu.link')}
       </button>
       <MoveToZone session={session} onClose={onClose} />
+      <ProgressItem session={session} onClose={onClose} />
       {canResume(session) && (
         <button
           type="button"

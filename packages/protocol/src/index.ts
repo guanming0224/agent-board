@@ -5,3 +5,6 @@ export * from './rest';
 export * from './repo';
 export * from './attention';
 export * from './zones';
+export * from './progress';
+export * from './search';
+export * from './presets';

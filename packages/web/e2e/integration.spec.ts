@@ -368,6 +368,91 @@ test('audit 有送入的指令與核准決定', async ({ page }) => {
   expect(entries.some((e) => e.action.includes('approval'))).toBe(true);
 });
 
+test('全域搜尋快速層：檔案改動與次數、停 250ms 才送、遮蔽在網路回應裡、owner 有指令組、終端機焦點不開搜尋（P3 §3.8）', async ({
+  page,
+}) => {
+  const key = 'sk-ant-demo03-integrationKEY0000000';
+  const risk = join(realpathSync(repo), 'src', 'risk.py');
+  await page.goto('/#/canvas');
+  await type(page, session.id, `edit-file ${risk}`);
+  await type(page, session.id, `edit-file ${risk}`);
+  await type(page, session.id, `deploy token ${key}`);
+  await expect
+    .poll(
+      async () => {
+        const body = (await (await page.request.get('/api/search?q=risk.py')).json()) as {
+          groups: { kind: string; items: { count?: number }[] }[];
+        };
+        return body.groups.find((g) => g.kind === 'file')?.items[0]?.count;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(2);
+
+  const requests: string[] = [];
+  page.on('request', (r) => {
+    if (r.url().includes('/api/search')) requests.push(r.url());
+  });
+  await page.goto('/#/canvas');
+  await expect(page.getByText('integration').first()).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+k');
+  const input = page.getByTestId('search-input');
+  await expect(input).toBeFocused();
+  await input.pressSequentially('r');
+  await page.waitForTimeout(500);
+  expect(requests).toEqual([]);
+  await input.pressSequentially('isk.py', { delay: 30 });
+  const files = page.getByTestId('search-group-file').getByTestId('search-row');
+  await expect(files).toHaveCount(1);
+  await expect(files.first()).toContainText('src/risk.py');
+  await expect(files.first()).toContainText('共 2 次');
+  expect(requests).toHaveLength(1);
+
+  // owner 看得到自己送出的指令（audit 的 terminal.input）。
+  await input.fill('deploy token');
+  await expect(page.getByTestId('search-group-input')).toBeVisible();
+  await expect(page.getByTestId('search-group-session')).toContainText(key);
+
+  // 遮蔽開著：hub 回應的原始內容就沒有金鑰（不是只在畫面遮）。
+  await page.evaluate(() => localStorage.setItem('agent-board.mask-mode', '1'));
+  const masked = page.waitForResponse(
+    (r) => r.url().includes('/api/search') && r.url().includes('mask=1'),
+  );
+  await page.goto(`/#/search?q=${encodeURIComponent('deploy token')}`);
+  await page.reload();
+  const body = await (await masked).text();
+  expect(body).toContain('deploy token');
+  expect(body).not.toContain('sk-ant');
+  await expect(page.getByTestId('search-group-session')).not.toContainText('sk-ant');
+  await page.evaluate(() => localStorage.setItem('agent-board.mask-mode', '0'));
+
+  // Enter 前往：關掉視窗、畫布聚焦那張卡。
+  await page.goto('/#/canvas');
+  await page.keyboard.press('ControlOrMeta+k');
+  await page.getByTestId('search-input').fill('risk.py');
+  await expect(files).toHaveCount(1);
+  await page.getByTestId('search-input').press('ArrowDown');
+  await page.getByTestId('search-input').press('Enter');
+  await expect(page.getByTestId('search-panel')).toHaveCount(0);
+  await expect(
+    page.locator(`.react-flow__node[data-id="${session.id}"] .frame.spot`),
+  ).toBeVisible();
+
+  // 焦點在終端機：/ 與 ⌘K 交給終端機，不開搜尋（驗收 14）。
+  await page.getByText('integration').first().dblclick();
+  const terminal = page.locator(`[data-terminal-session="${session.id}"]`);
+  await expect(terminal).toBeVisible();
+  await page.waitForTimeout(500);
+  await terminal.click();
+  await page.keyboard.press('/');
+  await page.keyboard.press('ControlOrMeta+k');
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('search-panel')).toHaveCount(0);
+  expect(await page.evaluate(() => location.hash)).not.toContain('search');
+  // 收尾：把打進終端機的 / 刪掉，後面的測試不受影響。
+  await page.keyboard.press('Backspace');
+});
+
 test('daemon 被殺：卡片失聯；重啟：--resume 接回、畫面還在', async ({ page }) => {
   await page.goto('/#/canvas');
   // 假 claude 不寫對話紀錄；沒有紀錄時 daemon 會改成重新開始，所以放一份讓它走 --resume。

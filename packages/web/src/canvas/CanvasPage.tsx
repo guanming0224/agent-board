@@ -25,6 +25,7 @@ import { codeClass, statusCode } from '../shared/status';
 import { useBoard } from '../shared/store';
 import { QuickCreate } from '../flows';
 import { CostChip } from '../team/common';
+import { PresetsButton } from '../team/PresetPicker';
 import { refreshTeams, useTeams, useTeamSync } from '../team/store';
 import {
   EmptyState,
@@ -66,6 +67,7 @@ import {
 import { TidyPanel, TidyToast, useTidy, type TidyState } from './tidy';
 import { SessionNode, TERMINAL_ZOOM, type SessionNodeType } from './SessionNode';
 import { TeamFrames } from './TeamFrames';
+import { CanvasProgress } from '../progress/CanvasProgress';
 import { canvasTeams, groupHandoffs, teamForHandoff, teamRect } from './teams';
 import { teamHash } from '../views/overlay';
 import { useCurrentZoneId, useSessionZones, useZoneUi } from '../zones';
@@ -887,6 +889,7 @@ function Flow({
       >
         <ZoomVariable host={host} />
         <TeamFrames rects={rects} onTidy={tidy.tidyTeam} />
+        <CanvasProgress rects={rects} />
         <Background
           variant={BackgroundVariant.Dots}
           color="var(--canvas-dot)"
@@ -1046,7 +1049,7 @@ export function CanvasPage() {
   return (
     <PageShell>
       {body}
-      <CommandBar />
+      <CommandBar presets={<PresetsButton />} />
     </PageShell>
   );
 }

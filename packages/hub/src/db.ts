@@ -262,6 +262,57 @@ export const MIGRATIONS: readonly string[] = [
       OR EXISTS (SELECT 1 FROM notes WHERE zone_id = OLD.id)
     BEGIN SELECT RAISE(ABORT, 'zone not empty'); END;
   `,
+  /*
+   * 10：P3。三個項目併成一個 migration（只升一次，升級前照樣寫 -v9 備份）。
+   * ① 進度卡（docs/p3-spec.md §1.7）：卡片屬於一個團隊或一個單獨 session（剛好一個），
+   *   團隊、session 刪掉時卡片與歷史一起刪（audit 另外留著改動紀錄）。新表可以直接用外鍵。
+   *   field_revisions 是每個欄位最後被改的 revision（JSON，三方比對用）；updated_by_kind 是 user／session。
+   *   progress_revisions 每張卡只留最新 50 版（寫入時同一個交易刪舊的）。
+   * ② 團隊 Presets（docs/p3-spec.md §2.5）：team_presets.config 是 TeamPresetConfig 的 JSON（hub 存檔時用 zod 驗證）；
+   *   名稱不分大小寫不能重複；position 是清單順序（0 起，連續）；last_used_at 是最後一次套用成功的時間。
+   *   不參照任何表（機器被移除時 Preset 留著，套用前的預覽會說「機器不存在」）。
+   * ③a 全域搜尋：session_events 依種類＋時間查（快速層只搜 file.changed、hook、handoff.*、dispatch.*、task.*
+   *   在時間範圍內的事件；原本只有 (session_id, at) 索引，跨 session 搜要掃整張表）。只加索引，不動資料。
+   */ `
+  CREATE TABLE progress_cards (
+    id TEXT PRIMARY KEY,
+    team_id TEXT UNIQUE REFERENCES teams(id) ON DELETE CASCADE,
+    session_id TEXT UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT '',
+    next TEXT NOT NULL DEFAULT '',
+    blockers TEXT NOT NULL DEFAULT '',
+    gm_notes TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 0,
+    locked INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    updated_by_kind TEXT,
+    updated_by_id TEXT,
+    field_revisions TEXT NOT NULL DEFAULT '{}',
+    CHECK ((team_id IS NULL) <> (session_id IS NULL))
+  );
+  CREATE TABLE progress_revisions (
+    id TEXT PRIMARY KEY,
+    card_id TEXT NOT NULL REFERENCES progress_cards(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    fields TEXT NOT NULL,
+    by_kind TEXT NOT NULL,
+    by_id TEXT,
+    source TEXT NOT NULL,
+    at TEXT NOT NULL,
+    UNIQUE (card_id, revision)
+  );
+  CREATE INDEX session_events_type ON session_events(type, at);
+  CREATE TABLE team_presets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    config TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_used_at TEXT
+  );
+  CREATE INDEX team_presets_position ON team_presets(position);
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

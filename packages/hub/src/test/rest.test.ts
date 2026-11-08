@@ -418,8 +418,18 @@ describe('listening address', () => {
 });
 
 /** 退回 v6 的樣子：拿掉 v7 加的欄位（額度恢復後自動接續）。 */
+/** 退回 v9 的樣子：拿掉 v10 加的東西（P3 一個 migration：進度卡兩張表、團隊 Presets 表與索引、全域搜尋的事件索引）。 */
+const dropV10 = (db: ReturnType<typeof openDatabase>) => {
+  db.exec('DROP TABLE progress_revisions');
+  db.exec('DROP TABLE progress_cards');
+  db.exec('DROP INDEX team_presets_position');
+  db.exec('DROP TABLE team_presets');
+  db.exec('DROP INDEX session_events_type');
+};
+
 /** 退回 v8 的樣子：拿掉 v9 加的工作區（zones 表、觸發器、zone_id 欄，notes.zone_id 改回 workspace）。 */
 const dropV9 = (db: ReturnType<typeof openDatabase>) => {
+  dropV10(db);
   for (const table of ['teams', 'sessions', 'notes']) {
     db.exec(`DROP TRIGGER ${table}_zone_insert`);
     db.exec(`DROP TRIGGER ${table}_zone_update`);
@@ -477,11 +487,14 @@ describe('database', () => {
       'handoff_rules',
       'templates',
       'zones',
+      'team_presets',
       'audit_log',
       'push_subscriptions',
       'settings',
       'auth_sessions',
       'pairing_codes',
+      'progress_cards',
+      'progress_revisions',
     ];
     expect(tables.map((t) => t.name).sort()).toEqual([...expected].sort());
     for (const { name } of tables) {

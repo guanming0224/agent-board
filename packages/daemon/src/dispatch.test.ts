@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { McpReply } from '@agent-board/protocol';
-import { DISPATCH_TOOL_NAMES, secretMatches } from './mcpFiles';
+import { DAEMON_FEATURES } from '@agent-board/protocol';
+import { DISPATCH_TOOL_NAMES, MEMORY_TOOL_NAMES, secretMatches } from './mcpFiles';
 import { Harness, waitUntil } from './test-support/harness';
 
 const MCP_SERVER = fileURLToPath(new URL('../../hook/src/mcp.ts', import.meta.url));
@@ -43,9 +44,14 @@ function askDaemon(
   });
 }
 
-async function start(dispatch: boolean | undefined, mcpServer: string | null = MCP_SERVER) {
+async function start(
+  dispatch: boolean | undefined,
+  mcpServer: string | null = MCP_SERVER,
+  memory: boolean | undefined = undefined,
+) {
   h = new Harness();
   h.hub.dispatch = dispatch;
+  h.hub.memory = memory;
   h.mcpServer = mcpServer;
   const daemon = await h.start();
   await h.createAndSubscribe('s1');
@@ -125,6 +131,159 @@ describe('派工工具：開 PTY 的參數', () => {
     await h.hub.waitFor('session.created', (m) => m.requestId === 'r2');
     await waitUntil(() => h.runs().length === 2, '第二個 claude');
     expect(h.runs()[1]!.argv).not.toContain('--mcp-config');
+  });
+});
+
+describe('進度卡工具（P3 項目一）：掛載條件', () => {
+  const allowed = (argv: string[]) => {
+    const at = argv.indexOf('--allowedTools');
+    const end = argv.indexOf('--name');
+    return at === -1 ? [] : argv.slice(at + 1, end);
+  };
+  const toolsEnv = () =>
+    JSON.parse(readFileSync(mcpConfigPath(), 'utf8')).mcpServers['agent-board'].env
+      .AGENT_BOARD_MCP_TOOLS as string;
+
+  it('hello 宣告 mcp.memory；派工與進度卡都開：--allowedTools 六個工具，設定檔 env 列同樣的六個', async () => {
+    await start(true, MCP_SERVER, true);
+    const hello = h.hub.received.find((m) => m.type === 'daemon.hello');
+    expect(hello && 'features' in hello ? hello.features : []).toContain(DAEMON_FEATURES.memory);
+    const { argv } = h.runs()[0]!;
+    expect(allowed(argv)).toEqual([...DISPATCH_TOOL_NAMES, ...MEMORY_TOOL_NAMES]);
+    expect(MEMORY_TOOL_NAMES).toEqual([
+      'mcp__agent-board__get_progress',
+      'mcp__agent-board__update_progress',
+    ]);
+    expect(toolsEnv()).toBe(
+      'list_members,spawn_member,send_task,get_result,get_progress,update_progress',
+    );
+  });
+
+  it('只開進度卡：只掛兩個工具；只開派工：只掛四個；兩個都關或舊版 hub：完全不掛', async () => {
+    await start(false, MCP_SERVER, true);
+    expect(allowed(h.runs()[0]!.argv)).toEqual([...MEMORY_TOOL_NAMES]);
+    expect(toolsEnv()).toBe('get_progress,update_progress');
+    await h.cleanup();
+    await start(true, MCP_SERVER, false);
+    expect(allowed(h.runs()[0]!.argv)).toEqual([...DISPATCH_TOOL_NAMES]);
+    expect(toolsEnv()).toBe('list_members,spawn_member,send_task,get_result');
+    await h.cleanup();
+    for (const [dispatch, memory] of [
+      [false, false],
+      [undefined, undefined],
+    ] as const) {
+      await start(dispatch, MCP_SERVER, memory);
+      expect(h.runs()[0]!.argv).not.toContain('--mcp-config');
+      expect(existsSync(mcpConfigPath())).toBe(false);
+      await h.cleanup();
+    }
+  });
+
+  it('真的 MCP server：只開進度卡時 tools/list 只有兩個；get_progress 經 daemon 到 hub 再回來', async () => {
+    await start(false, MCP_SERVER, true);
+    const config = JSON.parse(readFileSync(mcpConfigPath(), 'utf8')).mcpServers['agent-board'];
+    const child = spawn(config.command, config.args, {
+      env: { PATH: process.env.PATH, ...config.env },
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    const lines: Record<string, unknown>[] = [];
+    let buffer = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      buffer += chunk;
+      let newline: number;
+      while ((newline = buffer.indexOf('\n')) !== -1) {
+        lines.push(JSON.parse(buffer.slice(0, newline)));
+        buffer = buffer.slice(newline + 1);
+      }
+    });
+    const rpc = (id: number, method: string, params: unknown = {}) =>
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+    const reply = (id: number) => waitUntil(() => lines.find((l) => l.id === id), `reply ${id}`);
+    try {
+      rpc(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+      await reply(1);
+      rpc(2, 'tools/list');
+      const tools = ((await reply(2)).result as { tools: { name: string }[] }).tools;
+      expect(tools.map((t) => t.name)).toEqual(['get_progress', 'update_progress']);
+      rpc(3, 'tools/call', { name: 'get_progress', arguments: {} });
+      const request = await h.hub.waitFor('dispatch.request');
+      expect(request).toMatchObject({ sessionId: 's1', tool: 'get_progress', args: {} });
+      h.hub.send({
+        type: 'dispatch.reply',
+        requestId: request.requestId,
+        ok: true,
+        text: '{"revision":0}',
+      });
+      expect((await reply(3)).result).toEqual({
+        content: [{ type: 'text', text: '{"revision":0}' }],
+        isError: false,
+      });
+    } finally {
+      child.kill();
+    }
+  });
+});
+
+describe('進度卡設定關掉（P3 §1.8 驗收 8）', () => {
+  it('開著時開的 session 有進度卡工具；hub 重送 welcome 關掉後新開的 session，真的 MCP server tools/list 沒有 get_progress', async () => {
+    await start(true, MCP_SERVER, true);
+    h.hub.send({
+      type: 'hub.welcome',
+      machineId: 'machine-1',
+      dangerRules: h.hub.dangerRules,
+      stuckMinutes: h.hub.stuckMinutes,
+      dispatch: true,
+      memory: false,
+    });
+    // welcome 是非同步套用：等 daemon 存下設定再開新的 session。
+    await waitUntil(() => {
+      try {
+        return JSON.parse(readFileSync(join(h.dataDir, 'sessions.json'), 'utf8')).memory === false;
+      } catch {
+        return false;
+      }
+    }, 'memory off persisted');
+    await h.createAndSubscribe('s2');
+    const config = JSON.parse(readFileSync(join(h.dataDir, 'mcp', 's2.json'), 'utf8')).mcpServers[
+      'agent-board'
+    ];
+    const child = spawn(config.command, config.args, {
+      env: { PATH: process.env.PATH, ...config.env },
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    const lines: Record<string, unknown>[] = [];
+    let buffer = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      buffer += chunk;
+      let newline: number;
+      while ((newline = buffer.indexOf('\n')) !== -1) {
+        lines.push(JSON.parse(buffer.slice(0, newline)));
+        buffer = buffer.slice(newline + 1);
+      }
+    });
+    const rpc = (id: number, method: string, params: unknown = {}) =>
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+    const reply = (id: number) => waitUntil(() => lines.find((l) => l.id === id), `reply ${id}`);
+    try {
+      rpc(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+      await reply(1);
+      rpc(2, 'tools/list');
+      const tools = ((await reply(2)).result as { tools: { name: string }[] }).tools;
+      expect(tools.map((t) => t.name)).toEqual([
+        'list_members',
+        'spawn_member',
+        'send_task',
+        'get_result',
+      ]);
+      const argv = h.runs().at(-1)!.argv;
+      expect(argv.join(' ')).not.toContain('get_progress');
+      // 關掉前開的 s1 照舊（設定只影響新開的 PTY）。
+      expect(h.runs()[0]!.argv.join(' ')).toContain('mcp__agent-board__get_progress');
+    } finally {
+      child.kill();
+    }
   });
 });
 

@@ -290,6 +290,12 @@ describe('SessionStore', () => {
     // 舊檔沒有 dispatch：和 hub 預設一樣當開，升級後第一次接回的 session 才會掛上派工工具。
     expect(loaded.dispatch).toBe(true);
     expect(new SessionStore(temp()).dispatch).toBe(true);
+    // 舊檔沒有 memory（P3 項目一）：當關。只有 hub 明確送過 memory: true 才掛進度卡工具，
+    // 新 daemon 搭舊 hub 時不會掛上舊 hub 不認得的工具。
+    expect(loaded.memory).toBe(false);
+    expect(new SessionStore(temp()).memory).toBe(false);
+    loaded.setHubSettings([], 1, true, true);
+    expect(new SessionStore(old).memory).toBe(true);
     expect(readdirSync(old).some((name) => name.includes('corrupt'))).toBe(false);
   });
 
@@ -300,12 +306,13 @@ describe('SessionStore', () => {
     store.upsert(entry('b'));
     store.patch('a', { claudeSessionId: 'new' });
     store.remove('b');
-    store.setHubSettings(['x'], 3, true);
+    store.setHubSettings(['x'], 3, true, false);
     const reloaded = new SessionStore(dir);
     expect(reloaded.sessions.map((s) => [s.sessionId, s.claudeSessionId])).toEqual([['a', 'new']]);
     expect(reloaded.dangerRules).toEqual(['x']);
     expect(reloaded.stuckMinutes).toBe(3);
     expect(reloaded.dispatch).toBe(true);
+    expect(reloaded.memory).toBe(false);
     expect(readdirSync(dir)).toEqual(['sessions.json']);
   });
 

@@ -584,6 +584,12 @@ export const Settings = z.object({
    * 關掉後新開或接續的 session 不掛工具，已掛著的呼叫一律回「已關閉」。
    */
   dispatch: z.boolean().default(true),
+  /**
+   * 讓 session 讀寫進度卡（MCP 工具 get_progress／update_progress，P3 項目一，docs/p3-spec.md §1.3）。
+   * 預設開（§7.2-D3）：工具本身不花額度、不會自己動，是 Claude 呼叫才有作用。關掉後新開或接續的 session
+   * 不掛這兩個工具（派工也關著就完全不掛 MCP server）；已掛著的呼叫一律回 `memory_disabled`。
+   */
+  memory: z.boolean().default(true),
 });
 export type Settings = z.infer<typeof Settings>;
 
@@ -669,9 +675,19 @@ export const BroadcastTarget = z.object({
 });
 export type BroadcastTarget = z.infer<typeof BroadcastTarget>;
 /** 一則群發（hub 只放在記憶體：hub 重啟就沒有，排隊中的前端標成「沒送出（hub 重啟）」）。 */
+/**
+ * 送字的種類：team＝團隊群發；progress＝進度卡「帶入進度卡」；ask_update＝「請隊長更新 ◈」（P3 項目一）。
+ * 後兩種和群發同一條 SafeDelivery（manual）與同一套結果格式，畫面共用排隊中／取消的顯示。
+ */
+export const BroadcastKind = z.enum(['team', 'progress', 'ask_update']);
+export type BroadcastKind = z.infer<typeof BroadcastKind>;
 export const Broadcast = z.object({
   id: Id,
-  teamId: Id,
+  /** 團隊群發與團隊進度卡是團隊 id；單獨 session 的進度卡帶入是 null。 */
+  teamId: Id.nullable(),
+  kind: BroadcastKind.default('team'),
+  /** 進度卡送字：卡片擁有者（`team:<id>`／`session:<id>`，見 progressOwnerKey）；群發是 null。 */
+  cardKey: z.string().nullable().default(null),
   text: z.string(),
   /** 有 @ 點名（只送給 targets 裡的人）。 */
   mentioned: z.boolean(),

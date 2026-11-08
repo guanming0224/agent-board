@@ -15,6 +15,7 @@ import {
 import { CloseButton, SidePanel } from '../views/Overlays';
 import { useCurrentZoneId, useZones } from '../zones';
 import { NewTeamForm } from './NewTeamForm';
+import { PresetEntry } from './PresetPicker';
 import { refreshTeams, teamColorVar, useTeams, useTeamSync } from './store';
 import { TeamWorkbench } from './TeamWorkbench';
 
@@ -45,6 +46,8 @@ function TeamList({ missing }: { missing: boolean }) {
           {t('team.notFound')}
         </p>
       )}
+      {/* 從 Preset 建立（P3 §2.4：手機的入口；桌面另有底部指令列的 Presets）。 */}
+      <PresetEntry />
       <NewTeamForm />
       <label className="row team-list-all">
         <input

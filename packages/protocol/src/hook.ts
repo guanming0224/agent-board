@@ -1,7 +1,8 @@
 // agent-board-hook ↔ daemon 的本機 socket 協定（NDJSON，一行一則）。
 // Claude Code 的欄位以 docs/claude-code-notes.md 為準；未列出的欄位用 loose 保留，避免版本更新就解析失敗。
 import { z } from 'zod';
-import { DispatchTool, Id } from './models';
+import { Id } from './models';
+import { AgentBoardTool } from './progress';
 
 export const HOOK_ENV = {
   /** Agent Board 內部的 session id。沒有這個變數就代表不是我們開的 claude，hook 必須立刻 exit 0。 */
@@ -70,7 +71,14 @@ export const HOOK_TIMEOUT_SECONDS = 600;
  * MCP server（`agent-board-mcp`）讀密鑰的檔案路徑。daemon 在 `--mcp-config` 檔的 `env` 給它；
  * 密鑰本身只在 0600 的檔案裡，不在 argv、不在 claude 的環境變數（Bash 工具讀不到）、不在 MCP 設定檔。
  */
-export const MCP_ENV = { secretFile: 'AGENT_BOARD_MCP_SECRET_FILE' } as const;
+export const MCP_ENV = {
+  secretFile: 'AGENT_BOARD_MCP_SECRET_FILE',
+  /**
+   * 這次開 PTY 掛了哪些工具（逗號分隔的短名稱，例如 `list_members,get_progress`；P3 項目一）。
+   * MCP server 的 tools/list 只列這些、只接受這些。沒有這個變數＝舊版 daemon，只有派工的四個。
+   */
+  tools: 'AGENT_BOARD_MCP_TOOLS',
+} as const;
 
 export const McpRequest = z.object({
   type: z.literal('mcp'),
@@ -78,7 +86,7 @@ export const McpRequest = z.object({
   sessionId: Id,
   /** 這個 session 這次開 PTY 時 daemon 產生的密鑰；結束或重開就換掉。 */
   secret: z.string().min(16).max(200),
-  tool: DispatchTool,
+  tool: AgentBoardTool,
   args: z.record(z.string(), z.unknown()),
 });
 export type McpRequest = z.infer<typeof McpRequest>;

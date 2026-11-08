@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// agent-board-mcp：派工工具的 MCP server（stdio，CONTRACTS §11）。daemon 用 `--mcp-config` 掛給每個 claude。
+// agent-board-mcp：派工與進度卡工具的 MCP server（stdio，CONTRACTS §11、§14）。daemon 用 `--mcp-config` 掛給每個 claude。
+// 只列、只接受 daemon 在 AGENT_BOARD_MCP_TOOLS 給的工具（設定關著的功能不出現）。
 // 自己不做任何決定：每個工具呼叫原樣經本機 socket 交給 daemon（daemon 比對密鑰），再由 hub 判斷能不能做。
 // 不呼叫任何模型、不連網路，只連 daemon 的本機 socket。只用 node 內建模組（同 agent-board-hook，可直接 node 執行）。
 // stdout 只能有 JSON-RPC 訊息；說明一律寫 stderr。
@@ -7,9 +8,12 @@ import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { createInterface } from 'node:readline';
 import {
+  DISPATCH_TOOLS,
   MCP_SECRET_FILE_ENV,
   MCP_SERVER_NAME,
   MCP_TOOL_TIMEOUT_MS,
+  MCP_TOOLS_ENV,
+  MEMORY_TOOLS,
   SESSION_ID_ENV,
   SOCKET_ENV,
 } from './mcp-constants.ts';
@@ -19,15 +23,21 @@ type Json = Record<string, unknown>;
 const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const DEFAULT_VERSION = '2025-06-18';
 
-const INSTRUCTIONS = [
+const DISPATCH_INSTRUCTIONS = [
   'Agent Board tools let you delegate work to other Claude Code sessions shown on the Agent Board canvas, like subagents that keep running.',
   'list_members shows your team. spawn_member starts a new member in this same project (writers — worker and tester — get their own git worktree; researcher/reviewer are read-only) and gives it your prompt.',
   'send_task types a new task into one of your members once it is waiting for input.',
   'When a member finishes the turn that handled your work, its result is typed back into this session automatically as "[Result from <name>] Summary: … | Detected file edits: … | Branch: …". Do not poll; wait for it.',
   "get_result shows a member's latest summary, files and branch on demand.",
-].join(' ');
+];
 
-const TOOLS = [
+/** 進度卡（P3 項目一）：固定的兩句（docs/p3-spec.md §1.3）。 */
+const MEMORY_INSTRUCTIONS = [
+  'When you start new work, or after the conversation was cleared (/clear, compact), first read the team progress card with get_progress; when you finish a chunk of work, or before you stop to wait for the user, update status/next/blockers with update_progress.',
+  "gmNotes are the user's fixed rules and must be followed.",
+];
+
+const ALL_TOOLS = [
   {
     name: 'list_members',
     description:
@@ -85,9 +95,67 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'get_progress',
+    description:
+      "Read your team's progress card on the Agent Board: status, next step, blockers, the user's fixed rules (gmNotes), the team goal and TEAM.md, plus facts (task board counts, files changed in the last 24 hours, member status). Also returns the card's revision, which update_progress needs. If you are in several teams and omit team, every card is returned. A session without a team gets its own card.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        team: { type: 'string', description: 'Optional team name or id.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'update_progress',
+    description:
+      "Update your team's progress card. Only the fields you send change. Pass baseRevision = the revision you read with get_progress; if the user or another member changed the same field since then, the update is refused (progress_conflict) and you get the current card to merge with. Only the team lead writes (a team without a lead: any member; a session without a team: its own card). gmNotes cannot be changed. Each field is at most 2000 characters; simple Markdown lists, bold and inline code are shown.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        baseRevision: {
+          type: 'integer',
+          minimum: 0,
+          description: 'The revision you read with get_progress (0 if the card is empty).',
+        },
+        status: { type: 'string', description: 'Where the work stands now.' },
+        next: { type: 'string', description: 'The next step(s).' },
+        blockers: {
+          type: 'string',
+          description: 'What blocks progress or waits for the user to decide.',
+        },
+        team: {
+          type: 'string',
+          description: 'Team name or id; required only if you are in several teams.',
+        },
+      },
+      required: ['baseRevision'],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
-const TOOL_NAMES: readonly string[] = TOOLS.map((tool) => tool.name);
+/**
+ * daemon 給的工具清單（只認得的名稱）。沒有這個變數＝舊版 daemon：只有派工的四個。
+ * 給了但是空的不會發生（daemon 兩個功能都關時不掛 MCP server），當成沒有工具。
+ */
+function enabledTools(): readonly string[] {
+  const raw = process.env[MCP_TOOLS_ENV];
+  if (raw === undefined) return DISPATCH_TOOLS;
+  const known: readonly string[] = ALL_TOOLS.map((tool) => tool.name);
+  return raw
+    .split(',')
+    .map((name) => name.trim())
+    .filter((name) => known.includes(name));
+}
+
+const TOOL_NAMES = enabledTools();
+const TOOLS = ALL_TOOLS.filter((tool) => TOOL_NAMES.includes(tool.name));
+const INSTRUCTIONS = [
+  ...(DISPATCH_TOOLS.some((name) => TOOL_NAMES.includes(name)) ? DISPATCH_INSTRUCTIONS : []),
+  ...(MEMORY_TOOLS.some((name) => TOOL_NAMES.includes(name)) ? MEMORY_INSTRUCTIONS : []),
+].join(' ');
 
 function write(message: Json): void {
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
@@ -112,7 +180,7 @@ function callDaemon(tool: string, args: Json): Promise<{ ok: boolean; text: stri
   if (!socketPath || !sessionId || !secret) {
     return Promise.resolve({
       ok: false,
-      text: 'not_configured: This session was not started by Agent Board with dispatch tools.',
+      text: 'not_configured: This session was not started by Agent Board with its tools.',
     });
   }
   const requestId = crypto.randomUUID();

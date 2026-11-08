@@ -12,11 +12,17 @@ import type {
   Layout,
   Machine,
   Note,
+  ProgressCard,
+  ProgressOwner,
+  ProgressRevision,
+  ProgressWrite,
   Project,
   PurgeOptions,
   PurgeResult,
   RepoInfo,
   ResourceSample,
+  SearchQuery,
+  SearchResults,
   Session,
   SessionEvent,
   SessionInspect,
@@ -25,6 +31,9 @@ import type {
   Task,
   Team,
   TeamMember,
+  TeamPreset,
+  TeamPresetConfig,
+  TeamPresetUsed,
   Template,
   TranscriptPage,
   UsageSummary,
@@ -51,6 +60,13 @@ export interface BoardSnapshot {
   broadcasts?: Broadcast[];
   /** 全部暫停的狀態與排隊統計（P2 項目三）。舊版 hub 沒有就是 undefined（＝沒暫停）；群發送出鈕旁的「目前全部暫停中」也看它。 */
   pause?: BoardPauseState;
+  /**
+   * 進度卡（P3 項目一，含自動事實）：寫過的卡，hub 在 board.state 帶、每次寫入推 progress.updated。
+   * 舊版 hub 沒有＝undefined（畫面當成還沒有卡）。
+   */
+  progress?: ProgressCard[];
+  /** 團隊 Presets（P3 項目二），照 position 排。舊版 hub 沒有＝undefined（底部列與設定改用 listTeamPresets 讀）。 */
+  presets?: TeamPreset[];
 }
 
 /** 團隊建立、修改（含換工作區）或刪除：hub 用 WS 推，不等輪詢。 */
@@ -76,6 +92,13 @@ export interface AuditFilter {
 export const errorCode = (e: unknown): string | null => {
   const code = typeof e === 'object' && e !== null ? (e as { code?: unknown }).code : undefined;
   return typeof code === 'string' ? code : null;
+};
+
+/** hub 錯誤的 detail（ApiError.detail，例如 progress_conflict 的 ProgressConflict）。沒有就是 null。 */
+export const errorDetail = (e: unknown): Record<string, unknown> | null => {
+  const detail =
+    typeof e === 'object' && e !== null ? (e as { detail?: unknown }).detail : undefined;
+  return typeof detail === 'object' && detail !== null ? (detail as Record<string, unknown>) : null;
 };
 
 /** 後端回的錯誤是否為「機器離線」（hub 回 409 machine_offline）。 */
@@ -233,11 +256,48 @@ export interface BoardBackend {
   /** 取消某個對象還在排隊的群發。 */
   cancelBroadcast(broadcastId: string, sessionId: string): Promise<Broadcast>;
 
+  /**
+   * 進度卡（P3 項目一，CONTRACTS §14）。owner 是團隊或單獨 session。清單在 board 快照的 progress；
+   * 單張（含最新的自動事實）用 getProgress。saveProgress 衝突時丟 code `progress_conflict`、detail 是 ProgressConflict。
+   */
+  getProgress(owner: ProgressOwner): Promise<ProgressCard>;
+  saveProgress(owner: ProgressOwner, body: ProgressWrite): Promise<ProgressCard>;
+  progressRevisions(owner: ProgressOwner): Promise<ProgressRevision[]>;
+  restoreProgress(owner: ProgressOwner, revision: number): Promise<ProgressCard>;
+  /** 帶入進度卡：送一行 `[Progress card: …]` 給 sessionId（hub 端 SafeDelivery manual）。 */
+  deliverProgress(owner: ProgressOwner, sessionId: string): Promise<Broadcast>;
+  /** 請隊長更新 ◈：送固定一行給隊長。 */
+  askProgressUpdate(teamId: string): Promise<Broadcast>;
+
   /** 工作區（P2 項目二）。清單在 board 快照的 zones。刪除非空回 zone_not_empty、最後一個 last_zone。 */
   createZone(name: string): Promise<Zone>;
   renameZone(id: string, name: string): Promise<Zone>;
   deleteZone(id: string): Promise<void>;
 
+  /**
+   * 團隊 Presets（P3 項目二，CONTRACTS §15）。清單也在 board 快照的 presets（hub 推 preset.list）。
+   * 名稱不分大小寫重複回 preset_name_taken。套用在前端走 runPlan，完成後呼叫 teamPresetUsed 回報（hub 記最後使用時間與 audit）。
+   */
+  listTeamPresets(): Promise<TeamPreset[]>;
+  createTeamPreset(input: {
+    name: string;
+    config: TeamPresetConfig;
+    /** 刪除後「復原」：插回原本的位置。 */
+    position?: number;
+  }): Promise<TeamPreset>;
+  updateTeamPreset(
+    id: string,
+    patch: { name?: string; config?: TeamPresetConfig; position?: number },
+  ): Promise<TeamPreset>;
+  deleteTeamPreset(id: string): Promise<void>;
+  teamPresetUsed(id: string, result: TeamPresetUsed): Promise<TeamPreset>;
+
   /** 由舊到新。請隊長拆解從這裡讀回覆；最近的交接紀錄也是。 */
   sessionEvents(sessionId: string): Promise<SessionEvent[]>;
+
+  /**
+   * 全域搜尋的快速層（P3 §3，`GET /api/search`）：只搜 hub 已有的資料。mask 為 true 時片段在 hub 就遮好。
+   * 深層（各台機器的對話紀錄與終端機，③b）之後才有，會另外加 deepSearch。
+   */
+  search(query: SearchQuery): Promise<SearchResults>;
 }

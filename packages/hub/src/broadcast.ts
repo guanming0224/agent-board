@@ -3,7 +3,13 @@
 // 這是 GM 親手下的指令：全部暫停不擋（Q6，DeliveryItem.manual），畫面另外提示「目前全部暫停中」。
 // 結果只放在記憶體（和送字佇列一樣），hub 重啟就沒有；前端把重啟前還在排隊的標成「沒送出（hub 重啟）」。
 import { randomUUID } from 'node:crypto';
-import type { Broadcast, BroadcastTarget, Session, User } from '@agent-board/protocol';
+import type {
+  Broadcast,
+  BroadcastKind,
+  BroadcastTarget,
+  Session,
+  User,
+} from '@agent-board/protocol';
 import { isGone, type SafeDelivery } from './delivery';
 import { HttpError, notFound } from './errors';
 import type { Store } from './store';
@@ -37,6 +43,8 @@ function skipReason(session: Session): string | null {
 
 export class BroadcastEngine {
   private readonly items = new Map<string, Broadcast>();
+  /** 每則的 audit 動作名稱（群發 team.broadcast、進度卡 progress.deliver／progress.ask_update）。 */
+  private readonly actions = new Map<string, string>();
 
   constructor(private readonly deps: BroadcastDeps) {}
 
@@ -67,10 +75,57 @@ export class BroadcastEngine {
     if (sessions.length === 0) {
       throw new HttpError(400, 'no_targets', 'This team has no members to send to');
     }
+    return this.start(
+      { teamId, kind: 'team', cardKey: null, text, mentioned, sessions },
+      user,
+      'team.broadcast',
+    );
+  }
+
+  /**
+   * 進度卡的送字（P3 項目一）：「帶入進度卡」送給任一個 session、「請隊長更新」送給隊長。和群發同一條
+   * SafeDelivery（manual：只在等輸入時送、忙就排隊、全部暫停不擋）與同一套結果格式。
+   * audit：建立時 `<action>`（user，detail 同群發），送出 Enter 時 `<action>.delivered`、沒送出 `<action>.dropped`。
+   */
+  direct(
+    input: {
+      teamId: string | null;
+      kind: Exclude<BroadcastKind, 'team'>;
+      cardKey: string;
+      text: string;
+      session: Session;
+    },
+    user: User,
+    action: string,
+  ): Broadcast {
+    return this.start(
+      {
+        teamId: input.teamId,
+        kind: input.kind,
+        cardKey: input.cardKey,
+        text: input.text,
+        mentioned: true,
+        sessions: [input.session],
+      },
+      user,
+      action,
+    );
+  }
+
+  private start(
+    input: Pick<Broadcast, 'teamId' | 'kind' | 'cardKey' | 'text' | 'mentioned'> & {
+      sessions: Session[];
+    },
+    user: User,
+    action: string,
+  ): Broadcast {
+    const { teamId, text, mentioned, sessions } = input;
     const now = this.deps.now().toISOString();
     const broadcast: Broadcast = {
       id: randomUUID(),
       teamId,
+      kind: input.kind,
+      cardKey: input.cardKey,
       text,
       mentioned,
       by: user.id,
@@ -89,6 +144,7 @@ export class BroadcastEngine {
       }),
     };
     this.items.set(broadcast.id, broadcast);
+    this.actions.set(broadcast.id, action);
     this.trim();
     for (const target of broadcast.targets) {
       if (target.state !== 'queued') continue;
@@ -117,10 +173,11 @@ export class BroadcastEngine {
       this.deps.audit(
         user.id,
         target.sessionId,
-        'team.broadcast',
+        action,
         JSON.stringify({
           teamId,
           broadcastId: broadcast.id,
+          ...(input.cardKey ? { card: input.cardKey } : {}),
           text,
           mentioned,
           state: target.state,
@@ -144,7 +201,7 @@ export class BroadcastEngine {
       this.deps.audit(
         user.id,
         sessionId,
-        'team.broadcast.cancelled',
+        `${this.actions.get(broadcastId) ?? 'team.broadcast'}.cancelled`,
         JSON.stringify({ teamId: broadcast.teamId, broadcastId }),
       );
       this.emit(broadcastId);
@@ -165,7 +222,7 @@ export class BroadcastEngine {
     this.deps.audit(
       user.id,
       sessionId,
-      state === 'sent' ? 'team.broadcast.delivered' : 'team.broadcast.dropped',
+      `${this.actions.get(broadcastId) ?? 'team.broadcast'}.${state === 'sent' ? 'delivered' : 'dropped'}`,
       JSON.stringify({ teamId: broadcast.teamId, broadcastId, ...(reason ? { reason } : {}) }),
     );
     this.emit(broadcastId);
@@ -204,6 +261,7 @@ export class BroadcastEngine {
       if (this.items.size <= KEEP) return;
       if (broadcast.targets.some((t) => t.state === 'queued')) continue;
       this.items.delete(id);
+      this.actions.delete(id);
     }
   }
 }

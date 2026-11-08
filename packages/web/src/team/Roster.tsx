@@ -20,13 +20,13 @@ export interface RosterRow {
   session: Session;
 }
 
-/** 這個團隊的群發（任何人送的），舊的在前。 */
+/** 這個團隊的群發（任何人送的），舊的在前。進度卡的送字（帶入進度卡、請隊長更新）不算，狀態顯示在進度卡上。 */
 function useTeamBroadcasts(teamId: string): Broadcast[] {
   const broadcasts = useBoard((s) => s.broadcasts);
   return useMemo(
     () =>
       (broadcasts ?? [])
-        .filter((b) => b.teamId === teamId)
+        .filter((b) => b.teamId === teamId && b.kind === 'team')
         .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)),
     [broadcasts, teamId],
   );

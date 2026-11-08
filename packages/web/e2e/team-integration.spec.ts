@@ -667,3 +667,36 @@ test('工作區（P2 §2）：真 hub 建立、把團隊移過去；目前工作
   expect(audit.filter((a) => trio.some((s) => s.id === a.sessionId))).toHaveLength(trio.length);
   await context.close();
 });
+
+test('進度卡（P3 §1.8 驗收 2，真 hub）：一個瀏覽器存卡，另一個瀏覽器 1 秒內看到；audit 有 progress.update', async ({
+  browser,
+}) => {
+  const open = async () => {
+    const context = await browser.newContext({ baseURL: HUB, locale: 'zh-TW' });
+    const login = await context.request.post('/api/auth/login', {
+      data: { name: 'owner', password: PASSWORD },
+    });
+    expect(login.ok()).toBe(true);
+    const page = await context.newPage();
+    await page.goto(`/#/team/${teamId}`);
+    await expect(page.getByTestId('team-progress')).toBeVisible();
+    return { context, page };
+  };
+  const a = await open();
+  const b = await open();
+  await a.page.getByTestId('team-progress-edit').click();
+  await a.page.getByTestId('team-progress-input-status').fill('真 hub 同步測試');
+  await a.page.getByTestId('team-progress-input-next').fill('另一個瀏覽器要看到這行');
+  await a.page.getByTestId('team-progress-save').click();
+  await expect(
+    a.page.getByTestId('team-progress').getByTestId('progress-field-next'),
+  ).toContainText('另一個瀏覽器要看到這行');
+  await expect(
+    b.page.getByTestId('team-progress').getByTestId('progress-field-next'),
+  ).toContainText('另一個瀏覽器要看到這行', { timeout: 1000 });
+  const audit = await auditOf(a.page, 'progress.update');
+  expect(audit.length).toBeGreaterThanOrEqual(1);
+  expect(JSON.parse(audit[0]!.detail)).toMatchObject({ source: 'web' });
+  await a.context.close();
+  await b.context.close();
+});

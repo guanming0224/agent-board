@@ -1,6 +1,6 @@
 // 全部暫停（P2 項目三，docs/p2-spec.md §3）：畫布底部的浮動指令列、暫停中的提示列、手機收件匣的暫停鈕。
 // 狀態在 hub（board.state.pause／board.pause），每個 client 即時同步；這裡只畫與送 REST。
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
 import {
   NOT_PAUSED,
@@ -10,7 +10,7 @@ import {
 } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { closeRight, useOverlay } from './overlayStore';
+import { closeRight, toggleMemory, useOverlay } from './overlayStore';
 import { teamHash } from './overlay';
 import {
   heldParts,
@@ -342,11 +342,13 @@ function toggleTeams() {
 
 /**
  * 畫布底部置中的浮動指令列（桌面；手機沒有）：
- * `[＋ 新增 session] [群組] │ [⏸ 全部暫停 ▾] [▶ 全部繼續]`。Presets、Memory 本輪不顯示（Q9）。
+ * `[＋ 新增 session] [群組] [Presets] [Memory] │ [⏸ 全部暫停 ▾] [▶ 全部繼續]`（docs/p3-spec.md §1.5）。
+ * Presets（P3 項目二）由畫布傳進來（`presets`，team 資料夾的元件；views 不反過來 import team）；Memory 是 P3 項目一。
  */
-export function CommandBar() {
+export function CommandBar({ presets }: { presets?: ReactNode } = {}) {
   const t = useT();
   const teamOpen = useOverlay((s) => s.right?.kind === 'team' && s.right.teamId === null);
+  const memoryOpen = useOverlay((s) => s.right?.kind === 'memory');
   const inset = useViewsUi((s) => s.rightInset);
   const openNew = (full: boolean) => {
     const open = useViewsUi.getState().openQuickCreate;
@@ -381,6 +383,16 @@ export function CommandBar() {
           data-testid="command-teams"
         >
           {t('views.command.teams')}
+        </button>
+        {presets}
+        <button
+          type="button"
+          aria-pressed={memoryOpen}
+          title={t('views.command.memoryHint')}
+          onClick={toggleMemory}
+          data-testid="command-memory"
+        >
+          {t('views.command.memory')}
         </button>
         <span className="command-sep" aria-hidden="true" />
         <PauseMenu />

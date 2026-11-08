@@ -1,4 +1,4 @@
-// 看起來像金鑰的字串。hub（audit 打碼）與 web（遮蔽模式）各放一份完全相同的檔案，
+// 看起來像金鑰的字串。hub（audit 打碼、搜尋片段的伺服器端遮蔽）與 web（遮蔽模式）各放一份完全相同的檔案，
 // packages/web/src/security/mask.test.ts 會比對兩份一致。這是形狀比對，不是安全邊界：
 // 沒有固定前綴也沒有 key=value 標籤的密碼認不出來。
 
@@ -59,4 +59,38 @@ export function secretRanges(text: string): Range[] {
     else merged.push([range[0], range[1]]);
   }
   return merged;
+}
+
+const isWide = (code: number) =>
+  code >= 0x1100 &&
+  (code <= 0x115f ||
+    (code >= 0x2e80 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    code >= 0x1f300);
+
+/** 每個字換成同寬的 *；換行與空白留著（多行私鑰的版面不變）。 */
+export function maskChars(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    if (ch === '\n' || ch === '\r' || ch === ' ' || ch === '\t') out += ch;
+    else out += isWide(ch.codePointAt(0) ?? 0) ? '**' : '*';
+  }
+  return out;
+}
+
+/**
+ * 遮蔽模式：把看起來像金鑰的字串換成同寬的 *（寬度不變，TUI 的游標位置與折行才不會亂）。
+ * 畫面（web）與搜尋片段（hub，P3 §3.5）用同一個函式，伺服器端遮好的片段和畫面上遮的一模一樣。
+ */
+export function maskSecrets(text: string): string {
+  let out = '';
+  let at = 0;
+  for (const [start, end] of secretRanges(text)) {
+    out += text.slice(at, start) + maskChars(text.slice(start, end));
+    at = end;
+  }
+  return out + text.slice(at);
 }

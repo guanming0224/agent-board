@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Panel } from '@xyflow/react';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
+import { useBoard } from '../shared/store';
 import { useTeams } from '../team/store';
 import { useArchiveUi, UNDO_MS } from './archive';
 import { arrangeCanvas, arrangeTeam, restoreLayout, type ArrangeInput } from './arrange';
@@ -57,6 +58,7 @@ export function useTidy({
 }: Options): Tidy {
   const teams = useTeams((s) => s.teams);
   const members = useTeams((s) => s.members);
+  const progress = useBoard((s) => s.progress);
   const [hasPrevious, setHasPrevious] = useState(() => tidyState.current.previous !== null);
   const [toastKey, setToastKey] = useState<number | null>(null);
   const frame = useRef<number | null>(null);
@@ -125,11 +127,13 @@ export function useTidy({
         projectId: s.projectId,
         cwd: s.cwd,
         ended: s.endedAt !== null,
+        // 寫過的單獨 session 進度卡畫在卡片右側（progress/CanvasProgress.tsx），整理時預留寬度。
+        progress: (progress ?? []).some((c) => c.sessionId === s.id && c.revision > 0),
       })),
       teams,
       members,
     }),
-    [current, members, sessions, teams],
+    [current, members, progress, sessions, teams],
   );
 
   /** 先記下整理前的全部位置當「上一次擺設」，再一次存好新位置與快照。 */

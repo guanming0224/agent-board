@@ -28,8 +28,9 @@ import { HubClient } from './hubClient';
 import { errorMessage, log } from './log';
 import {
   clearMcpDir,
-  DISPATCH_TOOL_NAMES,
+  enabledTools,
   removeMcpFiles,
+  toolFullName,
   secretMatches,
   writeMcpFiles,
 } from './mcpFiles';
@@ -219,6 +220,8 @@ export class Daemon {
   private revokedTimer: NodeJS.Timeout | null = null;
   /** `Settings.dispatch`（hub.welcome 下發）：新開的 PTY 要不要掛派工工具。 */
   private dispatchEnabled: boolean;
+  /** `Settings.memory`（hub.welcome 下發，P3 項目一）：新開的 PTY 要不要掛進度卡工具。 */
+  private memoryEnabled: boolean;
   /** 每個活著的 session 這次 PTY 的派工密鑰（只在記憶體，檔案另存 0600）。 */
   private readonly mcpSecrets = new Map<string, string>();
   private readonly dispatchRequests = new Map<
@@ -234,6 +237,7 @@ export class Daemon {
     this.dangerRules = this.store.dangerRules ?? DEFAULT_DANGER_RULES;
     this.stuckMinutes = this.store.stuckMinutes ?? DEFAULT_STUCK_MINUTES;
     this.dispatchEnabled = this.store.dispatch;
+    this.memoryEnabled = this.store.memory;
     this.hub = new HubClient({
       url: config.hubUrl,
       token: config.token,
@@ -335,7 +339,7 @@ export class Daemon {
       capabilities: this.capabilities,
       sessions: [...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.runtime()),
       pendingApprovals: this.approvals.pending(),
-      features: [DAEMON_FEATURES.signalGuard],
+      features: [DAEMON_FEATURES.signalGuard, DAEMON_FEATURES.memory],
     };
   }
 
@@ -370,7 +374,12 @@ export class Daemon {
       case 'hub.welcome':
         this.clearRevokedTimer();
         // 設定變更時 hub 會重送 welcome；用量每條連線只需要補報一次。
-        this.applyHubSettings(message.dangerRules, message.stuckMinutes, message.dispatch === true);
+        this.applyHubSettings(
+          message.dangerRules,
+          message.stuckMinutes,
+          message.dispatch === true,
+          message.memory === true,
+        );
         for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
         if (!this.usageReportedOnConnect) {
           this.usageReportedOnConnect = true;
@@ -593,12 +602,18 @@ export class Daemon {
     fn(session);
   }
 
-  private applyHubSettings(dangerRules: string[], stuckMinutes: number, dispatch: boolean): void {
+  private applyHubSettings(
+    dangerRules: string[],
+    stuckMinutes: number,
+    dispatch: boolean,
+    memory: boolean,
+  ): void {
     this.dangerRules = dangerRules;
     this.stuckMinutes = stuckMinutes;
     // 只影響之後開的 PTY；已經掛著的工具呼叫時由 hub 回「已關閉」。
     this.dispatchEnabled = dispatch;
-    this.store.setHubSettings(dangerRules, stuckMinutes, dispatch);
+    this.memoryEnabled = memory;
+    this.store.setHubSettings(dangerRules, stuckMinutes, dispatch, memory);
     for (const session of this.sessions.values()) session.setStuckMinutes(stuckMinutes);
   }
 
@@ -852,22 +867,27 @@ export class Daemon {
 
   // ── 派工工具（CONTRACTS §11）────────────────────────────
 
-  /** 設定開著、找得到 MCP server 才掛；每次開 PTY 換新密鑰。寫檔失敗就不掛，session 照常開。 */
+  /**
+   * 派工或進度卡設定開著、找得到 MCP server 才掛（兩個都關＝完全不掛）；`--allowedTools` 只列開著的功能的工具。
+   * 每次開 PTY 換新密鑰。寫檔失敗就不掛，session 照常開。
+   */
   private prepareMcp(
     sessionId: string,
   ): { configPath: string; allowedTools: readonly string[] } | null {
     this.dropMcp(sessionId);
     const server = this.deps.config.mcpServer;
-    if (!this.dispatchEnabled || !server) return null;
+    const tools = enabledTools({ dispatch: this.dispatchEnabled, memory: this.memoryEnabled });
+    if (tools.length === 0 || !server) return null;
     try {
       const launch = writeMcpFiles(
         this.deps.config.dataDir,
         sessionId,
         { command: process.execPath, args: [server] },
         this.hookServer.path,
+        tools,
       );
       this.mcpSecrets.set(sessionId, launch.secret);
-      return { configPath: launch.configPath, allowedTools: DISPATCH_TOOL_NAMES };
+      return { configPath: launch.configPath, allowedTools: tools.map(toolFullName) };
     } catch (error) {
       log.warn(`無法寫入派工設定，這個 session 不掛派工工具：${errorMessage(error)}`);
       return null;

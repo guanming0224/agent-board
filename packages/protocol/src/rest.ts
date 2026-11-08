@@ -39,6 +39,9 @@ import {
   Zone,
   ZoneName,
 } from './models';
+import { ProgressCard, ProgressRevision, ProgressWrite } from './progress';
+import { SearchQuery, SearchResults } from './search';
+import { TeamPreset, TeamPresetConfig, TeamPresetName, TeamPresetUsed } from './presets';
 import { DirEntry, FolderName, RepoInfo, SessionSpec } from './ws';
 
 export type Auth = 'public' | 'user' | 'owner';
@@ -93,7 +96,60 @@ export type ZoneNotEmpty = z.infer<typeof ZoneNotEmpty>;
 export const SettingsPatch = Settings.extend({
   autoContinue: z.boolean(),
   dispatch: z.boolean(),
+  memory: z.boolean(),
 }).partial();
+
+/**
+ * 進度卡的路由（P3 項目一，CONTRACTS §14）：團隊卡在 `/api/teams/:id/progress…`，單獨 session 的卡在
+ * `/api/sessions/:id/progress…`，兩組行為相同。auth user（手機登入的一般帳號也能用）。
+ */
+function progressRoutes<const P extends 'teams' | 'sessions'>(owner: P) {
+  const base = `/api/${owner}/:id/progress` as const;
+  return {
+    /** 單張卡（含自動事實）。還沒寫過回空卡（revision 0）。 */
+    get: route({ method: 'GET', path: base, auth: 'user', response: ProgressCard }),
+    /**
+     * 寫入：只寫有帶的欄位；baseRevision 是讀到的版本。衝突回 409 progress_conflict（ApiError.detail 是
+     * ProgressConflict）；欄位超過上限 400 field_too_long；baseRevision 比目前新 400 invalid_revision。
+     * 成功回卡片（merged：和別人的改動合併寫入）。locked 切換鎖定（不加版本）。
+     */
+    put: route({
+      method: 'PUT',
+      path: base,
+      auth: 'user',
+      body: ProgressWrite,
+      response: ProgressCard,
+    }),
+    /** 最近 50 版，新到舊。 */
+    revisions: route({
+      method: 'GET',
+      path: `${base}/revisions`,
+      auth: 'user',
+      response: z.array(ProgressRevision),
+    }),
+    /** 還原這版＝以舊內容寫一個新版本（不刪歷史，source restore）。 */
+    restore: route({
+      method: 'POST',
+      path: `${base}/restore`,
+      auth: 'user',
+      body: z.object({ revision: z.number().int().positive() }),
+      response: ProgressCard,
+    }),
+    /**
+     * 帶入進度卡：把卡片組成一行 `[Progress card: …]` 送進指定 session（任何 session 都可以），
+     * 走 SafeDelivery manual（只在等輸入時送、忙就排隊、全部暫停不擋）。卡片全空 400 progress_empty。
+     */
+    deliver: route({
+      method: 'POST',
+      path: `${base}/deliver`,
+      auth: 'user',
+      body: z.object({ sessionId: Id }),
+      response: Broadcast,
+    }),
+  };
+}
+const teamProgress = progressRoutes('teams');
+const sessionProgress = progressRoutes('sessions');
 
 export const routes = {
   // 登入與首次引導
@@ -398,6 +454,55 @@ export const routes = {
     response: Ok,
   }),
 
+  // 團隊 Presets（P3 項目二，docs/p3-spec.md §2；CONTRACTS §15）：全 hub 共用，一般使用者（手機）也能用。
+  // 名稱不分大小寫不能重複：409 preset_name_taken。清單照 position 排；建立、改名、排序、刪除都推 WS preset.list。
+  teamPresetsList: route({
+    method: 'GET',
+    path: '/api/team-presets',
+    auth: 'user',
+    response: z.array(TeamPreset),
+  }),
+  teamPresetsCreate: route({
+    method: 'POST',
+    path: '/api/team-presets',
+    auth: 'user',
+    /** position 沒帶＝排最後；有帶（刪除後「復原」）＝插回那個位置。 */
+    body: z.object({
+      name: TeamPresetName,
+      config: TeamPresetConfig,
+      position: z.number().int().nonnegative().optional(),
+    }),
+    response: TeamPreset,
+  }),
+  teamPresetsUpdate: route({
+    method: 'PATCH',
+    path: '/api/team-presets/:id',
+    auth: 'user',
+    /** position：移到第幾個（0 起；超過就放最後），其他的依序往後排。 */
+    body: z
+      .object({
+        name: TeamPresetName,
+        config: TeamPresetConfig,
+        position: z.number().int().nonnegative(),
+      })
+      .partial(),
+    response: TeamPreset,
+  }),
+  teamPresetsDelete: route({
+    method: 'DELETE',
+    path: '/api/team-presets/:id',
+    auth: 'user',
+    response: Ok,
+  }),
+  /** 套用完成（前端逐列建立後）回報：更新 lastUsedAt、寫 audit preset.apply（成功與失敗列數）。 */
+  teamPresetsUsed: route({
+    method: 'POST',
+    path: '/api/team-presets/:id/used',
+    auth: 'user',
+    body: TeamPresetUsed,
+    response: TeamPreset,
+  }),
+
   // 工作區（P2 項目二）：全 hub 共用，一般使用者可改。刪除只在沒有團隊、也沒有單獨 session 時可以：
   // 非空回 409 zone_not_empty（ApiError.detail 是 ZoneNotEmpty：團隊數、session 數），最後一個回 409 last_zone。
   zonesList: route({ method: 'GET', path: '/api/zones', auth: 'user', response: z.array(Zone) }),
@@ -526,6 +631,46 @@ export const routes = {
     path: '/api/handoff-rules/:id',
     auth: 'user',
     response: Ok,
+  }),
+
+  // 進度卡與 Memory（P3 項目一，CONTRACTS §14）
+  /** 卡片清單（含自動事實）。zoneId：只回這個工作區的（團隊看 team.zoneId，單獨 session 看 session.zoneId）；all＝全部。 */
+  progressList: route({
+    method: 'GET',
+    path: '/api/progress',
+    auth: 'user',
+    query: z.object({ zoneId: Id.optional(), all: z.stringbool().optional() }),
+    response: z.array(ProgressCard),
+  }),
+  progressTeamGet: teamProgress.get,
+  progressTeamPut: teamProgress.put,
+  progressTeamRevisions: teamProgress.revisions,
+  progressTeamRestore: teamProgress.restore,
+  progressTeamDeliver: teamProgress.deliver,
+  progressSessionGet: sessionProgress.get,
+  progressSessionPut: sessionProgress.put,
+  progressSessionRevisions: sessionProgress.revisions,
+  progressSessionRestore: sessionProgress.restore,
+  progressSessionDeliver: sessionProgress.deliver,
+  /** 請隊長更新 ◈：送固定一行 PROGRESS_ASK_UPDATE_PROMPT 給隊長（SafeDelivery manual）。沒有隊長 400 no_lead。 */
+  progressAskUpdate: route({
+    method: 'POST',
+    path: '/api/teams/:id/progress/ask-update',
+    auth: 'user',
+    response: Broadcast,
+  }),
+
+  /**
+   * 全域搜尋的快速層（P3 §3，CONTRACTS §16）：只搜 hub 已有的資料（session 欄位、檔案改動、每回合最後回覆、
+   * 交接／派工／任務摘要、團隊文字與任務標題；進度卡在項目一上架後加入）。「GM 送出的指令」（audit 的 terminal.input）
+   * 只回給 owner。mask=1 時片段在 hub 就遮蔽。不寫 audit（太頻繁）。
+   */
+  search: route({
+    method: 'GET',
+    path: '/api/search',
+    auth: 'user',
+    query: SearchQuery,
+    response: SearchResults,
   }),
 
   // 稽核與設定

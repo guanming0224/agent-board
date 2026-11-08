@@ -14,6 +14,7 @@ import { PasswordSection } from './PasswordSection';
 import {
   AutoContinueSection,
   DispatchSection,
+  MemorySection,
   NotifySection,
   QuotaSection,
   SaveBar,
@@ -33,6 +34,7 @@ import {
   type Category,
 } from './settingsNav';
 import { SettingsUserContext } from './settingsParts';
+import { settingsCategoryContent } from './settingsExtra';
 import { TemplatesSection } from './TemplatesSection';
 
 function useSettingsTarget() {
@@ -105,6 +107,12 @@ function useScrollToSection(section: string | null, ready: boolean, current: Cat
       stop();
     };
   }, [section, ready, current]);
+}
+
+/** 其他資料夾註冊的分類內容（例如 team 的 Presets）；沒註冊就是空的。 */
+function RegisteredContent({ category }: { category: Category }) {
+  const Content = settingsCategoryContent(category);
+  return Content ? <Content /> : null;
 }
 
 export function SettingsPage() {
@@ -238,11 +246,13 @@ export function SettingsPage() {
                       <QuotaSection form={f} />
                       <AutoContinueSection form={f} />
                       <DispatchSection form={f} />
+                      <MemorySection form={f} />
                       <StuckSection form={f} />
                     </>
                   ))}
               </>,
             )}
+            {group('presets', <RegisteredContent category="presets" />)}
             {group(
               'security',
               current === 'security' && server((f) => <SecuritySection form={f} />),

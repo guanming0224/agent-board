@@ -97,6 +97,7 @@ export const zhTW: Record<string, string> = {
   'flows.history.deny': '拒絕',
   'flows.history.answer': '回答',
   'flows.inbox.title': '收件匣',
+  'flows.inbox.search': '搜尋全部 session、檔案、回覆與團隊',
   'flows.inbox.showOnCanvas': '在畫布上看',
   'flows.inbox.sort': '排序',
   'flows.inbox.sort.urgency': '依急迫',
@@ -259,6 +260,10 @@ export const zhTW: Record<string, string> = {
   'flows.dispatch.label': '允許 session 派工（MCP 工具）',
   'flows.dispatch.hint':
     '開著時，新開或接續的 session 會掛上 Agent Board 的 MCP 工具：裡面的 Claude 可以自己在同一個專案開成員（寫檔的各自 worktree、研究與審查唯讀）、送工作給成員，成員做完一回合後結果（一句摘要、改過的檔案、分支）會自動送回給它。工具本身不花額度，但開成員就是開新的 session；每個 session 最多同時 {limit} 個成員，權限不會比它寬。關掉後新開的 session 不掛工具，已經掛著的呼叫一律被拒絕。預設開。',
+  'flows.settings.memory': '讓 session 讀寫進度卡（MCP 工具）',
+  'flows.memory.label': '讓 session 讀寫進度卡（MCP 工具）',
+  'flows.memory.hint':
+    '開著時，新開或接續的 session 會掛上 get_progress、update_progress 兩個工具：Claude 開始工作或對話被清空後可以自己讀團隊的進度卡，做完一段後寫回狀態、下一步、阻礙（只有隊長能寫，GM 備註它改不了）。工具本身不花額度、不會自己動。關掉後新開的 session 不掛這兩個工具，已經掛著的呼叫一律被拒絕。預設開。',
   'flows.settings.language': '語言',
   'flows.settings.unsaved': '未存檔',
   'flows.settings.unsavedCount': '{n} 項未存檔',
@@ -776,6 +781,7 @@ export const en: Record<string, string> = {
   'flows.history.deny': 'Denied',
   'flows.history.answer': 'Answered',
   'flows.inbox.title': 'Inbox',
+  'flows.inbox.search': 'Search all sessions, files, replies and teams',
   'flows.inbox.showOnCanvas': 'Show on canvas',
   'flows.inbox.sort': 'Sort',
   'flows.inbox.sort.urgency': 'By urgency',
@@ -952,6 +958,10 @@ export const en: Record<string, string> = {
   'flows.dispatch.label': 'Allow sessions to dispatch work (MCP tools)',
   'flows.dispatch.hint':
     'When on, new and resumed sessions get the Agent Board MCP tools: the Claude inside can start members in the same project (writers get their own worktree; researchers and reviewers are read-only), send them work, and get each result (one-sentence summary, edited files, branch) typed back automatically when the member finishes its turn. The tools themselves use no quota, but starting a member starts a new session. Each session can have at most {limit} live members, never with wider permissions than its own. When off, new sessions get no tools and calls from sessions that already have them are refused. On by default.',
+  'flows.settings.memory': 'Let sessions read and write progress cards (MCP tools)',
+  'flows.memory.label': 'Let sessions read and write progress cards (MCP tools)',
+  'flows.memory.hint':
+    'When on, new and resumed sessions get two tools, get_progress and update_progress: Claude can read its team progress card when it starts work or after the conversation was cleared, and write back status, next step and blockers after a chunk of work (only the lead writes; it cannot change GM notes). The tools use no quota and never act on their own. When off, new sessions do not get them and calls from sessions that already have them are refused. On by default.',
   'flows.settings.language': 'Language',
   'flows.settings.unsaved': 'Unsaved',
   'flows.settings.unsavedCount': '{n} unsaved',

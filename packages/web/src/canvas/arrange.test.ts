@@ -5,6 +5,7 @@ import {
   arrangeTeam,
   MAX_ROW_W,
   restoreLayout,
+  PROGRESS_RESERVE,
   TEAM_BLOCK_GAP,
   TEAM_CLEAR,
   TEAM_GAP_SCREEN,
@@ -415,6 +416,54 @@ describe('arrangeCanvas', () => {
         }
       }
     }
+  });
+
+  it('團隊框右邊預留進度卡的寬度（P3 §1.5）：同一列右邊的東西離框至少 TEAM_BLOCK_GAP＋PROGRESS_RESERVE', () => {
+    expect(PROGRESS_RESERVE).toBe(296);
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const data = randomCanvas(seed);
+      const out = arrangeCanvas(data);
+      const cluster = clusterOf(data);
+      const drawn = frames(data, out);
+      const inTeam = new Set(data.members.map((m) => m.sessionId));
+      // 進度卡的位置：框的右上角外側 16px、寬 280，高度至少一張收合卡。
+      for (const a of drawn) {
+        const card = { x: a.rect.x + a.rect.w + 16, y: a.rect.y, w: 280, h: 48 };
+        const others: Rect[] = [
+          ...drawn.filter((b) => !cluster.get(a.team.id)!.has(b.team.id)).map((b) => b.rect),
+          ...[...out].filter(([id]) => !inTeam.has(id)).map(([, r]) => r),
+        ];
+        for (const r of others) {
+          const overlap =
+            card.x < r.x + r.w &&
+            r.x < card.x + card.w &&
+            card.y < r.y + r.h &&
+            r.y < card.y + card.h;
+          expect(overlap, `seed ${seed} ${a.team.id}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('寫過進度卡的單獨 session 自己一塊、右邊預留 PROGRESS_RESERVE：卡片右側 16px 寬 280 不壓到別的卡', () => {
+    const rects: Record<string, Rect> = {};
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f'];
+    ids.forEach((id, i) => (rects[id] = card(i * STEP_X, 0)));
+    const sessions = ids.map((id) => session(id, { progress: id === 'a' || id === 'c' }));
+    const out = arrangeCanvas(input(rects, [], sessions));
+    expect(overlapping(out)).toEqual([]);
+    for (const id of ['a', 'c']) {
+      const r = out.get(id)!;
+      const note = { x: r.x + r.w + 16, y: r.y, w: 280, h: 48 };
+      for (const [other, o] of out) {
+        if (other === id) continue;
+        expect(overlaps(note, o), `${id} 的進度卡壓到 ${other}`).toBe(false);
+      }
+    }
+    // 沒寫過卡的仍是同一塊（同一列，相鄰間距 GAP_X）。
+    const rest = ['b', 'd', 'e'].map((id) => out.get(id)!);
+    expect(rest[1]!.x - rest[0]!.x).toBe(STEP_X);
+    expect(rest[0]!.y).toBe(rest[1]!.y);
   });
 
   it('整理後全部顯示：手機與桌面寬度下，團隊之間在畫面上至少 48px（P2 §4.2）', () => {

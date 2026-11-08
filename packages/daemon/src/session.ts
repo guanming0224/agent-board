@@ -78,7 +78,8 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
   if (input.readOnly) args.push('--disallowedTools', ...READ_ONLY_DISALLOWED_TOOLS);
   if (input.model) args.push('--model', input.model);
   // 兩個都是可變長度參數：一個值一個 argv，最後一定接 --name，才不會吞到別的參數。
-  // `--allowedTools` 只列這四個派工工具，不放寬任何其他工具（docs/claude-code-notes.md）。
+  // `--allowedTools` 只列設定開著的 agent-board 工具（派工 4 個、進度卡 2 個），不放寬任何其他工具
+  // （docs/claude-code-notes.md、docs/no-llm-review.md）。
   if (input.mcp) {
     args.push('--mcp-config', input.mcp.configPath);
     if (input.mcp.allowedTools.length > 0) args.push('--allowedTools', ...input.mcp.allowedTools);

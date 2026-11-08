@@ -1,36 +1,8 @@
 // 遮蔽模式：把看起來像金鑰的字串換成同寬的 *。寬度不變，TUI 的游標位置與折行才不會亂。
 // 只改這個畫面看到的東西，不是安全邊界：原始資料照樣送到瀏覽器，形狀認不出來的密碼也遮不到。
-import { secretRanges } from './secretPatterns';
+import { maskChars, maskSecrets, secretRanges } from './secretPatterns';
 
-const isWide = (code: number) =>
-  code >= 0x1100 &&
-  (code <= 0x115f ||
-    (code >= 0x2e80 && code <= 0xa4cf) ||
-    (code >= 0xac00 && code <= 0xd7a3) ||
-    (code >= 0xf900 && code <= 0xfaff) ||
-    (code >= 0xfe30 && code <= 0xfe6f) ||
-    (code >= 0xff00 && code <= 0xff60) ||
-    code >= 0x1f300);
-
-/** 換行與空白留著（多行私鑰的版面不變）。 */
-function star(text: string): string {
-  let out = '';
-  for (const ch of text) {
-    if (ch === '\n' || ch === '\r' || ch === ' ' || ch === '\t') out += ch;
-    else out += isWide(ch.codePointAt(0) ?? 0) ? '**' : '*';
-  }
-  return out;
-}
-
-export function maskSecrets(text: string): string {
-  let out = '';
-  let at = 0;
-  for (const [start, end] of secretRanges(text)) {
-    out += text.slice(at, start) + star(text.slice(start, end));
-    at = end;
-  }
-  return out + text.slice(at);
-}
+export { maskSecrets };
 
 type Item =
   | { kind: 'text'; raw: string }
@@ -222,7 +194,7 @@ export class StreamMasker {
         let stop = at + 1;
         while (stop < keep && (covered[visible + stop] === 1) === isCovered) stop += 1;
         const slice = raw.slice(at, stop);
-        segment += isCovered ? star(slice) : slice;
+        segment += isCovered ? maskChars(slice) : slice;
         at = stop;
       }
       text += segment;

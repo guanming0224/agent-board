@@ -1,4 +1,4 @@
-// 路由（P2 §1）：畫布是唯一主畫面且常駐，收件匣、團隊是右側面板（互斥），設定、封存細節、完整新增表單是
+// 路由（P2 §1）：畫布是唯一主畫面且常駐，收件匣、團隊、Memory（P3）是右側面板（互斥），設定、封存細節、完整新增表單是
 // 置中次畫面，可疊在右側面板之上。全尺寸終端機、登入、首次引導仍是整頁。手機（≤ 640px）的收件匣、團隊、
 // 設定是全螢幕頁。網址規則在 views/overlay.ts。
 import { useEffect, useState, type ReactNode } from 'react';
@@ -12,15 +12,18 @@ import {
   SettingsPage,
 } from './flows';
 import { applyAccountLocale } from './flows/locale';
+import { MemoryContent, MemoryDrawer } from './progress';
 import { markBooted } from './shared/boot';
 import { useT } from './shared/i18n';
 import { isDemo, useBoard } from './shared/store';
+import { isSearchShortcut, SearchPanel } from './search';
 import { TeamContent, TeamDrawer } from './team';
 import {
   cameFrom,
   closeModal,
   closeRight,
   markHistory,
+  openSearch,
   replaceHash,
   resolve,
   toggleInbox,
@@ -95,6 +98,7 @@ function effectiveHash(hash: string): string {
 function ModalContent({ kind }: { kind: ModalKind }) {
   if (kind === 'settings') return <SettingsPage />;
   if (kind === 'archive') return <ArchivePage />;
+  if (kind === 'search') return <SearchPanel />;
   return <NewSessionPage />;
 }
 
@@ -102,6 +106,7 @@ const MODAL_LABEL: Record<ModalKind, string> = {
   settings: 'flows.settings.title',
   archive: 'flows.archived.title',
   new: 'flows.new.title',
+  search: 'search.title',
 };
 
 /** 手機：上一筆歷史就是 app 裡的畫面就上一頁，否則回收件匣（手機的首頁）。 */
@@ -135,6 +140,13 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
         </PhonePage>
       );
     }
+    if (right?.kind === 'memory') {
+      return (
+        <PhonePage onBack={phoneBack} testId="phone-memory">
+          <MemoryContent phone />
+        </PhonePage>
+      );
+    }
     return <CanvasPage />;
   }
 
@@ -145,9 +157,15 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
         <CanvasPage />
         {right?.kind === 'inbox' && <InboxDrawer target={right.target} nonce={nav.nonce} />}
         {right?.kind === 'team' && <TeamDrawer teamId={right.teamId} />}
+        {right?.kind === 'memory' && <MemoryDrawer />}
       </div>
       {modal && (
-        <ModalLayer label={t(MODAL_LABEL[modal])} onClose={closeModal} testId="modal">
+        <ModalLayer
+          label={t(MODAL_LABEL[modal])}
+          onClose={closeModal}
+          testId="modal"
+          className={modal === 'search' ? 'search-modal' : undefined}
+        >
           <ModalContent kind={modal} />
         </ModalLayer>
       )}
@@ -195,10 +213,19 @@ export function App() {
     useOverlay.setState({ right: onBoard ? nav.right : null, modal });
   }, [nav.right, modal, onBoard]);
 
-  // Esc 只關最上層；I 開關收件匣。打字中（終端機、輸入框）一律不攔。
+  // Esc 只關最上層；I 開關收件匣；⌘K、/ 開搜尋。打字中（終端機、輸入框）一律不攔。
   useEffect(() => {
     if (!onBoard || phone) return;
     const onKey = (e: KeyboardEvent) => {
+      // 全域搜尋（P3 §3.3）：⌘K／Ctrl+K，或焦點不在輸入框與終端機時按 /。焦點在終端機時一律交給終端機。
+      if (isSearchShortcut(e)) {
+        // 開著別的次畫面（新 session、設定、封存）時不換頁：表單填到一半的內容會不見。
+        const open = useOverlay.getState().modal;
+        if (open && open !== 'search') return;
+        e.preventDefault();
+        openSearch();
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || isTyping(e.target)) return;
       if (e.key === 'Escape') {
         // 等別的元件先處理（卡片選單、快速建立、對話框會 preventDefault），沒人處理才關面板。

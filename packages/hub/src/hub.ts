@@ -5,6 +5,7 @@ import type { WebSocket } from 'ws';
 import {
   ClientToHub,
   DAEMON_FEATURES,
+  isMemoryTool,
   DaemonToHub,
   needsAttention,
   QUEUE_DETAIL_RATE_LIMITED,
@@ -48,9 +49,11 @@ import { buildSummary, DEFAULT_WINDOWS, NotifyCoalescer, type SummaryItem } from
 import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from './audit';
 import { AutoContinueEngine, isAutoContinueKey } from './autoContinue';
 import { BroadcastEngine } from './broadcast';
+import { TeamPresets } from './presets';
 import { conflict, HttpError, notFound } from './errors';
 import { SafeDelivery, type DeliveryItem } from './delivery';
 import { DispatchEngine } from './dispatch';
+import { ProgressEngine } from './progress';
 import { HandoffEngine } from './handoff';
 import {
   attentionPayload,
@@ -295,6 +298,10 @@ export class Hub {
   private readonly dispatch: DispatchEngine;
   /** 團隊群發（P2 項目二）：GM 親手下的，走同一條送字佇列，全部暫停不擋。 */
   private readonly broadcasts: BroadcastEngine;
+  /** 進度卡（P3 項目一）：REST 與 MCP 工具共用。 */
+  readonly progress: ProgressEngine;
+  /** 團隊 Presets（P3 項目二）：只存設定與 audit，不建立、不送字（套用在前端走 runPlan）。 */
+  readonly presets: TeamPresets;
   /** 合併通知（Settings.notifications.coalesce）：哪時候送；送什麼在 flushSummary 決定。 */
   private readonly coalescer: NotifyCoalescer;
   /** 同時等你的上限：每次跨過只通知一次，回到上限以內才重設。 */
@@ -425,6 +432,20 @@ export class Hub {
         this.roundLimits.delete(sessionId);
         this.guarded('auto continue', () => this.autoContinue.onUserInput(sessionId));
       },
+    });
+    this.progress = new ProgressEngine({
+      store: deps.store,
+      now: deps.now,
+      audit: (userId, sessionId, action, detail) => this.audit(userId, sessionId, action, detail),
+      changed: (card) => this.broadcast({ type: 'progress.updated', card }),
+      enabled: () => this.store.getSettings().memory,
+      broadcasts: this.broadcasts,
+    });
+    this.presets = new TeamPresets({
+      db: deps.store.db,
+      now: deps.now,
+      audit: (userId, sessionId, action, detail) => this.audit(userId, sessionId, action, detail),
+      changed: (presets) => this.broadcast({ type: 'preset.list', presets }),
     });
     this.coalescer = new NotifyCoalescer({
       now: () => deps.now().getTime(),
@@ -623,10 +644,15 @@ export class Hub {
   ): void {
     let reply: { ok: boolean; text: string };
     if (!this.store.getSession(msg.sessionId) || !this.ownsSession(conn, msg.sessionId)) {
-      reply = { ok: false, text: 'caller_inactive: This session is not known to Agent Board.' };
+      reply = isMemoryTool(msg.tool)
+        ? { ok: false, text: 'no_card_owner: This session is not known to Agent Board.' }
+        : { ok: false, text: 'caller_inactive: This session is not known to Agent Board.' };
     } else {
       try {
-        reply = this.dispatch.handle(msg.sessionId, msg.tool, msg.args);
+        const { tool } = msg;
+        reply = isMemoryTool(tool)
+          ? this.progress.handleTool(msg.sessionId, tool, msg.args)
+          : this.dispatch.handle(msg.sessionId, tool, msg.args);
       } catch (error) {
         this.log.error({ err: error, tool: msg.tool }, 'dispatch failed');
         reply = { ok: false, text: 'internal_error: Agent Board could not complete this request.' };
@@ -716,6 +742,7 @@ export class Hub {
       dangerRules: settings.dangerRules,
       stuckMinutes: settings.stuckMinutes,
       dispatch: settings.dispatch,
+      memory: settings.memory,
     };
   }
 
@@ -798,6 +825,8 @@ export class Hub {
       pause: this.boardPauseState(),
       zones: this.store.listZones(),
       broadcasts: this.broadcasts.list(),
+      progress: this.progress.list(),
+      presets: this.presets.list(),
     };
   }
 
@@ -2411,6 +2440,7 @@ export class Hub {
     const changed =
       prev.stuckMinutes !== next.stuckMinutes ||
       prev.dispatch !== next.dispatch ||
+      prev.memory !== next.memory ||
       JSON.stringify(prev.dangerRules) !== JSON.stringify(next.dangerRules);
     if (changed) {
       for (const conn of this.daemons.values()) {
