@@ -1237,6 +1237,8 @@ test.describe('新增 session', () => {
           resumeClaudeSessionId: null,
           firstPrompt: 'hello',
           readOnly: false,
+          // P2 §2.3：新建 session 放在目前工作區（預設「主要」）。
+          zoneId: 'main',
         },
       },
     ]);

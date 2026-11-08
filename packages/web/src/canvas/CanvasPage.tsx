@@ -1011,6 +1011,12 @@ export function CanvasPage() {
   const board = useBoardLoad();
   const { state: layouts, retry } = useLayouts();
   useTeamSync();
+  // 團隊還沒讀到時不知道誰屬於哪個工作區（成員跟著團隊）：先等，別的工作區的卡才不會先畫出來、訂閱終端機。
+  // 讀失敗就照 session 自己的工作區畫（畫布上方另有團隊讀取失敗的提示）。
+  // 只等第一次：之後重讀（例如按「重試」）不能把整張畫布卸載。
+  const teamsSeen = useRef(false);
+  const teamsLoading = useTeams((s) => s.status === 'loading') && !teamsSeen.current;
+  if (!teamsLoading) teamsSeen.current = true;
   const sessions = useBoard().sessions.filter((s) => !s.archived);
 
   let body;
@@ -1022,7 +1028,7 @@ export function CanvasPage() {
     body = (
       <ErrorState text={t('canvas.error.layout', { detail: layouts.detail })} onRetry={retry} />
     );
-  } else if (board.status === 'loading' || layouts.status === 'loading') {
+  } else if (board.status === 'loading' || layouts.status === 'loading' || teamsLoading) {
     body = <LoadingState />;
   } else {
     body = (

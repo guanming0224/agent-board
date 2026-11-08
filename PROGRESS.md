@@ -101,3 +101,13 @@ GM 決定先自用，尚未公開發布。步驟、驗證結果與缺口在上�
 - context：daemon 依模型 id 推上限（`[1m]` 或內建模型目錄表），回報 `contextWindow`；不知道就不畫百分比。`Stop` 時從對話紀錄更新用量，新對話不再一直沒有數值。來源見 `docs/claude-code-notes.md`「Context 上限」。
 - 同 repo：daemon 回報 `repoRoot`、`repoCommonDir`（session 與資料夾瀏覽），新 session 頁與團隊成員檢查改用 working tree 根目錄判斷；同 repo 但各自在 linked worktree 的不算衝突，新 session 頁只告知。
 - 未驗證：真實限流訊息與重置時間格式、`SessionStart.model` 是否帶 `[1m]`、`CLAUDE_CODE_DISABLE_1M_CONTEXT`。
+
+## P2 項目二：工作區＋團隊名單面板（2026-11-08，分支 `feat/p2-workspaces`，未合併、未上架）
+
+- schema v9：`zones` 表（預設「主要」id `main`）、`teams.zone_id`、`sessions.zone_id`、`notes.workspace` 改名 `zone_id`；外鍵用觸發器（理由見 CONTRACTS §13）。舊資料全部歸「主要」，`layouts` 不動。升級時照舊自動備份 `-v8`。
+- 程式內工作區叫 zone，和 `layouts.workspace`（版面組）分開。
+- 頁首工作區分頁（等你數、+、右鍵／長按改名刪除、超過 6 個收「更多」、手機下拉）；畫布只畫目前工作區；團隊框標籤拖到分頁、團隊面板下拉、卡片選單都能移；跨工作區的「下一個」與連結會先切過去。
+- 團隊面板：名單（狀態代碼、角色可改、時間、點列聚焦）、原工作台區塊收合、寬版、底部群發（不確認、@ 點名、每列結果、排隊可取消、全部暫停中照送並提示）。群發走 hub 的 `SafeDelivery`（`manual`，不受暫停擋）。
+- 角色加「測試」（tester）：可寫、預設 `default`、開 worktree、可被派任務、不當審查、MCP 可開。
+- 測試：單元 1601（protocol 42、web 356、hub 469、hook 91、daemon 643）；e2e canvas 94、flows 146、team 49（含新的 workspaces 13）、expanded 7、integration 15、team-integration 9、account-integration 5、resize-integration 2、push 4、security 14、terminal 18，全過。
+- 未驗證：真 claude、手機實機、iPhone 拖曳（不支援，手機用下拉）、多個使用者各自版面下的「移入時排右側」（只在移動當下開著畫布的裝置上排）。

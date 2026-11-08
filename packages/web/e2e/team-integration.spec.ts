@@ -521,15 +521,21 @@ test('工作區（P2 §2）：真 hub 建立、把團隊移過去；目前工作
   });
   expect(login.ok()).toBe(true);
   const page = await context.newPage();
-  const all = (await (await page.request.get('/api/sessions')).json()) as Session[];
-  const trio = all.filter((x) => x.name.startsWith('trio-') && x.endedAt === null);
-  expect(trio.length).toBeGreaterThanOrEqual(3);
   const teams = (await (await page.request.get('/api/teams')).json()) as {
     id: string;
     name: string;
     zoneId: string;
   }[];
   const trioTeam = teams.find((x) => x.name === 'trio')!;
+  // 團隊 trio 的成員（trio-extra 加入被擋，不是成員，留在「主要」）。
+  const memberIds = (
+    (await (await page.request.get(`/api/teams/${trioTeam.id}/members`)).json()) as {
+      sessionId: string;
+    }[]
+  ).map((m) => m.sessionId);
+  const all = (await (await page.request.get('/api/sessions')).json()) as Session[];
+  const trio = all.filter((x) => memberIds.includes(x.id));
+  expect(trio).toHaveLength(3);
   expect(trioTeam.zoneId).toBe('main');
 
   await page.goto('/#/canvas');
