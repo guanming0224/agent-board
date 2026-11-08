@@ -39,7 +39,7 @@ registerMessages('zh-TW', {
   'views.pause.resumed': '已繼續，放出：{parts}',
   'views.pause.resumedNone': '已繼續（沒有排隊中的）',
   'views.pause.done.finishTurn': '已暫停：做完這輪就停。',
-  'views.pause.done.interrupt': '已暫停：立刻中斷。',
+  'views.pause.done.interrupt': '已暫停：立刻中斷。{result}',
   'views.pause.interrupted': '已中斷 {n} 個',
   'views.pause.interruptOffline': '{n} 個失聯沒送到',
   'views.pause.interruptUnsupported':
@@ -179,7 +179,7 @@ registerMessages('en', {
   'views.pause.resumed': 'Resumed, released: {parts}',
   'views.pause.resumedNone': 'Resumed (nothing was queued)',
   'views.pause.done.finishTurn': 'Paused: stop after this turn.',
-  'views.pause.done.interrupt': 'Paused: interrupt now.',
+  'views.pause.done.interrupt': 'Paused: interrupt now. {result}',
   'views.pause.interrupted': 'Interrupted {n}',
   'views.pause.interruptOffline': '{n} offline, not sent',
   'views.pause.interruptUnsupported':

@@ -3046,7 +3046,7 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
     await page.waitForTimeout(400);
     await option.click();
     await expect(page.getByTestId('pause-msg')).toHaveText(
-      '已暫停：立刻中斷。 已中斷 1 個；1 個失聯沒送到',
+      '已暫停：立刻中斷。已中斷 1 個；1 個失聯沒送到',
     );
     await expect(page.getByTestId('pause-menu')).toHaveCount(0);
     await expect(strip(page)).toContainText('已暫停（立刻中斷）');
@@ -3064,6 +3064,16 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
     await page.getByTestId('resume-button').first().click();
     await expect(strip(page)).toHaveCount(0);
     await expect(lamp(page, 's-tests')).not.toHaveText('●RUN');
+
+    // 稽核（規格 §3.6 第 5 條）：一筆 board.pause，加上每個送出 Esc 的 session 各一筆 terminal.signal。
+    await page.evaluate(() => (location.hash = '#/settings/data'));
+    const audit = page.locator('#s-audit');
+    await audit.getByLabel('動作', { exact: true }).selectOption('terminal.signal');
+    await expect(audit.getByTestId('audit-row')).toHaveCount(1);
+    await expect(audit.getByTestId('audit-row')).toContainText('Write tests');
+    await expect(audit.getByTestId('audit-row')).toContainText('escape');
+    await audit.getByLabel('動作', { exact: true }).selectOption('board.pause');
+    await expect(audit.getByTestId('audit-row')).toHaveCount(1);
   });
 
   test('別的瀏覽器暫停、hub 重啟清掉排隊：提示列照 hub 推來的狀態顯示', async ({ page }) => {
@@ -3146,6 +3156,31 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
     await expect(phone.getByTestId('pause-strip')).toHaveCount(0);
     await expect(phone.getByTestId('pause-msg')).toHaveText('已繼續（沒有排隊中的）');
     await expect(resumeButton).toBeDisabled();
+    const width = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(width).toBeLessThanOrEqual(390);
+  });
+
+  test('手機：團隊、設定、新增的全螢幕頁也一直看得到暫停提示列', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#/inbox');
+    const phone = page.getByTestId('phone-pause');
+    await phone.getByTestId('pause-button').click();
+    await phone.getByTestId('pause-finish-turn').click();
+    await expect(phone.getByTestId('pause-strip')).toContainText('已暫停（做完這輪就停）');
+    for (const [hash, id] of [
+      ['#/team', 'phone-team'],
+      ['#/settings', 'phone-settings'],
+      ['#/new', 'phone-new'],
+    ] as const) {
+      await page.evaluate((h) => (location.hash = h), hash);
+      const screen = page.getByTestId(id);
+      await expect(screen).toBeVisible();
+      await expect(screen.getByTestId('pause-strip')).toBeVisible();
+      await expect(screen.getByTestId('pause-strip')).toContainText('已暫停（做完這輪就停）');
+    }
+    // 繼續之後就收起來。
+    await page.getByTestId('phone-new').getByTestId('resume-button').click();
+    await expect(page.getByTestId('pause-strip')).toHaveCount(0);
     const width = await page.evaluate(() => document.documentElement.scrollWidth);
     expect(width).toBeLessThanOrEqual(390);
   });

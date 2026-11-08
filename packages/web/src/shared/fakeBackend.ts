@@ -836,6 +836,15 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
             // Esc 中斷回合：回到等輸入（Q8：之後不自動送「繼續」）。
             x.status = 'waiting_input';
             terminal.emit(x.id, '\r\n[Interrupted by user]\r\n');
+            // 和 hub 一樣：daemon 確認送出 Esc 的每個 session 各記一筆 terminal.signal（規格 §3.6 第 5 條）。
+            audit.unshift({
+              id: crypto.randomUUID(),
+              userId: demoUser.id,
+              sessionId: x.id,
+              action: 'terminal.signal',
+              detail: 'escape',
+              at: new Date().toISOString(),
+            });
           }
         }
       }

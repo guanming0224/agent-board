@@ -47,6 +47,11 @@ export const AUDIT_ACTIONS = [
   'settings.update',
   'audit.export',
   'audit.retention',
+  'board.pause',
+  'board.resume',
+  'board.held',
+  'board.held_cleared',
+  'board.interrupt_skipped',
 ] as const;
 
 /** hub 一次最多回 1000 筆；畫面一次多載 100。 */

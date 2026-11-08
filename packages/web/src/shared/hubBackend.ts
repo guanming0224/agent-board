@@ -189,6 +189,7 @@ class HubConnection implements TerminalStream {
   private handle(message: HubToClient): void {
     switch (message.type) {
       case 'board.state':
+        this.pauseSeq++;
         this.publish({
           machines: message.machines,
           sessions: message.sessions,
@@ -198,6 +199,7 @@ class HubConnection implements TerminalStream {
         });
         return;
       case 'board.pause':
+        this.pauseSeq++;
         return this.patch((s) => ({ ...s, pause: message.pause }));
       case 'board.waitingLimit':
         return this.patch((s) => ({ ...s, waitingLimit: message.waitingLimit }));
@@ -245,8 +247,15 @@ class HubConnection implements TerminalStream {
     }
   }
 
-  /** REST 回來的暫停狀態先套上（WebSocket 的 board.pause 隨後也會到，內容相同）。 */
-  setPause(pause: BoardPauseState): void {
+  /**
+   * 收到幾次 hub 推來的暫停狀態（board.state／board.pause）。REST 回應只在送出後這個數字沒變
+   * （WebSocket 還沒到）時才當後備套用；WebSocket 已經更新過就不拿較舊的 REST 回應蓋掉。
+   */
+  pauseSeq = 0;
+
+  /** REST 回來的暫停狀態：只在 seq 之後 WebSocket 還沒推過新狀態時套上。 */
+  setPauseIfUnchanged(seq: number, pause: BoardPauseState): void {
+    if (this.pauseSeq !== seq) return;
     this.patch((s) => ({ ...s, pause }));
   }
 
@@ -321,13 +330,15 @@ export function createHubBackend() {
       );
     },
     async pauseBoard(mode) {
+      const seq = hub.pauseSeq;
       const result = await call('boardPause', { body: { mode } });
-      hub.setPause(result.state);
+      hub.setPauseIfUnchanged(seq, result.state);
       return result;
     },
     async resumeBoard() {
+      const seq = hub.pauseSeq;
       const result = await call('boardResume');
-      hub.setPause(result.state);
+      hub.setPauseIfUnchanged(seq, result.state);
       return result;
     },
     async decideApproval(approval, decision) {

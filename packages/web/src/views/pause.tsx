@@ -1,6 +1,6 @@
 // 全部暫停（P2 項目三，docs/p2-spec.md §3）：畫布底部的浮動指令列、暫停中的提示列、手機收件匣的暫停鈕。
 // 狀態在 hub（board.state.pause／board.pause），每個 client 即時同步；這裡只畫與送 REST。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { create } from 'zustand';
 import {
   NOT_PAUSED,
@@ -59,7 +59,7 @@ function usePauseActions() {
         msg: {
           text:
             mode === 'interrupt'
-              ? `${t('views.pause.done.interrupt')} ${interruptText(interrupted, t)}`
+              ? t('views.pause.done.interrupt', { result: interruptText(interrupted, t) })
               : t('views.pause.done.finishTurn'),
           tone: 'ok',
         },
@@ -130,11 +130,14 @@ export function PauseMenu({ phone = false }: { phone?: boolean }) {
   const arm = useArm();
   const box = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
 
+  // 只依賴穩定的 disarm：不然每次 render 都會把 window 上的監聽拆掉重裝。
+  const { disarm } = arm;
   const close = useCallback(() => {
     setOpen(false);
-    arm.disarm();
-  }, [arm]);
+    disarm();
+  }, [disarm]);
 
   useEffect(() => {
     if (!open) return;
@@ -178,8 +181,8 @@ export function PauseMenu({ phone = false }: { phone?: boolean }) {
         ref={toggle}
         type="button"
         className="pause-toggle"
-        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
         aria-pressed={paused !== null}
         disabled={busy}
         onClick={() => (open ? close() : setOpen(true))}
@@ -188,11 +191,10 @@ export function PauseMenu({ phone = false }: { phone?: boolean }) {
         <span aria-hidden="true">⏸</span> {label} <span aria-hidden="true">▾</span>
       </button>
       {open && (
-        <div className="pause-options" role="menu" data-testid="pause-menu">
+        <div className="pause-options" id={menuId} data-testid="pause-menu">
           <button
             type="button"
-            role="menuitemradio"
-            aria-checked={paused?.mode === 'finish_turn'}
+            aria-pressed={paused?.mode === 'finish_turn'}
             disabled={busy}
             onClick={() => choose('finish_turn')}
             data-testid="pause-finish-turn"
@@ -202,8 +204,7 @@ export function PauseMenu({ phone = false }: { phone?: boolean }) {
           </button>
           <button
             type="button"
-            role="menuitemradio"
-            aria-checked={paused?.mode === 'interrupt'}
+            aria-pressed={paused?.mode === 'interrupt'}
             className={arm.armed ? 'danger' : undefined}
             disabled={busy}
             onClick={() => choose('interrupt')}
