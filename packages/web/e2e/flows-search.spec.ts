@@ -252,6 +252,7 @@ test.describe('全域搜尋（桌面）', () => {
     await page.getByTestId('modal-close').click();
     await expect(page).toHaveURL(/#\/search\?q=/);
     await expect(input).toHaveValue('手續費 0.1425');
+    await expect(input).toBeFocused();
     await expect(deepRows).toHaveCount(5);
     expect((await deepCalls(page)).map((c) => c.q)).toEqual(['手續費 0.1425']);
   });

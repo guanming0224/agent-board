@@ -475,7 +475,7 @@ function TriageRow({
           <StatusBadge kind={kind} />
           <button
             type="button"
-            className="row-name link-button"
+            className="row-name link-button sm"
             aria-expanded={expanded}
             onClick={() => onToggle(session.id)}
             data-testid={`inbox-toggle-${session.id}`}

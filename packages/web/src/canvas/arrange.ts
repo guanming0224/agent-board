@@ -661,15 +661,16 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW?: number): Map<string
       if (order.leads.length + order.rest.length > 0) orders.push(order);
     }
     if (orders.length === 0) continue;
-    const candidates = orders.map((o) => teamCandidates(o, cell));
+    // 隊長＋1 位：只照畫面比例挑一種（橫的畫面左右排、直的上下排）。不然整片的最佳化常為了和旁邊的區塊
+    // 湊一樣高，又挑回上下排（團隊框長寬比約 0.48，收尾 2026-11-10）。單獨一隊和多隊一群（共用成員）走同一條規則。
+    const candidates = orders.map((o) => {
+      const list = teamCandidates(o, cell);
+      return o.leads.length === 1 && o.rest.length === 1
+        ? [closest(list, aspectOf(input.view), teamExtent)]
+        : list;
+    });
     if (candidates.length === 1) {
-      let options = candidates[0]!;
-      // 隊長＋1 位：只照畫面比例挑一種（橫的畫面左右排、直的上下排）。不然整片的最佳化常為了和旁邊的區塊
-      // 湊一樣高，又挑回上下排（團隊框長寬比約 0.48，收尾 2026-11-10）。
-      const only = orders[0]!;
-      if (only.leads.length === 1 && only.rest.length === 1) {
-        options = [closest(options, aspectOf(input.view), teamExtent)];
-      }
+      const options = candidates[0]!;
       groups.push({
         options,
         pick: (aspect) => options.indexOf(closest(options, aspect, teamExtent)),

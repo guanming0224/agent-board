@@ -295,6 +295,11 @@ export class DeepSearcher {
           sinceMs,
           maxHits: room,
           budget,
+        }).catch((error: unknown): FileScan => {
+          // worker 搜到一半壞掉（或被看門狗關掉）：當成這一份讀到一半就停，走正常的「只搜了 N／M」，
+          // 回報的 scannedSessions 才和前面已送出的結果一致。
+          log.warn(`深層搜尋讀對話紀錄失敗：${errorMessage(error)}`);
+          return { hits: [], bytes: 0, stopped: 'deadline' };
         });
         if (scan.stopped === 'cancelled' || budget.cancelled) return 'cancelled';
         if (!send(scan.hits)) {

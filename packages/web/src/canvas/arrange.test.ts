@@ -466,6 +466,44 @@ describe('arrangeCanvas', () => {
     expect(phone.get('w')!.y).toBe(phone.get('lead')!.y + TEAM_STEP_Y);
   });
 
+  it('整理畫布：兩個隊長＋1 位的團隊共用一位成員（同一群疊在一起）也照畫面比例左右排', () => {
+    // t＝lead＋s，u＝lead2＋w2＋s（s 已跟著 t 排，u 剩隊長＋1 位）：兩隊在同一群，走疊放的路徑。
+    const data = input(
+      {
+        lead: card(0, 0),
+        s: card(STEP_X, STEP_Y),
+        lead2: card(3 * STEP_X, 0),
+        w2: card(4 * STEP_X, STEP_Y),
+        x0: card(0, 4 * STEP_Y),
+        x1: card(STEP_X, 4 * STEP_Y),
+        x2: card(2 * STEP_X, 4 * STEP_Y),
+      },
+      [
+        member('t', 'lead', 'lead'),
+        member('t', 's', 'worker'),
+        member('u', 'lead2', 'lead'),
+        member('u', 'w2', 'worker'),
+        member('u', 's', 'worker'),
+      ],
+    );
+    for (const view of [DEFAULT_VIEW, { w: 1208, h: 808 }, { w: 2560, h: 1080 }]) {
+      const out = arrangeCanvas({ ...data, view });
+      expect(overlapping(out)).toEqual([]);
+      for (const [l, m] of [
+        ['lead', 's'],
+        ['lead2', 'w2'],
+      ] as const) {
+        expect(out.get(m)!.y).toBe(out.get(l)!.y);
+        expect(out.get(m)!.x).toBe(out.get(l)!.x + STEP_X);
+      }
+    }
+    // 直的畫面：兩隊都上下排。
+    const phone = arrangeCanvas({ ...data, view: { w: 390, h: 760 } });
+    expect(phone.get('s')!.x).toBe(phone.get('lead')!.x);
+    expect(phone.get('w2')!.x).toBe(phone.get('lead2')!.x);
+    expect(phone.get('w2')!.y).toBe(phone.get('lead2')!.y + TEAM_STEP_Y);
+  });
+
   it('同專案的卡排在一起，每列最多 3 張、依名稱', () => {
     const rects: Record<string, Rect> = {};
     const sessions: ArrangeSession[] = [];

@@ -3,8 +3,13 @@
 //
 // 找 worker 檔：發布檔（esbuild 打包）是 daemon/dist/deepSearchWorker.mjs，和 index.mjs 同一個資料夾；
 // 開發與測試直接跑 src/deepSearchWorker.ts，worker 裡沒有 tsx 的話自己加 `--import tsx`。
-// worker 起不來（例如發布檔少了那個檔）：記一次警告，之後都在主執行緒掃（行為和以前一樣，只是會佔主執行緒）。
-// worker 跑到一半壞掉：那一份檔的掃描失敗（DeepSearcher 回 timeout，和以前讀檔出錯一樣），下次再開新的。
+// worker 起不來（例如發布檔少了那個檔、一時開不了檔）：記一次警告，冷卻 COOLDOWN_MS 內在主執行緒掃（行為和以前一樣，
+// 只是會佔主執行緒），冷卻過了再試開一次。
+// worker 跑到一半壞掉（含 heap 超過 resourceLimits）：那一份檔的掃描失敗（DeepSearcher 當成這台只搜了一部分），
+// 下次再開新的；daemon 主執行緒不受影響。
+// 每個 worker 有自己的一份等待中工作（Live.pending）：舊 worker 晚到的 exit／error 只清它自己的，不會牽連新 worker。
+// 看門狗：該停了（取消、讓位、時間或讀檔上限到了）卻超過 STUCK_GRACE_MS 還沒回（卡在單次讀檔或很重的一行），
+// 直接 terminate 那個 worker，等待中的工作 reject，佇列不會被一直卡住。
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
@@ -40,11 +45,24 @@ export interface ScanOptions {
 
 /** 閒置多久關掉 worker。 */
 const IDLE_MS = 60_000;
+/** worker 起不來之後，多久內不再試（在主執行緒掃）。 */
+const COOLDOWN_MS = 10 * 60_000;
+/** 該停了之後，worker 最多再給多久回覆；超過就當成卡住、terminate。 */
+const STUCK_GRACE_MS = 5_000;
+/** 看門狗多久看一次。 */
+const WATCH_MS = 500;
+/** worker 的 heap 上限：一份檔一塊一塊讀，用不到這麼多；超過時只有 worker 壞掉，不會拖垮 daemon。 */
+const WORKER_HEAP_MB = 256;
 
 /** worker 在 ready 之前就出錯：檔案不在、載入失敗。 */
 class WorkerStartError extends Error {}
 
-function workerSpec(): { url: URL; execArgv: string[] | undefined } {
+export interface WorkerSpec {
+  url: URL;
+  execArgv: string[] | undefined;
+}
+
+function workerSpec(): WorkerSpec {
   if (!import.meta.url.endsWith('.ts')) {
     return { url: new URL('./deepSearchWorker.mjs', import.meta.url), execArgv: undefined };
   }
@@ -63,28 +81,69 @@ interface Pending {
   reject(error: Error): void;
 }
 
-class ScanWorker {
-  private worker: Worker | null = null;
-  private ready: Promise<void> | null = null;
-  private readonly pending = new Map<number, Pending>();
+/** 一個 worker 和只屬於它的等待中工作。 */
+interface Live {
+  worker: Worker;
+  pending: Map<number, Pending>;
+  ready: Promise<void>;
+}
+
+export interface ScanWorkerOptions {
+  /** 測試用：指定 worker 檔（例如不存在的檔、不回覆的假 worker）。 */
+  spec?: () => WorkerSpec;
+  cooldownMs?: number;
+  stuckGraceMs?: number;
+  watchMs?: number;
+}
+
+export class ScanWorker {
+  private live: Live | null = null;
   private nextId = 1;
   private idle: NodeJS.Timeout | null = null;
-  /** worker 起不來過一次：之後都在主執行緒掃。 */
-  disabled = false;
+  /** worker 起不來之後，到這個時間之前都在主執行緒掃（0＝沒有停用）。 */
+  private disabledUntil = 0;
+  private readonly spec: () => WorkerSpec;
+  private readonly cooldownMs: number;
+  private readonly stuckGraceMs: number;
+  private readonly watchMs: number;
+
+  constructor(options: ScanWorkerOptions = {}) {
+    this.spec = options.spec ?? workerSpec;
+    this.cooldownMs = options.cooldownMs ?? COOLDOWN_MS;
+    this.stuckGraceMs = options.stuckGraceMs ?? STUCK_GRACE_MS;
+    this.watchMs = options.watchMs ?? WATCH_MS;
+  }
+
+  /** 現在是不是退回主執行緒掃（worker 起不來、還在冷卻期）。 */
+  get disabled(): boolean {
+    return Date.now() < this.disabledUntil;
+  }
+
+  /** 測試用：現在的 worker（模擬舊 worker 晚到的事件）。 */
+  get currentWorker(): Worker | null {
+    return this.live?.worker ?? null;
+  }
+
+  /** 測試用：現在的 worker 上有幾份工作在等。 */
+  get pendingCount(): number {
+    return this.live?.pending.size ?? 0;
+  }
 
   async scan(file: string, sessionId: string, options: ScanOptions): Promise<FileScan> {
     // 一般物件的 Budget 沒辦法跨執行緒共用（取消、讓位看不到）：在主執行緒掃。
     const budget = options.budget instanceof SharedBudget ? options.budget : null;
     if (this.disabled || budget === null) return scanInline(file, sessionId, options);
+    let live: Live;
     try {
-      await this.start();
+      live = await this.start();
     } catch (error) {
       if (!(error instanceof WorkerStartError)) throw error;
-      this.disabled = true;
-      log.warn(`深層搜尋的 worker 起不來，改在主執行緒掃：${error.message}`);
+      this.disabledUntil = Date.now() + this.cooldownMs;
+      log.warn(
+        `深層搜尋的 worker 起不來，${Math.round(this.cooldownMs / 60_000)} 分鐘內改在主執行緒掃：${error.message}`,
+      );
       return scanInline(file, sessionId, options);
     }
-    const worker = this.worker!;
     if (this.idle) clearTimeout(this.idle);
     this.idle = null;
     const id = this.nextId++;
@@ -98,45 +157,71 @@ class ScanWorker {
       maxHits: options.maxHits,
       control: budget.buffer,
     };
+    // 看門狗：第一次看到「該停了」起算，超過寬限還沒回就 terminate 這個 worker。
+    let stopSeenAt: number | null = null;
+    const watch = setInterval(() => {
+      const now = Date.now();
+      const shouldStop =
+        budget.cancelled || now > budget.deadline || budget.bytes >= budget.maxBytes;
+      if (!shouldStop) return;
+      stopSeenAt ??= now;
+      if (now - stopSeenAt >= this.stuckGraceMs) {
+        log.warn(`深層搜尋 worker 該停卻沒回（${file}），關掉重開`);
+        this.kill(live, new Error('深層搜尋 worker 卡住，已關掉'));
+      }
+    }, this.watchMs);
+    watch.unref();
     try {
       return await new Promise<FileScan>((resolve, reject) => {
-        this.pending.set(id, { resolve, reject });
-        worker.postMessage(job);
+        // ready 之後到這裡之間 worker 已經掉了（drop 過）：不送，直接失敗，不會一直等。
+        if (this.live !== live) {
+          reject(new Error('深層搜尋 worker 已關掉'));
+          return;
+        }
+        live.pending.set(id, { resolve, reject });
+        live.worker.postMessage(job);
       });
     } finally {
-      this.pending.delete(id);
-      if (this.pending.size === 0 && this.worker === worker) this.armIdle();
+      clearInterval(watch);
+      live.pending.delete(id);
+      if (live.pending.size === 0 && this.live === live) this.armIdle();
     }
   }
 
   /** 開 worker 並等它 ready（已經開好就直接回）。 */
-  private start(): Promise<void> {
-    if (this.ready) return this.ready;
-    const { url, execArgv } = workerSpec();
-    const worker = new Worker(url, execArgv ? { execArgv } : {});
+  private async start(): Promise<Live> {
+    if (this.live) {
+      await this.live.ready;
+      return this.live;
+    }
+    const { url, execArgv } = this.spec();
+    let worker: Worker;
+    try {
+      worker = new Worker(url, {
+        ...(execArgv ? { execArgv } : {}),
+        resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB },
+      });
+    } catch (error) {
+      throw new WorkerStartError(errorMessage(error));
+    }
     worker.unref();
-    this.worker = worker;
+    const pending = new Map<number, Pending>();
     let isReady = false;
-    this.ready = new Promise<void>((resolve, reject) => {
+    const ready = new Promise<void>((resolve, reject) => {
       worker.on('message', (reply: ScanReply) => {
         if (reply.type === 'ready') {
           isReady = true;
           resolve();
           return;
         }
-        const waiting = this.pending.get(reply.id);
+        const waiting = pending.get(reply.id);
         if (!waiting) return;
         if (reply.ok) waiting.resolve(reply.scan);
         else waiting.reject(new Error(reply.error));
       });
       const fail = (error: Error) => {
-        if (this.worker === worker) {
-          this.worker = null;
-          this.ready = null;
-        }
         if (!isReady) reject(new WorkerStartError(error.message));
-        for (const waiting of this.pending.values()) waiting.reject(error);
-        this.pending.clear();
+        this.drop(live, error);
       };
       worker.on('error', (error: unknown) =>
         fail(error instanceof Error ? error : new Error(errorMessage(error))),
@@ -144,26 +229,40 @@ class ScanWorker {
       worker.on('exit', (code) => fail(new Error(`深層搜尋 worker 結束（${code}）`)));
     });
     // 沒人等的時候 reject 不要變成 unhandled rejection。
-    this.ready.catch(() => undefined);
-    return this.ready;
+    ready.catch(() => undefined);
+    // fail 只會在事件送到時才呼叫（一定在這行之後），所以可以在上面的 closure 裡用 live。
+    const live: Live = { worker, pending, ready };
+    this.live = live;
+    await ready;
+    return live;
+  }
+
+  /** 這個 worker 不用了：不再是現在的那個，它自己等待中的工作全部 reject（別的 worker 的不碰）。 */
+  private drop(live: Live, error: Error): void {
+    if (this.live === live) this.live = null;
+    for (const waiting of live.pending.values()) waiting.reject(error);
+    live.pending.clear();
+  }
+
+  /** 丟掉並 terminate。 */
+  private kill(live: Live, error: Error): void {
+    this.drop(live, error);
+    void live.worker.terminate().catch((e: unknown) => log.warn(errorMessage(e)));
   }
 
   private armIdle(): void {
     if (this.idle) clearTimeout(this.idle);
     this.idle = setTimeout(() => {
       this.idle = null;
-      if (this.pending.size > 0) return;
+      if (this.pendingCount > 0) return;
       this.stop();
     }, IDLE_MS);
     this.idle.unref();
   }
 
-  /** 關掉 worker（閒置、或測試要確認重開）。 */
+  /** 關掉 worker（閒置、或測試要確認重開）。還在等的工作 reject（不會掛著）。 */
   stop(): void {
-    const worker = this.worker;
-    this.worker = null;
-    this.ready = null;
-    if (worker) void worker.terminate().catch((error) => log.warn(errorMessage(error)));
+    if (this.live) this.kill(this.live, new Error('深層搜尋 worker 已關掉'));
   }
 }
 
