@@ -98,6 +98,13 @@ button.icon,
   line-height: 1;
 }
 
+/* SVG 圖示（shared/SearchIcon.tsx 的放大鏡）：和字元圖示同大（--fs-lg 16），觸控時放大到 20（檔尾）。 */
+.search-icon {
+  flex: none;
+  width: var(--fs-lg);
+  height: var(--fs-lg);
+}
+
 /* ── 尺寸：標準（預設）36／精簡 .sm 32；手機另有觸控 .touch 44／動作 .act 56 ── */
 button.sm,
 :where(a.button, .btn).sm {
@@ -438,6 +445,10 @@ button.close:hover:not(:disabled) {
   :where(a.button, .btn).icon.touch {
     width: var(--ctl-h-touch);
     min-width: var(--ctl-h-touch);
+  }
+  :is(button, a.button, .btn).icon .search-icon {
+    width: calc(var(--fs-lg) * 1.25);
+    height: calc(var(--fs-lg) * 1.25);
   }
   button.act,
   :where(a.button, .btn).act {

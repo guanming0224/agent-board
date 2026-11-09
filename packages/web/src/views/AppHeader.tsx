@@ -4,6 +4,7 @@ import { MaskChip } from '../security';
 import { ZoneTabs } from '../zones';
 import { useLocale, useT, type Locale } from '../shared/i18n';
 import { useBoard } from '../shared/store';
+import { SearchIcon } from '../shared/SearchIcon';
 import { USAGE_HASH } from './overlay';
 import { openSearch, useOverlay, toggleInbox } from './overlayStore';
 import { nextInQueue, pendingQueue } from './queue';
@@ -192,7 +193,7 @@ export function AppHeader() {
           onClick={openSearch}
           data-testid="search-button"
         >
-          <span aria-hidden="true">⌕</span>
+          <SearchIcon />
           <span className="search-btn-label">{t('views.search.label')}</span>
           <kbd>⌘K</kbd>
         </button>
