@@ -271,8 +271,8 @@ describe('arrangeTeam', () => {
       {
         lead: card(0, 0),
         a: card(0, 3 * STEP_Y),
-        // 會被新區塊（第二列）壓到
-        intruder: card(10, STEP_Y + 10),
+        // 會被新區塊（隊長＋1 位左右排：成員在隊長右邊）壓到
+        intruder: card(STEP_X + 10, 10),
         // 遠處的卡不動
         far: card(9 * STEP_X, 0),
       },
@@ -280,7 +280,7 @@ describe('arrangeTeam', () => {
     );
     const out = arrangeTeam('t', data);
     expect(out.get('lead')).toEqual(card(0, 0));
-    expect(out.get('a')).toEqual(card(0, TEAM_STEP_Y));
+    expect(out.get('a')).toEqual(card(STEP_X, 0));
     expect(out.get('far')).toEqual(data.rects.get('far'));
     const moved = out.get('intruder')!;
     expect(moved).not.toEqual(data.rects.get('intruder'));
@@ -288,7 +288,7 @@ describe('arrangeTeam', () => {
     expect(overlaps(moved, frame)).toBe(false);
     expect(overlapping(out)).toEqual([]);
     // 最近：只往旁邊挪，不會飛到很遠
-    expect(Math.hypot(moved.x - 10, moved.y - (STEP_Y + 10))).toBeLessThan(3 * STEP_X);
+    expect(Math.hypot(moved.x - (STEP_X + 10), moved.y - 10)).toBeLessThan(3 * STEP_X);
   });
 
   it('同時在兩個團隊的成員跟著被整理的團隊排；別的團隊成員被壓到才搬', () => {
@@ -297,7 +297,7 @@ describe('arrangeTeam', () => {
         lead: card(0, 0),
         shared: card(4 * STEP_X, 0),
         uLead: card(5 * STEP_X, 0),
-        uWorker: card(0, STEP_Y),
+        uWorker: card(STEP_X, STEP_Y),
       },
       [
         member('t', 'lead', 'lead'),
@@ -308,11 +308,43 @@ describe('arrangeTeam', () => {
       ],
     );
     const out = arrangeTeam('t', data);
-    expect(out.get('shared')).toEqual(card(0, TEAM_STEP_Y));
-    // uWorker 原本在 (0, STEP_Y)，被 shared 的新位置壓到 → 搬走
+    // 隊長＋1 位：左右排，shared 排到隊長右邊。
+    expect(out.get('shared')).toEqual(card(STEP_X, 0));
+    // uWorker 原本在 (STEP_X, STEP_Y)，在 shared 新位置的正下方、團隊框的留白裡 → 搬走
     expect(overlaps(out.get('uWorker')!, out.get('shared')!)).toBe(false);
     expect(out.get('uLead')).toEqual(data.rects.get('uLead'));
     expect(overlapping(out)).toEqual([]);
+  });
+
+  it('隊長＋1 位：照畫面比例左右排（橫的畫面隊長在左）或上下排（直的畫面），團隊框不再是 0.48 的瘦長條', () => {
+    const data = input({ lead: card(2 * STEP_X, 3 * STEP_Y), a: card(0, 0) }, [
+      member('t', 'lead', 'lead'),
+      member('t', 'a', 'worker'),
+    ]);
+    const frame = (out: ReadonlyMap<string, Rect>) =>
+      teamRect({ id: 't', name: '', color: '', memberIds: ['lead', 'a'] }, out)!;
+    for (const view of [undefined, DEFAULT_VIEW, { w: 1208, h: 808 }, { w: 2560, h: 1080 }]) {
+      const out = arrangeTeam('t', { ...data, view });
+      expect(out.get('lead')).toEqual(card(0, 0));
+      expect(out.get('a')).toEqual(card(STEP_X, 0));
+      const f = frame(out);
+      expect(f.w / f.h).toBeGreaterThan(2);
+    }
+    // 直的畫面（手機）：上下排，隊長在上。
+    const phone = arrangeTeam('t', { ...data, view: { w: 390, h: 760 } });
+    expect(phone.get('lead')).toEqual(card(0, 0));
+    expect(phone.get('a')).toEqual(card(0, TEAM_STEP_Y));
+    // 隊長＋2 位以上不受影響：照舊隊長在上、成員一列。
+    const three = arrangeTeam(
+      't',
+      input({ lead: card(0, 0), a: card(STEP_X, 0), b: card(2 * STEP_X, 0) }, [
+        member('t', 'lead', 'lead'),
+        member('t', 'a', 'worker'),
+        member('t', 'b', 'worker'),
+      ]),
+    );
+    expect(three.get('a')!.y).toBe(TEAM_STEP_Y);
+    expect(three.get('b')!.y).toBe(TEAM_STEP_Y);
   });
 
   it('團隊不在畫布上：原樣回傳', () => {
@@ -392,9 +424,9 @@ describe('arrangeCanvas', () => {
     const out = arrangeCanvas(data);
     expect(overlapping(out)).toEqual([]);
     const pad = 32;
-    // 團隊在最前面：隊長在成員上方
+    // 團隊在最前面：隊長＋1 位在 16:10 的畫面左右排（隊長在左）
     expect(out.get('lead')).toEqual(card(pad, pad));
-    expect(out.get('w')).toEqual(card(pad, pad + TEAM_STEP_Y));
+    expect(out.get('w')).toEqual(card(pad + STEP_X, pad));
     // 依序（由左到右、一列排完換下一列）：專案 → 資料夾（/elsewhere 在 /work 前）→ 已結束
     const order = ['lead', 'p1', 'd1', 'z', 'old'].map((id) => out.get(id)!);
     for (let i = 1; i < order.length; i += 1) {
@@ -402,6 +434,36 @@ describe('arrangeCanvas', () => {
       const sameRow = b.y < a.y + a.h && a.y < b.y + b.h;
       expect(sameRow ? b.x > a.x : b.y >= a.y + a.h, `第 ${i} 塊`).toBe(true);
     }
+  });
+
+  it('整理畫布：隊長＋1 位的團隊照畫面比例左右排，旁邊有別的區塊也一樣；直的畫面上下排', () => {
+    const rects: Record<string, Rect> = {
+      lead: card(0, 0),
+      w: card(STEP_X, STEP_Y),
+      lead2: card(2 * STEP_X, 0),
+      w2: card(3 * STEP_X, STEP_Y),
+    };
+    for (let i = 0; i < 4; i += 1) rects[`x${i}`] = card(i * STEP_X, 3 * STEP_Y);
+    const data = input(rects, [
+      member('t', 'lead', 'lead'),
+      member('t', 'w', 'worker'),
+      member('u', 'lead2', 'lead'),
+      member('u', 'w2', 'worker'),
+    ]);
+    for (const view of [DEFAULT_VIEW, { w: 1208, h: 808 }]) {
+      const out = arrangeCanvas({ ...data, view });
+      expect(overlapping(out)).toEqual([]);
+      for (const [l, m] of [
+        ['lead', 'w'],
+        ['lead2', 'w2'],
+      ] as const) {
+        expect(out.get(m)!.y).toBe(out.get(l)!.y);
+        expect(out.get(m)!.x).toBe(out.get(l)!.x + STEP_X);
+      }
+    }
+    const phone = arrangeCanvas({ ...data, view: { w: 390, h: 760 } });
+    expect(phone.get('w')!.x).toBe(phone.get('lead')!.x);
+    expect(phone.get('w')!.y).toBe(phone.get('lead')!.y + TEAM_STEP_Y);
   });
 
   it('同專案的卡排在一起，每列最多 3 張、依名稱', () => {
