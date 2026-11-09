@@ -17,6 +17,7 @@ import {
 } from '@agent-board/protocol/lead-guide';
 import {
   DISPATCH_TOOLS,
+  LEGACY_DISPATCH_TOOLS,
   MCP_SECRET_FILE_ENV,
   MCP_SERVER_NAME,
   MCP_TOOL_TIMEOUT_MS,
@@ -147,12 +148,12 @@ const ALL_TOOLS = [
 ] as const;
 
 /**
- * daemon 給的工具清單（只認得的名稱）。沒有這個變數＝舊版 daemon：只有派工工具。
+ * daemon 給的工具清單（只認得的名稱）。沒有這個變數＝舊版 daemon：只有舊的四個派工工具（沒有 release_member）。
  * 給了但是空的不會發生（daemon 兩個功能都關時不掛 MCP server），當成沒有工具。
  */
 function enabledTools(): readonly string[] {
   const raw = process.env[MCP_TOOLS_ENV];
-  if (raw === undefined) return DISPATCH_TOOLS;
+  if (raw === undefined) return LEGACY_DISPATCH_TOOLS;
   const known: readonly string[] = ALL_TOOLS.map((tool) => tool.name);
   return raw
     .split(',')

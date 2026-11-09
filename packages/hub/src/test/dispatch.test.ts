@@ -350,6 +350,14 @@ const eventsOf = (id: string, prefix = 'dispatch.') =>
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
 
+/** 成員把手上的派工做完（回合結束、結果送回），之後才能封存。 */
+async function finishWork(b: Board, id: string, message = 'Done.') {
+  await setStatus(b, id, 'running');
+  stop(b, id, message);
+  await setStatus(b, id, 'waiting_input');
+  await until(() => hub.running.store.dispatchWork(id) === null, 'work reported');
+}
+
 describe('派工：開成員、送工作、結果自動送回', () => {
   it('spawn → 成員建立並加入新團隊 → 回合結束 → 結果送回呼叫者一次 → send_task → 再回報一次', async () => {
     const b = await board({ permissionMode: 'acceptEdits' });
@@ -863,6 +871,7 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
         enabled: true,
       },
     });
+    await finishWork(b, rv, 'Reviewed.');
     const released = json(
       await ask(b, 'release_member', { member: 'Lead-RV', reason: 'Review finished.' }),
     );
@@ -903,23 +912,44 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
     expect(get(rv)?.archived).toBe(false);
   });
 
-  it('release_member 的保護：RUN／starting 不能封存、不能封存自己、只能封存自己當隊長的團隊、理由必填', async () => {
+  it('release_member 的保護：回合中（RUN、starting、等允許、等審計畫）與還欠結果的不能封存、不能封存自己、理由必填', async () => {
     const b = await board({ permissionMode: 'acceptEdits' });
     const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Build.', reason: 'Build.' });
     expect((await ask(b, 'release_member', { member: 'Lead-BD1' })).text).toMatch(
       /^reason_required:/,
     );
-    await setStatus(b, bd, 'running');
-    const busy = await ask(b, 'release_member', { member: 'Lead-BD1', reason: 'Done.' });
-    expect(busy.text).toMatch(/^member_busy: Lead-BD1 is working \(RUN\).*send_task/);
-    expect(get(bd)?.archived).toBe(false);
-    const self = await ask(b, 'release_member', { member: 'Lead', reason: 'x' });
-    expect(self.text).toMatch(/^cannot_release_self:/);
-    // 別人的團隊的成員。
+    // 不在任何團隊的 session（先開：後面成員限流時同帳號的新 session 會排隊）。
     const other = await startSession(b, { name: 'Other', cwd: '/fake/other' });
     const outsider = await ask(b, 'release_member', { member: 'Other', reason: 'x' });
     expect(outsider.text).toMatch(/^not_your_member: .*You can release: Lead-BD1/);
     expect(get(other)?.archived).toBe(false);
+    // 第一個工作還沒交回：還欠結果。
+    const owes = await ask(b, 'release_member', { member: 'Lead-BD1', reason: 'Done.' });
+    expect(owes.text).toMatch(/^member_busy: Lead-BD1 still owes you a result/);
+    expect(get(bd)?.archived).toBe(false);
+    await finishWork(b, bd);
+    const cases: [string, RegExp][] = [
+      ['running', /is working \(RUN\)/],
+      ['starting', /is starting/],
+      ['waiting_permission', /waiting for the user to approve a tool/],
+      ['plan_review', /waiting for the user to review its plan/],
+    ];
+    for (const [status, text] of cases) {
+      await setStatus(b, bd, status);
+      const busy = await ask(b, 'release_member', { member: 'Lead-BD1', reason: 'Done.' });
+      expect(busy.text, status).toMatch(/^member_busy: Lead-BD1 /);
+      expect(busy.text, status).toMatch(text);
+      expect(get(bd)?.archived).toBe(false);
+    }
+    // 送出去、還在排隊的工作（成員忙著時送字排隊）：也算還欠結果。
+    await setStatus(b, bd, 'running');
+    json(await ask(b, 'send_task', { member: 'Lead-BD1', text: 'One more thing.' }));
+    await setStatus(b, bd, 'rate_limited');
+    const queued = await ask(b, 'release_member', { member: 'Lead-BD1', reason: 'Done.' });
+    expect(queued.text).toMatch(/^member_busy: Lead-BD1 still owes you a result/);
+    expect(get(bd)?.archived).toBe(false);
+    const self = await ask(b, 'release_member', { member: 'Lead', reason: 'x' });
+    expect(self.text).toMatch(/^cannot_release_self:/);
     // 成員（不是隊長）：不能封存、不能新增，提醒向隊長回報。
     await setStatus(b, bd, 'waiting_input');
     const up = await ask(b, 'release_member', { member: 'Lead', reason: 'x' }, bd);
@@ -934,6 +964,101 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
     expect(memberList.teams[0]!.staffing).not.toHaveProperty('limit');
   });
 
+  it('release_member：呼叫者在 A 隊當隊長、在 B 隊只是成員，封不了 B 隊的人（not_your_member）', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    // A 隊：呼叫者（Lead）當隊長。
+    const a1 = await startSession(b, { name: 'A-1', cwd: '/fake/a1' }, null);
+    await gmTeam(b, [{ id: a1, role: 'worker' }]);
+    // B 隊：X 當隊長，呼叫者只是 worker，還有一位 B-1。
+    const x = await startSession(b, { name: 'X', cwd: '/fake/x' }, null);
+    const b1 = await startSession(b, { name: 'B-1', cwd: '/fake/b1' }, null);
+    const res = await hub.api('POST', '/api/teams', {
+      cookie: b.cookie,
+      body: { name: 'Bravo', goal: '', doneCriteria: '', color: 'teal', contextMd: '' },
+    });
+    for (const m of [
+      { id: x, role: 'lead' },
+      { id: b.caller, role: 'worker' },
+      { id: b1, role: 'researcher' },
+    ]) {
+      const put = await hub.api('PUT', `/api/teams/${res.body.id}/members/${m.id}`, {
+        cookie: b.cookie,
+        body: { role: m.role },
+      });
+      expect(put.status, JSON.stringify(put.body)).toBe(200);
+    }
+    for (const name of ['B-1', 'X']) {
+      const r = await ask(b, 'release_member', { member: name, reason: 'x' });
+      expect(r.text, name).toMatch(/^not_your_member: .*You can release: A-1\.$/);
+    }
+    expect(get(b1)?.archived).toBe(false);
+    expect(get(x)?.archived).toBe(false);
+  });
+
+  it('全部暫停、全隊暫停時不新增也不封存；同一隊 10 分鐘內封存有上限', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      ids.push(await startSession(b, { name: `GM-${i}`, cwd: `/fake/g${i}` }, null));
+    }
+    const teamId = await gmTeam(
+      b,
+      ids.map((id) => ({ id, role: 'researcher' })),
+    );
+    // 全隊暫停（CONTRACTS §17）。
+    const hold = await hub.api('POST', `/api/teams/${teamId}/hold`, {
+      cookie: b.cookie,
+      body: { mode: 'pause' },
+    });
+    expect(hold.status, JSON.stringify(hold.body)).toBe(200);
+    const spawnHeld = await ask(b, 'spawn_member', {
+      role: 'researcher',
+      prompt: 'x',
+      reason: 'x',
+    });
+    expect(spawnHeld.text).toMatch(/^team_held: The user paused this team/);
+    const releaseHeld = await ask(b, 'release_member', { member: 'GM-0', reason: 'x' });
+    expect(releaseHeld.text).toMatch(/^team_held:/);
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+    const resume = await hub.api('POST', `/api/teams/${teamId}/resume`, { cookie: b.cookie });
+    expect(resume.status, JSON.stringify(resume.body)).toBe(200);
+    // 全部暫停。
+    const pause = await hub.api('POST', '/api/board/pause', {
+      cookie: b.cookie,
+      body: { mode: 'finish_turn' },
+    });
+    expect(pause.status, JSON.stringify(pause.body)).toBe(200);
+    const releasePaused = await ask(b, 'release_member', { member: 'GM-0', reason: 'x' });
+    expect(releasePaused.text).toMatch(/^board_paused:/);
+    await hub.api('POST', '/api/board/resume', { cookie: b.cookie });
+    // 頻率上限：10 分鐘內第 5 位擋下。
+    for (const id of ids) await setStatus(b, id, 'waiting_input');
+    for (let i = 0; i < 4; i++) {
+      json(await ask(b, 'release_member', { member: `GM-${i}`, reason: 'Done.' }));
+    }
+    const fifth = await ask(b, 'release_member', { member: 'GM-4', reason: 'Done.' });
+    expect(fifth.text).toMatch(/^release_rate_limit:/);
+    expect(get(ids[4]!)?.archived).toBe(false);
+  });
+
+  it('上限邊界：GM 配的成員加隊長剛好等於上限時，第一次 spawn 就擋（team_full），daemon 沒收到 session.create', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      ids.push(await startSession(b, { name: `GM-${i}`, cwd: `/fake/g${i}` }, null));
+    }
+    await gmTeam(
+      b,
+      ids.map((id) => ({ id, role: 'worker' })),
+    );
+    await setAutoStaff(b, { teamLimit: 4 });
+    b.daemon.clear();
+    const full = await ask(b, 'spawn_member', { role: 'researcher', prompt: 'x', reason: 'x' });
+    expect(full.text).toMatch(/^team_full: Your team already has 4 members/);
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+  });
+
   it('GM 配的成員（不是隊長、不是派工開的）不能自己開人：not_lead', async () => {
     const b = await board({ permissionMode: 'acceptEdits' });
     const a = await startSession(b, { name: 'GM-A', cwd: '/fake/a' }, null);
@@ -942,16 +1067,24 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
     expect(r.text).toMatch(/^not_lead: You are a team member, not the lead/);
   });
 
-  it('帳號限流時不擴編（同機器、同帳號有 rate_limited）：account_rate_limited', async () => {
+  it('帳號限流時不擴編（同機器、同帳號有 rate_limited）：account_rate_limited；別的帳號限流不影響', async () => {
     const b = await board({ permissionMode: 'acceptEdits' });
-    const other = await startSession(b, { name: 'Busy', cwd: '/fake/busy' });
-    await setStatus(b, other, 'rate_limited');
+    // 別的帳號（accountProfile＝CLAUDE_CONFIG_DIR 不同）限流：照常可以開。
+    const elsewhere = await startSession(b, {
+      name: 'Other account',
+      cwd: '/fake/other',
+      accountProfile: '/acct/other',
+    });
+    await setStatus(b, elsewhere, 'rate_limited');
+    await spawnMember(b, { role: 'researcher', prompt: 'x', reason: 'x' });
+    // 同機器、同帳號（預設帳號）限流：擋。
+    const same = await startSession(b, { name: 'Busy', cwd: '/fake/busy' });
+    await setStatus(b, same, 'rate_limited');
+    b.daemon.clear();
     const r = await ask(b, 'spawn_member', { role: 'researcher', prompt: 'x', reason: 'x' });
     expect(r.text).toMatch(/^account_rate_limited:/);
+    await settle();
     expect(b.daemon.of('session.create')).toHaveLength(0);
-    // 別的帳號（CLAUDE_CONFIG_DIR 不同）限流不影響。
-    await setStatus(b, other, 'waiting_input');
-    await spawnMember(b, { role: 'researcher', prompt: 'x', reason: 'x' });
   });
 
   it('設定關掉＝不能新增也不能封存，只能用現有成員；list_members 的提醒跟著改', async () => {

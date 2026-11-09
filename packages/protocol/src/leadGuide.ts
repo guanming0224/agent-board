@@ -20,7 +20,7 @@ export const MEMBER_STAFFING_GUIDE =
 
 /** 隊長看的回傳裡的一句提醒（list_members、get_progress 的 staffing.guide）。 */
 export const LEAD_STAFFING_REMINDER =
-  'You lead this team. Check staffing against the task: if a role is missing, the work is stuck or too big, spawn_member (reason required); when a member is done and not needed again, release_member to free its slot. Members that are running cannot be released.';
+  "You lead this team. Check staffing against the task: if a role is missing, the work is stuck or too big, spawn_member (reason required); when a member is done and not needed again, release_member to free its slot. Members that are still in a turn (running, starting, waiting for the user's approval or plan review) or still owe you a result cannot be released.";
 
 /** 設定「隊長自主擴編」關著時，隊長看到的提醒。 */
 export const AUTOSTAFF_OFF_GUIDE =
@@ -29,6 +29,10 @@ export const AUTOSTAFF_OFF_GUIDE =
 /** 團隊滿了時多加的一句。 */
 export const TEAM_FULL_GUIDE =
   'The team is at its size limit: release_member a finished member before adding another.';
+
+/** GM 對這一隊按了全隊暫停／停止（CONTRACTS §17）時，新增、封存都擋。 */
+export const TEAM_HELD_GUIDE =
+  'The user paused this team; do not add or release members until it is resumed. Wait for the user.';
 
 /** MCP server instructions 的派工段落（原本的說明，加上擴編節奏）。 */
 export const DISPATCH_INSTRUCTIONS: readonly string[] = [
@@ -46,13 +50,13 @@ export const DISPATCH_TOOL_DESCRIPTIONS = {
   list_members:
     'List the members of your Agent Board team(s): name, role, status, current task, last screen line, read-only, branch, who added them and why, and whether they still owe you a result. For a team you lead it also returns staffing: team size, the size limit, free slots, members per role (and how many are running), how many members you may still add in the next 10 minutes, and a reminder. Call it when you receive a task, to decide whether the team has the roles the work needs. Empty if you have no team.',
   spawn_member:
-    'Add a member to the team you lead: start a new Claude Code session in the same machine and project folder and give it a first prompt. Use it when you receive a task and a needed role is missing, or while working when you are stuck, the workload is too large, or a skill is missing. role worker edits files (gets its own git worktree by default); tester writes and runs tests (also its own worktree, asks before each step by default); researcher and reviewer are read-only and share the folder. reason is required: one short sentence on why the team needs this member (shown to the user). Its permission mode cannot exceed yours. The whole team (lead included) is capped by a size limit the user sets (list_members shows it); when full, release_member a finished member first. Refused while the board is paused, while this account is rate-limited, or when the user turned auto-staffing off. Only the team lead can add members. The result comes back to you automatically when it finishes the turn.',
+    'Add a member to the team you lead: start a new Claude Code session in the same machine and project folder and give it a first prompt. Use it when you receive a task and a needed role is missing, or while working when you are stuck, the workload is too large, or a skill is missing. role worker edits files (gets its own git worktree by default); tester writes and runs tests (also its own worktree, asks before each step by default); researcher and reviewer are read-only and share the folder. reason is required: one short sentence on why the team needs this member (shown to the user). Its permission mode cannot exceed yours. The whole team (lead included) is capped by a size limit the user sets (list_members shows it); when full, release_member a finished member first. Refused while the board or this team is paused, while this account is rate-limited, or when the user turned auto-staffing off. Only the team lead can add members. The result comes back to you automatically when it finishes the turn.',
   send_task:
     'Give one of your members (a member of a team you lead, or one you spawned) a new task. It is typed in when the member is waiting for input; if it is busy the task waits in a queue. The result comes back to you automatically.',
   get_result:
     "Show a member's latest one-sentence summary, detected file edits and branch, and whether it is still working on your task.",
   release_member:
-    'Release (archive) a member of a team you lead to free its slot, when it has finished and will not be needed again. Its session is stopped, handoff rules touching it are paused, and its conversation is kept; the user can restore it from Settings → Archived. reason is required (shown to the user). A member that is running or starting cannot be released: wait for its result, or send_task it to wrap up first. You cannot release yourself. Only the team lead can release members.',
+    "Release (archive) a member of a team you lead to free its slot, when it has finished and will not be needed again. Its session is stopped, handoff rules touching it are paused, and its conversation is kept; the user can restore it from Settings → Archived. reason is required (shown to the user). A member still in a turn (running, starting, waiting for the user's approval or plan review) or that still owes you a result cannot be released: wait for its result first. You cannot release yourself. Only the team lead can release members.",
 } as const;
 
 /** 參數說明（inputSchema 的 description）。 */

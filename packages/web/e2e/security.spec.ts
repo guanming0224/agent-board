@@ -5,6 +5,8 @@ import type { Approval, Session } from '@agent-board/protocol';
 const HUB = 'http://127.0.0.1:5187';
 const KEY = 'sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF';
 const BODY = 'AAAABBBB';
+const DEMO_KEY = 'sk-ant-demo03-autostaffREASON00000000';
+const DEMO_BODY = 'autostaffREASON';
 const XSS = '<img src=x onerror="window.__xss=1"><script>window.__xss=1</script>';
 
 const machine = {
@@ -180,6 +182,45 @@ test.describe('遮蔽模式：畫面', () => {
     await seed(page, 'inbox', sessions, approvals);
     await expect(page.getByTestId('mask-chip')).toHaveText(/遮蔽中/);
     await expect(page.locator('body')).not.toContainText(BODY);
+  });
+
+  test('隊長自主擴編：團隊名單與收件匣的新增理由都打碼', async ({ page }) => {
+    await setMaskStored(page, true);
+    const reason = `Needs ${DEMO_KEY} to call the API.`;
+    await page.goto('about:blank');
+    await page.goto('/?demo=1#/canvas');
+    // demo 裡隊長加的那位（s-auth）：把理由換成含金鑰的字串（模擬 Claude 寫進理由）。
+    await page.evaluate(
+      async ({ reason }) => {
+        const storePath = '/src/shared/store.ts';
+        const teamPath = '/src/team/store.ts';
+        const { useBoard } = await import(/* @vite-ignore */ storePath);
+        const { refreshTeams } = await import(/* @vite-ignore */ teamPath);
+        const backend = useBoard.getState().backend;
+        const list = backend.listTeamMembers.bind(backend);
+        backend.listTeamMembers = async (teamId: string) =>
+          (await list(teamId)).map((m: { added?: { reason: string } }) =>
+            m.added ? { ...m, added: { ...m.added, reason } } : m,
+          );
+        await refreshTeams(backend);
+        useBoard.setState((s: { teamActivity?: { reason: string }[] }) => ({
+          teamActivity: (s.teamActivity ?? []).map((a) => ({ ...a, reason })),
+        }));
+      },
+      { reason },
+    );
+    await page.evaluate(() => {
+      location.hash = '#/team/team-demo-auth';
+    });
+    const added = page.getByTestId('roster-added-s-auth');
+    await expect(added).toContainText('Needs');
+    await expect(added).not.toContainText(DEMO_BODY);
+    await page.evaluate(() => {
+      location.hash = '#/inbox';
+    });
+    const row = page.getByTestId('team-activity-activity-demo-1');
+    await expect(row.locator('.activity-reason')).toContainText('Needs');
+    await expect(page.locator('body')).not.toContainText(DEMO_BODY);
   });
 
   test('關著時完全不動內容', async ({ page }) => {

@@ -27,6 +27,7 @@ import {
 } from '@agent-board/protocol/lead-guide';
 import {
   DISPATCH_TOOLS,
+  LEGACY_DISPATCH_TOOLS,
   MCP_SECRET_FILE_ENV,
   MCP_SERVER_NAME,
   MCP_TOOLS_ENV,
@@ -210,11 +211,21 @@ describe('agent-board-mcp', () => {
     ]);
   });
 
-  it('舊版 daemon（沒給工具清單）：照舊只有派工工具', async () => {
+  it('舊版 daemon（沒給工具清單）：只有舊的四個派工工具，沒有 release_member（舊 daemon 的 --allowedTools 沒有它）', async () => {
     const server = await configured(() => null);
     const { tools, instructions } = await listed(server, 1);
-    expect(tools.map((t) => t.name)).toEqual(DispatchTool.options);
+    expect(tools.map((t) => t.name)).toEqual([...LEGACY_DISPATCH_TOOLS]);
+    expect(tools.map((t) => t.name)).not.toContain('release_member');
+    expect(DispatchTool.options.filter((t) => t !== 'release_member')).toEqual([
+      ...LEGACY_DISPATCH_TOOLS,
+    ]);
     expect(instructions).not.toContain('get_progress');
+    server.send({
+      id: 10,
+      method: 'tools/call',
+      params: { name: 'release_member', arguments: { member: 'x', reason: 'y' } },
+    });
+    expect(((await server.reply(10)).error as { code: number }).code).toBe(-32602);
   });
 
   it('initialize 協商版本、tools/list 列出派工工具，通知不回', async () => {
@@ -242,7 +253,7 @@ describe('agent-board-mcp', () => {
         };
       }[];
     };
-    expect(tools.map((t) => t.name)).toEqual(DispatchTool.options);
+    expect(tools.map((t) => t.name)).toEqual([...LEGACY_DISPATCH_TOOLS]);
     // 角色和 hub 收的一樣（P2 加了 tester，Q5）。
     expect(
       tools.find((t) => t.name === 'spawn_member')!.inputSchema.properties?.role?.enum,
@@ -388,7 +399,9 @@ describe('agent-board-mcp', () => {
     expect(tool('spawn_member').description).toMatch(/reason is required/);
     expect(tool('spawn_member').description).toMatch(/release_member a finished member first/);
     expect(tool('spawn_member').description).toMatch(/rate-limited/);
-    expect(tool('release_member').description).toMatch(/running or starting cannot be released/);
+    expect(tool('release_member').description).toMatch(
+      /waiting for the user's approval or plan review\) or that still owes you a result cannot be released/,
+    );
     expect(tool('release_member').description).toMatch(/cannot release yourself/);
     expect(tool('release_member').description).toMatch(/Settings → Archived/);
     expect(tool('spawn_member').inputSchema.properties?.reason?.description).toBe(

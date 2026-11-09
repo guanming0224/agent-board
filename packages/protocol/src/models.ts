@@ -675,7 +675,6 @@ export const WAITING_LIMIT_MIN = 1;
 export const WAITING_LIMIT_MAX = 20;
 export const DEFAULT_WAITING_LIMIT = 3;
 
-/** Lead 增補的 `settings` 鍵值表內容（§3 沒有列，但 §5.3-7、§7、§8 都需要）。 */
 /** 隊長自主擴編的設定（`Settings.autoStaff`）。 */
 export const AutoStaff = z.object({
   enabled: z.boolean().default(true),
@@ -689,6 +688,7 @@ export const AUTO_STAFF_DEFAULT: AutoStaff = {
   push: true,
 };
 
+/** Lead 增補的 `settings` 鍵值表內容（§3 沒有列，但 §5.3-7、§7、§8 都需要）。 */
 export const Settings = z.object({
   listenAddress: z.string(),
   publicOrigin: z.string().url().nullable(),

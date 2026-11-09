@@ -15,6 +15,7 @@ import {
   MEMBER_STAFFING_GUIDE,
   STAFFING_REASON_MAX,
   TEAM_FULL_GUIDE,
+  TEAM_HELD_GUIDE,
   TeamRole,
   type AutoStaff,
   PermissionMode,
@@ -167,9 +168,29 @@ const reasonOf = (raw: unknown): string | null => {
   return text ? text : null;
 };
 
-/** 正在工作（RUN）或正在開：不能封存。 */
+/** 正在跑（RUN）或正在開：人手資訊裡的 running 計數。 */
 const isBusy = (s: Session) =>
   s.endedAt === null && (s.status === 'running' || s.status === 'starting');
+
+/**
+ * release_member 的保護：回合還沒結束的成員不能封存。除了 RUN／starting，還有等 GM 允許（GM 可能正在看權限框）
+ * 與等 GM 審計畫——封存會讓 GM 的待決項直接消失、工作做到一半就斷。回傳擋下的原因（給隊長看的英文），可以封存是 null。
+ */
+const releaseBlock = (s: Session): string | null => {
+  if (s.endedAt !== null) return null;
+  switch (s.status) {
+    case 'running':
+      return 'working (RUN)';
+    case 'starting':
+      return 'starting';
+    case 'waiting_permission':
+      return 'waiting for the user to approve a tool (the user may be looking at it right now)';
+    case 'plan_review':
+      return 'waiting for the user to review its plan';
+    default:
+      return null;
+  }
+};
 
 /** 團隊人數（含隊長、GM 配的；不含已封存的）。 */
 export function teamSize(store: Store, teamId: string): number {
@@ -281,6 +302,8 @@ export class DispatchEngine {
   private readonly results = new Map<string, number[]>();
   /** 每個團隊（還沒有團隊時是呼叫者）10 分鐘內新增成員的時間。 */
   private readonly adds = new Map<string, number[]>();
+  /** 每個團隊 10 分鐘內封存成員的時間（防一輪封光整隊；上限同新增）。 */
+  private readonly releases = new Map<string, number[]>();
 
   constructor(private readonly deps: DispatchDeps) {}
 
@@ -528,6 +551,11 @@ export class DispatchEngine {
         'A read-only session cannot start members that edit files. Use role researcher or reviewer.',
       );
     }
+    // 團隊層級的全隊暫停／停止（CONTRACTS §17）：新成員一開就會照 prompt 跑，所以也擋。
+    if (this.teamOf(caller)?.hold) {
+      this.blockedTool(caller, 'spawn_member', 'team_held');
+      return fail('team_held', TEAM_HELD_GUIDE);
+    }
     if (this.deps.accountLimited(caller)) {
       this.blockedTool(caller, 'spawn_member', 'account_rate_limited');
       return fail(
@@ -535,6 +563,8 @@ export class DispatchEngine {
         'This Claude account is rate-limited on this machine right now; a new member would stop at the same limit. Do not add members until the limit resets; continue with the current members or yourself.',
       );
     }
+    // 從這裡的人數檢查到下面 upsertTeamMember 必須保持同步（中間不能 await）：Node 單執行緒，
+    // 兩個同時的 spawn_member 才不會一起通過檢查而超過上限。
     const existingTeam = this.teamOf(caller);
     const { teamLimit } = this.deps.autoStaff();
     const size = existingTeam ? teamSize(store, existingTeam.id) : 1;
@@ -691,10 +721,19 @@ export class DispatchEngine {
   // ── release_member ──────────────────────────────────
 
   /**
-   * 隊長封存自己團隊的成員（空出名額）。保護：正在工作（RUN／starting）的不能封存、不能封存自己、
-   * 只能封存自己當隊長的團隊的成員。走 hub 的封存流程，可以在設定→已封存還原。
+   * 隊長封存自己團隊的成員（空出名額）。保護：回合還沒結束的（RUN、starting、等 GM 允許、等 GM 審計畫）
+   * 或還欠結果的（派工沒交回、送字還在排隊）不能封存、不能封存自己、只能封存自己當隊長的團隊的成員；
+   * 全部暫停、全隊暫停時擋；同一隊 10 分鐘內最多封存 DISPATCH_SPAWN_RATE_MAX 位。
+   * 走 hub 的封存流程，可以在設定→已封存還原。
    */
   private release(caller: Session, raw: Record<string, unknown>): DispatchReply {
+    if (this.deps.paused?.()) {
+      this.blockedTool(caller, 'release_member', 'board_paused');
+      return fail(
+        'board_paused',
+        'Agent Board is paused (the user pressed "pause all"); members cannot be released now. Do not retry; wait for the user to resume.',
+      );
+    }
     if (!this.deps.autoStaff().enabled) {
       this.blockedTool(caller, 'release_member', 'autostaff_disabled');
       return fail('autostaff_disabled', AUTOSTAFF_OFF_GUIDE);
@@ -734,11 +773,36 @@ export class DispatchEngine {
       );
     }
     const { team, member, session: target } = found;
-    if (isBusy(target)) {
+    if (team.hold) {
+      this.blockedTool(caller, 'release_member', 'team_held', target.id);
+      return fail('team_held', TEAM_HELD_GUIDE);
+    }
+    const inTurn = releaseBlock(target);
+    if (inTurn !== null) {
       this.blockedTool(caller, 'release_member', 'member_busy', target.id);
       return fail(
         'member_busy',
-        `${target.name} is ${target.status === 'starting' ? 'starting' : 'working (RUN)'}; it cannot be released now. Wait for its result, or send_task it to wrap up, then release it.`,
+        `${target.name} is ${inTurn}; it cannot be released now. Wait for it to finish the turn (its result comes back to you), then release it.`,
+      );
+    }
+    // 還欠結果：手上的派工還沒交回，或送給它的工作還在排隊（封存了結果就回不來）。
+    // 已經結束的 session 交不回結果了，不擋。
+    if (
+      target.endedAt === null &&
+      (store.dispatchWork(target.id) !== null ||
+        this.deps.delivery.has(`dispatch:${caller.id}:${target.id}`))
+    ) {
+      this.blockedTool(caller, 'release_member', 'member_busy', target.id);
+      return fail(
+        'member_busy',
+        `${target.name} still owes you a result (a task you sent has not been delivered or answered yet). Wait for "[Result from ${target.name}]", then release it.`,
+      );
+    }
+    if (!this.underLimit(this.releases, team.id, DISPATCH_SPAWN_RATE_MAX)) {
+      this.blockedTool(caller, 'release_member', 'release_rate_limit', target.id);
+      return fail(
+        'release_rate_limit',
+        `More than ${DISPATCH_SPAWN_RATE_MAX} members released from this team in 10 minutes. Wait before releasing more.`,
       );
     }
     try {

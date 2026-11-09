@@ -433,6 +433,12 @@ function safeJson(text: string): unknown {
 }
 
 export class Store {
+  /**
+   * 隊長新增成員的記錄（`memberAdded:*`）的快取：listTeamMembers 在熱路徑上（teamsOf 對每個團隊各呼叫一次），
+   * 不每次查 settings 表。setMemberAdded、deleteSession 時清掉，下次整批重讀。
+   */
+  private addedCache: Map<string, MemberAdded> | null = null;
+
   constructor(
     readonly db: Db,
     private readonly defaultListenAddress: string,
@@ -712,6 +718,7 @@ export class Store {
         .prepare("DELETE FROM handoff_rules WHERE json_extract(action, '$.toSessionId') = ?")
         .run(id);
       this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${MEMBER_ADDED_PREFIX}${id}`);
+      this.addedCache = null;
       return this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes === 1;
     })();
   }
@@ -1193,14 +1200,24 @@ export class Store {
     });
   }
 
-  /** 隊長新增成員的記錄（誰加的、理由）。讀不懂的當沒有。 */
+  /** 隊長新增成員的記錄（誰加的、理由）。讀不懂的當沒有。整批讀一次後快取。 */
   private membersAdded(sessionIds: readonly string[]): Map<string, MemberAdded> {
     const out = new Map<string, MemberAdded>();
     if (sessionIds.length === 0) return out;
-    const keys = sessionIds.map((id) => `${MEMBER_ADDED_PREFIX}${id}`);
+    const all = this.allMembersAdded();
+    for (const id of sessionIds) {
+      const added = all.get(id);
+      if (added) out.set(id, added);
+    }
+    return out;
+  }
+
+  private allMembersAdded(): Map<string, MemberAdded> {
+    if (this.addedCache) return this.addedCache;
+    const out = new Map<string, MemberAdded>();
     const rows = this.db
-      .prepare(`SELECT key, value FROM settings WHERE key IN (${keys.map(() => '?').join(', ')})`)
-      .all(...keys) as { key: string; value: string }[];
+      .prepare(`SELECT key, value FROM settings WHERE key LIKE '${MEMBER_ADDED_PREFIX}%'`)
+      .all() as { key: string; value: string }[];
     for (const row of rows) {
       try {
         const parsed = MemberAdded.safeParse(JSON.parse(row.value));
@@ -1209,11 +1226,13 @@ export class Store {
         // 壞掉的就當沒有。
       }
     }
+    this.addedCache = out;
     return out;
   }
 
   setMemberAdded(sessionId: string, added: MemberAdded): void {
     this.setRaw(`${MEMBER_ADDED_PREFIX}${sessionId}`, added);
+    this.addedCache = null;
   }
 
   /** 團隊動態，新的在前。讀不懂的當沒有。 */
