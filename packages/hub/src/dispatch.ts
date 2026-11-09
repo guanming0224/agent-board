@@ -302,8 +302,6 @@ export class DispatchEngine {
   private readonly results = new Map<string, number[]>();
   /** 每個團隊（還沒有團隊時是呼叫者）10 分鐘內新增成員的時間。 */
   private readonly adds = new Map<string, number[]>();
-  /** 每個團隊 10 分鐘內封存成員的時間（防一輪封光整隊；上限同新增）。 */
-  private readonly releases = new Map<string, number[]>();
 
   constructor(private readonly deps: DispatchDeps) {}
 
@@ -723,17 +721,10 @@ export class DispatchEngine {
   /**
    * 隊長封存自己團隊的成員（空出名額）。保護：回合還沒結束的（RUN、starting、等 GM 允許、等 GM 審計畫）
    * 或還欠結果的（派工沒交回、送字還在排隊）不能封存、不能封存自己、只能封存自己當隊長的團隊的成員；
-   * 全部暫停、全隊暫停時擋；同一隊 10 分鐘內最多封存 DISPATCH_SPAWN_RATE_MAX 位。
+   * 全隊暫停／停止時擋。全部暫停時照樣可以封存、封存沒有頻率上限（GM 2026-11-10 決定拿掉這兩道）。
    * 走 hub 的封存流程，可以在設定→已封存還原。
    */
   private release(caller: Session, raw: Record<string, unknown>): DispatchReply {
-    if (this.deps.paused?.()) {
-      this.blockedTool(caller, 'release_member', 'board_paused');
-      return fail(
-        'board_paused',
-        'Agent Board is paused (the user pressed "pause all"); members cannot be released now. Do not retry; wait for the user to resume.',
-      );
-    }
     if (!this.deps.autoStaff().enabled) {
       this.blockedTool(caller, 'release_member', 'autostaff_disabled');
       return fail('autostaff_disabled', AUTOSTAFF_OFF_GUIDE);
@@ -796,13 +787,6 @@ export class DispatchEngine {
       return fail(
         'member_busy',
         `${target.name} still owes you a result (a task you sent has not been delivered or answered yet). Wait for "[Result from ${target.name}]", then release it.`,
-      );
-    }
-    if (!this.underLimit(this.releases, team.id, DISPATCH_SPAWN_RATE_MAX)) {
-      this.blockedTool(caller, 'release_member', 'release_rate_limit', target.id);
-      return fail(
-        'release_rate_limit',
-        `More than ${DISPATCH_SPAWN_RATE_MAX} members released from this team in 10 minutes. Wait before releasing more.`,
       );
     }
     try {

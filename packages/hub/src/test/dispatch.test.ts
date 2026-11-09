@@ -995,7 +995,7 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
     expect(get(x)?.archived).toBe(false);
   });
 
-  it('全部暫停、全隊暫停時不新增也不封存；同一隊 10 分鐘內封存有上限', async () => {
+  it('全隊暫停時不新增也不封存；全部暫停時不新增但可以封存；封存沒有頻率上限（GM 2026-11-10）', async () => {
     const b = await board({ permissionMode: 'acceptEdits' });
     const ids: string[] = [];
     for (let i = 0; i < 5; i++) {
@@ -1028,17 +1028,16 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
       body: { mode: 'finish_turn' },
     });
     expect(pause.status, JSON.stringify(pause.body)).toBe(200);
-    const releasePaused = await ask(b, 'release_member', { member: 'GM-0', reason: 'x' });
-    expect(releasePaused.text).toMatch(/^board_paused:/);
-    await hub.api('POST', '/api/board/resume', { cookie: b.cookie });
-    // 頻率上限：10 分鐘內第 5 位擋下。
+    // GM 2026-11-10：全部暫停時照樣可以封存。
     for (const id of ids) await setStatus(b, id, 'waiting_input');
-    for (let i = 0; i < 4; i++) {
+    json(await ask(b, 'release_member', { member: 'GM-0', reason: 'Done.' }));
+    expect(get(ids[0]!)?.archived).toBe(true);
+    await hub.api('POST', '/api/board/resume', { cookie: b.cookie });
+    // GM 2026-11-10：封存沒有頻率上限，10 分鐘內連封 4 位照樣成功。
+    for (let i = 1; i < 5; i++) {
       json(await ask(b, 'release_member', { member: `GM-${i}`, reason: 'Done.' }));
     }
-    const fifth = await ask(b, 'release_member', { member: 'GM-4', reason: 'Done.' });
-    expect(fifth.text).toMatch(/^release_rate_limit:/);
-    expect(get(ids[4]!)?.archived).toBe(false);
+    for (let i = 1; i < 5; i++) expect(get(ids[i]!)?.archived).toBe(true);
   });
 
   it('上限邊界：GM 配的成員加隊長剛好等於上限時，第一次 spawn 就擋（team_full），daemon 沒收到 session.create', async () => {
