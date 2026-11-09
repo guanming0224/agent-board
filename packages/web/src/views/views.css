@@ -692,6 +692,13 @@ button.primary kbd {
 .modal-box:focus-visible {
   outline: none;
 }
+/* 搜尋 ⌘Enter 開對話紀錄時，搜尋視窗藏在這裡不卸載（App.tsx 的 ModalStack）；顯示時不多一層版面。 */
+.modal-keep {
+  display: contents;
+}
+.modal-keep[hidden] {
+  display: none;
+}
 .modal-tools {
   position: absolute;
   top: var(--space-2);
