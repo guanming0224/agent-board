@@ -1521,11 +1521,6 @@ test.describe('等你的數量與上限（GM 2026-11-06）', () => {
 test.describe('一鍵整理', () => {
   const STEP_X = 680 + 140;
   const STEP_Y = 640 + 72;
-  /**
-   * 團隊裡上下兩列的距離（arrange.ts TEAM_ROW_GAP，由線上標籤高 24＋上下各 6＋2 在最小縮放下推算，
-   * ＝(24 + 12 + 2) × TEAM_BLOCK_GAP 240 ÷ TEAM_GAP_SCREEN 36 ≈ 253.33；GM 2026-11-09 最小縮放 0.2→0.15）。
-   */
-  const TEAM_STEP_Y = 640 + ((24 + 2 * 6 + 2) * 240) / 36;
   const IDS = ['s-auth', 's-tests', 's-etl', 's-ml', 's-docs', 's-web'];
   type Box = { x: number; y: number };
 
@@ -1669,10 +1664,9 @@ test.describe('一鍵整理', () => {
     await page.waitForTimeout(500);
     const tidied = await positions(page);
     expect(overlapPairs(tidied)).toEqual([]);
-    // 隊長在上一列、成員正下方
-    expect(tidied['s-auth']!.x).toBe(tidied['s-tests']!.x);
-    // 畫面上讀回的座標只到小數第三位（TEAM_ROW_GAP 不是整數）。
-    expect(tidied['s-auth']!.y).toBeCloseTo(tidied['s-tests']!.y + TEAM_STEP_Y, 2);
+    // 隊長＋1 位在橫的畫面左右排：隊長在左、成員在右，同一列（收尾 2026-11-10）。
+    expect(tidied['s-auth']!.y).toBeCloseTo(tidied['s-tests']!.y, 2);
+    expect(tidied['s-auth']!.x).toBeCloseTo(tidied['s-tests']!.x + STEP_X, 2);
     await shot(page, 'tidy-canvas');
 
     // 一次存好：目前位置＋上一次擺設
@@ -1704,7 +1698,7 @@ test.describe('一鍵整理', () => {
     await page.getByRole('button', { name: '整理畫布' }).click();
     await expect(page.getByTestId('tidy-toast')).toBeVisible();
     await page.waitForTimeout(800);
-    // 交接規則 s-auth → s-tests：成員在隊長正下方，以前的線整條藏在兩張卡底下。
+    // 交接規則 s-auth → s-tests：成員在隊長右邊，線走兩張卡之間（以前上下排時，舊的線整條藏在兩張卡底下）。
     const label = page.getByTestId('handoff-label-s-auth-s-tests');
     await expect(label).toBeVisible();
     await expectLinksVisible(page);
@@ -1830,8 +1824,8 @@ test.describe('一鍵整理', () => {
     const before: Record<string, Box> = {
       's-tests': { x: 0, y: 0 },
       's-auth': { x: 3 * STEP_X, y: 2 * STEP_Y },
-      // 擋在隊長正下方：整理後成員要放這裡
-      's-docs': { x: 0, y: STEP_Y },
+      // 擋在隊長右邊：整理後成員要放這裡（隊長＋1 位在橫的畫面左右排）
+      's-docs': { x: STEP_X, y: 0 },
       's-etl': { x: 3 * STEP_X, y: 0 },
       's-ml': { x: 6 * STEP_X, y: 0 },
       's-web': { x: 6 * STEP_X, y: 2 * STEP_Y },
@@ -1852,7 +1846,7 @@ test.describe('一鍵整理', () => {
           (p) => p['s-auth'] && { x: p['s-auth'].x, y: Math.round(p['s-auth'].y) },
         ),
       )
-      .toEqual({ x: 0, y: Math.round(TEAM_STEP_Y) });
+      .toEqual({ x: STEP_X, y: 0 });
     const after = await positions(page);
     expect(after['s-tests']).toEqual({ x: 0, y: 0 });
     expect(after['s-docs']).not.toEqual(before['s-docs']);
