@@ -356,6 +356,8 @@ hub `packages/hub/src/attention.ts`（`NotifyCoalescer`、`buildSummary`）。�
 
 GM：在原生 Claude CLI 裡只要叫 Claude 派給 agent；Agent Board 要自己建角色、規則、任務，感覺不一樣。新的用法：GM 只跟**一個** session 講話，那個 session 裡的 Claude 自己在畫布上開成員、送工作、自動收到結果。手動的團隊功能全部照舊。固定規則，不呼叫任何模型（`docs/no-llm-review.md`）。
 
+2026-11-10 加上**隊長自主擴編**（§11.7）：隊長自己評估人手、新增（理由必填）與封存成員，上限改成團隊總人數（設定 `autoStaff.teamLimit`，預設 12），每次都通知 GM。
+
 ### 11.1 架構與資料流
 
 ```
@@ -369,21 +371,22 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 
 - **MCP server 放 hook 套件**：和 `agent-board-hook` 一樣跑在 claude 底下、只用 node 內建模組、只連 daemon 的本機 socket（可直接 `node src/mcp.ts`，type stripping）。發布檔打包到 `daemon/dist/agent-board-mcp.mjs`（不放 `node_modules/.bin`：那個資料夾會加進 PTY 的 PATH，只能有 hook）。daemon 用自己的 `process.execPath` 執行它；`AGENT_BOARD_MCP_SERVER` 可覆寫，找不到就不掛。
 - **為什麼走 daemon 不直接連 hub**：daemon 已經有認證過的 hub 連線，MCP server 不必拿到機器 token 或登入 cookie；密鑰只在這台機器上比對；hub 再確認這個 session 屬於這條 daemon 連線的機器（`ownsSession`），別台機器冒用 session id 一律 `caller_inactive`。能做什麼（團隊、上限、權限）只由 hub 判斷，daemon 不知道團隊。
-- **掛法**：`Settings.dispatch` 開著（hub 在 `hub.welcome.dispatch` 下發，daemon 存在 `sessions.json`，重啟沒連上 hub 時照上次的值；舊版 hub 不送 → 不掛）時，daemon 每次開 PTY（新開、接續、重啟接回）都帶 `--mcp-config <dataDir>/mcp/<sessionId>.json --allowedTools mcp__agent-board__list_members mcp__agent-board__spawn_member mcp__agent-board__send_task mcp__agent-board__get_result`。**不用 `--strict-mcp-config`**：使用者自己的 MCP server 照常載入。設定關掉只影響之後開的 PTY；已經掛著的，工具呼叫時 hub 回 `dispatch_disabled`。
-- **事先允許（`--allowedTools`）的決定**：只列這四個工具全名，不放寬任何其他工具（實測見 `docs/claude-code-notes.md`）。理由：原生 CLI 派子代理不會每次問；不允許的話 `default` 模式每次都跳權限對話框、`dontAsk` 模式會直接拒絕。會花額度的只有開成員，由 hub 的上限、權限上限與設定開關管。
+- **掛法**：`Settings.dispatch` 開著（hub 在 `hub.welcome.dispatch` 下發，daemon 存在 `sessions.json`，重啟沒連上 hub 時照上次的值；舊版 hub 不送 → 不掛）時，daemon 每次開 PTY（新開、接續、重啟接回）都帶 `--mcp-config <dataDir>/mcp/<sessionId>.json --allowedTools mcp__agent-board__list_members mcp__agent-board__spawn_member mcp__agent-board__send_task mcp__agent-board__get_result mcp__agent-board__release_member`（`release_member` 2026-11-10 加）。**不用 `--strict-mcp-config`**：使用者自己的 MCP server 照常載入。設定關掉只影響之後開的 PTY；已經掛著的，工具呼叫時 hub 回 `dispatch_disabled`。
+- **事先允許（`--allowedTools`）的決定**：只列這五個工具全名，不放寬任何其他工具（實測見 `docs/claude-code-notes.md`）。理由：原生 CLI 派子代理不會每次問；不允許的話 `default` 模式每次都跳權限對話框、`dontAsk` 模式會直接拒絕。會花額度的只有開成員，由 hub 的上限、權限上限與設定開關管。
 - **密鑰**（每個 PTY 一把，`randomBytes(32)` base64url）：存在 `<dataDir>/mcp/<sessionId>.key`（資料夾 0700、檔案 0600，先寫暫存檔再換名）；MCP 設定檔（0600）的 `env` 只放 `AGENT_BOARD_SESSION_ID`、`AGENT_BOARD_SOCKET` 與密鑰**檔案路徑** `AGENT_BOARD_MCP_SECRET_FILE`。所以密鑰不在任何 argv（`ps` 看得到）、不在 claude 的環境變數（Bash 工具讀不到）、不在 MCP 設定檔（`/mcp` 畫面）、不在 log、audit、hub（daemon 轉送時不帶）、MCP server 的 stdout。daemon 用固定時間比較；session 結束、被忘掉、重開時密鑰作廢並刪檔，daemon 啟動與關閉時清空整個 `mcp/`。
 - **限制（未驗證、也做不到的）**：同一個使用者帳號底下的其他程式（包括任何 session 的 Bash）讀得到 0600 的檔案，所以密鑰防的是「session 冒用別的 session」這種誤用，不是同帳號的惡意程式（hook socket 本身也沒有密鑰）。
 
 ### 11.2 工具（回覆是 JSON，失敗是 `<code>: <給 Claude 看的說明>`，`isError: true`）
 
-| 工具           | 參數                                                                                                            | 行為                                                                                                                                                                                                                                                                                                    |
-| -------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list_members` | —                                                                                                               | 呼叫者所在的每個團隊：成員 `name`、`role`、`kind`、`status`（結束的寫 `ended`）、`task`（進行中的任務 `#n 標題`）、`lastLine`、`readOnly`（`isReadOnlyMember`）、`branch`、`dispatchedBy`（名稱）、`working`（還欠呼叫者結果）、自己標 `you`；另外 `spawned: { live, limit }`。沒有團隊就 `teams: []`。 |
-| `spawn_member` | `role`（worker／researcher／reviewer／tester）、`prompt`、選填 `name`、`permissionMode`、`useWorktree`、`model` | 見 11.3。成功回 `name`、`status`（可能是 `queued`）、`team`、`teamCreated`、`permissionMode`、被降級時 `note`。                                                                                                                                                                                         |
-| `send_task`    | `member`（名稱不分大小寫，或 session id）、`text`                                                               | 對象只能是**呼叫者當隊長的團隊的成員**或**它開的成員**（不含自己）。送 `[From <呼叫者>] <text>`（一行、清控制字元、4000 字截斷）進 `SafeDelivery`，key `dispatch:<呼叫者>:<成員>`（還沒送出又送，新的蓋舊的，回覆 `note`）。回 `state: sent／queued`。                                                  |
-| `get_result`   | `member`                                                                                                        | 同上的範圍。最後一則回覆的一句摘要、上次派工之後偵測到的改檔（最多 20）、分支、`working`、狀態。                                                                                                                                                                                                        |
+| 工具             | 參數                                                                                                                                              | 行為                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_members`   | —                                                                                                                                                 | 呼叫者所在的每個團隊：成員 `name`、`role`、`kind`、`status`（結束的寫 `ended`）、`task`（進行中的任務 `#n 標題`）、`lastLine`、`readOnly`（`isReadOnlyMember`）、`branch`、`dispatchedBy`（名稱）、`working`（還欠呼叫者結果）、`addedReason`（隊長新增時的理由）、自己標 `you`；每個團隊另有 `staffing`（§11.7）。沒有團隊就 `teams: []` 加一句 `guide`。 |
+| `spawn_member`   | `role`（worker／researcher／reviewer／tester）、`prompt`、**`reason`（必填，2026-11-10）**、選填 `name`、`permissionMode`、`useWorktree`、`model` | 見 11.3、11.7。成功回 `name`、`status`（可能是 `queued`）、`team`、`teamCreated`、`permissionMode`、`reason`、`teamSize`（`人數/上限`）、被降級時 `note`。                                                                                                                                                                                                 |
+| `send_task`      | `member`（名稱不分大小寫，或 session id）、`text`                                                                                                 | 對象只能是**呼叫者當隊長的團隊的成員**或**它開的成員**（不含自己）。送 `[From <呼叫者>] <text>`（一行、清控制字元、4000 字截斷）進 `SafeDelivery`，key `dispatch:<呼叫者>:<成員>`（還沒送出又送，新的蓋舊的，回覆 `note`）。回 `state: sent／queued`。                                                                                                     |
+| `get_result`     | `member`                                                                                                                                          | 同上的範圍。最後一則回覆的一句摘要、上次派工之後偵測到的改檔（最多 20）、分支、`working`、狀態。                                                                                                                                                                                                                                                           |
+| `release_member` | `member`、`reason`（必填）                                                                                                                        | 2026-11-10。見 11.7。成功回 `released`、`team`、`teamSize`、`note`（可以在設定→已封存還原）。                                                                                                                                                                                                                                                              |
 
-錯誤代碼：`dispatch_disabled`、`caller_inactive`（封存、結束、不認得、不是這台機器）、`invalid_arguments`、`permission_not_allowed`、`nested_spawn`、`read_only_caller`、`limit_reached`、`machine_offline`、`worktree_unavailable`、`worktree_required`、`not_your_member`、`member_ended`、`rate_limit`，以及 `hub.createSession` 的 409 代碼（例如 `session_deleting`）。daemon 端另有 `unauthorized`、`hub_unreachable`、`timeout`（等 hub 30 秒）、`invalid_request`；MCP server 端 `not_configured`、`daemon_unreachable`、`timeout`（45 秒）。
+錯誤代碼：`dispatch_disabled`、`caller_inactive`（封存、結束、不認得、不是這台機器）、`invalid_arguments`、`permission_not_allowed`、`nested_spawn`、`read_only_caller`、`machine_offline`、（§11.7）`reason_required`、`autostaff_disabled`、`not_lead`、`team_full`、`spawn_rate_limit`、`account_rate_limited`、`member_busy`、`cannot_release_self`、`worktree_unavailable`、`worktree_required`、`not_your_member`、`member_ended`、`rate_limit`，以及 `hub.createSession` 的 409 代碼（例如 `session_deleting`）。daemon 端另有 `unauthorized`、`hub_unreachable`、`timeout`（等 hub 30 秒）、`invalid_request`；MCP server 端 `not_configured`、`daemon_unreachable`、`timeout`（45 秒）。
 
 ### 11.3 開成員的規則（`spawn_member`）
 
@@ -394,8 +397,8 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 - **唯讀呼叫者**（`Session.readOnly`）只能開 researcher／reviewer → 否則 `read_only_caller`。
 - **測試（tester，P2 Q5）**：和 worker 一樣會改檔案（`readOnly: false`、預設開 worktree），預設權限模式 `default`（每步問，名稱縮寫 `QA`）；可被派任務（任務負責人不限角色），**不當審查**（送審只找 `reviewer`）。新團隊放在呼叫者所在的工作區（§13）。
 - **不能巢狀**：派工開的成員（`dispatchedBy` 不是 null）不能再開 → `nested_spawn`（防止一層層開下去）。它還是可以用 `list_members`、`get_result`。
-- **上限**：同一個呼叫者同時活著（沒封存、沒結束）的派工成員最多 `DISPATCH_SPAWN_LIMIT` = 4 → `limit_reached`（列出是哪幾個，建議用 `send_task` 重用或請使用者封存）。
-- **團隊**：呼叫者當隊長的團隊；沒有就它所在的第一個團隊；都沒有就開一個新團隊（名稱＝呼叫者名稱、`teal`、目標空白、任務自動執行關），呼叫者當 `lead`。成員以 `role` 加入（直接寫 `team_members`，上面已檢查過寫入者規則）。前端團隊資料是 10 秒輪詢，框最慢 10 秒後出現。
+- **上限**（2026-11-10 改，§11.7）：團隊總人數（含隊長、GM 配的，不含已封存）到 `autoStaff.teamLimit` → `team_full`（列出現有成員，建議 `release_member` 或 `send_task` 重用）；同一團隊 10 分鐘最多新增 `DISPATCH_SPAWN_RATE_MAX` = 4 位 → `spawn_rate_limit`。舊的「每個呼叫者同時 4 個」（`DISPATCH_SPAWN_LIMIT`、`limit_reached`）拿掉。
+- **團隊**：呼叫者當隊長的團隊；在團隊裡但不是任何一隊的隊長 → `not_lead`（2026-11-10）；都沒有團隊就開一個新團隊（名稱＝呼叫者名稱、`teal`、目標空白、任務自動執行關），呼叫者當 `lead`。成員以 `role` 加入（直接寫 `team_members`，上面已檢查過寫入者規則）。前端團隊資料是 10 秒輪詢，框最慢 10 秒後出現。
 - **名稱**（`memberName`，同 `teamPlan.defaultNames`）：`<團隊名>-BD1`、`-BD2`；研究、審查第一位 `-RS`／`-RV`，之後 `-RS2`。指定的名稱撞名（不分大小寫，所有 session）加 `-2`、`-3`。
 - 第一個指令：`[From <呼叫者>] <prompt>`（一行、清控制字元、4000 字截斷），由 daemon 在 `SessionStart` 後送（§3.1）。
 
@@ -410,7 +413,7 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 
 ### 11.5 紀錄與畫面
 
-- audit（user 一律 null）：`dispatch.spawn`（記在呼叫者，detail 有 from／to、team、角色、模式、worktree、唯讀、一句摘要）、`dispatch.send`、`dispatch.delivered`、`dispatch.result`（記在成員，detail 有送出的整行）、`dispatch.result_delivered`、`dispatch.blocked`（reason）。開成員另有一般的 `session.create`、`terminal.input`（第一個指令）；送字照舊寫 `terminal.input`。
+- audit（user 一律 null）：`dispatch.spawn`（記在呼叫者，detail 有 from／to、team、角色、模式、worktree、唯讀、一句摘要，2026-11-10 起加 `reason`、`teamSize`、`teamLimit`）、`dispatch.release`（§11.7）、`dispatch.send`、`dispatch.delivered`、`dispatch.result`（記在成員，detail 有送出的整行）、`dispatch.result_delivered`、`dispatch.blocked`（reason）。開成員另有一般的 `session.create`、`terminal.input`（第一個指令）；送字照舊寫 `terminal.input`。
 - session 事件（payload 都有 `fromSessionId`、`toSessionId`、`workId`，送出類有 `summary`）：`dispatch.spawn`（成員）、`dispatch.send`（呼叫者，排入）、`dispatch.delivered`（成員，送達；也是改檔分界）、`dispatch.result`（成員，結果排入）、`dispatch.result_delivered`（呼叫者，送達）、`dispatch.blocked`（來源那一邊）。daemon 送來的 `dispatch.*` 事件不收（同 `handoff.*`、`task.*`）。
 - 畫布：交接動畫（`canvas/handoffActivity*.ts`）也聽 `dispatch.*`：spawn／delivered／result_delivered 畫成「已送達」、send／result 畫成「已排入」、blocked 畫成「擋下」，沒有規則線時用臨時線。成員卡片多一個晶片「派工自 <呼叫者>」（`views/session.tsx` 的 `DispatchedByChip`，找不到呼叫者就不顯示）。
 - 畫布的往來（GM 2026-11-06，`canvas/interactions.ts`）：
@@ -418,8 +421,8 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
   - **往來**：`handoff.*`、`dispatch.*`、`task.dispatched`／`task.delivered`（有 `fromSessionId` 的）、`task.reviewed`／`task.rejected`（判定）。畫在同方向優先順序最高的線上（交接規則 > 派工 > 隊長）；沒有就畫暫時的細點線，最近 10 分鐘有往來就留著。排入與送達的語意不變（送達才讓目標卡亮一圈），判定是另一種「已判定」。
   - **次數與紀錄**：排入後的送達、擋下、取消用 `workId`／`taskId`／`ruleId` 對上同一則（沒有就對同一對、同一類最近的排入）。每條線的徽章是最近 10 分鐘幾則；點線或徽章打開小視窗，列兩個方向最近 8 則（時間、做了什麼、結果、摘要先遮蔽再截斷）。紀錄只在前端、只記畫布開著時收到的、留一小時、每一對最多 20 則；**不從 hub 補讀舊事件**。
   - **篩選**：交接／派工／任務／關係線四個開關，記在這台瀏覽器（`localStorage` `agent-board.canvas.link-filters`，讀寫失敗就全開、只在這次有效）。交接關掉時連規則線一起藏。
-- 設定：`Settings.dispatch`，**預設開**（GM 2026-11-06 的決定，見下）；設定頁「Session 與額度」的「允許 session 派工（MCP 工具）」標 ◈ 耗額度、寫出上限 4。改了寫 audit `settings.update`，hub 重送 `hub.welcome`。
-- **預設開的理由**：和自動接續、任務自動執行（預設關）不同，工具本身不花額度、也不會自己動：一定是 GM 叫畫布上的 Claude 派工、Claude 決定呼叫才會開成員。開成員就是開 session，所以標 ◈、有上限 4、權限不比呼叫者寬、不能巢狀，GM 可以隨時關掉（關掉後新開的 session 完全不掛 MCP server）。
+- 設定：`Settings.dispatch`，**預設開**（GM 2026-11-06 的決定，見下）；設定頁「Session 與額度」的「允許 session 派工（MCP 工具）」標 ◈ 耗額度（上限改在「隊長自主擴編」，§11.7）。改了寫 audit `settings.update`，hub 重送 `hub.welcome`。
+- **預設開的理由**：和自動接續、任務自動執行（預設關）不同，工具本身不花額度、也不會自己動：一定是 GM 叫畫布上的 Claude 派工、Claude 決定呼叫才會開成員。開成員就是開 session，所以標 ◈、有團隊人數上限（§11.7）、權限不比呼叫者寬、不能巢狀，GM 可以隨時關掉（關掉後新開的 session 完全不掛 MCP server）。
 
 ### 11.6 已知限制
 
@@ -427,7 +430,22 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 - hub 只知道建立時的權限模式；Claude 在 session 裡用 Shift+Tab 切到更寬的模式，上限不會跟著變（反過來也一樣）。
 - `dispatch_work` 只在 `Stop` 時結算：成員回合中 API 錯誤（`StopFailure`）不算完成，工作留著，直到下一個 Stop、被中斷、結束或封存。
 - 送字佇列只在記憶體：hub 重啟時還沒送出的 `send_task` 會遺失（audit 有 `dispatch.send`，沒有 `dispatch.delivered`）；已送達的工作（`dispatch_work`）在資料庫，結果照樣送回。
-- 前端團隊資料靠 10 秒輪詢，新團隊與新成員的框最慢 10 秒後出現。
+- 前端團隊資料靠 10 秒輪詢，新團隊與新成員的框最慢 10 秒後出現（2026-11-10 起派工新增、封存成員後 hub 另外推 `team.updated`，畫面馬上重讀）。
+
+### 11.7 隊長自主擴編（GM 2026-11-10）
+
+GM：「我組出來的團隊不見得合適；LD 要能自己新增它要的人才，人手不夠時可以自己新增成員、擴大自己的團隊。」GM 決定：自動新增（不用核准）＋通知 GM；團隊總人數上限 12；隊長可以封存任何成員（RUN 中的不行，封存可還原）；評估時機＝收到任務時＋執行中卡住時。
+
+- **守則放哪裡**：`protocol/src/leadGuide.ts` 一處（給 Claude 看，英文）。用在 MCP server 的 `instructions` 與工具說明（`hook/src/mcp.ts` 直接 import，這個檔案不 import 任何東西，打包也不帶 zod），以及 `list_members`、`get_progress` 回傳的 `staffing.guide`。**不用 hook `additionalContext`、不自動送字**：Claude 只有在讀工具清單或呼叫工具時看到（no-llm 保證不變）。節奏：收到任務先評估要哪些角色、對照 `list_members` → 不夠就 `spawn_member`（附理由）→ 分工寫進進度卡、`send_task`、等結果 → 執行中卡住、工作量太大、缺專長就補人 → 做完且之後用不到就 `release_member`。
+- **`staffing`**（`dispatch.ts` `staffingView`）：呼叫者是那個團隊的隊長時 `{ autoStaff, size, limit, free, roles: { <角色>: { members, running } }, addsLeftThis10Minutes, guide }`；不是隊長只有 `{ guide }`（「你是成員，不能自己開人，需要人手在回覆裡告訴隊長」）。`get_progress` 的團隊卡也帶同一份（派工設定關著時不帶）。
+- **新增（`spawn_member`）多的規則**，依序：全部暫停 → `board_paused`；設定關 → `autostaff_disabled`；沒帶 `reason`（空白也算）→ `reason_required`（舊呼叫會先看到這個，說明要補一句理由）；在團隊裡但不是隊長 → `not_lead`；同機器同帳號（`CLAUDE_CONFIG_DIR`）有還沒到重置時間的 `rate_limited` session（含呼叫者）→ `account_rate_limited`（不看「限流時排隊」設定）；團隊總人數 ≥ 上限 → `team_full`；同團隊 10 分鐘已新增 4 位 → `spawn_rate_limit`。權限上限、worktree、唯讀、巢狀規則照舊（§11.3）。理由一行、清控制字元、200 字截斷。
+- **封存（`release_member`）**：設定關 → `autostaff_disabled`；沒帶理由 → `reason_required`；呼叫者不是任何團隊的隊長 → `not_lead`；對象只能是**呼叫者當隊長的團隊**裡沒封存的成員（名稱或 id）→ 否則 `not_your_member`；自己 → `cannot_release_self`；對象 `running` 或 `starting` → `member_busy`（叫它等結果或用 `send_task` 收尾）。走 hub 的封存流程（§9.1：還活著的先停、機器離線就照樣封存等重連補停、暫停從它出發或指向它的交接規則、對話保留、可以在設定→已封存還原）；audit `session.archive` 的 user 是 null、detail 多 `byLead`。暫停中照樣可以封存。
+- **人數怎麼算**：`team_members` 裡 session 沒封存的（含已結束、還沒封存的；含隊長）。還沒有團隊的呼叫者算 1。封存的成員還原後回到團隊，可能暫時超過上限（不會被擋，只是不能再新增）。
+- **記錄**：成員卡（團隊名單）顯示「由 <隊長> 新增：<理由>」——settings 表 `memberAdded:<sessionId>`（`MemberAdded`：`bySessionId`、`byName`、`reason`、`at`），hub 回傳 `TeamMember.added`；永久刪除 session 時一起刪。audit `dispatch.spawn`（多 `reason`、`teamSize`、`teamLimit`）、`dispatch.release`（from、to、team、name、role、reason）、被擋下的 `dispatch.blocked`（`tool`、`reason`）；session 事件 `dispatch.spawn`（多 `reason`）、`dispatch.release`（記在成員）。
+- **團隊動態**（收件匣）：settings 表 `teamActivity`（新的在前，最多 `TEAM_ACTIVITY_KEEP` = 100 筆）。`TeamActivity`：`id`、`at`、`kind`（`member_added`／`member_released`）、團隊 id 與名稱、隊長 id 與名稱、成員 id 與名稱、`role`、`reason`、`read`。board 快照帶 `teamActivity`，變了推 `team.activity`（整份）。`POST /api/team-activity/read`、`POST /api/team-activity/clear`（auth user，body `{ ids? }`，沒給＝全部，回傳新清單，audit `team_activity.read`／`team_activity.clear`）。已讀、清除是全站共用（不是每個帳號各自）。收件匣抽屜與手機收件匣底下都有「團隊動態」區塊（`flows/TeamActivity.tsx`），不算在「等你」裡；沒有動態時不顯示。
+- **推播**：設定 `autoStaff.push`（預設開）且通知開著、不在勿擾時段。合併通知開著時併進下一則總表（`SummaryPayload.team`：`{ reason: team_member_added|team_member_released, lead, member, sessionId }`，最多 3 項；只有團隊動態時標題「團隊動態」）；關著時單獨一則 `{ reason, name: <隊長>, member, sessionId, at }`（tag `team-<成員 id>`）。**不帶理由**（理由是 Claude 寫的字，同「推播不帶內容」原則），點了開收件匣。
+- **設定**：`Settings.autoStaff = { enabled: true, teamLimit: 12（2–20）, push: true }`（舊設定沒有這個鍵＝預設）；`PATCH /api/settings` 帶整個 `autoStaff` 物件。設定頁「Session 與額度」→「隊長自主擴編」（區塊 id `autostaff`）：開關（◈ 耗額度）、團隊人數上限、推播開關；派工關著時提示這一項沒作用。關掉＝隊長不能新增也不能封存，`send_task` 等照常。
+- **已知限制**：守則只是工具說明與回傳裡的文字，Claude 會不會照著評估人手要實測（未驗證）；`account_rate_limited` 只看 hub 已知的 `rate_limited` 狀態（還沒撞到限流前不會擋）。
 
 ## 12. 全部暫停（P2 項目三，GM 2026-11-08；`docs/p2-spec.md` §3）
 

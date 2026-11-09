@@ -543,3 +543,14 @@ test('底部指令列「群組」：開目前工作區的團隊清單；看某�
   await groups.click();
   await expect(page.getByTestId('team-panel')).toHaveCount(0);
 });
+
+test('隊長自主擴編：隊長自己加的成員在名單上顯示「由 LD 新增：理由」，GM 配的不顯示', async ({
+  page,
+}) => {
+  await page.goto(`/#/team/${TEAM}`);
+  const panel = page.getByTestId('team-panel');
+  await expect(panel.getByTestId('roster-added-s-auth')).toHaveText(
+    '由 Write tests 新增：Nobody on the team edits the login code yet.',
+  );
+  await expect(panel.getByTestId('roster-added-s-tests')).toHaveCount(0);
+});
