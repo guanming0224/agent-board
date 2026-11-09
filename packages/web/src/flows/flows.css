@@ -1818,9 +1818,15 @@
   min-width: 0;
 }
 
+/*
+ * 名稱本身就是展開鈕：點擊高度照尺寸系統（桌面精簡 32、手機 44，STYLE §5.1），
+ * 左右不加內距，文字仍和呼號、晶片對齊；這一行原本就有晶片，只多了幾 px。
+ */
 .flows .row-name.link-button {
+  display: inline-flex;
+  align-items: center;
   min-width: 0;
-  min-height: 0;
+  min-height: var(--ctl-h-sm);
   padding: 0;
   border: 0;
   background: none;
@@ -1835,6 +1841,11 @@
 
 .flows .row-name.link-button:hover {
   text-decoration: underline;
+}
+@media (max-width: 640px), (pointer: coarse) {
+  .flows .row-name.link-button {
+    min-height: var(--ctl-h-touch);
+  }
 }
 
 .flows .row-top .age {

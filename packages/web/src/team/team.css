@@ -396,10 +396,16 @@ button.color-pick[aria-pressed='true'] {
 .roster-row > .lamp .lamp-label {
   display: none;
 }
+/*
+ * 名稱鈕的點擊高度照尺寸系統（桌面 32、手機 44，STYLE §5.1）。同一行的職務下拉本來就是 32／44，
+ * 所以列高不變；文字靠 inline-flex 垂直置中。
+ */
 .roster-row > .roster-name {
   grid-area: name;
   justify-self: start;
-  min-height: 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--ctl-h-sm);
   padding: 0;
   border: 0;
   background: none;
@@ -407,6 +413,11 @@ button.color-pick[aria-pressed='true'] {
   font-weight: 600;
   text-align: left;
   overflow-wrap: anywhere;
+}
+@media (max-width: 640px), (pointer: coarse) {
+  .roster-row > .roster-name {
+    min-height: var(--ctl-h-touch);
+  }
 }
 .roster-role {
   grid-area: role;
@@ -529,4 +540,16 @@ button.color-pick[aria-pressed='true'] {
   .roster-row {
     padding: var(--space-2);
   }
+}
+
+/*
+ * 全隊暫停／停止後的說明（TeamControls 的 .hint-inline）。查過：沒有被團隊區樣式蓋掉，計算值就是
+ * views.css 的 .hint-inline（--muted #cbd3dc）；但它沒設字級，繼承內文 14px，又排在 56px 的動作鈕旁，
+ * 看起來和按鈕、操作結果一樣亮。改成和面板其他說明（進度卡空狀態的 .faint）一致：--faint、--fs-sm，
+ * 自己佔一行。
+ */
+.team-controls > .hint-inline {
+  flex-basis: 100%;
+  color: var(--faint);
+  font-size: var(--fs-sm);
 }
