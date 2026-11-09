@@ -295,3 +295,68 @@ describe('sw.js notificationclick', () => {
     expect(worker.opened).toEqual([`${ORIGIN}/#/inbox/s1`]);
   });
 });
+
+describe('sw.js team activity (lead auto-staffing)', () => {
+  it('single push: title is the lead, body names the member and points to the inbox; no reason text', async () => {
+    const worker = loadWorker('zh-TW');
+    await worker.dispatch(
+      'push',
+      pushEvent({
+        reason: 'team_member_added',
+        name: 'LD',
+        member: 'LD-QA',
+        sessionId: 's7',
+        at: '2026-11-10T01:00:00.000Z',
+      }),
+    );
+    expect(worker.shown[0]!.title).toBe('LD');
+    expect(worker.shown[0]!.options.body).toBe('新增了成員 LD-QA（理由在收件匣的團隊動態）');
+    expect(worker.shown[0]!.options.tag).toBe('team-s7');
+    const en = loadWorker('en');
+    await en.dispatch(
+      'push',
+      pushEvent({ reason: 'team_member_released', name: 'LD', member: 'LD-RV', sessionId: 's8' }),
+    );
+    expect(en.shown[0]!.options.body).toBe(
+      'Released member LD-RV (reason under Team activity in the inbox)',
+    );
+  });
+
+  it('summary with only team activity: titled "Team activity", lists who added or released whom', async () => {
+    const worker = loadWorker('zh-TW');
+    await worker.dispatch(
+      'push',
+      pushEvent({
+        kind: 'summary',
+        count: 0,
+        items: [],
+        more: 0,
+        autoContinued: [],
+        team: [
+          { reason: 'team_member_added', lead: 'LD', member: 'LD-BD2', sessionId: 'a' },
+          { reason: 'team_member_released', lead: 'LD', member: 'LD-RS', sessionId: 'b' },
+        ],
+        at: '2026-11-10T01:00:00.000Z',
+      }),
+    );
+    expect(worker.shown[0]!.title).toBe('團隊動態');
+    expect(worker.shown[0]!.options.body).toBe('LD 新增了 LD-BD2、LD 封存了 LD-RS');
+  });
+
+  it('summary with waiting sessions and team activity keeps the waiting title', async () => {
+    const worker = loadWorker('en');
+    await worker.dispatch(
+      'push',
+      pushEvent({
+        kind: 'summary',
+        count: 1,
+        items: [{ sessionId: 's1', name: 'BD1', status: 'waiting_permission' }],
+        more: 0,
+        autoContinued: [],
+        team: [{ reason: 'team_member_added', lead: 'LD', member: 'LD-QA', sessionId: 'q' }],
+      }),
+    );
+    expect(worker.shown[0]!.title).toBe('1 sessions waiting on you');
+    expect(worker.shown[0]!.options.body).toBe('BD1 needs approval, LD added LD-QA');
+  });
+});

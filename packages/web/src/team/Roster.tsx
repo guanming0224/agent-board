@@ -202,6 +202,19 @@ export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
                     )}
                   </span>
                 )}
+                {/* 隊長自己加的成員（隊長自主擴編）：誰加的、理由。 */}
+                {member.added && (
+                  <span
+                    className="roster-added"
+                    data-testid={`roster-added-${session.id}`}
+                    title={new Date(member.added.at).toLocaleString()}
+                  >
+                    {t('team.roster.addedBy', {
+                      lead: member.added.byName,
+                      reason: member.added.reason,
+                    })}
+                  </span>
+                )}
               </li>
             );
           })}

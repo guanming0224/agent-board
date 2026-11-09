@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 // agent-board-mcp：派工與進度卡工具的 MCP server（stdio，CONTRACTS §11、§14）。daemon 用 `--mcp-config` 掛給每個 claude。
 // 只列、只接受 daemon 在 AGENT_BOARD_MCP_TOOLS 給的工具（設定關著的功能不出現）。
+// 工具說明與隊長守則（擴編節奏）在 protocol/src/leadGuide.ts，Claude 只在讀工具清單、呼叫工具時看到，中控台不送字。
 // 自己不做任何決定：每個工具呼叫原樣經本機 socket 交給 daemon（daemon 比對密鑰），再由 hub 判斷能不能做。
 // 不呼叫任何模型、不連網路，只連 daemon 的本機 socket。只用 node 內建模組（同 agent-board-hook，可直接 node 執行）。
 // stdout 只能有 JSON-RPC 訊息；說明一律寫 stderr。
 import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { createInterface } from 'node:readline';
+// 隊長守則與工具說明集中在 protocol（GM 2026-11-10）。leadGuide.ts 不 import 任何東西（沒有 zod），可以直接用 node 執行。
+import {
+  DISPATCH_INSTRUCTIONS,
+  DISPATCH_TOOL_DESCRIPTIONS,
+  RELEASE_REASON_DESCRIPTION,
+  SPAWN_REASON_DESCRIPTION,
+} from '@agent-board/protocol/lead-guide';
 import {
   DISPATCH_TOOLS,
   MCP_SECRET_FILE_ENV,
@@ -23,14 +31,6 @@ type Json = Record<string, unknown>;
 const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const DEFAULT_VERSION = '2025-06-18';
 
-const DISPATCH_INSTRUCTIONS = [
-  'Agent Board tools let you delegate work to other Claude Code sessions shown on the Agent Board canvas, like subagents that keep running.',
-  'list_members shows your team. spawn_member starts a new member in this same project (writers — worker and tester — get their own git worktree; researcher/reviewer are read-only) and gives it your prompt.',
-  'send_task types a new task into one of your members once it is waiting for input.',
-  'When a member finishes the turn that handled your work, its result is typed back into this session automatically as "[Result from <name>] Summary: … | Detected file edits: … | Branch: …". Do not poll; wait for it.',
-  "get_result shows a member's latest summary, files and branch on demand.",
-];
-
 /** 進度卡（P3 項目一）：固定的兩句（docs/p3-spec.md §1.3）。 */
 const MEMORY_INSTRUCTIONS = [
   'When you start new work, or after the conversation was cleared (/clear, compact), first read the team progress card with get_progress; when you finish a chunk of work, or before you stop to wait for the user, update status/next/blockers with update_progress.',
@@ -40,19 +40,18 @@ const MEMORY_INSTRUCTIONS = [
 const ALL_TOOLS = [
   {
     name: 'list_members',
-    description:
-      'List the members of your Agent Board team(s): name, role, status, current task, last screen line, read-only, branch, who dispatched them, and whether they still owe you a result. Empty if you have no team.',
+    description: DISPATCH_TOOL_DESCRIPTIONS.list_members,
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'spawn_member',
-    description:
-      'Start a new Claude Code session as a member of your team, in the same machine and project folder, and give it a first prompt. role worker edits files (gets its own git worktree by default); tester writes and runs tests (also its own worktree, asks before each step by default); researcher and reviewer are read-only and share the folder. Its permission mode cannot exceed yours. At most 4 live members per caller. The result comes back to you automatically when it finishes the turn.',
+    description: DISPATCH_TOOL_DESCRIPTIONS.spawn_member,
     inputSchema: {
       type: 'object',
       properties: {
         role: { type: 'string', enum: ['worker', 'researcher', 'reviewer', 'tester'] },
         prompt: { type: 'string', description: 'The work to do. One self-contained instruction.' },
+        reason: { type: 'string', description: SPAWN_REASON_DESCRIPTION },
         name: { type: 'string', description: 'Optional display name; numbered automatically.' },
         permissionMode: {
           type: 'string',
@@ -66,14 +65,13 @@ const ALL_TOOLS = [
         },
         model: { type: 'string', description: 'Optional model; defaults to yours.' },
       },
-      required: ['role', 'prompt'],
+      required: ['role', 'prompt', 'reason'],
       additionalProperties: false,
     },
   },
   {
     name: 'send_task',
-    description:
-      'Give one of your members (a member of a team you lead, or one you spawned) a new task. It is typed in when the member is waiting for input; if it is busy the task waits in a queue. The result comes back to you automatically.',
+    description: DISPATCH_TOOL_DESCRIPTIONS.send_task,
     inputSchema: {
       type: 'object',
       properties: {
@@ -86,12 +84,24 @@ const ALL_TOOLS = [
   },
   {
     name: 'get_result',
-    description:
-      "Show a member's latest one-sentence summary, detected file edits and branch, and whether it is still working on your task.",
+    description: DISPATCH_TOOL_DESCRIPTIONS.get_result,
     inputSchema: {
       type: 'object',
       properties: { member: { type: 'string', description: 'Member name.' } },
       required: ['member'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'release_member',
+    description: DISPATCH_TOOL_DESCRIPTIONS.release_member,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        member: { type: 'string', description: 'Member name (as in list_members).' },
+        reason: { type: 'string', description: RELEASE_REASON_DESCRIPTION },
+      },
+      required: ['member', 'reason'],
       additionalProperties: false,
     },
   },
@@ -137,7 +147,7 @@ const ALL_TOOLS = [
 ] as const;
 
 /**
- * daemon 給的工具清單（只認得的名稱）。沒有這個變數＝舊版 daemon：只有派工的四個。
+ * daemon 給的工具清單（只認得的名稱）。沒有這個變數＝舊版 daemon：只有派工工具。
  * 給了但是空的不會發生（daemon 兩個功能都關時不掛 MCP server），當成沒有工具。
  */
 function enabledTools(): readonly string[] {

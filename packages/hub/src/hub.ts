@@ -56,16 +56,23 @@ import {
   type User,
   type Zone,
   type ZoneNotEmpty,
+  type TeamActivity,
 } from '@agent-board/protocol';
 import type { z } from 'zod';
-import { buildSummary, DEFAULT_WINDOWS, NotifyCoalescer, type SummaryItem } from './attention';
+import {
+  buildSummary,
+  DEFAULT_WINDOWS,
+  NotifyCoalescer,
+  type SummaryItem,
+  type SummaryTeamItem,
+} from './attention';
 import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from './audit';
 import { AutoContinueEngine, isAutoContinueKey } from './autoContinue';
 import { BroadcastEngine } from './broadcast';
 import { TeamPresets } from './presets';
 import { conflict, HttpError, notFound } from './errors';
 import { SafeDelivery, type DeliveryItem } from './delivery';
-import { DispatchEngine } from './dispatch';
+import { DispatchEngine, type DispatchDeps } from './dispatch';
 import { ProgressEngine } from './progress';
 import { HandoffEngine } from './handoff';
 import {
@@ -335,6 +342,8 @@ export class Hub {
   private overloadPending: number | null = null;
   /** 等待期間自動接續的 session（合併通知裡寫「已自動接續」）。 */
   private autoContinued: { sessionId: string; name: string }[] = [];
+  /** 等合併通知送出的團隊動態（隊長新增／封存成員）。 */
+  private teamPending: SummaryTeamItem[] = [];
   /** 自動流程停下等使用者決定的 session（合併通知送出時再確認還成不成立）。 */
   private readonly roundLimits = new Map<string, number>();
   private readonly taskLimits = new Map<
@@ -445,6 +454,16 @@ export class Hub {
       paused: () => this.pause !== null,
       createSession: (input, dispatchedBy) => this.createSessionAs(input, null, dispatchedBy),
       machineOnline: (machineId) => this.daemonFor(machineId) !== null,
+      autoStaff: () => this.store.getSettings().autoStaff,
+      accountLimited: (session) => this.accountLimited(session),
+      archiveMember: (member, by) => {
+        this.archive(member, null, by);
+      },
+      teamActivity: (entry) => this.recordTeamActivity(entry),
+      teamChanged: (team) => {
+        const current = this.store.getTeam(team.id);
+        if (current) this.broadcast({ type: 'team.updated', team: current });
+      },
     });
     this.broadcasts = new BroadcastEngine({
       store: deps.store,
@@ -466,6 +485,8 @@ export class Hub {
       changed: (card) => this.broadcast({ type: 'progress.updated', card }),
       enabled: () => this.store.getSettings().memory,
       broadcasts: this.broadcasts,
+      staffing: (caller, team) =>
+        this.store.getSettings().dispatch ? this.dispatch.staffingFor(caller, team) : null,
     });
     this.presets = new TeamPresets({
       db: deps.store.db,
@@ -874,7 +895,75 @@ export class Hub {
       broadcasts: this.broadcasts.list(),
       progress: this.progress.list(),
       presets: this.presets.list(),
+      teamActivity: this.store.listTeamActivity(),
     };
+  }
+
+  // ── 團隊動態（隊長自主擴編，GM 2026-11-10，CONTRACTS §11.1） ──────────
+
+  /**
+   * 隊長新增或封存了成員：記一筆團隊動態（收件匣「團隊動態」）、推給每個 client，設定開著時推播。
+   * 推播只帶名稱與種類（同其他推播：不帶 Claude 寫的理由），理由在收件匣看。
+   */
+  private recordTeamActivity(entry: Parameters<DispatchDeps['teamActivity']>[0]): void {
+    const item: TeamActivity = {
+      id: randomUUID(),
+      at: this.nowIso(),
+      kind: entry.kind,
+      teamId: entry.team.id,
+      teamName: entry.team.name,
+      leadSessionId: entry.lead.id,
+      leadName: entry.lead.name,
+      memberSessionId: entry.member.id,
+      memberName: entry.member.name,
+      role: entry.role,
+      reason: entry.reason,
+      read: false,
+    };
+    const items = [item, ...this.store.listTeamActivity()];
+    this.store.saveTeamActivity(items);
+    this.broadcast({ type: 'team.activity', items: this.store.listTeamActivity() });
+    this.notifyTeamActivity(item);
+  }
+
+  /** 標已讀：ids 沒給＝全部。回傳新清單。 */
+  readTeamActivity(ids: readonly string[] | undefined, user: User): TeamActivity[] {
+    const pick = ids ? new Set(ids) : null;
+    const items = this.store
+      .listTeamActivity()
+      .map((a) => (!pick || pick.has(a.id) ? { ...a, read: true } : a));
+    this.store.saveTeamActivity(items);
+    this.audit(user.id, null, 'team_activity.read', JSON.stringify({ ids: ids ?? 'all' }));
+    this.broadcast({ type: 'team.activity', items });
+    return items;
+  }
+
+  /** 清除：ids 沒給＝全部。回傳新清單。 */
+  clearTeamActivity(ids: readonly string[] | undefined, user: User): TeamActivity[] {
+    const pick = ids ? new Set(ids) : null;
+    const items = pick ? this.store.listTeamActivity().filter((a) => !pick.has(a.id)) : [];
+    this.store.saveTeamActivity(items);
+    this.audit(user.id, null, 'team_activity.clear', JSON.stringify({ ids: ids ?? 'all' }));
+    this.broadcast({ type: 'team.activity', items });
+    return items;
+  }
+
+  /**
+   * 擴編的帳號限流檢查（§11.1）：同機器、同帳號有還沒到重置時間的 rate_limited session（含呼叫者自己）。
+   * 和排隊的 limitedSessions 不同：不看「限流時排隊」設定，一律不擴編。
+   */
+  private accountLimited(session: Session): boolean {
+    const now = this.deps.now().getTime();
+    return this.store
+      .listMachineSessions(session.machineId)
+      .some(
+        (s) =>
+          s.endedAt === null &&
+          !s.archived &&
+          s.status === 'rate_limited' &&
+          sameAccount(s, session) &&
+          !this.resetPassed(s, now),
+      );
   }
 
   private approvalList(): Approval[] {
@@ -1371,11 +1460,12 @@ export class Hub {
     this.scheduleResetDrain();
   }
 
-  stopSession(id: string, user: User): Session {
+  /** user 是 null＝系統（隊長用 release_member 封存成員時，GM 2026-11-10）。 */
+  stopSession(id: string, user: User | null): Session {
     const session = this.requireSession(id);
     if (session.status === 'queued') {
       this.store.setPendingSpec(id, null);
-      this.audit(user.id, id, 'session.cancel', '');
+      this.audit(user?.id ?? null, id, 'session.cancel', '');
       return this.setStatus(session, 'done', SESSION_DETAIL_CANCELLED, 'user_cancelled', {
         endedAt: this.nowIso(),
       });
@@ -1383,7 +1473,7 @@ export class Hub {
     if (session.endedAt !== null) throw conflict('session_ended', 'Session has already ended');
     const conn = this.daemonFor(session.machineId);
     if (!conn) throw conflict('machine_offline', 'Machine is offline');
-    this.audit(user.id, id, 'session.stop', '');
+    this.audit(user?.id ?? null, id, 'session.stop', '');
     this.handoff.onUserStop(id);
     this.send(conn.ws, { type: 'session.stop', sessionId: id });
     return session;
@@ -1494,7 +1584,7 @@ export class Hub {
    * §9.1：還沒結束的先停（排隊的取消，其他與 sessionsStop 同一條路；機器離線就 409，不封存），
    * 再暫停從它出發或指向它的交接規則。
    */
-  private archive(session: Session, user: User): Session {
+  private archive(session: Session, user: User | null, by?: Session): Session {
     const live = session.endedAt === null;
     // 機器離線停不了：照樣封存，等 daemon 重連的 hello 對帳時補送 stop。
     const stopPending = live && session.status !== 'queued' && !this.daemonFor(session.machineId);
@@ -1505,10 +1595,10 @@ export class Hub {
     const current = this.requireSession(session.id);
     const next = this.updateFields(current, { archived: true, archivedAt: this.nowIso() });
     this.audit(
-      user.id,
+      user?.id ?? null,
       session.id,
       'session.archive',
-      JSON.stringify({ stopped, stopPending, rulesPaused }),
+      JSON.stringify({ stopped, stopPending, rulesPaused, ...(by ? { byLead: by.id } : {}) }),
     );
     return next;
   }
@@ -2800,6 +2890,33 @@ export class Hub {
     this.sendPush(attentionPayload(session, extra));
   }
 
+  /**
+   * 團隊動態的推播（設定 autoStaff.push，預設開）：合併通知開著時併進下一則總表（「LD 新增了 BD3」），
+   * 關著時單獨一則。只帶名稱與種類。
+   */
+  private notifyTeamActivity(item: TeamActivity): void {
+    const settings = this.store.getSettings();
+    if (!settings.autoStaff.push || !this.pushAllowed(settings)) return;
+    const reason = item.kind === 'member_added' ? 'team_member_added' : 'team_member_released';
+    if (settings.notifications.coalesce) {
+      this.teamPending = [
+        ...this.teamPending,
+        { reason, lead: item.leadName, member: item.memberName, sessionId: item.memberSessionId },
+      ];
+      this.coalescer.add(null, false);
+      return;
+    }
+    this.sendPush(
+      JSON.stringify({
+        reason,
+        name: item.leadName,
+        member: item.memberName,
+        sessionId: item.memberSessionId,
+        at: item.at,
+      }),
+    );
+  }
+
   /** 自動接續送出了：合併通知裡寫「BD1 已自動接續」；不合併時單獨一則。 */
   private notifyAutoContinued(session: Session): void {
     if (session.archived) return;
@@ -2838,8 +2955,10 @@ export class Hub {
   private flushSummary(triggered: string[]): void {
     const autoContinued = this.autoContinued;
     const overLimit = this.overloadPending;
+    const team = this.teamPending;
     this.autoContinued = [];
     this.overloadPending = null;
+    this.teamPending = [];
     const settings = this.store.getSettings();
     if (!this.pushAllowed(settings)) return;
     const items = this.summaryItems();
@@ -2850,6 +2969,7 @@ export class Hub {
       autoContinued,
       this.nowIso(),
       stillOver ? overLimit : undefined,
+      team,
     );
     if (payload) this.sendPush(JSON.stringify(payload));
   }

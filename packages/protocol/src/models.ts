@@ -211,11 +211,27 @@ export type Session = z.infer<typeof Session>;
 
 /** Claude Code 裡看到的 MCP server 名稱：工具全名是 `mcp__agent-board__<tool>`。 */
 export const DISPATCH_MCP_SERVER = 'agent-board';
-/** 派工工具。只有這四個，hub 依呼叫者的團隊判斷能不能做。 */
-export const DispatchTool = z.enum(['list_members', 'spawn_member', 'send_task', 'get_result']);
+/**
+ * 派工工具。只有這五個，hub 依呼叫者的團隊判斷能不能做。release_member 是隊長自主擴編（GM 2026-11-10）加的：
+ * 隊長封存自己團隊的成員，空出名額。
+ */
+export const DispatchTool = z.enum([
+  'list_members',
+  'spawn_member',
+  'send_task',
+  'get_result',
+  'release_member',
+]);
 export type DispatchTool = z.infer<typeof DispatchTool>;
-/** 同一個呼叫者同時活著（沒封存、沒結束）的派工成員上限。 */
-export const DISPATCH_SPAWN_LIMIT = 4;
+/**
+ * 團隊總人數上限（隊長自主擴編，GM 2026-11-10）：含隊長、GM 原本配的，所有沒封存的成員。
+ * 存在設定 `autoStaff.teamLimit`，設定頁可改（2–20）。取代舊的「每個呼叫者同時 4 個」。
+ */
+export const TEAM_SIZE_DEFAULT = 12;
+export const TEAM_SIZE_MIN = 2;
+export const TEAM_SIZE_MAX = 20;
+/** 同一個團隊 10 分鐘內最多新增幾個成員（防爆量；和送工作的 10 分鐘上限同一個視窗）。 */
+export const DISPATCH_SPAWN_RATE_MAX = 4;
 /** `spawn_member` 可開的角色：隊長只能是呼叫者自己。 */
 export const DISPATCH_ROLES = ['worker', 'researcher', 'reviewer', 'tester'] as const;
 /**
@@ -438,14 +454,49 @@ export const TeamResumeResult = z.object({
 });
 export type TeamResumeResult = z.infer<typeof TeamResumeResult>;
 
+/** 隊長用 spawn_member 加進來的成員：誰加的、理由（隊長自主擴編，存在 settings 表 `memberAdded:<sessionId>`）。 */
+export const MemberAdded = z.object({
+  bySessionId: Id,
+  byName: z.string(),
+  reason: z.string(),
+  at: IsoTime,
+});
+export type MemberAdded = z.infer<typeof MemberAdded>;
+
 export const TeamMember = z.object({
   teamId: Id,
   sessionId: Id,
   role: TeamRole,
   /** 研究團隊的分工；沒有就照角色推（worker 當實驗）。和 role 對不上時以 role 為準。 */
   kind: ResearchKind.optional(),
+  /** 由隊長新增的才有（hub 回傳時附上；建立、修改時帶了也不會存）。舊版 hub 不送。 */
+  added: MemberAdded.optional(),
 });
 export type TeamMember = z.infer<typeof TeamMember>;
+
+/**
+ * 團隊動態（隊長自主擴編，GM 2026-11-10）：隊長新增或封存成員時記一筆，收件匣的「團隊動態」列出來。
+ * 只是告知、不需要動作；可以標已讀、清除。存在 settings 表 `teamActivity`（最多 `TEAM_ACTIVITY_KEEP` 筆，舊的先丟）。
+ */
+export const TeamActivityKind = z.enum(['member_added', 'member_released']);
+export type TeamActivityKind = z.infer<typeof TeamActivityKind>;
+export const TeamActivity = z.object({
+  id: Id,
+  at: IsoTime,
+  kind: TeamActivityKind,
+  teamId: Id,
+  teamName: z.string(),
+  leadSessionId: Id,
+  leadName: z.string(),
+  memberSessionId: Id,
+  memberName: z.string(),
+  role: TeamRole,
+  /** 隊長給的理由（Claude 寫的一句，已清控制字元、截斷）。 */
+  reason: z.string(),
+  read: z.boolean(),
+});
+export type TeamActivity = z.infer<typeof TeamActivity>;
+export const TEAM_ACTIVITY_KEEP = 100;
 
 /** 審查退回幾次就停下等使用者（GM 2026-11-06）。 */
 export const TASK_REJECT_LIMIT = 3;
@@ -625,6 +676,19 @@ export const WAITING_LIMIT_MAX = 20;
 export const DEFAULT_WAITING_LIMIT = 3;
 
 /** Lead 增補的 `settings` 鍵值表內容（§3 沒有列，但 §5.3-7、§7、§8 都需要）。 */
+/** 隊長自主擴編的設定（`Settings.autoStaff`）。 */
+export const AutoStaff = z.object({
+  enabled: z.boolean().default(true),
+  teamLimit: z.number().int().min(TEAM_SIZE_MIN).max(TEAM_SIZE_MAX).default(TEAM_SIZE_DEFAULT),
+  push: z.boolean().default(true),
+});
+export type AutoStaff = z.infer<typeof AutoStaff>;
+export const AUTO_STAFF_DEFAULT: AutoStaff = {
+  enabled: true,
+  teamLimit: TEAM_SIZE_DEFAULT,
+  push: true,
+};
+
 export const Settings = z.object({
   listenAddress: z.string(),
   publicOrigin: z.string().url().nullable(),
@@ -655,7 +719,7 @@ export const Settings = z.object({
   /**
    * 允許 session 派工（MCP 工具，GM 2026-11-06）：開著時 daemon 新開的 claude 會帶 `--mcp-config` 掛上
    * `agent-board` 工具，讓畫布上的 Claude 自己開成員、送工作、收結果。工具本身不花額度（要 Claude 決定呼叫），
-   * 但開成員會開新的 session，所以設定頁標 ◈，每個呼叫者最多 `DISPATCH_SPAWN_LIMIT` 個。預設開；
+   * 但開成員會開新的 session，所以設定頁標 ◈，團隊人數上限見 `autoStaff`。預設開；
    * 關掉後新開或接續的 session 不掛工具，已掛著的呼叫一律回「已關閉」。
    */
   dispatch: z.boolean().default(true),
@@ -665,6 +729,12 @@ export const Settings = z.object({
    * 不掛這兩個工具（派工也關著就完全不掛 MCP server）；已掛著的呼叫一律回 `memory_disabled`。
    */
   memory: z.boolean().default(true),
+  /**
+   * 隊長自主擴編（GM 2026-11-10，CONTRACTS §11.1）。enabled：隊長可以用 spawn_member 新增、release_member 封存成員；
+   * 關掉＝兩個都回 `autostaff_disabled`，只能用現有成員。teamLimit：團隊總人數上限（含隊長、沒封存的）。
+   * push：新增或封存成員時推播（收件匣的「團隊動態」不受影響）。舊設定沒有這個鍵＝全部預設。
+   */
+  autoStaff: AutoStaff.default(AUTO_STAFF_DEFAULT),
 });
 export type Settings = z.infer<typeof Settings>;
 

@@ -109,6 +109,16 @@ export interface SummaryItem {
   task?: number;
 }
 
+/** 合併通知裡的團隊動態（隊長自主擴編）：「LD 新增了 BD3」。只有名稱與種類，不帶理由。 */
+export interface SummaryTeamItem {
+  reason: 'team_member_added' | 'team_member_released';
+  /** 隊長名稱。 */
+  lead: string;
+  /** 成員名稱。 */
+  member: string;
+  sessionId: string;
+}
+
 export interface SummaryPayload {
   kind: 'summary';
   /** 在等你的 session 數（不含已自動接續的）。 */
@@ -120,11 +130,14 @@ export interface SummaryPayload {
   autoContinued: { sessionId: string; name: string }[];
   /** 這一批跨過了「同時等你的上限」：值是上限。 */
   overLimit?: number;
+  /** 等待期間的團隊動態（最多 SUMMARY_MAX_TEAM 項，舊到新）。沒有就不帶。 */
+  team?: SummaryTeamItem[];
   at: string;
 }
 
 export const SUMMARY_MAX_ITEMS = 5;
 const SUMMARY_MAX_AUTO = 3;
+const SUMMARY_MAX_TEAM = 3;
 /** 推播有大小上限（約 4 KB）：名稱太長就截斷。不會比單則推播多帶任何東西。 */
 const NAME_MAX = 60;
 
@@ -143,8 +156,9 @@ export function buildSummary(
   autoContinued: readonly { sessionId: string; name: string }[],
   at: string,
   overLimit?: number,
+  team: readonly SummaryTeamItem[] = [],
 ): SummaryPayload | null {
-  if (items.length === 0 && autoContinued.length === 0) return null;
+  if (items.length === 0 && autoContinued.length === 0 && team.length === 0) return null;
   const recency = (id: string) => {
     const index = triggered.indexOf(id);
     return index === -1 ? -1 : index;
@@ -168,6 +182,15 @@ export function buildSummary(
       .slice(0, SUMMARY_MAX_AUTO)
       .map((a) => ({ sessionId: a.sessionId, name: shortName(a.name) })),
     ...(overLimit !== undefined ? { overLimit } : {}),
+    ...(team.length > 0
+      ? {
+          team: team.slice(-SUMMARY_MAX_TEAM).map((t) => ({
+            ...t,
+            lead: shortName(t.lead),
+            member: shortName(t.member),
+          })),
+        }
+      : {}),
     at,
   };
 }

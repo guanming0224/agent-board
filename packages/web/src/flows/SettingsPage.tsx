@@ -13,6 +13,7 @@ import { MachinesSection, UsersSection } from './MachinesUsersSettings';
 import { PasswordSection } from './PasswordSection';
 import {
   AutoContinueSection,
+  AutoStaffSection,
   DispatchSection,
   MemorySection,
   NotifySection,
@@ -246,6 +247,7 @@ export function SettingsPage() {
                       <QuotaSection form={f} />
                       <AutoContinueSection form={f} />
                       <DispatchSection form={f} />
+                      <AutoStaffSection form={f} />
                       <MemorySection form={f} />
                       <StuckSection form={f} />
                     </>

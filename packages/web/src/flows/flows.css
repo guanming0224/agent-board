@@ -2096,3 +2096,83 @@
     align-items: stretch;
   }
 }
+
+/* ── 團隊動態（隊長自主擴編，GM 2026-11-10）：收件匣底下，告知用，不算「等你」 ── */
+.flows .team-activity {
+  margin-top: var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.flows .team-activity .activity-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.flows .team-activity h2 {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+}
+.flows .team-activity .activity-head-acts {
+  display: flex;
+  gap: var(--space-2);
+}
+.flows .team-activity > .hint {
+  margin: var(--space-1) 0 0;
+}
+.flows .activity-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+}
+.flows .activity-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1h) 0;
+  font-size: var(--fs-ctl-sm);
+}
+.flows .activity-row + .activity-row {
+  border-top: 1px solid var(--border);
+}
+.flows .activity-row time {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.flows .activity-text {
+  overflow-wrap: anywhere;
+}
+.flows .activity-row.unread .activity-text {
+  font-weight: 600;
+}
+.flows .activity-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--space-1h);
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+.flows .activity-team {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.flows .activity-reason {
+  flex-basis: 100%;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.flows .activity-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}

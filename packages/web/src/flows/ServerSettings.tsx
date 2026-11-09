@@ -2,12 +2,13 @@
 // 草稿放在設定頁這一層，切換分類不會不見；選單用 dirtyCategories 標出哪些分類還沒存。
 import { useEffect, useState } from 'react';
 import {
-  DISPATCH_SPAWN_LIMIT,
   NOTIFY_MAX_WINDOW_MS,
   NOTIFY_PERMISSION_WINDOW_MS,
   NOTIFY_WINDOW_MS,
   WAITING_LIMIT_MAX,
   WAITING_LIMIT_MIN,
+  TEAM_SIZE_MAX,
+  TEAM_SIZE_MIN,
   type Settings,
 } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
@@ -28,6 +29,7 @@ interface Texts {
   max: string;
   stuck: string;
   limit: string;
+  teamLimit: string;
   newRule: string;
 }
 
@@ -36,6 +38,7 @@ const textsOf = (s: Settings | null): Texts => ({
   max: s?.quotaGuards.maxConcurrentSessions?.toString() ?? '',
   stuck: s ? String(s.stuckMinutes) : '',
   limit: s ? String(s.notifications.waitingLimit) : '',
+  teamLimit: s ? String(s.autoStaff.teamLimit) : '',
   newRule: '',
 });
 
@@ -54,6 +57,7 @@ export interface ServerSettingsForm {
   stuckValid: boolean;
   maxValid: boolean;
   limitValid: boolean;
+  teamLimitValid: boolean;
   quietInvalid: boolean;
   ruleNote: Note | null;
   addRule: () => void;
@@ -109,10 +113,11 @@ export function useServerSettings(loaded: Settings | null): ServerSettingsForm |
   const quiet = draft.notifications.quietHours;
   const quietInvalid = quiet !== null && (!quiet.start || !quiet.end);
   const limitValid = waitingLimitOf(texts.limit) !== null;
+  const teamLimitValid = teamLimitOf(texts.teamLimit) !== null;
 
   const invalidCategories = new Set<Category>();
   if (quietInvalid || !limitValid) invalidCategories.add('notify');
-  if (!stuckValid || !maxValid) invalidCategories.add('sessions');
+  if (!stuckValid || !maxValid || !teamLimitValid) invalidCategories.add('sessions');
   if (addressError !== null || badOrigin) invalidCategories.add('security');
 
   const addRule = () => {
@@ -169,6 +174,7 @@ export function useServerSettings(loaded: Settings | null): ServerSettingsForm |
     stuckValid,
     maxValid,
     limitValid,
+    teamLimitValid,
     quietInvalid,
     ruleNote,
     addRule,
@@ -185,6 +191,14 @@ function waitingLimitOf(text: string): number | null {
   if (!POSITIVE_INT.test(value)) return null;
   const n = Number(value);
   return n >= WAITING_LIMIT_MIN && n <= WAITING_LIMIT_MAX ? n : null;
+}
+
+/** 團隊人數上限（隊長自主擴編）：TEAM_SIZE_MIN–TEAM_SIZE_MAX 的整數；不合法回 null。 */
+export function teamLimitOf(text: string): number | null {
+  const value = text.trim();
+  if (!POSITIVE_INT.test(value)) return null;
+  const n = Number(value);
+  return n >= TEAM_SIZE_MIN && n <= TEAM_SIZE_MAX ? n : null;
 }
 
 const seconds = (ms: number) => Math.round(ms / 1000);
@@ -532,7 +546,75 @@ export function DispatchSection({ form }: { form: ServerSettingsForm }) {
           {t('flows.dispatch.label')}
           <span className="chip cost">◈ {t('flows.autoContinue.cost')}</span>
         </label>
-        <p className="hint">{t('flows.dispatch.hint', { limit: DISPATCH_SPAWN_LIMIT })}</p>
+        <p className="hint">{t('flows.dispatch.hint')}</p>
+      </div>
+    </Section>
+  );
+}
+
+/**
+ * 隊長自主擴編（GM 2026-11-10，CONTRACTS §11.1）：開關（關掉＝隊長不能新增也不能封存，只能用現有成員）、
+ * 團隊人數上限（含隊長、沒封存的，2–20）、新增或封存成員時推播。都預設開、上限 12。
+ */
+export function AutoStaffSection({ form }: { form: ServerSettingsForm }) {
+  const t = useT();
+  const { draft, patch, texts, teamLimitValid } = form;
+  const autoStaff = draft.autoStaff;
+  return (
+    <Section id="autostaff" title={t('flows.settings.autoStaff')} dirty={form.isDirty('autoStaff')}>
+      <div className="field">
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="autostaff-toggle"
+            checked={autoStaff.enabled}
+            onChange={(e) => patch({ autoStaff: { ...autoStaff, enabled: e.target.checked } })}
+          />
+          {t('flows.autoStaff.label')}
+          <span className="chip cost">◈ {t('flows.autoContinue.cost')}</span>
+        </label>
+        <p className="hint">{t('flows.autoStaff.hint')}</p>
+        {!draft.dispatch && (
+          <p className="hint" data-testid="autostaff-needs-dispatch">
+            {t('flows.autoStaff.needsDispatch')}
+          </p>
+        )}
+      </div>
+      <div className="field">
+        <label htmlFor="st-team-limit">{t('flows.autoStaff.limit')}</label>
+        <input
+          id="st-team-limit"
+          className="short num"
+          inputMode="numeric"
+          data-testid="autostaff-limit"
+          value={texts.teamLimit}
+          aria-invalid={!teamLimitValid}
+          onChange={(e) => {
+            form.setText('teamLimit', e.target.value);
+            const n = teamLimitOf(e.target.value);
+            if (n !== null) patch({ autoStaff: { ...autoStaff, teamLimit: n } });
+          }}
+        />
+        <p className="hint">
+          {t('flows.autoStaff.limitHint', { min: TEAM_SIZE_MIN, max: TEAM_SIZE_MAX })}
+        </p>
+        {!teamLimitValid && (
+          <p className="field-error" data-testid="autostaff-limit-error">
+            {t('flows.autoStaff.limitError', { min: TEAM_SIZE_MIN, max: TEAM_SIZE_MAX })}
+          </p>
+        )}
+      </div>
+      <div className="field">
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="autostaff-push"
+            checked={autoStaff.push}
+            onChange={(e) => patch({ autoStaff: { ...autoStaff, push: e.target.checked } })}
+          />
+          {t('flows.autoStaff.push')}
+        </label>
+        <p className="hint">{t('flows.autoStaff.pushHint')}</p>
       </div>
     </Section>
   );

@@ -392,7 +392,11 @@ describe('全部暫停：擋自動送字', () => {
       return { ok: reply.ok as boolean, text: reply.text as string };
     };
 
-    const spawned = await ask('spawn_member', { role: 'worker', prompt: 'Write the tests.' });
+    const spawned = await ask('spawn_member', {
+      role: 'worker',
+      prompt: 'Write the tests.',
+      reason: 'Need tests.',
+    });
     expect(spawned.ok).toBe(false);
     expect(spawned.text).toMatch(/^board_paused:/);
     await sleep();
@@ -640,7 +644,7 @@ describe('全部暫停：立刻中斷', () => {
       requestId,
       sessionId: lead,
       tool: 'spawn_member',
-      args: { role: 'researcher', prompt: 'Read the docs.' },
+      args: { role: 'researcher', prompt: 'Read the docs.', reason: 'Need the docs read.' },
     });
     const reply = await b.daemon.next('dispatch.reply', (m) => m.requestId === requestId);
     expect(reply.ok, String(reply.text)).toBe(true);

@@ -590,6 +590,9 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     boardPause: (ctx) => hub.pauseBoard(ctx.user, ctx.body.mode),
     boardResume: (ctx) => hub.resumeBoard(ctx.user),
     settingsGet: () => store.getSettings(),
+    teamActivityRead: (ctx) => hub.readTeamActivity(ctx.body.ids, ctx.user),
+    teamActivityClear: (ctx) => hub.clearTeamActivity(ctx.body.ids, ctx.user),
+
     settingsUpdate: (ctx) => {
       const patch = normalizeSettings(ctx.body);
       const prev = store.getSettings();
