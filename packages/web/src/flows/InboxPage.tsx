@@ -39,6 +39,7 @@ import {
 } from './common';
 import { codeClass, statusCode } from '../shared/status';
 import { DenyForm } from './DenyForm';
+import { TeamActivitySection } from './TeamActivity';
 import { summarizeTool } from './toolView';
 import { isFault, workItems, type WorkItem } from './workItems';
 
@@ -395,6 +396,7 @@ export function InboxPage() {
           ))}
         </div>
       )}
+      <TeamActivitySection />
     </Page>
   );
 }

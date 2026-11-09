@@ -1,6 +1,7 @@
 // 假資料後端：只給 demo 模式（?demo=1）與測試使用，正式資料庫一開始是空的（DISPATCH §1.2）。
 import {
   AUDIT_SYSTEM_USER,
+  AUTO_STAFF_DEFAULT,
   CANVAS_LAYOUT_SET,
   DEFAULT_ZONE_ID,
   DEFAULT_ZONE_NAME,
@@ -23,6 +24,7 @@ import {
   zoneMoveShift,
 } from '@agent-board/protocol';
 import type {
+  TeamActivity,
   Approval,
   AuditEntry,
   BoardHeld,
@@ -512,6 +514,7 @@ const defaultSettings: Settings = {
   autoContinue: false,
   dispatch: true,
   memory: true,
+  autoStaff: { ...AUTO_STAFF_DEFAULT },
 };
 
 /** 測試可以改掉 demoReply，模擬隊長回了無法解析的內容。 */
@@ -619,7 +622,35 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     presets.some((p) => p.id !== except && p.name.toLowerCase() === name.trim().toLowerCase());
   const members: TeamMember[] = [
     { teamId: 'team-demo-auth', sessionId: 's-tests', role: 'lead' },
-    { teamId: 'team-demo-auth', sessionId: 's-auth', role: 'worker' },
+    {
+      teamId: 'team-demo-auth',
+      sessionId: 's-auth',
+      role: 'worker',
+      // 隊長自主擴編（GM 2026-11-10）：demo 裡這位是隊長自己加的，名單上顯示理由。
+      added: {
+        bySessionId: 's-tests',
+        byName: 'Write tests',
+        reason: 'Nobody on the team edits the login code yet.',
+        at: minutesAgo(40),
+      },
+    },
+  ];
+  /** 團隊動態（隊長新增、封存成員），新的在前。 */
+  let teamActivity: TeamActivity[] = [
+    {
+      id: 'activity-demo-1',
+      at: minutesAgo(40),
+      kind: 'member_added',
+      teamId: 'team-demo-auth',
+      teamName: '登入重構',
+      leadSessionId: 's-tests',
+      leadName: 'Write tests',
+      memberSessionId: 's-auth',
+      memberName: 'Fix login',
+      role: 'worker',
+      reason: 'Nobody on the team edits the login code yet.',
+      read: false,
+    },
   ];
   const tasks: Task[] = [
     {
@@ -743,6 +774,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     pause,
     progress: [...progress.values()].map((p) => ({ ...p.card, facts: factsOf(p.card) })),
     presets,
+    teamActivity,
   });
   /** 假的送字：打進終端機、對象開始工作。 */
   const typeInto = (s: Session, text: string) => {
@@ -1446,6 +1478,18 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       layouts = next;
     },
     getNotes: async () => [],
+    async readTeamActivity(ids) {
+      teamActivity = teamActivity.map((a) =>
+        !ids || ids.includes(a.id) ? { ...a, read: true } : a,
+      );
+      publish();
+      return teamActivity;
+    },
+    async clearTeamActivity(ids) {
+      teamActivity = ids ? teamActivity.filter((a) => !ids.includes(a.id)) : [];
+      publish();
+      return teamActivity;
+    },
     getSettings: async () => settings,
     async updateSettings(patch) {
       settings = { ...settings, ...patch };

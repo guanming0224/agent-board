@@ -2,6 +2,9 @@
 import { z } from 'zod';
 import {
   AuditEntry,
+  AutoStaff,
+  TEAM_ACTIVITY_KEEP,
+  TeamActivity,
   Broadcast,
   BROADCAST_TEXT_MAX,
   BoardHeld,
@@ -101,6 +104,7 @@ export const SettingsPatch = Settings.extend({
   autoContinue: z.boolean(),
   dispatch: z.boolean(),
   memory: z.boolean(),
+  autoStaff: AutoStaff,
 }).partial();
 
 /**
@@ -747,6 +751,24 @@ export const routes = {
     path: '/api/board/resume',
     auth: 'user',
     response: z.object({ state: BoardPauseState, released: BoardHeld }),
+  }),
+  /**
+   * 團隊動態（隊長自主擴編，CONTRACTS §11.1）：清單在 board 快照的 teamActivity，變了推 team.activity。
+   * 標已讀／清除：ids 沒給＝全部。回傳整份新清單。
+   */
+  teamActivityRead: route({
+    method: 'POST',
+    path: '/api/team-activity/read',
+    auth: 'user',
+    body: z.object({ ids: z.array(Id).max(TEAM_ACTIVITY_KEEP).optional() }),
+    response: z.array(TeamActivity),
+  }),
+  teamActivityClear: route({
+    method: 'POST',
+    path: '/api/team-activity/clear',
+    auth: 'user',
+    body: z.object({ ids: z.array(Id).max(TEAM_ACTIVITY_KEEP).optional() }),
+    response: z.array(TeamActivity),
   }),
   settingsGet: route({ method: 'GET', path: '/api/settings', auth: 'owner', response: Settings }),
   settingsUpdate: route({

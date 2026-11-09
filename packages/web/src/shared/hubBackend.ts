@@ -19,6 +19,7 @@ import type {
   RouteName,
   RouteQuery,
   RouteResponse,
+  TeamActivity,
   User,
 } from '@agent-board/protocol';
 import type {
@@ -294,8 +295,11 @@ class HubConnection implements TerminalStream {
           pause: message.pause,
           progress: message.progress,
           presets: message.presets,
+          teamActivity: message.teamActivity,
         });
         return;
+      case 'team.activity':
+        return this.setTeamActivity(message.items);
       case 'board.pause':
         this.pauseSeq++;
         return this.patch((s) => ({ ...s, pause: message.pause }));
@@ -400,6 +404,11 @@ class HubConnection implements TerminalStream {
     const clean = { ...card };
     delete clean.merged;
     this.patch((s) => ({ ...s, progress: upsertCard(s.progress ?? [], clean) }));
+  }
+
+  /** 團隊動態（WS team.activity 或 REST 回應）：整份換掉。 */
+  setTeamActivity(items: TeamActivity[]): void {
+    this.patch((s) => ({ ...s, teamActivity: items }));
   }
 
   private patch(update: (state: BoardSnapshot) => BoardSnapshot): void {
@@ -557,6 +566,16 @@ export function createHubBackend() {
       await call('layoutsPut', { body: layouts });
     },
     getNotes: (zoneId) => call('notesList', { query: { zoneId } }),
+    async readTeamActivity(ids) {
+      const items = await call('teamActivityRead', { body: ids ? { ids } : {} });
+      hub.setTeamActivity(items);
+      return items;
+    },
+    async clearTeamActivity(ids) {
+      const items = await call('teamActivityClear', { body: ids ? { ids } : {} });
+      hub.setTeamActivity(items);
+      return items;
+    },
     getSettings: () => call('settingsGet'),
     updateSettings: (patch) => call('settingsUpdate', { body: patch }),
     pushVapidKey: async () => (await call('pushVapidKey')).publicKey,

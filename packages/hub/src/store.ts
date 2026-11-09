@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   AUDIT_SYSTEM_USER,
+  AUTO_STAFF_DEFAULT,
   AutoContinue,
   BoardPause,
   DEFAULT_WAITING_LIMIT,
@@ -9,6 +10,9 @@ import {
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   DispatchWork,
+  MemberAdded,
+  TEAM_ACTIVITY_KEEP,
+  TeamActivity,
   EMPTY_PROGRESS_FIELDS,
   ProgressFieldRevisions,
   ProgressFields,
@@ -50,6 +54,10 @@ export type StoredBoardPause = z.infer<typeof StoredBoardPause>;
 const BOARD_PAUSE_KEY = 'boardPause';
 /** 全隊暫停／停止的記錄（CONTRACTS §17）：settings 表 `teamHold:<teamId>`，不升 schema。 */
 const TEAM_HOLD_PREFIX = 'teamHold:';
+/** 隊長新增成員的記錄（隊長自主擴編，GM 2026-11-10）：settings 表 `memberAdded:<sessionId>`，不升 schema。 */
+const MEMBER_ADDED_PREFIX = 'memberAdded:';
+/** 團隊動態（同上）：settings 表 `teamActivity`，新的在前，最多 TEAM_ACTIVITY_KEEP 筆。 */
+const TEAM_ACTIVITY_KEY = 'teamActivity';
 
 const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   listenAddress,
@@ -66,6 +74,7 @@ const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   autoContinue: false,
   dispatch: true,
   memory: true,
+  autoStaff: { ...AUTO_STAFF_DEFAULT },
 });
 
 interface UserRow {
@@ -424,6 +433,12 @@ function safeJson(text: string): unknown {
 }
 
 export class Store {
+  /**
+   * 隊長新增成員的記錄（`memberAdded:*`）的快取：listTeamMembers 在熱路徑上（teamsOf 對每個團隊各呼叫一次），
+   * 不每次查 settings 表。setMemberAdded、deleteSession 時清掉，下次整批重讀。
+   */
+  private addedCache: Map<string, MemberAdded> | null = null;
+
   constructor(
     readonly db: Db,
     private readonly defaultListenAddress: string,
@@ -702,6 +717,8 @@ export class Store {
       this.db
         .prepare("DELETE FROM handoff_rules WHERE json_extract(action, '$.toSessionId') = ?")
         .run(id);
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${MEMBER_ADDED_PREFIX}${id}`);
+      this.addedCache = null;
       return this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes === 1;
     })();
   }
@@ -1170,12 +1187,70 @@ export class Store {
       role: TeamMember['role'];
       kind: TeamMember['kind'] | null;
     }[];
-    return rows.map((r) => ({
-      teamId: r.team_id,
-      sessionId: r.session_id,
-      role: r.role,
-      ...(r.kind ? { kind: r.kind } : {}),
-    }));
+    const added = this.membersAdded(rows.map((r) => r.session_id));
+    return rows.map((r) => {
+      const by = added.get(r.session_id);
+      return {
+        teamId: r.team_id,
+        sessionId: r.session_id,
+        role: r.role,
+        ...(r.kind ? { kind: r.kind } : {}),
+        ...(by ? { added: by } : {}),
+      };
+    });
+  }
+
+  /** 隊長新增成員的記錄（誰加的、理由）。讀不懂的當沒有。整批讀一次後快取。 */
+  private membersAdded(sessionIds: readonly string[]): Map<string, MemberAdded> {
+    const out = new Map<string, MemberAdded>();
+    if (sessionIds.length === 0) return out;
+    const all = this.allMembersAdded();
+    for (const id of sessionIds) {
+      const added = all.get(id);
+      if (added) out.set(id, added);
+    }
+    return out;
+  }
+
+  private allMembersAdded(): Map<string, MemberAdded> {
+    if (this.addedCache) return this.addedCache;
+    const out = new Map<string, MemberAdded>();
+    const rows = this.db
+      .prepare(`SELECT key, value FROM settings WHERE key LIKE '${MEMBER_ADDED_PREFIX}%'`)
+      .all() as { key: string; value: string }[];
+    for (const row of rows) {
+      try {
+        const parsed = MemberAdded.safeParse(JSON.parse(row.value));
+        if (parsed.success) out.set(row.key.slice(MEMBER_ADDED_PREFIX.length), parsed.data);
+      } catch {
+        // 壞掉的就當沒有。
+      }
+    }
+    this.addedCache = out;
+    return out;
+  }
+
+  setMemberAdded(sessionId: string, added: MemberAdded): void {
+    this.setRaw(`${MEMBER_ADDED_PREFIX}${sessionId}`, added);
+    this.addedCache = null;
+  }
+
+  /** 團隊動態，新的在前。讀不懂的當沒有。 */
+  listTeamActivity(): TeamActivity[] {
+    const row = this.db
+      .prepare('SELECT value FROM settings WHERE key = ?')
+      .get(TEAM_ACTIVITY_KEY) as { value: string } | undefined;
+    if (!row) return [];
+    try {
+      const parsed = z.array(TeamActivity).safeParse(JSON.parse(row.value));
+      return parsed.success ? parsed.data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  saveTeamActivity(items: readonly TeamActivity[]): void {
+    this.setRaw(TEAM_ACTIVITY_KEY, items.slice(0, TEAM_ACTIVITY_KEEP));
   }
 
   upsertTeamMember(m: TeamMember): void {
@@ -1462,9 +1537,12 @@ export class Store {
 
   // ── 設定與 VAPID ──────────────────────────────────────
   getSettings(): Settings {
-    // 用量細項（`usage:<機器>`）很大又不是設定，不讀。
+    // 用量細項（`usage:<機器>`）、成員新增記錄、團隊動態不是設定，不讀。
     const rows = this.db
-      .prepare(`SELECT key, value FROM settings WHERE key NOT LIKE '${USAGE_KEY_PREFIX}%'`)
+      .prepare(
+        `SELECT key, value FROM settings WHERE key NOT LIKE '${USAGE_KEY_PREFIX}%'
+           AND key NOT LIKE '${MEMBER_ADDED_PREFIX}%' AND key != '${TEAM_ACTIVITY_KEY}'`,
+      )
       .all() as {
       key: string;
       value: string;

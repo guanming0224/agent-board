@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import { TeamPreset } from './presets';
 import {
+  TeamActivity,
   Approval,
   BoardPauseState,
   Broadcast,
@@ -406,7 +407,11 @@ export const HubToClient = z.discriminatedUnion('type', [
     progress: z.array(ProgressCard).default([]),
     /** 團隊 Presets（P3 項目二），照 position 排。舊版 hub 不送＝空。 */
     presets: z.array(TeamPreset).default([]),
+    /** 團隊動態（隊長自主擴編，新的在前）。舊版 hub 不送＝空。 */
+    teamActivity: z.array(TeamActivity).default([]),
   }),
+  /** 團隊動態變了（新增、標已讀、清除）：整份推給每個 client。 */
+  z.object({ type: z.literal('team.activity'), items: z.array(TeamActivity) }),
   /** 進度卡寫入、鎖定、還原：整張卡推給每個 client（1 秒內更新）。 */
   z.object({ type: z.literal('progress.updated'), card: ProgressCard }),
   /** 團隊 Presets 清單變了（建立、改名、修改、排序、刪除、套用後的最後使用時間）：整份推給每個 client。 */

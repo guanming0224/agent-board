@@ -10,3 +10,4 @@ export * from './search';
 export * from './presets';
 export * from './usage';
 export * from './usageReport';
+export * from './leadGuide';

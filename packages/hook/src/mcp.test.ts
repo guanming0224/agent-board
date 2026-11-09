@@ -18,7 +18,16 @@ import {
   MemoryTool,
 } from '@agent-board/protocol';
 import {
+  DISPATCH_INSTRUCTIONS,
+  DISPATCH_TOOL_DESCRIPTIONS,
+  LEAD_STAFFING_RHYTHM,
+  MEMBER_STAFFING_GUIDE,
+  RELEASE_REASON_DESCRIPTION,
+  SPAWN_REASON_DESCRIPTION,
+} from '@agent-board/protocol/lead-guide';
+import {
   DISPATCH_TOOLS,
+  LEGACY_DISPATCH_TOOLS,
   MCP_SECRET_FILE_ENV,
   MCP_SERVER_NAME,
   MCP_TOOLS_ENV,
@@ -202,14 +211,24 @@ describe('agent-board-mcp', () => {
     ]);
   });
 
-  it('舊版 daemon（沒給工具清單）：照舊只有派工的四個', async () => {
+  it('舊版 daemon（沒給工具清單）：只有舊的四個派工工具，沒有 release_member（舊 daemon 的 --allowedTools 沒有它）', async () => {
     const server = await configured(() => null);
     const { tools, instructions } = await listed(server, 1);
-    expect(tools.map((t) => t.name)).toEqual(DispatchTool.options);
+    expect(tools.map((t) => t.name)).toEqual([...LEGACY_DISPATCH_TOOLS]);
+    expect(tools.map((t) => t.name)).not.toContain('release_member');
+    expect(DispatchTool.options.filter((t) => t !== 'release_member')).toEqual([
+      ...LEGACY_DISPATCH_TOOLS,
+    ]);
     expect(instructions).not.toContain('get_progress');
+    server.send({
+      id: 10,
+      method: 'tools/call',
+      params: { name: 'release_member', arguments: { member: 'x', reason: 'y' } },
+    });
+    expect(((await server.reply(10)).error as { code: number }).code).toBe(-32602);
   });
 
-  it('initialize 協商版本、tools/list 列出四個工具，通知不回', async () => {
+  it('initialize 協商版本、tools/list 列出派工工具，通知不回', async () => {
     const server = await configured(() => null);
     server.send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } });
     const init = (await server.reply(1)).result as Record<string, unknown>;
@@ -234,7 +253,7 @@ describe('agent-board-mcp', () => {
         };
       }[];
     };
-    expect(tools.map((t) => t.name)).toEqual(DispatchTool.options);
+    expect(tools.map((t) => t.name)).toEqual([...LEGACY_DISPATCH_TOOLS]);
     // 角色和 hub 收的一樣（P2 加了 tester，Q5）。
     expect(
       tools.find((t) => t.name === 'spawn_member')!.inputSchema.properties?.role?.enum,
@@ -242,6 +261,7 @@ describe('agent-board-mcp', () => {
     expect(tools.find((t) => t.name === 'spawn_member')!.inputSchema.required).toEqual([
       'role',
       'prompt',
+      'reason',
     ]);
     server.send({ id: 4, method: 'ping' });
     expect((await server.reply(4)).result).toEqual({});
@@ -254,7 +274,7 @@ describe('agent-board-mcp', () => {
     const server = await configured((request) =>
       request.tool === 'list_members'
         ? { ok: true, text: '{"teams":[]}' }
-        : { ok: false, text: 'limit_reached: too many' },
+        : { ok: false, text: 'team_full: too many' },
     );
     server.send({ id: 1, method: 'tools/call', params: { name: 'list_members', arguments: {} } });
     expect((await server.reply(1)).result).toEqual({
@@ -267,7 +287,7 @@ describe('agent-board-mcp', () => {
       params: { name: 'spawn_member', arguments: { role: 'worker', prompt: 'do it' } },
     });
     expect((await server.reply(2)).result).toEqual({
-      content: [{ type: 'text', text: 'limit_reached: too many' }],
+      content: [{ type: 'text', text: 'team_full: too many' }],
       isError: true,
     });
     expect(requests.map((r) => [r.sessionId, r.secret, r.tool, r.args])).toEqual([
@@ -352,5 +372,59 @@ describe('agent-board-mcp', () => {
     expect(
       ((await server.reply(1)).result as { content: { text: string }[] }).content[0]!.text,
     ).toBe('late');
+  });
+
+  it('隊長守則（GM 2026-11-10）：工具說明與 instructions 都來自 protocol 的 leadGuide，release_member 的參數', async () => {
+    const server = await configured(() => ({ ok: true, text: '{}' }), {
+      [MCP_TOOLS_ENV]: AgentBoardTool.options.join(','),
+    });
+    const { tools, instructions } = await listed(server, 1);
+    const tool = (name: string) =>
+      tools.find((t) => t.name === name) as unknown as {
+        description: string;
+        inputSchema: { required?: string[]; properties?: Record<string, { description?: string }> };
+      };
+    // instructions：原本的派工說明＋擴編節奏＋成員的守則，一字不差。
+    for (const line of DISPATCH_INSTRUCTIONS) expect(instructions).toContain(line);
+    expect(instructions).toContain(LEAD_STAFFING_RHYTHM);
+    expect(instructions).toContain(MEMBER_STAFFING_GUIDE);
+    // 工具說明就是 protocol 的那份。
+    for (const name of DispatchTool.options) {
+      expect(tool(name).description).toBe(DISPATCH_TOOL_DESCRIPTIONS[name]);
+    }
+    // 守則的重點真的寫在說明裡：收到任務先評估、卡住補人、做完封存、理由必填、隊長才能動、跑著的不能封存。
+    expect(tool('list_members').description).toMatch(/when you receive a task/i);
+    expect(tool('list_members').description).toMatch(/size limit/);
+    expect(tool('spawn_member').description).toMatch(/stuck, the workload is too large/);
+    expect(tool('spawn_member').description).toMatch(/reason is required/);
+    expect(tool('spawn_member').description).toMatch(/release_member a finished member first/);
+    expect(tool('spawn_member').description).toMatch(/rate-limited/);
+    expect(tool('release_member').description).toMatch(
+      /waiting for the user's approval or plan review\) or that still owes you a result cannot be released/,
+    );
+    expect(tool('release_member').description).toMatch(/cannot release yourself/);
+    expect(tool('release_member').description).toMatch(/Settings → Archived/);
+    expect(tool('spawn_member').inputSchema.properties?.reason?.description).toBe(
+      SPAWN_REASON_DESCRIPTION,
+    );
+    expect(tool('release_member').inputSchema.required).toEqual(['member', 'reason']);
+    expect(Object.keys(tool('release_member').inputSchema.properties!)).toEqual([
+      'member',
+      'reason',
+    ]);
+    expect(tool('release_member').inputSchema.properties?.reason?.description).toBe(
+      RELEASE_REASON_DESCRIPTION,
+    );
+    // release_member 原樣轉給 daemon。
+    server.send({
+      id: 9,
+      method: 'tools/call',
+      params: { name: 'release_member', arguments: { member: 'BD1', reason: 'Done.' } },
+    });
+    await server.reply(9);
+    expect(requests.at(-1)).toMatchObject({
+      tool: 'release_member',
+      args: { member: 'BD1', reason: 'Done.' },
+    });
   });
 });

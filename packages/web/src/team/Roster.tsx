@@ -5,7 +5,8 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { TeamRole } from '@agent-board/protocol';
 import type { Broadcast, BroadcastTarget, Session, Team, TeamMember } from '@agent-board/protocol';
-import { useT } from '../shared/i18n';
+import { useMaskText } from '../security';
+import { useLocale, useT } from '../shared/i18n';
 import { statusCode } from '../shared/status';
 import { useBoard } from '../shared/store';
 import { Age, errorText, Lamp, useViewsUi } from '../views';
@@ -121,6 +122,9 @@ function TargetResult({
 
 export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
   const t = useT();
+  const locale = useLocale((s) => s.locale);
+  // 新增理由是 Claude 寫的字，可能含金鑰：遮蔽模式下和收件匣一樣遮掉。
+  const mask = useMaskText();
   const backend = useBoard((s) => s.backend);
   const broadcasts = useTeamBroadcasts(team.id);
   const [error, setError] = useState<string | null>(null);
@@ -200,6 +204,19 @@ export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
                     {latest && (
                       <TargetResult broadcast={latest.b} target={latest.x} session={session} />
                     )}
+                  </span>
+                )}
+                {/* 隊長自己加的成員（隊長自主擴編）：誰加的、理由。 */}
+                {member.added && (
+                  <span
+                    className="roster-added"
+                    data-testid={`roster-added-${session.id}`}
+                    title={new Date(member.added.at).toLocaleString(locale)}
+                  >
+                    {t('team.roster.addedBy', {
+                      lead: member.added.byName,
+                      reason: mask(member.added.reason),
+                    })}
                   </span>
                 )}
               </li>

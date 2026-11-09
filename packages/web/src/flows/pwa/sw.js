@@ -19,17 +19,24 @@ const STATUS_TEXT = {
   },
 };
 
-/** 狀態以外的原因（hub push.ts 的 AttentionReason）。{n} 是上限（輪數或退回次數），{task} 是任務編號。 */
+/**
+ * 狀態以外的原因（hub push.ts 的 AttentionReason）。{n} 是上限（輪數或退回次數），{task} 是任務編號。
+ * team_member_added／team_member_released（隊長自主擴編）：標題是隊長名稱，{member} 是成員名稱；理由不在推播裡。
+ */
 const REASON_TEXT = {
   'zh-TW': {
     handoff_round_limit: '雙向交接已來回 {n} 輪，自動交接停下，等你決定',
     task_reject_limit: '任務 #{task} 被退回 {n} 次，自動執行停下，等你決定',
     auto_continued: '額度恢復，已自動接續',
+    team_member_added: '新增了成員 {member}（理由在收件匣的團隊動態）',
+    team_member_released: '封存了成員 {member}（理由在收件匣的團隊動態）',
   },
   en: {
     handoff_round_limit: 'Two-way handoff reached {n} rounds and stopped. Waiting for you.',
     task_reject_limit: 'Task #{task} was sent back {n} times and stopped. Waiting for you.',
     auto_continued: 'Usage limit reset. Continued automatically.',
+    team_member_added: 'Added member {member} (reason under Team activity in the inbox)',
+    team_member_released: 'Released member {member} (reason under Team activity in the inbox)',
   },
 };
 
@@ -42,9 +49,14 @@ const SUMMARY_TEXT = {
     title: '{count} 個 session 在等你',
     titleOver: '{count} 個 session 在等你（超過上限 {limit}）',
     titleNone: 'Agent Board',
+    titleTeam: '團隊動態',
     sep: '、',
     more: '還有 {n} 個',
     auto: '{name} 已自動接續',
+    team: {
+      team_member_added: '{lead} 新增了 {member}',
+      team_member_released: '{lead} 封存了 {member}',
+    },
     status: {
       waiting_permission: '{name} 問權限',
       waiting_input: '{name} 等你回覆',
@@ -63,9 +75,14 @@ const SUMMARY_TEXT = {
     title: '{count} sessions waiting on you',
     titleOver: '{count} sessions waiting on you (over your limit of {limit})',
     titleNone: 'Agent Board',
+    titleTeam: 'Team activity',
     sep: ', ',
     more: '{n} more',
     auto: '{name} auto-continued',
+    team: {
+      team_member_added: '{lead} added {member}',
+      team_member_released: '{lead} released {member}',
+    },
     status: {
       waiting_permission: '{name} needs approval',
       waiting_input: '{name} needs a reply',
@@ -92,6 +109,7 @@ function summaryNotification(data, lang) {
   const text = SUMMARY_TEXT[lang];
   const items = Array.isArray(data.items) ? data.items : [];
   const autos = Array.isArray(data.autoContinued) ? data.autoContinued : [];
+  const team = Array.isArray(data.team) ? data.team : [];
   const count = Number.isInteger(data.count) ? data.count : items.length;
   const parts = items.map((item) => {
     const name = textOf(item && item.name);
@@ -101,11 +119,20 @@ function summaryNotification(data, lang) {
   });
   if (Number.isInteger(data.more) && data.more > 0) parts.push(fill(text.more, { n: data.more }));
   for (const auto of autos) parts.push(fill(text.auto, { name: textOf(auto && auto.name) }));
+  for (const entry of team) {
+    const template =
+      entry && typeof entry.reason === 'string' ? text.team[entry.reason] : undefined;
+    if (template) {
+      parts.push(fill(template, { lead: textOf(entry.lead), member: textOf(entry.member) }));
+    }
+  }
   const over = Number.isInteger(data.overLimit);
   const title =
     count > 0
       ? fill(over ? text.titleOver : text.title, { count, limit: data.overLimit })
-      : text.titleNone;
+      : team.length > 0 && autos.length === 0
+        ? text.titleTeam
+        : text.titleNone;
   // 只有一個在等你時直接捲到那一項；多個就開收件匣。
   const only = count === 1 && items[0] && typeof items[0].sessionId === 'string';
   return {
@@ -125,7 +152,9 @@ const tagPrefix = (reason) =>
       ? 'handoff'
       : reason === 'auto_continued'
         ? 'auto'
-        : 'session';
+        : reason === 'team_member_added' || reason === 'team_member_released'
+          ? 'team'
+          : 'session';
 
 const FALLBACK = {
   'zh-TW': { title: 'Agent Board', body: '有 session 在等你' },
@@ -145,6 +174,7 @@ const inboxUrl = (sessionId) =>
 
 /**
  * hub 的 attentionPayload：{ sessionId, name, status, at }，有時多帶 { reason, maxRounds }。
+ * 團隊動態（不合併時）：{ reason: 'team_member_added'|'team_member_released', name: 隊長, member, sessionId, at }。
  * 合併通知是 { kind: 'summary', count, items, more, autoContinued, overLimit?, at }，
  * 超過上限（不合併時）是 { kind: 'overload', count, limit, at }。
  * 只有名稱、狀態與原因代碼，沒有終端機內容。
@@ -210,7 +240,10 @@ self.addEventListener('push', (event) => {
     data && typeof data.reason === 'string' ? REASON_TEXT[lang][data.reason] : undefined;
   const reason =
     reasonTemplate &&
-    reasonTemplate.replace('{n}', intText(data.maxRounds)).replace('{task}', intText(data.task));
+    reasonTemplate
+      .replace('{n}', intText(data.maxRounds))
+      .replace('{task}', intText(data.task))
+      .replace('{member}', textOf(data.member));
   const status = reason || (data && STATUS_TEXT[lang][data.status]);
   const title =
     data && typeof data.name === 'string' && data.name ? data.name : FALLBACK[lang].title;

@@ -10,7 +10,7 @@ import {
   type BrowserContext,
   type Page,
 } from '@playwright/test';
-import type { Machine, Session } from '@agent-board/protocol';
+import type { Machine, Session, Team, TeamMember } from '@agent-board/protocol';
 
 const PORT = 5197;
 const HUB = `http://127.0.0.1:${PORT}`;
@@ -739,4 +739,89 @@ test('進度卡（P3 §1.8 驗收 2，真 hub）：一個瀏覽器存卡，另�
   expect(JSON.parse(audit[0]!.detail)).toMatchObject({ source: 'web' });
   await a.context.close();
   await b.context.close();
+});
+
+test('隊長自主擴編（真 hub、真 MCP server）：spawn_member → 新成員進團隊、名單看得到理由、收件匣有團隊動態；release_member → 成員封存', async ({
+  page,
+}) => {
+  await page.goto('/#/canvas');
+  const staffLead = await createSession(page, 'staff-ld', false);
+  // 舊的寫法（沒有 reason）被擋下，說明要補理由。
+  await typeInto(page, staffLead.id, 'mcp spawn_member {"role":"researcher","prompt":"Survey."}');
+  await screenOf(page, staffLead.id).toContain('MCP error reason_required');
+  await typeInto(
+    page,
+    staffLead.id,
+    'mcp spawn_member {"role":"researcher","prompt":"Survey the code.","reason":"Need a survey first."}',
+  );
+  await screenOf(page, staffLead.id).toContain('MCP ok');
+
+  // 新成員：以隊長命名的團隊、角色研究、記下誰加的與理由。
+  let team: Team | undefined;
+  let added: TeamMember | undefined;
+  await expect
+    .poll(
+      async () => {
+        const teams = (await (await page.request.get('/api/teams')).json()) as Team[];
+        team = teams.find((t) => t.name === 'staff-ld');
+        if (!team) return null;
+        const members = (await (
+          await page.request.get(`/api/teams/${team.id}/members`)
+        ).json()) as TeamMember[];
+        added = members.find((m) => m.role === 'researcher');
+        return added?.added?.reason ?? null;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe('Need a survey first.');
+  expect(added!.added).toMatchObject({ bySessionId: staffLead.id, byName: 'staff-ld' });
+  const member = await getSession(page.request, added!.sessionId);
+  expect(member).toMatchObject({ name: 'staff-ld-RS', readOnly: true, dispatchedBy: staffLead.id });
+  // 成員真的開起來、做完第一個工作（假 claude 收到 [From staff-ld] 後回合結束）。
+  await expectStatus(page.request, member.id, 'waiting_input');
+  await screenOf(page, member.id).toContain('[From staff-ld] Survey the code.');
+
+  // 團隊名單：「由 staff-ld 新增：理由」。
+  await page.goto(`/#/team/${team!.id}`);
+  await expect(page.getByTestId(`roster-added-${member.id}`)).toHaveText(
+    '由 staff-ld 新增：Need a survey first.',
+  );
+  // 收件匣的團隊動態（WS 推來的）。
+  await page.goto('/#/inbox');
+  const activity = page.getByTestId('inbox-drawer').getByTestId('team-activity');
+  await expect(activity.locator('.activity-row').first().locator('.activity-text')).toHaveText(
+    'staff-ld 新增了 staff-ld-RS（研究）',
+  );
+  await expect(activity.locator('.activity-row').first().locator('.activity-reason')).toHaveText(
+    '理由：Need a survey first.',
+  );
+
+  // release_member：成員封存（停 session、對話保留，可以還原）。
+  await typeInto(
+    page,
+    staffLead.id,
+    'mcp release_member {"member":"staff-ld-RS","reason":"Survey done."}',
+  );
+  await expect
+    .poll(
+      async () => {
+        const archived = (await (
+          await page.request.get('/api/sessions?archived=true')
+        ).json()) as Session[];
+        return archived.find((s) => s.id === member.id)?.archived ?? false;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+  await expect(activity.locator('.activity-row').first().locator('.activity-text')).toHaveText(
+    'staff-ld 封存了 staff-ld-RS（研究）',
+  );
+  const release = await auditOf(page, 'dispatch.release');
+  expect(JSON.parse(release[0]!.detail)).toMatchObject({
+    fromSessionId: staffLead.id,
+    toSessionId: member.id,
+    reason: 'Survey done.',
+  });
+  const archive = await auditOf(page, 'session.archive');
+  expect(archive.some((a) => a.sessionId === member.id)).toBe(true);
 });

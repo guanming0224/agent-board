@@ -2,7 +2,12 @@
 // 結果送回呼叫者（一份工作一次）。另外驗權限順序、上限、命名、範圍與身分、設定關掉、結果限流。
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DISPATCH_SPAWN_LIMIT, type Session, type SessionSpec } from '@agent-board/protocol';
+import {
+  AUTO_STAFF_DEFAULT,
+  DISPATCH_SPAWN_RATE_MAX,
+  type Session,
+  type SessionSpec,
+} from '@agent-board/protocol';
 import { openDatabase } from '../db';
 import type { DeliveryItem } from '../delivery';
 import {
@@ -14,7 +19,7 @@ import {
   workMessage,
 } from '../dispatch';
 import { Store } from '../store';
-import { type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
+import { perEventPush, type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
 
 let hub: TestHub;
 afterEach(async () => {
@@ -149,6 +154,11 @@ function engineSetup() {
       throw new Error('not used');
     },
     machineOnline: () => true,
+    autoStaff: () => AUTO_STAFF_DEFAULT,
+    accountLimited: () => false,
+    archiveMember: () => undefined,
+    teamActivity: () => undefined,
+    teamChanged: () => undefined,
   });
   const stopEvent = (text: string) => ({
     id: randomUUID(),
@@ -279,7 +289,7 @@ const json = (reply: { ok: boolean; text: string }) => {
 
 /** 派工開成員，假 daemon 確認開好（等輸入）。回傳成員 id 與收到的 spec。 */
 async function spawnMember(b: Board, args: Record<string, unknown>) {
-  const reply = json(await ask(b, 'spawn_member', args));
+  const reply = json(await ask(b, 'spawn_member', { reason: 'The task needs it.', ...args }));
   const create = await b.daemon.next(
     'session.create',
     (m) => (m.spec as SessionSpec).name === reply.name,
@@ -340,12 +350,20 @@ const eventsOf = (id: string, prefix = 'dispatch.') =>
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
 
+/** 成員把手上的派工做完（回合結束、結果送回），之後才能封存。 */
+async function finishWork(b: Board, id: string, message = 'Done.') {
+  await setStatus(b, id, 'running');
+  stop(b, id, message);
+  await setStatus(b, id, 'waiting_input');
+  await until(() => hub.running.store.dispatchWork(id) === null, 'work reported');
+}
+
 describe('派工：開成員、送工作、結果自動送回', () => {
   it('spawn → 成員建立並加入新團隊 → 回合結束 → 結果送回呼叫者一次 → send_task → 再回報一次', async () => {
     const b = await board({ permissionMode: 'acceptEdits' });
     expect(json(await ask(b, 'list_members'))).toEqual({
       teams: [],
-      spawned: { live: 0, limit: DISPATCH_SPAWN_LIMIT },
+      guide: expect.stringMatching(/^You have no team yet\..*size limit 12/),
     });
 
     const {
@@ -484,10 +502,10 @@ describe('派工：開成員、送工作、結果自動送回', () => {
     );
   });
 
-  it('研究與審查唯讀、不開 worktree、預設 plan；最多 4 個，第 5 個回 limit_reached', async () => {
+  it(`研究與審查唯讀、不開 worktree、預設 plan；同一團隊 10 分鐘最多新增 ${DISPATCH_SPAWN_RATE_MAX} 位`, async () => {
     const b = await board({ permissionMode: 'acceptEdits' });
     const names: string[] = [];
-    for (let i = 0; i < DISPATCH_SPAWN_LIMIT; i += 1) {
+    for (let i = 0; i < DISPATCH_SPAWN_RATE_MAX; i += 1) {
       const { spec: s } = await spawnMember(b, {
         role: i % 2 === 0 ? 'researcher' : 'reviewer',
         prompt: `Look at area ${i}.`,
@@ -496,9 +514,13 @@ describe('派工：開成員、送工作、結果自動送回', () => {
       names.push(s.name);
     }
     expect(names).toEqual(['Lead-RS', 'Lead-RV', 'Lead-RS2', 'Lead-RV2']);
-    const fifth = await ask(b, 'spawn_member', { role: 'researcher', prompt: 'One more.' });
+    const fifth = await ask(b, 'spawn_member', {
+      reason: 'One more.',
+      role: 'researcher',
+      prompt: 'One more.',
+    });
     expect(fifth.ok).toBe(false);
-    expect(fifth.text).toMatch(/^limit_reached: You already have 4 live members/);
+    expect(fifth.text).toMatch(/^spawn_rate_limit: More than 4 members added/);
     expect(b.daemon.of('session.create')).toHaveLength(0);
   });
 
@@ -523,11 +545,9 @@ describe('派工：開成員、送工作、結果自動送回', () => {
     const team = hub.running.store.teamsOfSession(id)[0]!;
     expect(team.zoneId).toBe(zone.body.id);
     expect(get(id)?.zoneId).toBe(zone.body.id);
-    expect(hub.running.store.listTeamMembers(team.id)).toContainEqual({
-      teamId: team.id,
-      sessionId: id,
-      role: 'tester',
-    });
+    expect(hub.running.store.listTeamMembers(team.id)).toContainEqual(
+      expect.objectContaining({ teamId: team.id, sessionId: id, role: 'tester' }),
+    );
   });
 
   it('權限：不比呼叫者寬、不給 bypassPermissions；唯讀呼叫者不能開寫入者；派工開的成員不能再開', async () => {
@@ -544,26 +564,38 @@ describe('派工：開成員、送工作、結果自動送回', () => {
     expect(s.permissionMode).toBe('default');
     expect(reply.note).toMatch(/lowered to default/);
     const bypass = await ask(b, 'spawn_member', {
+      reason: 'Needed.',
       role: 'worker',
       prompt: 'x',
       permissionMode: 'bypassPermissions',
     });
     expect(bypass.text).toMatch(/^permission_not_allowed:/);
-    const nested = await ask(b, 'spawn_member', { role: 'researcher', prompt: 'x' }, bd);
+    const nested = await ask(
+      b,
+      'spawn_member',
+      { reason: 'Needed.', role: 'researcher', prompt: 'x' },
+      bd,
+    );
     expect(nested.text).toMatch(/^nested_spawn:.*Lead/);
-    const bad = await ask(b, 'spawn_member', { role: 'lead', prompt: 'x' });
+    const bad = await ask(b, 'spawn_member', { reason: 'Needed.', role: 'lead', prompt: 'x' });
     expect(bad.text).toMatch(/^invalid_arguments:/);
 
     const ro = await startSession(b, { name: 'Reader', cwd: '/fake/other', readOnly: true });
-    const roWorker = await ask(b, 'spawn_member', { role: 'worker', prompt: 'x' }, ro);
+    const roWorker = await ask(
+      b,
+      'spawn_member',
+      { reason: 'Needed.', role: 'worker', prompt: 'x' },
+      ro,
+    );
     expect(roWorker.text).toMatch(/^read_only_caller:/);
   });
 
   it('同資料夾寫入者規則：不是 git 不能開 worktree；不開 worktree 的寫入者和呼叫者衝突', async () => {
     const b = await board({ permissionMode: 'acceptEdits' }, null);
-    const noGit = await ask(b, 'spawn_member', { role: 'worker', prompt: 'x' });
+    const noGit = await ask(b, 'spawn_member', { reason: 'Needed.', role: 'worker', prompt: 'x' });
     expect(noGit.text).toMatch(/^worktree_unavailable:/);
     const clashFirst = await ask(b, 'spawn_member', {
+      reason: 'Needed.',
       role: 'worker',
       prompt: 'x',
       useWorktree: false,
@@ -573,7 +605,12 @@ describe('派工：開成員、送工作、結果自動送回', () => {
     expect(hub.running.store.listTeams()).toEqual([]);
     // 研究、審查照樣可以（唯讀，共用資料夾）。
     await spawnMember(b, { role: 'reviewer', prompt: 'Review it.' });
-    const clash = await ask(b, 'spawn_member', { role: 'worker', prompt: 'x', useWorktree: false });
+    const clash = await ask(b, 'spawn_member', {
+      reason: 'Needed.',
+      role: 'worker',
+      prompt: 'x',
+      useWorktree: false,
+    });
     expect(clash.text).toMatch(/^worktree_required: Same folder as Lead/);
   });
 });
@@ -641,5 +678,461 @@ describe('派工：設定', () => {
       body: { stuckMinutes: 12 },
     });
     expect(other.body).toMatchObject({ stuckMinutes: 12, dispatch: false, autoContinue: false });
+  });
+});
+
+// ── 隊長自主擴編（GM 2026-11-10，CONTRACTS §11.1） ──────────────────────
+
+/** GM 自己配的團隊：呼叫者當隊長，其他人用 REST 加進來。 */
+async function gmTeam(b: Board, members: { id: string; role: string }[]): Promise<string> {
+  const res = await hub.api('POST', '/api/teams', {
+    cookie: b.cookie,
+    body: { name: 'Squad', goal: '', doneCriteria: '', color: 'teal', contextMd: '' },
+  });
+  expect(res.status).toBe(200);
+  for (const m of [{ id: b.caller, role: 'lead' }, ...members]) {
+    const put = await hub.api('PUT', `/api/teams/${res.body.id}/members/${m.id}`, {
+      cookie: b.cookie,
+      body: { role: m.role },
+    });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+  }
+  return res.body.id as string;
+}
+
+const setAutoStaff = async (b: Board, over: Record<string, unknown>) => {
+  const res = await hub.api('PATCH', '/api/settings', {
+    cookie: b.cookie,
+    body: { autoStaff: { enabled: true, teamLimit: 12, push: true, ...over } },
+  });
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  return res.body;
+};
+
+const subscribePush = (b: Board) =>
+  hub.api('POST', '/api/push/subscriptions', {
+    cookie: b.cookie,
+    body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
+  });
+
+describe('隊長自主擴編：新增理由、上限、通知', () => {
+  it('reason 必填：舊呼叫（沒帶 reason）回 reason_required 並說明怎麼補', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const old = await ask(b, 'spawn_member', { role: 'worker', prompt: 'Fix it.' });
+    expect(old.ok).toBe(false);
+    expect(old.text).toMatch(/^reason_required: spawn_member now requires reason/);
+    const blank = await ask(b, 'spawn_member', { role: 'worker', prompt: 'x', reason: ' \n ' });
+    expect(blank.text).toMatch(/^reason_required:/);
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+    expect(hub.running.store.listTeams()).toEqual([]);
+  });
+
+  it('理由記在 audit、session 事件、成員（added）、list_members，並產生團隊動態＋推播', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    await perEventPush(hub, b.cookie);
+    await subscribePush(b);
+    const { id: qa, reply } = await spawnMember(b, {
+      role: 'tester',
+      prompt: 'Write regression tests.',
+      reason: 'No tester yet;\nthe change needs regression tests.',
+    });
+    const reason = 'No tester yet; the change needs regression tests.';
+    expect(reply).toMatchObject({ reason, teamSize: '2/12' });
+    const audit = hub.running.store
+      .listAudit({ limit: 100 })
+      .find((a) => a.action === 'dispatch.spawn')!;
+    expect(JSON.parse(audit.detail)).toMatchObject({ reason, teamSize: 2, teamLimit: 12 });
+    expect(eventsOf(qa)[0]!.payload).toMatchObject({ reason });
+    const team = hub.running.store.teamsOfSession(qa)[0]!;
+    const members = await hub.api('GET', `/api/teams/${team.id}/members`, { cookie: b.cookie });
+    expect(members.body.find((m: { sessionId: string }) => m.sessionId === qa)).toMatchObject({
+      role: 'tester',
+      added: { bySessionId: b.caller, byName: 'Lead', reason },
+    });
+    const listed = json(await ask(b, 'list_members')) as {
+      teams: { staffing: Record<string, unknown>; members: Record<string, unknown>[] }[];
+    };
+    expect(listed.teams[0]!.members.find((m) => m.name === 'Lead-QA')).toMatchObject({
+      addedReason: reason,
+    });
+    // 團隊動態：一筆、未讀；推播只帶名稱與種類，不帶理由。
+    const activity = hub.running.store.listTeamActivity();
+    expect(activity).toEqual([
+      expect.objectContaining({
+        kind: 'member_added',
+        teamName: 'Lead',
+        leadName: 'Lead',
+        memberName: 'Lead-QA',
+        memberSessionId: qa,
+        role: 'tester',
+        reason,
+        read: false,
+      }),
+    ]);
+    const teamPushes = () =>
+      hub.push.sent
+        .map((p) => JSON.parse(p.payload) as Record<string, unknown>)
+        .filter((p) => p.reason === 'team_member_added');
+    await until(() => teamPushes().length === 1, 'push');
+    const payload = teamPushes()[0]!;
+    expect(payload).toMatchObject({
+      reason: 'team_member_added',
+      name: 'Lead',
+      member: 'Lead-QA',
+      sessionId: qa,
+    });
+    expect(hub.push.sent.some((p) => p.payload.includes('regression'))).toBe(false);
+    // 標已讀、清除（REST）；board 快照帶最新清單。
+    const read = await hub.api('POST', '/api/team-activity/read', { cookie: b.cookie, body: {} });
+    expect(read.status).toBe(200);
+    expect(read.body).toEqual([expect.objectContaining({ read: true })]);
+    const cleared = await hub.api('POST', '/api/team-activity/clear', {
+      cookie: b.cookie,
+      body: { ids: [activity[0]!.id] },
+    });
+    expect(cleared.body).toEqual([]);
+    expect(hub.running.store.listTeamActivity()).toEqual([]);
+  });
+
+  it('推播設定關掉：團隊動態照記，不推播', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    await perEventPush(hub, b.cookie);
+    await subscribePush(b);
+    await setAutoStaff(b, { push: false });
+    await spawnMember(b, { role: 'researcher', prompt: 'Survey.', reason: 'Need a survey.' });
+    await settle();
+    expect(hub.push.sent.filter((p) => p.payload.includes('team_member'))).toHaveLength(0);
+    expect(hub.running.store.listTeamActivity()).toHaveLength(1);
+  });
+
+  it('上限算團隊總人數（含隊長與 GM 配的、不含已封存）；滿了回 team_full 並提示 release_member', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const a = await startSession(b, { name: 'GM-A', cwd: '/fake/a' }, null);
+    const c = await startSession(b, { name: 'GM-B', cwd: '/fake/b' }, null);
+    const teamId = await gmTeam(b, [
+      { id: a, role: 'researcher' },
+      { id: c, role: 'reviewer' },
+    ]);
+    await setAutoStaff(b, { teamLimit: 4 });
+    const listed = json(await ask(b, 'list_members')) as {
+      teams: { yourRole: string; staffing: Record<string, unknown> }[];
+    };
+    expect(listed.teams[0]).toMatchObject({
+      yourRole: 'lead',
+      staffing: {
+        autoStaff: true,
+        size: 3,
+        limit: 4,
+        free: 1,
+        roles: { lead: { members: 1 }, researcher: { members: 1 }, reviewer: { members: 1 } },
+        addsLeftThis10Minutes: 1,
+        guide: expect.stringMatching(/^You lead this team/),
+      },
+    });
+    await spawnMember(b, { role: 'worker', prompt: 'Build.', reason: 'Nobody edits code.' });
+    expect(hub.running.store.listTeamMembers(teamId)).toHaveLength(4);
+    const full = await ask(b, 'spawn_member', {
+      role: 'tester',
+      prompt: 'Test.',
+      reason: 'Need tests.',
+    });
+    expect(full.text).toMatch(
+      /^team_full: Your team already has 4 members.*limit set by the user is 4/,
+    );
+    expect(full.text).toMatch(/release_member/);
+    const fullList = json(await ask(b, 'list_members')) as {
+      teams: { staffing: { guide: string; free: number } }[];
+    };
+    expect(fullList.teams[0]!.staffing).toMatchObject({ free: 0 });
+    expect(fullList.teams[0]!.staffing.guide).toMatch(/size limit: release_member/);
+    // 封存一位 GM 配的（等輸入中）：名額空出來，可以再加。
+    const released = json(
+      await ask(b, 'release_member', { member: 'GM-A', reason: 'Survey done.' }),
+    );
+    expect(released).toMatchObject({ released: 'GM-A', team: 'Squad', teamSize: '3/4' });
+    expect(get(a)).toMatchObject({ archived: true });
+    await spawnMember(b, { role: 'tester', prompt: 'Test.', reason: 'Need tests.' });
+  });
+
+  it('release_member：走封存流程（停 session、暫停交接規則、可還原）、記 audit／事件／團隊動態', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const { id: rv } = await spawnMember(b, {
+      role: 'reviewer',
+      prompt: 'Review.',
+      reason: 'Review.',
+    });
+    const team = hub.running.store.teamsOfSession(rv)[0]!;
+    const rule = await hub.api('POST', `/api/teams/${team.id}/handoff-rules`, {
+      cookie: b.cookie,
+      body: {
+        fromSessionId: rv,
+        trigger: 'on_done',
+        action: { toSessionId: b.caller },
+        enabled: true,
+      },
+    });
+    await finishWork(b, rv, 'Reviewed.');
+    const released = json(
+      await ask(b, 'release_member', { member: 'Lead-RV', reason: 'Review finished.' }),
+    );
+    expect(released).toMatchObject({ released: 'Lead-RV' });
+    // 停 session（還活著的先送 stop）。
+    expect(b.daemon.of('session.stop').map((m) => m.sessionId)).toContain(rv);
+    expect(get(rv)).toMatchObject({ archived: true });
+    expect(rule.status, JSON.stringify(rule.body)).toBe(200);
+    const rules = await hub.api('GET', `/api/teams/${team.id}/handoff-rules`, {
+      cookie: b.cookie,
+    });
+    expect(rules.body[0]).toMatchObject({ enabled: false });
+    const archive = hub.running.store
+      .listAudit({ limit: 100 })
+      .find((a) => a.action === 'session.archive' && a.sessionId === rv)!;
+    expect(archive.userId).toBeNull();
+    expect(JSON.parse(archive.detail)).toMatchObject({ byLead: b.caller, stopped: true });
+    const audit = hub.running.store
+      .listAudit({ limit: 100 })
+      .find((a) => a.action === 'dispatch.release')!;
+    expect(JSON.parse(audit.detail)).toMatchObject({
+      fromSessionId: b.caller,
+      toSessionId: rv,
+      reason: 'Review finished.',
+    });
+    expect(eventsOf(rv).map((e) => e.type)).toContain('dispatch.release');
+    expect(hub.running.store.listTeamActivity()[0]).toMatchObject({
+      kind: 'member_released',
+      memberName: 'Lead-RV',
+      reason: 'Review finished.',
+    });
+    // 可以在設定→已封存還原（同一條 PATCH archived:false）。
+    const restored = await hub.api('PATCH', `/api/sessions/${rv}`, {
+      cookie: b.cookie,
+      body: { archived: false },
+    });
+    expect(restored.status).toBe(200);
+    expect(get(rv)?.archived).toBe(false);
+  });
+
+  it('release_member 的保護：回合中（RUN、starting、等允許、等審計畫）與還欠結果的不能封存、不能封存自己、理由必填', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Build.', reason: 'Build.' });
+    expect((await ask(b, 'release_member', { member: 'Lead-BD1' })).text).toMatch(
+      /^reason_required:/,
+    );
+    // 不在任何團隊的 session（先開：後面成員限流時同帳號的新 session 會排隊）。
+    const other = await startSession(b, { name: 'Other', cwd: '/fake/other' });
+    const outsider = await ask(b, 'release_member', { member: 'Other', reason: 'x' });
+    expect(outsider.text).toMatch(/^not_your_member: .*You can release: Lead-BD1/);
+    expect(get(other)?.archived).toBe(false);
+    // 第一個工作還沒交回：還欠結果。
+    const owes = await ask(b, 'release_member', { member: 'Lead-BD1', reason: 'Done.' });
+    expect(owes.text).toMatch(/^member_busy: Lead-BD1 still owes you a result/);
+    expect(get(bd)?.archived).toBe(false);
+    await finishWork(b, bd);
+    const cases: [string, RegExp][] = [
+      ['running', /is working \(RUN\)/],
+      ['starting', /is starting/],
+      ['waiting_permission', /waiting for the user to approve a tool/],
+      ['plan_review', /waiting for the user to review its plan/],
+    ];
+    for (const [status, text] of cases) {
+      await setStatus(b, bd, status);
+      const busy = await ask(b, 'release_member', { member: 'Lead-BD1', reason: 'Done.' });
+      expect(busy.text, status).toMatch(/^member_busy: Lead-BD1 /);
+      expect(busy.text, status).toMatch(text);
+      expect(get(bd)?.archived).toBe(false);
+    }
+    // 送出去、還在排隊的工作（成員忙著時送字排隊）：也算還欠結果。
+    await setStatus(b, bd, 'running');
+    json(await ask(b, 'send_task', { member: 'Lead-BD1', text: 'One more thing.' }));
+    await setStatus(b, bd, 'rate_limited');
+    const queued = await ask(b, 'release_member', { member: 'Lead-BD1', reason: 'Done.' });
+    expect(queued.text).toMatch(/^member_busy: Lead-BD1 still owes you a result/);
+    expect(get(bd)?.archived).toBe(false);
+    const self = await ask(b, 'release_member', { member: 'Lead', reason: 'x' });
+    expect(self.text).toMatch(/^cannot_release_self:/);
+    // 成員（不是隊長）：不能封存、不能新增，提醒向隊長回報。
+    await setStatus(b, bd, 'waiting_input');
+    const up = await ask(b, 'release_member', { member: 'Lead', reason: 'x' }, bd);
+    expect(up.text).toMatch(/^not_lead: You are a team member, not the lead/);
+    const memberList = json(await ask(b, 'list_members', {}, bd)) as {
+      teams: { yourRole: string; staffing: Record<string, unknown> }[];
+    };
+    expect(memberList.teams[0]).toMatchObject({
+      yourRole: 'worker',
+      staffing: { guide: expect.stringMatching(/^You are a team member, not the lead/) },
+    });
+    expect(memberList.teams[0]!.staffing).not.toHaveProperty('limit');
+  });
+
+  it('release_member：呼叫者在 A 隊當隊長、在 B 隊只是成員，封不了 B 隊的人（not_your_member）', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    // A 隊：呼叫者（Lead）當隊長。
+    const a1 = await startSession(b, { name: 'A-1', cwd: '/fake/a1' }, null);
+    await gmTeam(b, [{ id: a1, role: 'worker' }]);
+    // B 隊：X 當隊長，呼叫者只是 worker，還有一位 B-1。
+    const x = await startSession(b, { name: 'X', cwd: '/fake/x' }, null);
+    const b1 = await startSession(b, { name: 'B-1', cwd: '/fake/b1' }, null);
+    const res = await hub.api('POST', '/api/teams', {
+      cookie: b.cookie,
+      body: { name: 'Bravo', goal: '', doneCriteria: '', color: 'teal', contextMd: '' },
+    });
+    for (const m of [
+      { id: x, role: 'lead' },
+      { id: b.caller, role: 'worker' },
+      { id: b1, role: 'researcher' },
+    ]) {
+      const put = await hub.api('PUT', `/api/teams/${res.body.id}/members/${m.id}`, {
+        cookie: b.cookie,
+        body: { role: m.role },
+      });
+      expect(put.status, JSON.stringify(put.body)).toBe(200);
+    }
+    for (const name of ['B-1', 'X']) {
+      const r = await ask(b, 'release_member', { member: name, reason: 'x' });
+      expect(r.text, name).toMatch(/^not_your_member: .*You can release: A-1\.$/);
+    }
+    expect(get(b1)?.archived).toBe(false);
+    expect(get(x)?.archived).toBe(false);
+  });
+
+  it('全部暫停、全隊暫停時不新增也不封存；同一隊 10 分鐘內封存有上限', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      ids.push(await startSession(b, { name: `GM-${i}`, cwd: `/fake/g${i}` }, null));
+    }
+    const teamId = await gmTeam(
+      b,
+      ids.map((id) => ({ id, role: 'researcher' })),
+    );
+    // 全隊暫停（CONTRACTS §17）。
+    const hold = await hub.api('POST', `/api/teams/${teamId}/hold`, {
+      cookie: b.cookie,
+      body: { mode: 'pause' },
+    });
+    expect(hold.status, JSON.stringify(hold.body)).toBe(200);
+    const spawnHeld = await ask(b, 'spawn_member', {
+      role: 'researcher',
+      prompt: 'x',
+      reason: 'x',
+    });
+    expect(spawnHeld.text).toMatch(/^team_held: The user paused this team/);
+    const releaseHeld = await ask(b, 'release_member', { member: 'GM-0', reason: 'x' });
+    expect(releaseHeld.text).toMatch(/^team_held:/);
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+    const resume = await hub.api('POST', `/api/teams/${teamId}/resume`, { cookie: b.cookie });
+    expect(resume.status, JSON.stringify(resume.body)).toBe(200);
+    // 全部暫停。
+    const pause = await hub.api('POST', '/api/board/pause', {
+      cookie: b.cookie,
+      body: { mode: 'finish_turn' },
+    });
+    expect(pause.status, JSON.stringify(pause.body)).toBe(200);
+    const releasePaused = await ask(b, 'release_member', { member: 'GM-0', reason: 'x' });
+    expect(releasePaused.text).toMatch(/^board_paused:/);
+    await hub.api('POST', '/api/board/resume', { cookie: b.cookie });
+    // 頻率上限：10 分鐘內第 5 位擋下。
+    for (const id of ids) await setStatus(b, id, 'waiting_input');
+    for (let i = 0; i < 4; i++) {
+      json(await ask(b, 'release_member', { member: `GM-${i}`, reason: 'Done.' }));
+    }
+    const fifth = await ask(b, 'release_member', { member: 'GM-4', reason: 'Done.' });
+    expect(fifth.text).toMatch(/^release_rate_limit:/);
+    expect(get(ids[4]!)?.archived).toBe(false);
+  });
+
+  it('上限邊界：GM 配的成員加隊長剛好等於上限時，第一次 spawn 就擋（team_full），daemon 沒收到 session.create', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      ids.push(await startSession(b, { name: `GM-${i}`, cwd: `/fake/g${i}` }, null));
+    }
+    await gmTeam(
+      b,
+      ids.map((id) => ({ id, role: 'worker' })),
+    );
+    await setAutoStaff(b, { teamLimit: 4 });
+    b.daemon.clear();
+    const full = await ask(b, 'spawn_member', { role: 'researcher', prompt: 'x', reason: 'x' });
+    expect(full.text).toMatch(/^team_full: Your team already has 4 members/);
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+  });
+
+  it('GM 配的成員（不是隊長、不是派工開的）不能自己開人：not_lead', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const a = await startSession(b, { name: 'GM-A', cwd: '/fake/a' }, null);
+    await gmTeam(b, [{ id: a, role: 'worker' }]);
+    const r = await ask(b, 'spawn_member', { role: 'worker', prompt: 'x', reason: 'x' }, a);
+    expect(r.text).toMatch(/^not_lead: You are a team member, not the lead/);
+  });
+
+  it('帳號限流時不擴編（同機器、同帳號有 rate_limited）：account_rate_limited；別的帳號限流不影響', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    // 別的帳號（accountProfile＝CLAUDE_CONFIG_DIR 不同）限流：照常可以開。
+    const elsewhere = await startSession(b, {
+      name: 'Other account',
+      cwd: '/fake/other',
+      accountProfile: '/acct/other',
+    });
+    await setStatus(b, elsewhere, 'rate_limited');
+    await spawnMember(b, { role: 'researcher', prompt: 'x', reason: 'x' });
+    // 同機器、同帳號（預設帳號）限流：擋。
+    const same = await startSession(b, { name: 'Busy', cwd: '/fake/busy' });
+    await setStatus(b, same, 'rate_limited');
+    b.daemon.clear();
+    const r = await ask(b, 'spawn_member', { role: 'researcher', prompt: 'x', reason: 'x' });
+    expect(r.text).toMatch(/^account_rate_limited:/);
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+  });
+
+  it('設定關掉＝不能新增也不能封存，只能用現有成員；list_members 的提醒跟著改', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    await spawnMember(b, { role: 'researcher', prompt: 'x', reason: 'x' });
+    const saved = await setAutoStaff(b, { enabled: false });
+    expect(saved.autoStaff).toEqual({ enabled: false, teamLimit: 12, push: true });
+    const spawn = await ask(b, 'spawn_member', { role: 'researcher', prompt: 'x', reason: 'x' });
+    expect(spawn.text).toMatch(/^autostaff_disabled: The user turned off lead auto-staffing/);
+    const release = await ask(b, 'release_member', { member: 'Lead-RS', reason: 'x' });
+    expect(release.text).toMatch(/^autostaff_disabled:/);
+    // send_task 照常可用。
+    expect(json(await ask(b, 'send_task', { member: 'Lead-RS', text: 'More.' }))).toMatchObject({
+      member: 'Lead-RS',
+    });
+    const listed = json(await ask(b, 'list_members')) as {
+      teams: { staffing: Record<string, unknown> }[];
+    };
+    expect(listed.teams[0]!.staffing).toMatchObject({
+      autoStaff: false,
+      addsLeftThis10Minutes: 0,
+      guide: expect.stringMatching(/turned off lead auto-staffing/),
+    });
+    // 範圍外的上限存不進去；存別的設定不會把 autoStaff 改回預設。
+    const bad = await hub.api('PATCH', '/api/settings', {
+      cookie: b.cookie,
+      body: { autoStaff: { enabled: true, teamLimit: 30, push: true } },
+    });
+    expect(bad.status).toBe(400);
+    const other = await hub.api('PATCH', '/api/settings', {
+      cookie: b.cookie,
+      body: { stuckMinutes: 9 },
+    });
+    expect(other.body.autoStaff).toMatchObject({ enabled: false });
+  });
+
+  it('get_progress 的團隊卡附上人手資訊（隊長看到上限、成員看到向隊長回報）', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'x', reason: 'x' });
+    const lead = json(await ask(b, 'get_progress')) as { staffing: Record<string, unknown> };
+    expect(lead.staffing).toMatchObject({
+      size: 2,
+      limit: 12,
+      guide: expect.stringMatching(/^You lead this team/),
+    });
+    const member = json(await ask(b, 'get_progress', {}, bd)) as {
+      staffing: Record<string, unknown>;
+    };
+    expect(member.staffing).toEqual({ guide: expect.stringMatching(/not the lead/) });
   });
 });

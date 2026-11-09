@@ -629,6 +629,7 @@ registerMessages('en', {
 registerMessages('zh-TW', {
   'team.roster.title': '名單（{n}）',
   'team.roster.focus': '在畫布上看 {name}',
+  'team.roster.addedBy': '由 {lead} 新增：{reason}',
   'team.roster.emptyTitle': '名單是空的',
   'team.roster.empty': '在「成員管理」加入 session，或「新增成員」開新的。',
   'team.fold.members': '成員管理',
@@ -668,6 +669,7 @@ registerMessages('zh-TW', {
 registerMessages('en', {
   'team.roster.title': 'Members ({n})',
   'team.roster.focus': 'Show {name} on the canvas',
+  'team.roster.addedBy': 'Added by {lead}: {reason}',
   'team.roster.emptyTitle': 'No members yet',
   'team.roster.empty':
     'Add sessions under "Manage members", or start new ones under "Add members".',

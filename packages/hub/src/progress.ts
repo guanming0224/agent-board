@@ -56,6 +56,11 @@ export interface ProgressDeps {
   /** `Settings.memory`。 */
   enabled(): boolean;
   broadcasts: Pick<BroadcastEngine, 'direct'>;
+  /**
+   * 隊長自主擴編（GM 2026-11-10）：get_progress 的團隊卡附上人手資訊與守則提醒（dispatch.ts staffingView；
+   * 隊長看到人數、上限、各角色，成員看到「向隊長回報」）。派工關著時回 null，不附。
+   */
+  staffing?(caller: Session, team: Team): Record<string, unknown> | null;
 }
 
 export interface ProgressReply {
@@ -605,6 +610,10 @@ export class ProgressEngine {
               : {}),
           }
         : {}),
+      ...(() => {
+        const staffing = team ? (this.deps.staffing?.(caller, team) ?? null) : null;
+        return staffing ? { staffing } : {};
+      })(),
       facts: {
         tasks: card.facts.tasks,
         recentFiles: card.facts.recentFiles,

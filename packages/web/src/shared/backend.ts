@@ -36,6 +36,7 @@ import type {
   TeamHoldResult,
   TeamMember,
   TeamResumeResult,
+  TeamActivity,
   TeamPreset,
   TeamPresetConfig,
   TeamPresetUsed,
@@ -91,6 +92,8 @@ export interface BoardSnapshot {
   progress?: ProgressCard[];
   /** 團隊 Presets（P3 項目二），照 position 排。舊版 hub 沒有＝undefined（底部列與設定改用 listTeamPresets 讀）。 */
   presets?: TeamPreset[];
+  /** 團隊動態（隊長自主擴編：隊長新增、封存成員），新的在前。舊版 hub 沒有＝undefined（不顯示）。 */
+  teamActivity?: TeamActivity[];
 }
 
 /** 團隊建立、修改（含換工作區）或刪除：hub 用 WS 推，不等輪詢。 */
@@ -324,6 +327,12 @@ export interface BoardBackend {
   ): Promise<TeamPreset>;
   deleteTeamPreset(id: string): Promise<void>;
   teamPresetUsed(id: string, result: TeamPresetUsed): Promise<TeamPreset>;
+
+  /**
+   * 團隊動態（隊長自主擴編，CONTRACTS §11.1）：標已讀、清除。ids 沒給＝全部。回傳新清單（也會經 board 快照更新）。
+   */
+  readTeamActivity(ids?: string[]): Promise<TeamActivity[]>;
+  clearTeamActivity(ids?: string[]): Promise<TeamActivity[]>;
 
   /** 由舊到新。請隊長拆解從這裡讀回覆；最近的交接紀錄也是。 */
   sessionEvents(sessionId: string): Promise<SessionEvent[]>;

@@ -164,4 +164,25 @@ describe('buildSummary', () => {
       ['maxRounds', 'name', 'reason', 'sessionId', 'status', 'task'].sort(),
     );
   });
+
+  it('只有團隊動態也送（隊長新增／封存成員）；最多 3 項、只帶名稱與種類', () => {
+    const team = ['A', 'B', 'C', 'D'].map((m, i) => ({
+      reason: i === 3 ? ('team_member_released' as const) : ('team_member_added' as const),
+      lead: 'LD',
+      member: m,
+      sessionId: m.toLowerCase(),
+    }));
+    const payload = buildSummary([], [], [], at, undefined, team)!;
+    expect(payload).toMatchObject({ count: 0, items: [] });
+    expect(payload.team!.map((t) => [t.reason, t.member])).toEqual([
+      ['team_member_added', 'B'],
+      ['team_member_added', 'C'],
+      ['team_member_released', 'D'],
+    ]);
+    expect(Object.keys(payload.team![0]!).sort()).toEqual(
+      ['lead', 'member', 'reason', 'sessionId'].sort(),
+    );
+    // 沒有團隊動態時不帶這個鍵。
+    expect(buildSummary([item('a')], [], [], at)).not.toHaveProperty('team');
+  });
 });

@@ -1581,7 +1581,7 @@ test.describe('設定', () => {
     const section = page.locator('#s-dispatch');
     await expect(section).toContainText('允許 session 派工（MCP 工具）');
     await expect(section.locator('.chip.cost')).toHaveText('◈ 耗額度');
-    await expect(section).toContainText('最多同時 4 個成員');
+    await expect(section).toContainText('團隊人數上限見下方「隊長自主擴編」');
     const toggle = section.getByTestId('dispatch-toggle');
     await expect(toggle).toBeChecked();
     await toggle.uncheck();
@@ -1593,14 +1593,54 @@ test.describe('設定', () => {
     await expect(page.locator('#s-dispatch')).toBeInViewport();
   });
 
+  test('隊長自主擴編：預設開、上限 12、推播開；上限 2–20 才能存，存檔只送 autoStaff', async ({
+    page,
+  }) => {
+    await open(page, 'settings/sessions');
+    const section = page.locator('#s-autostaff');
+    await expect(section).toContainText('隊長自主擴編');
+    await expect(section.locator('.chip.cost')).toHaveText('◈ 耗額度');
+    await expect(section.getByTestId('autostaff-toggle')).toBeChecked();
+    await expect(section.getByTestId('autostaff-push')).toBeChecked();
+    const limit = section.getByLabel('團隊人數上限');
+    await expect(limit).toHaveValue('12');
+    await expect(section.getByTestId('autostaff-needs-dispatch')).toHaveCount(0);
+    await section.getByTestId('autostaff-push').uncheck();
+    for (const bad of ['1', '21', 'x', '']) {
+      await limit.fill(bad);
+      await expect(section.getByTestId('autostaff-limit-error')).toHaveText('請填 2 到 20 的整數');
+    }
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg.err')).toContainText('先修正');
+    expect(await calls(page)).toEqual([]);
+    await limit.fill('8');
+    await expect(section.locator('.chip.unsaved')).toHaveText('未存檔');
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    expect(((await calls(page))[0] as { patch: unknown }).patch).toEqual({
+      autoStaff: { enabled: true, teamLimit: 8, push: false },
+    });
+    // 派工關著時提示這一項沒作用；關掉擴編只送 enabled:false。
+    await page.locator('#s-dispatch').getByTestId('dispatch-toggle').uncheck();
+    await expect(section.getByTestId('autostaff-needs-dispatch')).toBeVisible();
+    await section.getByTestId('autostaff-toggle').uncheck();
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    expect(((await calls(page))[1] as { patch: unknown }).patch).toEqual({
+      dispatch: false,
+      autoStaff: { enabled: false, teamLimit: 8, push: false },
+    });
+    // #/settings/autostaff 直接落到這一區。
+    await open(page, 'settings/autostaff');
+    await expect(page.locator('#s-autostaff')).toBeInViewport();
+  });
+
   for (const width of [320, 375]) {
     test(`${width}px 通知與自動接續設定不撐出水平捲軸`, async ({ page }) => {
       await page.setViewportSize({ width, height: 740 });
-      for (const route of ['settings/notify', 'settings/autocontinue']) {
+      for (const route of ['settings/notify', 'settings/autocontinue', 'settings/autostaff']) {
         await open(page, route);
-        await expect(
-          page.locator(route.endsWith('notify') ? '#s-notify' : '#s-autocontinue'),
-        ).toBeVisible();
+        await expect(page.locator(`#s-${route.split('/')[1]}`)).toBeVisible();
         const overflow = await page.evaluate(
           () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
         );

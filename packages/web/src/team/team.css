@@ -422,6 +422,13 @@ button.color-pick[aria-pressed='true'] {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
 }
+.roster-added {
+  /* 隊長自主擴編：「由 LD 新增：理由」，名稱下方整列、淡色。 */
+  grid-column: 2 / -1;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
 .roster-results {
   grid-area: result;
   justify-self: end;

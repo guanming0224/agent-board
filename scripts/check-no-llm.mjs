@@ -110,7 +110,7 @@ const CLAUDE_FLAGS = new Set([
   '--model',
   '--name',
   // agent-board 工具（派工 2026-11-06 審查、進度卡 2026-11-08）：掛 daemon 產生的 MCP 設定檔（本機 MCP server，
-  // 只連 daemon 的 socket），並事先允許開著的那幾個工具（最多 6 個，見 AGENT_BOARD_TOOLS）；
+  // 只連 daemon 的 socket），並事先允許開著的那幾個工具（最多 7 個，見 AGENT_BOARD_TOOLS）；
   // 不加 --strict-mcp-config，也不放寬其他工具。仍是互動模式。
   '--mcp-config',
   '--allowedTools',
@@ -202,6 +202,8 @@ const AGENT_BOARD_TOOLS = [
   'spawn_member',
   'send_task',
   'get_result',
+  // 隊長自主擴編（GM 2026-11-10）：隊長封存自己團隊的成員（走 hub 既有的封存流程，不送字）。
+  'release_member',
   'get_progress',
   'update_progress',
 ];

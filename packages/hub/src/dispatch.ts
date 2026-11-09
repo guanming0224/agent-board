@@ -2,11 +2,22 @@
 // （daemon 掛的 `agent-board` server）自己開成員、送工作、收結果。全部是固定規則，不呼叫任何模型：
 // 送進成員的字是 Claude 自己寫的工作內容（加上固定的 `[From …]` 開頭），送回的結果只有一句摘要＋檔案＋分支。
 // 送字一律走 delivery.ts（只在目標等輸入時送，和交接、任務同一條佇列）。
+// 隊長自主擴編（GM 2026-11-10，§11.1）：隊長自己新增（spawn_member，理由必填）、封存（release_member）成員；
+// 團隊總人數上限看設定 `autoStaff.teamLimit`；每次都記 audit、session 事件、團隊動態（收件匣）並通知 GM。
+// 守則文字（擴編節奏）在 protocol/src/leadGuide.ts，只放在工具說明與回傳裡，不會自己送字。
 import { randomUUID } from 'node:crypto';
 import {
+  AUTOSTAFF_OFF_GUIDE,
   DISPATCH_ROLES,
-  DISPATCH_SPAWN_LIMIT,
+  DISPATCH_SPAWN_RATE_MAX,
   isReadOnlyMember,
+  LEAD_STAFFING_REMINDER,
+  MEMBER_STAFFING_GUIDE,
+  STAFFING_REASON_MAX,
+  TEAM_FULL_GUIDE,
+  TEAM_HELD_GUIDE,
+  TeamRole,
+  type AutoStaff,
   PermissionMode,
   sameWorkingTree,
   type DispatchTool,
@@ -15,6 +26,7 @@ import {
   type SessionEvent,
   type SessionSpec,
   type Team,
+  type TeamActivityKind,
   type TeamMember,
 } from '@agent-board/protocol';
 import { z } from 'zod';
@@ -140,12 +152,97 @@ const SpawnArgs = z.object({
   name: z.string().max(NAME_MAX_CHARS).optional(),
   role: z.enum(DISPATCH_ROLES),
   prompt: z.string().min(1),
+  reason: z.string(),
   permissionMode: PermissionMode.optional(),
   useWorktree: z.boolean().optional(),
   model: z.string().max(100).optional(),
 });
 const SendArgs = z.object({ member: z.string().min(1), text: z.string().min(1) });
 const MemberArgs = z.object({ member: z.string().min(1) });
+const ReleaseArgs = z.object({ member: z.string().min(1), reason: z.string() });
+
+/** reason 必填（隊長自主擴編）：一行、清控制字元、截斷。空的回 null。 */
+const reasonOf = (raw: unknown): string | null => {
+  if (typeof raw !== 'string') return null;
+  const text = clip(raw, STAFFING_REASON_MAX);
+  return text ? text : null;
+};
+
+/** 正在跑（RUN）或正在開：人手資訊裡的 running 計數。 */
+const isBusy = (s: Session) =>
+  s.endedAt === null && (s.status === 'running' || s.status === 'starting');
+
+/**
+ * release_member 的保護：回合還沒結束的成員不能封存。除了 RUN／starting，還有等 GM 允許（GM 可能正在看權限框）
+ * 與等 GM 審計畫——封存會讓 GM 的待決項直接消失、工作做到一半就斷。回傳擋下的原因（給隊長看的英文），可以封存是 null。
+ */
+const releaseBlock = (s: Session): string | null => {
+  if (s.endedAt !== null) return null;
+  switch (s.status) {
+    case 'running':
+      return 'working (RUN)';
+    case 'starting':
+      return 'starting';
+    case 'waiting_permission':
+      return 'waiting for the user to approve a tool (the user may be looking at it right now)';
+    case 'plan_review':
+      return 'waiting for the user to review its plan';
+    default:
+      return null;
+  }
+};
+
+/** 團隊人數（含隊長、GM 配的；不含已封存的）。 */
+export function teamSize(store: Store, teamId: string): number {
+  return store.listTeamMembers(teamId).filter((m) => {
+    const s = store.getSession(m.sessionId);
+    return s !== null && !s.archived;
+  }).length;
+}
+
+/** 每個角色有幾位、其中幾位在跑（RUN／starting）。 */
+export type RoleCounts = Record<TeamMember['role'], { members: number; running: number }>;
+
+/**
+ * 隊長看的人手資訊（list_members、get_progress 共用）。不是隊長只回一句守則（向隊長回報，不能自己開人）。
+ * addsLeft：這 10 分鐘還能新增幾位（同團隊的頻率上限）。
+ */
+export function staffingView(input: {
+  store: Store;
+  team: Team;
+  isLead: boolean;
+  autoStaff: AutoStaff;
+  addsLeft: number;
+}): Record<string, unknown> {
+  const { store, team, isLead, autoStaff, addsLeft } = input;
+  if (!isLead) return { guide: MEMBER_STAFFING_GUIDE };
+  const roles = Object.fromEntries(
+    TeamRole.options.map((r) => [r, { members: 0, running: 0 }]),
+  ) as RoleCounts;
+  for (const m of store.listTeamMembers(team.id)) {
+    const s = store.getSession(m.sessionId);
+    if (!s || s.archived) continue;
+    const count = roles[m.role];
+    count.members += 1;
+    if (isBusy(s)) count.running += 1;
+  }
+  const size = Object.values(roles).reduce((n, r) => n + r.members, 0);
+  const free = Math.max(0, autoStaff.teamLimit - size);
+  const guide = !autoStaff.enabled
+    ? AUTOSTAFF_OFF_GUIDE
+    : free === 0
+      ? `${LEAD_STAFFING_REMINDER} ${TEAM_FULL_GUIDE}`
+      : LEAD_STAFFING_REMINDER;
+  return {
+    autoStaff: autoStaff.enabled,
+    size,
+    limit: autoStaff.teamLimit,
+    free,
+    roles,
+    addsLeftThis10Minutes: autoStaff.enabled ? Math.min(addsLeft, free) : 0,
+    guide,
+  };
+}
 
 export interface DispatchReply {
   ok: boolean;
@@ -178,11 +275,35 @@ export interface DispatchDeps {
   ): Session;
   /** 機器在線才開得了 session；離線時回 false。 */
   machineOnline(machineId: string): boolean;
+  /** 隊長自主擴編的設定（`Settings.autoStaff`）。 */
+  autoStaff(): AutoStaff;
+  /** 這個 session 的 Claude 帳號（同機器、同 CLAUDE_CONFIG_DIR）正在限流：不擴編。 */
+  accountLimited(session: Session): boolean;
+  /**
+   * 封存成員：走 hub 的封存流程（停 session、暫停相關交接規則，可在設定→已封存還原，對話保留）。
+   * 停不了（例如機器離線以外的錯）丟 HttpError。`by` 是下令的隊長（audit 用）。
+   */
+  archiveMember(member: Session, by: Session): void;
+  /** 隊長新增或封存了成員：記團隊動態、推播（設定開著時）。 */
+  teamActivity(entry: {
+    kind: TeamActivityKind;
+    team: Team;
+    lead: Session;
+    member: Session;
+    role: TeamMember['role'];
+    reason: string;
+  }): void;
+  /** 團隊成員變了：推 team.updated（畫面不等輪詢）。 */
+  teamChanged(team: Team): void;
 }
 
 export class DispatchEngine {
   private readonly sends = new Map<string, number[]>();
   private readonly results = new Map<string, number[]>();
+  /** 每個團隊（還沒有團隊時是呼叫者）10 分鐘內新增成員的時間。 */
+  private readonly adds = new Map<string, number[]>();
+  /** 每個團隊 10 分鐘內封存成員的時間（防一輪封光整隊；上限同新增）。 */
+  private readonly releases = new Map<string, number[]>();
 
   constructor(private readonly deps: DispatchDeps) {}
 
@@ -207,6 +328,8 @@ export class DispatchEngine {
         return this.send(caller, args);
       case 'get_result':
         return this.getResult(caller, args);
+      case 'release_member':
+        return this.release(caller, args);
     }
   }
 
@@ -253,8 +376,33 @@ export class DispatchEngine {
     );
   }
 
-  private liveSpawned(caller: Session): Session[] {
-    return this.deps.store.listDispatchedBy(caller.id).filter(isLive);
+  /** 呼叫者當隊長的團隊（可能不只一個）。 */
+  private ledTeams(caller: Session): { team: Team; members: TeamMember[] }[] {
+    return this.teamsOf(caller.id).filter(({ members }) =>
+      members.some((m) => m.sessionId === caller.id && m.role === 'lead'),
+    );
+  }
+
+  /** 10 分鐘內還能新增幾位（只看，不記）。 */
+  private addsLeft(key: string): number {
+    const now = this.deps.now().getTime();
+    const recent = (this.adds.get(key) ?? []).filter((at) => now - at < DISPATCH_WINDOW_MS);
+    this.adds.set(key, recent);
+    return Math.max(0, DISPATCH_SPAWN_RATE_MAX - recent.length);
+  }
+
+  /** get_progress 也回人手資訊：呼叫者在這個團隊的角色決定看到什麼。 */
+  staffingFor(caller: Session, team: Team): Record<string, unknown> {
+    const isLead = this.deps.store
+      .listTeamMembers(team.id)
+      .some((m) => m.sessionId === caller.id && m.role === 'lead');
+    return staffingView({
+      store: this.deps.store,
+      team,
+      isLead,
+      autoStaff: this.deps.autoStaff(),
+      addsLeft: this.addsLeft(team.id),
+    });
   }
 
   private underLimit(map: Map<string, number[]>, key: string, max: number): boolean {
@@ -277,6 +425,7 @@ export class DispatchEngine {
       return {
         team: team.name,
         yourRole: members.find((m) => m.sessionId === caller.id)?.role ?? null,
+        staffing: this.staffingFor(caller, team),
         members: members.flatMap((m) => {
           const s = store.getSession(m.sessionId);
           if (!s || s.archived) return [];
@@ -294,15 +443,23 @@ export class DispatchEngine {
               readOnly: isReadOnlyMember(m.role, s),
               branch: s.branch,
               dispatchedBy: by ?? null,
+              ...(m.added ? { addedReason: m.added.reason } : {}),
               working: store.dispatchWork(s.id) !== null,
             },
           ];
         }),
       };
     });
+    const autoStaff = this.deps.autoStaff();
     return okJson({
       teams,
-      spawned: { live: this.liveSpawned(caller).length, limit: DISPATCH_SPAWN_LIMIT },
+      ...(teams.length === 0
+        ? {
+            guide: autoStaff.enabled
+              ? `You have no team yet. If the task needs more hands, spawn_member makes you the lead of a new team (size limit ${autoStaff.teamLimit}, you included). ${LEAD_STAFFING_REMINDER}`
+              : AUTOSTAFF_OFF_GUIDE,
+          }
+        : {}),
     });
   }
 
@@ -345,11 +502,23 @@ export class DispatchEngine {
         'Agent Board is paused (the user pressed "pause all"); no new members can be started. Do not retry; wait for the user to resume, or do the work yourself.',
       );
     }
+    if (!this.deps.autoStaff().enabled) {
+      this.blockedTool(caller, 'spawn_member', 'autostaff_disabled');
+      return fail('autostaff_disabled', AUTOSTAFF_OFF_GUIDE);
+    }
+    // 舊的呼叫（理由還不是必填時的寫法）：先講清楚缺什麼，再看其他參數。
+    const reason = reasonOf(raw.reason);
+    if (reason === null) {
+      return fail(
+        'reason_required',
+        'spawn_member now requires reason: one short sentence on why the team needs this member (for example "No tester yet; the change needs regression tests"). It is shown to the user. Call spawn_member again with reason.',
+      );
+    }
     const parsed = SpawnArgs.safeParse(raw);
     if (!parsed.success) {
       return fail(
         'invalid_arguments',
-        `role must be one of ${DISPATCH_ROLES.join(', ')}, and prompt is required. ${parsed.error.issues
+        `role must be one of ${DISPATCH_ROLES.join(', ')}, and prompt and reason are required. ${parsed.error.issues
           .map((i) => `${i.path.join('.')}: ${i.message}`)
           .join('; ')}`,
       );
@@ -371,6 +540,10 @@ export class DispatchEngine {
         `Members started by dispatch cannot start more members. Report back to ${by} instead.`,
       );
     }
+    // 在團隊裡、但不是任何一隊的隊長：不能自己開人（向隊長回報）。沒有團隊的 session 開第一位時自己當隊長。
+    if (this.teamsOf(caller.id).length > 0 && this.ledTeams(caller).length === 0) {
+      return fail('not_lead', MEMBER_STAFFING_GUIDE);
+    }
     const readOnly = !isWriterRole(args.role);
     if (caller.readOnly && !readOnly) {
       return fail(
@@ -378,11 +551,47 @@ export class DispatchEngine {
         'A read-only session cannot start members that edit files. Use role researcher or reviewer.',
       );
     }
-    const live = this.liveSpawned(caller);
-    if (live.length >= DISPATCH_SPAWN_LIMIT) {
+    // 團隊層級的全隊暫停／停止（CONTRACTS §17）：新成員一開就會照 prompt 跑，所以也擋。
+    if (this.teamOf(caller)?.hold) {
+      this.blockedTool(caller, 'spawn_member', 'team_held');
+      return fail('team_held', TEAM_HELD_GUIDE);
+    }
+    if (this.deps.accountLimited(caller)) {
+      this.blockedTool(caller, 'spawn_member', 'account_rate_limited');
       return fail(
-        'limit_reached',
-        `You already have ${live.length} live members (${live.map((s) => s.name).join(', ')}); the limit is ${DISPATCH_SPAWN_LIMIT}. Reuse one with send_task, or ask the user to archive one.`,
+        'account_rate_limited',
+        'This Claude account is rate-limited on this machine right now; a new member would stop at the same limit. Do not add members until the limit resets; continue with the current members or yourself.',
+      );
+    }
+    // 從這裡的人數檢查到下面 upsertTeamMember 必須保持同步（中間不能 await）：Node 單執行緒，
+    // 兩個同時的 spawn_member 才不會一起通過檢查而超過上限。
+    const existingTeam = this.teamOf(caller);
+    const { teamLimit } = this.deps.autoStaff();
+    const size = existingTeam ? teamSize(store, existingTeam.id) : 1;
+    if (size >= teamLimit) {
+      const names = existingTeam
+        ? store
+            .listTeamMembers(existingTeam.id)
+            .flatMap((m) => {
+              const s = store.getSession(m.sessionId);
+              return s && !s.archived && s.id !== caller.id
+                ? [`${s.name} (${m.role}, ${s.status})`]
+                : [];
+            })
+            .join(', ')
+        : '';
+      this.blockedTool(caller, 'spawn_member', 'team_full');
+      return fail(
+        'team_full',
+        `Your team already has ${size} members (you included); the limit set by the user is ${teamLimit}. Members: ${names || 'none'}. release_member a member that has finished and will not be needed again, then try again — or reuse one with send_task.`,
+      );
+    }
+    const rateKey = existingTeam?.id ?? caller.id;
+    if (this.addsLeft(rateKey) === 0) {
+      this.blockedTool(caller, 'spawn_member', 'spawn_rate_limit');
+      return fail(
+        'spawn_rate_limit',
+        `More than ${DISPATCH_SPAWN_RATE_MAX} members added to this team in 10 minutes. Wait, and use the members you have (send_task).`,
       );
     }
     if (!this.deps.machineOnline(caller.machineId)) {
@@ -402,7 +611,7 @@ export class DispatchEngine {
       );
     }
     // 先檢查完才動資料庫：被擋下時不留下空的團隊。
-    const existing = this.teamOf(caller);
+    const existing = existingTeam;
     const members: TeamMember[] = existing
       ? store.listTeamMembers(existing.id)
       : [{ teamId: '', sessionId: caller.id, role: 'lead' }];
@@ -447,6 +656,15 @@ export class DispatchEngine {
       throw error;
     }
     store.upsertTeamMember({ teamId: team.id, sessionId: member.id, role: args.role });
+    const at = this.deps.now();
+    store.setMemberAdded(member.id, {
+      bySessionId: caller.id,
+      byName: caller.name,
+      reason,
+      at: at.toISOString(),
+    });
+    this.adds.set(rateKey, [...(this.adds.get(rateKey) ?? []), at.getTime()]);
+    if (rateKey !== team.id) this.adds.set(team.id, this.adds.get(rateKey) ?? []);
     const workId = randomUUID();
     const work: DispatchWork = {
       from: caller.id,
@@ -467,10 +685,22 @@ export class DispatchEngine {
       permissionMode: mode,
       useWorktree,
       readOnly,
+      reason,
+      teamSize: size + 1,
+      teamLimit,
     };
     this.deps.audit(caller.id, 'dispatch.spawn', JSON.stringify({ ...detail, summary }));
     // 記在成員：畫布畫「呼叫者 → 成員」的送達；也是成員「改過的檔案」的分界。
     this.deps.addEvent(member.id, 'dispatch.spawn', { ...detail, summary });
+    this.deps.teamActivity({
+      kind: 'member_added',
+      team,
+      lead: caller,
+      member,
+      role: args.role,
+      reason,
+    });
+    this.deps.teamChanged(team);
     return okJson({
       name,
       status: member.status,
@@ -481,9 +711,143 @@ export class DispatchEngine {
       ...(clamped ? { note: `permissionMode lowered to ${mode} (cannot exceed yours)` } : {}),
       readOnly,
       useWorktree,
+      reason,
+      teamSize: `${size + 1}/${teamLimit}`,
       result:
         'The prompt will be typed in once the session starts. Its result comes back to you automatically as "[Result from …]" when it finishes the turn.',
     });
+  }
+
+  // ── release_member ──────────────────────────────────
+
+  /**
+   * 隊長封存自己團隊的成員（空出名額）。保護：回合還沒結束的（RUN、starting、等 GM 允許、等 GM 審計畫）
+   * 或還欠結果的（派工沒交回、送字還在排隊）不能封存、不能封存自己、只能封存自己當隊長的團隊的成員；
+   * 全部暫停、全隊暫停時擋；同一隊 10 分鐘內最多封存 DISPATCH_SPAWN_RATE_MAX 位。
+   * 走 hub 的封存流程，可以在設定→已封存還原。
+   */
+  private release(caller: Session, raw: Record<string, unknown>): DispatchReply {
+    if (this.deps.paused?.()) {
+      this.blockedTool(caller, 'release_member', 'board_paused');
+      return fail(
+        'board_paused',
+        'Agent Board is paused (the user pressed "pause all"); members cannot be released now. Do not retry; wait for the user to resume.',
+      );
+    }
+    if (!this.deps.autoStaff().enabled) {
+      this.blockedTool(caller, 'release_member', 'autostaff_disabled');
+      return fail('autostaff_disabled', AUTOSTAFF_OFF_GUIDE);
+    }
+    const parsed = ReleaseArgs.safeParse(raw);
+    const reason = reasonOf(raw.reason);
+    if (!parsed.success || reason === null) {
+      return fail(
+        reason === null ? 'reason_required' : 'invalid_arguments',
+        'member and reason are required: reason is one short sentence on why this member is no longer needed (shown to the user).',
+      );
+    }
+    const { store } = this.deps;
+    const led = this.ledTeams(caller);
+    if (led.length === 0) return fail('not_lead', MEMBER_STAFFING_GUIDE);
+    const ref = parsed.data.member.trim();
+    const wanted = ref.toLowerCase();
+    const candidates = led.flatMap(({ team, members }) =>
+      members.flatMap((m) => {
+        const s = store.getSession(m.sessionId);
+        return s && !s.archived ? [{ team, member: m, session: s }] : [];
+      }),
+    );
+    const found = candidates.find(
+      ({ session }) => session.id === ref || session.name.toLowerCase() === wanted,
+    );
+    if (found?.session.id === caller.id) {
+      return fail('cannot_release_self', 'You cannot release yourself. Only members of your team.');
+    }
+    if (!found) {
+      const names = candidates.filter(({ session }) => session.id !== caller.id);
+      return fail(
+        'not_your_member',
+        `"${clip(ref, NAME_MAX_CHARS)}" is not a member of a team you lead. You can release: ${
+          names.length > 0 ? names.map(({ session }) => session.name).join(', ') : 'nobody'
+        }.`,
+      );
+    }
+    const { team, member, session: target } = found;
+    if (team.hold) {
+      this.blockedTool(caller, 'release_member', 'team_held', target.id);
+      return fail('team_held', TEAM_HELD_GUIDE);
+    }
+    const inTurn = releaseBlock(target);
+    if (inTurn !== null) {
+      this.blockedTool(caller, 'release_member', 'member_busy', target.id);
+      return fail(
+        'member_busy',
+        `${target.name} is ${inTurn}; it cannot be released now. Wait for it to finish the turn (its result comes back to you), then release it.`,
+      );
+    }
+    // 還欠結果：手上的派工還沒交回，或送給它的工作還在排隊（封存了結果就回不來）。
+    // 已經結束的 session 交不回結果了，不擋。
+    if (
+      target.endedAt === null &&
+      (store.dispatchWork(target.id) !== null ||
+        this.deps.delivery.has(`dispatch:${caller.id}:${target.id}`))
+    ) {
+      this.blockedTool(caller, 'release_member', 'member_busy', target.id);
+      return fail(
+        'member_busy',
+        `${target.name} still owes you a result (a task you sent has not been delivered or answered yet). Wait for "[Result from ${target.name}]", then release it.`,
+      );
+    }
+    if (!this.underLimit(this.releases, team.id, DISPATCH_SPAWN_RATE_MAX)) {
+      this.blockedTool(caller, 'release_member', 'release_rate_limit', target.id);
+      return fail(
+        'release_rate_limit',
+        `More than ${DISPATCH_SPAWN_RATE_MAX} members released from this team in 10 minutes. Wait before releasing more.`,
+      );
+    }
+    try {
+      this.deps.archiveMember(target, caller);
+    } catch (error) {
+      if (error instanceof HttpError) return fail(error.code, error.message);
+      throw error;
+    }
+    const detail = {
+      fromSessionId: caller.id,
+      toSessionId: target.id,
+      teamId: team.id,
+      name: target.name,
+      role: member.role,
+      reason,
+    };
+    this.deps.audit(caller.id, 'dispatch.release', JSON.stringify(detail));
+    this.deps.addEvent(target.id, 'dispatch.release', detail);
+    this.deps.teamActivity({
+      kind: 'member_released',
+      team,
+      lead: caller,
+      member: target,
+      role: member.role,
+      reason,
+    });
+    this.deps.teamChanged(team);
+    const { teamLimit } = this.deps.autoStaff();
+    return okJson({
+      released: target.name,
+      team: team.name,
+      teamSize: `${teamSize(store, team.id)}/${teamLimit}`,
+      note: 'Archived: its session is stopped and its conversation kept. The user can restore it from Settings → Archived.',
+    });
+  }
+
+  /** 擴編被擋下：audit 加事件（記在呼叫者）。 */
+  private blockedTool(caller: Session, tool: string, reason: string, toSessionId?: string): void {
+    const detail = {
+      fromSessionId: caller.id,
+      tool,
+      reason,
+      ...(toSessionId ? { toSessionId } : {}),
+    };
+    this.deps.audit(caller.id, 'dispatch.blocked', JSON.stringify(detail));
   }
 
   /** 新成員（不開 worktree、會改檔案）和團隊裡同一個 working tree 的寫入者衝突（同 hub/worktree.ts 的規則）。 */

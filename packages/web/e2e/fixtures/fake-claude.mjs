@@ -49,6 +49,30 @@ function tool(name, input) {
   hook('PostToolUse', { tool_name: name, tool_input: input, tool_use_id: randomUUID() });
 }
 
+/**
+ * 隊長自主擴編的整合測試：像 Claude Code 一樣照 `--mcp-config` 啟動 agent-board MCP server（stdio），
+ * initialize 後呼叫一個工具，把回答印在畫面上（`MCP ok …`／`MCP error …`）。輸入列格式：`mcp <tool> <json 參數>`。
+ */
+function callMcp(name, input) {
+  const configPath = flag('--mcp-config');
+  if (!configPath) return 'MCP error no --mcp-config';
+  const server = JSON.parse(readFileSync(configPath, 'utf8')).mcpServers['agent-board'];
+  const request = (id, method, params) => JSON.stringify({ jsonrpc: '2.0', id, method, params });
+  const result = spawnSync(server.command, server.args, {
+    input: `${request(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} })}\n${request(2, 'tools/call', { name, arguments: input })}\n`,
+    env: { ...process.env, ...server.env },
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  const reply = result.stdout
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .find((message) => message.id === 2);
+  if (!reply?.result) return `MCP error ${JSON.stringify(reply?.error ?? result.stderr)}`;
+  return `MCP ${reply.result.isError ? 'error' : 'ok'} ${reply.result.content[0].text}`;
+}
+
 console.log(`fake claude ${sessionId} args=${args.join(' ')}`);
 hook('SessionStart', { source: flag('--resume') ? 'resume' : 'startup', context_tokens: 1234 });
 console.log('READY');
@@ -80,6 +104,10 @@ process.stdin.on('data', (chunk) => {
       });
     }
     if (line === 'danger') tool('Bash', { command: 'git push --force origin main' });
+    if (line.startsWith('mcp ')) {
+      const [, name, ...rest] = line.split(' ');
+      console.log(callMcp(name, JSON.parse(rest.join(' ') || '{}')));
+    }
     // 團隊測試：假隊長回一份任務清單。
     const reply = line.startsWith('Break this team goal')
       ? 'Plan:\n```json\n[{"title":"Integration task one"},{"title":"Integration task two"}]\n```'
