@@ -230,6 +230,31 @@ test.describe('全域搜尋（桌面）', () => {
       'data-index',
       '0',
     );
+
+    // 關掉對話紀錄（Esc）回到搜尋視窗，不是畫布：查詢字、深層結果、選到的那一列都還在，焦點回搜尋框。
+    await page.keyboard.press('Escape');
+    await expect(page).toHaveURL(/#\/search\?q=/);
+    await expect(page.getByTestId('search-panel')).toBeVisible();
+    await expect(input).toHaveValue('手續費 0.1425');
+    await expect(input).toBeFocused();
+    await expect(deepRows).toHaveCount(5);
+    await expect(target).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByTestId('search-deep-machine-m-gpu')).toContainText(
+      'demo-gpu：完成 3 筆',
+    );
+    // 沒有重搜：深層只叫過一次。
+    expect((await deepCalls(page)).map((c) => c.q)).toEqual(['手續費 0.1425']);
+
+    // ⌘點擊另一列開對話紀錄，按 ✕ 關掉：一樣回到搜尋視窗、結果還在。
+    await auth.filter({ hasNotText: '對話 #32' }).click({ modifiers: ['ControlOrMeta'] });
+    await expect(page).toHaveURL(/#\/transcript\/s-auth/);
+    await expect(page.getByTestId('search-panel')).toBeHidden();
+    await page.getByTestId('modal-close').click();
+    await expect(page).toHaveURL(/#\/search\?q=/);
+    await expect(input).toHaveValue('手續費 0.1425');
+    await expect(input).toBeFocused();
+    await expect(deepRows).toHaveCount(5);
+    expect((await deepCalls(page)).map((c) => c.q)).toEqual(['手續費 0.1425']);
   });
 
   test('深層搜尋中改字：舊的 searchId 送出取消、舊結果不再出現；再按一次 Enter 也取消上一次（驗收 6）', async ({

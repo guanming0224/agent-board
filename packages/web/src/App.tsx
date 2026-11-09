@@ -24,6 +24,7 @@ import {
   cameFrom,
   closeModal,
   closeRight,
+  isSearchHash,
   markHistory,
   openSearch,
   replaceHash,
@@ -105,6 +106,27 @@ function ModalContent({ kind }: { kind: ModalKind }) {
   return <NewSessionPage />;
 }
 
+/**
+ * 次畫面的內容。搜尋結果按 ⌘Enter／⌘點擊開的對話紀錄：搜尋視窗不卸載、只藏起來（hidden），
+ * 關掉對話紀錄（Esc、✕、上一頁，closeStep 會 history.back() 回 #/search?q=…）時，查詢字、快速與深層結果、
+ * 展開的群組、選到的那一列都還在；深層搜尋也不會因為卸載被取消。兩者固定在同樣的位置，React 才不會重掛搜尋。
+ * 刻意的取捨：藏起來的期間搜尋照常訂閱 board／遮蔽／區域，遮蔽或區域一改就在背景重算（深層會被取消重來）。
+ * 不加「藏起來就暫停」，是為了回到搜尋時結果一定照目前的遮蔽與區域，不會顯示切換前的舊結果；多出的只是少量 render 與請求。
+ */
+function ModalStack({ modal }: { modal: ModalKind }) {
+  const keepSearch = modal === 'search' || (modal === 'transcript' && isSearchHash(cameFrom()));
+  return (
+    <>
+      {keepSearch && (
+        <div className="modal-keep" hidden={modal !== 'search'} data-testid="search-keep">
+          <SearchPanel />
+        </div>
+      )}
+      {modal !== 'search' && <ModalContent kind={modal} />}
+    </>
+  );
+}
+
 const MODAL_LABEL: Record<ModalKind, string> = {
   settings: 'flows.settings.title',
   archive: 'flows.archived.title',
@@ -131,7 +153,7 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
     if (modal) {
       return (
         <PhonePage onBack={phoneBack} testId={`phone-${modal}`}>
-          <ModalContent kind={modal} />
+          <ModalStack modal={modal} />
         </PhonePage>
       );
     }
@@ -171,7 +193,7 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
           testId="modal"
           className={modal === 'search' ? 'search-modal' : undefined}
         >
-          <ModalContent kind={modal} />
+          <ModalStack modal={modal} />
         </ModalLayer>
       )}
     </>

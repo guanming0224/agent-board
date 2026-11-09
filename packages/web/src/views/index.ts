@@ -37,6 +37,7 @@ export {
 } from './overlayStore';
 export {
   inboxHash,
+  isSearchHash,
   MEMORY_HASH,
   parseHash,
   resolve,

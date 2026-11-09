@@ -10,6 +10,7 @@
 // - 欄數不固定（GM 2026-11-09「我需要你妥善利用空間」：以前每列最多 3 張，人一多就長成很高的一欄）：
 //   依人數挑最接近畫面長寬比的欄數；成員（不含隊長）有 SIDE_LEAD_MIN 位以上時，隊長也可以放在左邊一欄、
 //   成員排在右邊（交接線由左往右讀），哪個比較接近畫面比例就用哪個，一樣接近時維持隊長在上。
+//   只有隊長＋1 位的團隊也可以左右排（隊長在左），一樣照畫面比例挑。
 // - 整理團隊：新區塊的左上角＝原本團隊框內成員的左上角，團隊不會跳到別處。壓到新區塊（含框的留白與標籤空間）
 //   的非成員卡，搬到最近、不碰到任何東西的位置。
 // - 同時屬於多個團隊的成員：整理哪個團隊就跟著那個團隊排（它就是成員）；另一個團隊的框會跟著它變大，
@@ -401,6 +402,9 @@ function teamCandidates({ leads, rest }: TeamOrder, cell: { w: number; h: number
       out.push(sideBlock(leads, chunk(rest, c), cell));
     }
   }
+  // 只有隊長＋1 位（收尾 2026-11-10）：隊長在上只有「上下排」一種（長寬比約 0.48），畫面是橫的時很瘦長。
+  // 加上「隊長在左、成員在右」，照畫面比例挑；直的畫面（手機）仍是上下排。線從隊長右緣出發走兩張卡之間。
+  if (leads.length === 1 && rest.length === 1) out.push(sideBlock(leads, [rest], cell));
   return out;
 }
 
@@ -657,7 +661,14 @@ export function arrangeCanvas(input: ArrangeInput, maxRowW?: number): Map<string
       if (order.leads.length + order.rest.length > 0) orders.push(order);
     }
     if (orders.length === 0) continue;
-    const candidates = orders.map((o) => teamCandidates(o, cell));
+    // 隊長＋1 位：只照畫面比例挑一種（橫的畫面左右排、直的上下排）。不然整片的最佳化常為了和旁邊的區塊
+    // 湊一樣高，又挑回上下排（團隊框長寬比約 0.48，收尾 2026-11-10）。單獨一隊和多隊一群（共用成員）走同一條規則。
+    const candidates = orders.map((o) => {
+      const list = teamCandidates(o, cell);
+      return o.leads.length === 1 && o.rest.length === 1
+        ? [closest(list, aspectOf(input.view), teamExtent)]
+        : list;
+    });
     if (candidates.length === 1) {
       const options = candidates[0]!;
       groups.push({

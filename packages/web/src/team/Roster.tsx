@@ -170,7 +170,7 @@ export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
                 <Lamp status={session.status} detail={session.statusDetail} />
                 <button
                   type="button"
-                  className="roster-name"
+                  className="roster-name sm"
                   title={t('team.roster.focus', { name: session.name })}
                   onClick={() => useViewsUi.getState().focusSession(session.id)}
                 >

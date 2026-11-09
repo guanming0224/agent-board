@@ -7,6 +7,7 @@ import { AutoContinueNote, PhonePauseControls, WaitingBanner } from '../views';
 import { ZoneChip } from '../zones';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
+import { SearchIcon } from '../shared/SearchIcon';
 import {
   answerDecision,
   parseQuestions,
@@ -364,7 +365,7 @@ export function InboxPage() {
           title={t('flows.inbox.search')}
           data-testid="inbox-search"
         >
-          <span aria-hidden="true">⌕</span>
+          <SearchIcon />
         </a>
         <MaskChip />
       </header>

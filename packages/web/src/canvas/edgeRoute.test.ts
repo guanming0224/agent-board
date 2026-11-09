@@ -11,6 +11,7 @@ import {
   PROGRESS_GAP,
   TEAM_BLOCK_GAP,
   TEAM_GAP_SCREEN,
+  TIDY_FIT_MIN_ZOOM,
   tidyFitZoom,
   type ArrangeInput,
   type ArrangeSession,
@@ -224,7 +225,7 @@ describe('線的走法', () => {
 });
 
 describe('整理畫布後關係線看得到（GM 2026-11-09）', () => {
-  it('demo：隊長在上、成員在下，交接線從兩列之間的空隙走，標籤不壓到卡', () => {
+  it('demo（隊長＋1 位）：橫的畫面左右排（隊長在左），交接線走兩張卡之間，標籤不壓到卡', () => {
     const members = [member('t', 's-tests', 'lead'), member('t', 's-auth', 'worker')];
     const rules = [rule('t', 's-auth', 's-tests')];
     const data = input(
@@ -240,13 +241,29 @@ describe('整理畫布後關係線看得到（GM 2026-11-09）', () => {
       rules,
     );
     const out = arrangeCanvas(data);
-    // 整理前：成員在隊長正下方時，以前的線（右緣 → 左緣）整條藏在兩張卡底下。
+    // 只有隊長＋1 位（收尾 2026-11-10）：16:10 的畫面上左右排，隊長在左、成員在右，同一列。
+    const lead = out.get('s-tests')!;
+    const worker = out.get('s-auth')!;
+    expect(worker.y).toBe(lead.y);
+    expect(worker.x).toBe(lead.x + STEP_X);
+    const { routes } = expectVisible(out, members, rules);
+    expect(routes.get('s-auth->s-tests')).toMatchObject({ from: 'left', to: 'right' });
+    // 縮到整理後常見的 0.4 倍與最小的 0.15 倍，字也不壓到卡。
+    expectVisible(out, members, rules, [], 0.4);
+    expectVisible(out, members, rules, [], TIDY_FIT_MIN_ZOOM);
+  });
+
+  it('demo（隊長＋1 位）在直的畫面（手機）：仍是上下排，交接線從兩列之間的空隙走', () => {
+    const members = [member('t', 's-tests', 'lead'), member('t', 's-auth', 'worker')];
+    const rules = [rule('t', 's-auth', 's-tests')];
+    const data = input({ 's-auth': card(0, 0), 's-tests': card(STEP_X, 0) }, members, rules);
+    const out = arrangeCanvas({ ...data, view: { w: 390, h: 760 } });
     const lead = out.get('s-tests')!;
     const worker = out.get('s-auth')!;
     expect(worker.x).toBe(lead.x);
+    expect(worker.y).toBeGreaterThan(lead.y);
     const { routes } = expectVisible(out, members, rules);
     expect(routes.get('s-auth->s-tests')).toMatchObject({ from: 'top', to: 'bottom' });
-    // 縮到整理後常見的 0.4 倍，字也還放得進兩列之間。
     expectVisible(out, members, rules, [], 0.4);
   });
 
@@ -435,6 +452,7 @@ describe('整理畫布妥善利用空間（GM 2026-11-09）', () => {
     ['1 個團隊 12 人', [12]],
     ['1 個團隊 16 人', [16]],
     ['6 個團隊各 3–5 人', [3, 4, 5, 3, 4, 5]],
+    ['6 個團隊，其中 3 個只有隊長＋1 位', [2, 4, 2, 5, 2, 3]],
   ];
   for (const [name, sizes] of cases) {
     it(`${name}：範圍接近畫面比例（1.2–2.2）；線不穿過卡、字不壓到卡；進度卡不被壓；團隊之間 ≥ 36px`, () => {

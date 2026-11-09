@@ -8,8 +8,10 @@
 // 「只搜了 N／M 個 session」；取消時下一塊就停止讀檔。開檔用 O_NOFOLLOW（不跟符號連結，沒有先檢查再開的空窗）。
 // 和對話紀錄檢視（transcript.ts 的 readQueue，同時只讀一份）分開排隊：搜尋不會讓 GM 打開對話紀錄要等。
 // hub 是可信端，但 daemon 自己再收斂一次：上限有天花板、session 數有上限、accountProfile 只認這台用過的帳號設定目錄。
-import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+//
+// 讀檔與 JSON 解析在 worker_threads 裡跑（deepScanPool.ts、deepSearchWorker.ts；程式在 deepScan.ts）：
+// 大檔解析不會卡住 daemon 主執行緒的 PTY 轉送。取消、讓位、上限透過 SharedBudget 共用；
+// 每讀完一份檔照樣在主執行緒送那一份的結果（分批回傳不變）。畫面搜尋只在記憶體、很快，留在主執行緒。
 import { isAbsolute } from 'node:path';
 import {
   makeSnippet,
@@ -18,23 +20,35 @@ import {
   type HubToDaemon,
   type SearchItem,
 } from '@agent-board/protocol';
+import {
+  makePrefilter,
+  scanTranscriptFile,
+  SharedBudget,
+  type Budget,
+  type FileScan,
+  type StopReason,
+} from './deepScan';
+import { scanInWorker } from './deepScanPool';
 import { errorMessage, log } from './log';
 import { maskSecrets } from './secretPatterns';
 import { indexTranscripts, type TranscriptIndexEntry } from './sessionFiles';
-import { countEntries, MAX_LINE_CHARS, mayHaveEntries, parseLine } from './transcript';
+
+// 測試與舊的 import 路徑照用。
+export {
+  makePrefilter,
+  READ_CHUNK_BYTES,
+  readLines,
+  scanTranscriptFile,
+  SharedBudget,
+  type Budget,
+  type FileScan,
+  type StopReason,
+} from './deepScan';
 
 export type SearchRequest = Extract<HubToDaemon, { type: 'search.request' }>;
 
 /** 畫面切段：連續非空白行算一段，一段最多幾行（命中處前後的片段才不會跨太遠）。 */
 const SCREEN_CHUNK_LINES = 20;
-/** 讀檔的區塊大小：每讀一塊檢查一次取消、時間與讀檔量（超過上限最多多讀一塊）。 */
-export const READ_CHUNK_BYTES = 1024 * 1024;
-/**
- * 一行超過這麼多位元組就整行丟掉、不組字串（記憶體上限）。對話紀錄檢視是「字串長度 > MAX_LINE_CHARS」才略過，
- * UTF-8 一個 UTF-16 字元最多 3 位元組：3 倍以內的照樣解碼再用同一條規則判斷，序號才和檢視器一致。
- */
-const MAX_LINE_BYTES = MAX_LINE_CHARS * 3;
-
 /**
  * daemon 自己的天花板：hub 送來的上限再大也只照這個（hub 有 bug 也不會讓 daemon 長時間讀檔）。
  * 讀檔量與時間是規格預設值的上限；session 數遠大於一台機器在時間範圍內會有的量。
@@ -58,16 +72,10 @@ export interface DeepSearchDeps {
   /** 活著的 session 的畫面（邏輯行）；不是這台的或已結束回 null。 */
   screen(sessionId: string): string[] | null;
   send(message: DaemonToHub): void;
+  /** 測試用的假時鐘。有給的話對話紀錄改在主執行緒掃（時鐘不能跨執行緒），除非 scanIn 另外指定。 */
   now?: () => number;
-}
-
-/** 一次搜尋的進度與上限。 */
-export interface Budget {
-  /** 新的搜尋進來時改成現在（讓位：正在跑的這個在下一塊就停，回部分結果）。 */
-  deadline: number;
-  readonly maxBytes: number;
-  bytes: number;
-  cancelled: boolean;
+  /** 對話紀錄在哪裡掃：預設 worker（有假時鐘時預設 main）。 */
+  scanIn?: 'worker' | 'main';
 }
 
 /** 一次搜尋跑完的統計（測試與效能量測用；hub 看不到）。 */
@@ -76,47 +84,6 @@ export interface DeepRunStats {
   bytes: number;
   /** 提早停下的原因；搜完是 null。 */
   stopped: StopReason | null;
-}
-
-export type StopReason = 'deadline' | 'bytes' | 'cancelled';
-
-export interface FileScan {
-  /** 這份檔的命中（最新的 maxHits 筆，依序號由舊到新）。 */
-  hits: SearchItem[];
-  /** 實際讀了多少位元組。 */
-  bytes: number;
-  /** 提早停下的原因；讀完是 null。 */
-  stopped: StopReason | null;
-}
-
-/** 字裡有 JSON 會跳脫的字元（引號、反斜線、控制字元）或大小寫轉換不對稱的字：原始 JSON 行裡長得不一樣，不拿來先篩。 */
-function prefilterable(word: string): boolean {
-  for (const ch of word) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (ch === '"' || ch === '\\' || code < 0x20 || ch === 'σ' || ch === 'ς') return false;
-    if (ch.toLowerCase() !== ch) return false; // foldCase 保留原樣的字（小寫後會變長）
-  }
-  return true;
-}
-
-/**
- * 先篩：每個詞拆成單字（片語裡的空白在原文可能是換行），只要有一個單字不在這段文字裡就一定不符合。
- * 只會多放、不會漏（最後一律用 makeSnippet 確認）。
- */
-export function makePrefilter(terms: readonly string[]): (text: string) => boolean {
-  const words = [...new Set(terms.flatMap((t) => t.split(' ')).filter((w) => w !== ''))];
-  const ascii = words.filter((w) => prefilterable(w) && /^[\x20-\x7e]*$/.test(w));
-  const other = words.filter((w) => prefilterable(w) && !/^[\x20-\x7e]*$/.test(w));
-  if (ascii.length === 0 && other.length === 0) return () => true;
-  return (text) => {
-    const lower = text.toLowerCase();
-    if (!ascii.every((w) => lower.includes(w))) return false;
-    // 非 ASCII 的字在 JSON 裡可能寫成 \uXXXX：有這種跳脫的行不篩。
-    if (other.length > 0 && !other.every((w) => lower.includes(w)) && !text.includes('\\u')) {
-      return false;
-    }
-    return true;
-  };
 }
 
 /** 比對一段文字（遮蔽模式先遮好整段，金鑰不會被比對到、位置也是遮蔽後的）。 */
@@ -158,140 +125,6 @@ export function searchScreen(
   return found;
 }
 
-/**
- * 一塊一塊（READ_CHUNK_BYTES）讀一份檔、自己切行，每一行（去掉行尾的 \r）交給 onLine。
- * 開檔用 O_NOFOLLOW：路徑最後一段是符號連結就開不起來（不跟），也沒有「先 lstat 再開」的空窗。
- * 每讀一塊前檢查取消、時間與讀檔量；太長的行（> MAX_LINE_BYTES）不組字串、丟到下一個換行為止。
- */
-export async function readLines(
-  file: string,
-  budget: Budget,
-  now: () => number,
-  onLine: (line: string) => void,
-): Promise<{ bytes: number; stopped: StopReason | null }> {
-  let handle;
-  try {
-    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch {
-    return { bytes: 0, stopped: null }; // 剛好被刪掉、或是符號連結
-  }
-  let bytes = 0;
-  let stopped: StopReason | null = null;
-  try {
-    if (!(await handle.stat()).isFile()) return { bytes: 0, stopped: null };
-    const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
-    /** 上一塊沒收尾的那一段（複製出來，buffer 會被下一塊蓋掉）。 */
-    let carry: Buffer[] = [];
-    let carryBytes = 0;
-    /** 這一行已經太長：丟到下一個換行為止。 */
-    let skipping = false;
-    const emit = (line: Buffer) => {
-      const end = line.length > 0 && line[line.length - 1] === 0x0d ? line.length - 1 : line.length;
-      onLine(line.toString('utf8', 0, end));
-    };
-    for (;;) {
-      if (budget.cancelled) {
-        stopped = 'cancelled';
-        break;
-      }
-      if (now() > budget.deadline) {
-        stopped = 'deadline';
-        break;
-      }
-      if (budget.bytes >= budget.maxBytes) {
-        stopped = 'bytes';
-        break;
-      }
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
-      if (bytesRead === 0) break;
-      bytes += bytesRead;
-      budget.bytes += bytesRead;
-      const chunk = buffer.subarray(0, bytesRead);
-      let from = 0;
-      while (from < chunk.length) {
-        const newline = chunk.indexOf(0x0a, from);
-        const end = newline < 0 ? chunk.length : newline;
-        if (!skipping) {
-          if (carryBytes + (end - from) > MAX_LINE_BYTES) {
-            skipping = true;
-            carry = [];
-            carryBytes = 0;
-          } else if (newline < 0) {
-            carry.push(Buffer.from(chunk.subarray(from, end)));
-            carryBytes += end - from;
-          } else if (carry.length > 0) {
-            carry.push(chunk.subarray(from, end));
-            emit(Buffer.concat(carry));
-            carry = [];
-            carryBytes = 0;
-          } else {
-            emit(chunk.subarray(from, end));
-          }
-        }
-        if (newline < 0) break;
-        skipping = false;
-        from = newline + 1;
-      }
-      if (budget.cancelled) {
-        stopped = 'cancelled';
-        break;
-      }
-    }
-    // 最後一行沒有換行
-    if (stopped === null && !skipping && carry.length > 0) emit(Buffer.concat(carry));
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
-  return { bytes, stopped };
-}
-
-/**
- * 掃一份 JSONL，序號（transcriptIndex）和對話紀錄檢視（readTranscriptFile）一樣算，⌘Enter 才捲得到那則。
- * 先篩沒過的行只算這行有幾則（countEntries，不組搜尋全文）；sinceMs 之前的那幾則不算命中。命中只留最新的 maxHits 筆。
- */
-export async function scanTranscriptFile(
-  file: string,
-  sessionId: string,
-  options: {
-    terms: readonly string[];
-    mask: boolean;
-    sinceMs: number;
-    maxHits: number;
-    budget: Budget;
-    now: () => number;
-  },
-): Promise<FileScan> {
-  const { terms, mask, sinceMs, maxHits, budget, now } = options;
-  const quick = makePrefilter(terms);
-  const hits: SearchItem[] = [];
-  let index = 0;
-  const { bytes, stopped } = await readLines(file, budget, now, (line) => {
-    // 同 readTranscriptFile 的略過規則（序號才一致）。
-    if (line.length > MAX_LINE_CHARS || !mayHaveEntries(line)) return;
-    if (!quick(line)) {
-      index += countEntries(line);
-      return;
-    }
-    for (const { raw, search } of parseLine(line)) {
-      const at = index;
-      index += 1;
-      if (raw.at !== null && Date.parse(raw.at) < sinceMs) continue;
-      if (!quick(search)) continue;
-      const hit = makeSnippet(mask ? maskSecrets(search) : search, terms);
-      if (!hit) continue;
-      hits.push({
-        kind: 'transcript',
-        sessionId,
-        ...hit,
-        ...(raw.at !== null ? { at: raw.at } : {}),
-        transcriptIndex: at,
-      });
-      if (hits.length > maxHits) hits.shift();
-    }
-  });
-  return { hits, bytes, stopped };
-}
-
 /** 依最後活動時間新到舊；沒有時間的排最後。 */
 const byActivity = (a: DeepSearchTarget, b: DeepSearchTarget) =>
   (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? '');
@@ -320,9 +153,11 @@ export class DeepSearcher {
   private queue: Promise<void> = Promise.resolve();
   private readonly running = new Map<string, Budget>();
   private readonly now: () => number;
+  private readonly scanIn: 'worker' | 'main';
 
   constructor(private readonly deps: DeepSearchDeps) {
     this.now = deps.now ?? Date.now;
+    this.scanIn = deps.scanIn ?? (deps.now ? 'main' : 'worker');
   }
 
   /** 收到 hub 的 search.request：排進佇列（等待的時間也算在 deadline 裡）。 */
@@ -330,12 +165,10 @@ export class DeepSearcher {
     const request = clampRequest(raw);
     this.cancel(request.searchId);
     for (const other of this.running.values()) other.deadline = 0; // 讓位
-    const budget: Budget = {
+    const budget: Budget = new SharedBudget({
       deadline: this.now() + request.limits.deadlineMs,
       maxBytes: request.limits.maxBytes,
-      bytes: 0,
-      cancelled: false,
-    };
+    });
     this.running.set(request.searchId, budget);
     const run = this.queue.then(async (): Promise<DeepRunStats> => {
       if (budget.cancelled) return { bytes: 0, stopped: 'cancelled' };
@@ -456,13 +289,17 @@ export class DeepSearcher {
         break;
       }
       if (file) {
-        const scan = await scanTranscriptFile(file, target.sessionId, {
+        const scan = await this.scanFile(file, target.sessionId, {
           terms,
           mask,
           sinceMs,
           maxHits: room,
           budget,
-          now: this.now,
+        }).catch((error: unknown): FileScan => {
+          // worker 搜到一半壞掉（或被看門狗關掉）：當成這一份讀到一半就停，走正常的「只搜了 N／M」，
+          // 回報的 scannedSessions 才和前面已送出的結果一致。
+          log.warn(`深層搜尋讀對話紀錄失敗：${errorMessage(error)}`);
+          return { hits: [], bytes: 0, stopped: 'deadline' };
         });
         if (scan.stopped === 'cancelled' || budget.cancelled) return 'cancelled';
         if (!send(scan.hits)) {
@@ -496,6 +333,23 @@ export class DeepSearcher {
       totalSessions: targets.length,
     });
     return stopped;
+  }
+
+  /** 掃一份對話紀錄：平常在 worker，有假時鐘的測試在主執行緒。 */
+  private scanFile(
+    file: string,
+    sessionId: string,
+    options: {
+      terms: readonly string[];
+      mask: boolean;
+      sinceMs: number;
+      maxHits: number;
+      budget: Budget;
+    },
+  ): Promise<FileScan> {
+    if (this.scanIn === 'main')
+      return scanTranscriptFile(file, sessionId, { ...options, now: this.now });
+    return scanInWorker(file, sessionId, options);
   }
 
   /** 這個 session 的 CLAUDE_CONFIG_DIR；不是這台用過的帳號設定目錄（或不是絕對路徑）回 null：不讀對話紀錄。 */
