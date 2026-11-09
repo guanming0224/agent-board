@@ -148,6 +148,10 @@ async function main() {
   const app = join(home, '.local/share/agent-board/app');
   assert.ok(existsSync(join(app, 'node_modules/node-pty')));
   assert.ok(!existsSync(join(app, 'node_modules/typescript')), '不該裝到開發依賴');
+  assert.ok(
+    existsSync(join(app, 'daemon/dist/deepSearchWorker.mjs')),
+    '深層搜尋 worker 要在發布檔裡',
+  );
   for (const name of readdirSync(join(app, 'node_modules/node-pty/prebuilds'))) {
     const helper = join(app, 'node_modules/node-pty/prebuilds', name, 'spawn-helper');
     if (existsSync(helper)) assert.ok(lstatSync(helper).mode & 0o100, `${helper} 要可執行`);

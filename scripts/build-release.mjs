@@ -2,6 +2,7 @@
 // 目錄結構刻意和 monorepo 對齊，功能程式碼裡的相對路徑才不用改：
 //   hub/dist/main.mjs    → ../../web/dist（server.ts 找前端）
 //   daemon/dist/index.mjs → ../node_modules/.bin/agent-board-hook（useBundledHook 找 hook）
+//   daemon/dist/deepSearchWorker.mjs（深層搜尋的 worker_threads 入口，和 index.mjs 同資料夾）
 // 那個 .bin 只放 hook：daemon 會把它所在資料夾加進 PTY 的 PATH，不能混進別的執行檔。
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -17,6 +18,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, relative } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { build } from 'esbuild';
 import {
   bundleOptions,
@@ -64,7 +66,39 @@ async function bundleAll() {
   // 派工 MCP server 也只能有 node 內建模組（claude 每開一個 session 就啟動一次）。
   const mcp = readFileSync(bundleOptions(root, stage).mcp.outfile, 'utf8');
   if (mcp.includes('zod')) throw new Error('派工 MCP server 打包結果不該含有 zod');
+  await checkSearchWorker();
   return { metafiles, hookBytes: statSync(hook).size };
+}
+
+/**
+ * 深層搜尋的 worker 要和 daemon/dist/index.mjs 放在一起，而且打包後真的起得來（回 ready）：
+ * 少了或壞了 daemon 不會掛，只會退回主執行緒掃（大檔會卡 PTY 轉送），所以在這裡擋。
+ */
+async function checkSearchWorker() {
+  const file = bundleOptions(root, stage).daemonSearchWorker.outfile;
+  if (dirname(file) !== dirname(bundleOptions(root, stage).daemon.outfile)) {
+    throw new Error('深層搜尋 worker 要和 daemon/dist/index.mjs 在同一個資料夾');
+  }
+  const worker = new Worker(file);
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('深層搜尋 worker 10 秒內沒有 ready')),
+        10_000,
+      );
+      worker.once('message', (reply) => {
+        clearTimeout(timer);
+        if (reply?.type === 'ready') resolve();
+        else reject(new Error(`深層搜尋 worker 回了 ${JSON.stringify(reply)}`));
+      });
+      worker.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  } finally {
+    await worker.terminate();
+  }
 }
 
 /** 實際散布的第三方套件（打包進去的、npm ci 會裝的）都要在 THIRD_PARTY_NOTICES.md 裡。 */

@@ -22,7 +22,7 @@ const ESM_BANNER = [
   'const require = __abCreateRequire(import.meta.url);',
 ].join('\n');
 
-/** 四個打包檔（hub、daemon、hook、派工 MCP server）的 esbuild 設定。 */
+/** 五個打包檔（hub、daemon、深層搜尋 worker、hook、派工 MCP server）的 esbuild 設定。 */
 export function bundleOptions(root, stage) {
   const service = {
     bundle: true,
@@ -44,6 +44,14 @@ export function bundleOptions(root, stage) {
       ...service,
       entryPoints: [join(root, 'packages/daemon/src/index.ts')],
       outfile: join(stage, 'daemon/dist/index.mjs'),
+      external: RUNTIME_DEPS.daemon,
+    },
+    // 深層搜尋的 worker_threads 入口（deepScanPool.ts 用 new URL('./deepSearchWorker.mjs', import.meta.url) 找）：
+    // 一定要和 index.mjs 放在同一個資料夾。只讀檔、解析，不需要原生模組。
+    daemonSearchWorker: {
+      ...service,
+      entryPoints: [join(root, 'packages/daemon/src/deepSearchWorker.ts')],
+      outfile: join(stage, 'daemon/dist/deepSearchWorker.mjs'),
       external: RUNTIME_DEPS.daemon,
     },
     // hook 跑在每次工具呼叫的路徑上：CJS、不帶 banner、只有 node 內建模組。
