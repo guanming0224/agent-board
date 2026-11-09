@@ -13,6 +13,12 @@ const MS_PER_MINUTE = 60_000;
 const RESET_HINT = /\bresets? .*\d(?::\d{2})?\s?[ap]m\b/i;
 /** setTimeout 的上限，超過會立刻觸發。到期時會重新檢查，所以截短沒有影響。 */
 const MAX_TIMER_MS = 2 ** 31 - 1;
+/**
+ * Codex PostModelRequest 的 error 裡代表額度用完的字樣（未驗證：沒有真的撞過上限）。
+ * 其他錯誤 Codex 可能會自己重試，只在這一輪就這樣結束（Stop）時才算 error。
+ */
+const CODEX_QUOTA_ERROR =
+  /usage[ _-]?limit|quota|insufficient[ _-]?credits|rate[ _-]?limit|\b429\b/i;
 
 /**
  * idle_prompt 只代表「閒置中」。這些狀態已經說明了為什麼閒置，被蓋成 waiting_input 反而是誤報：
@@ -42,6 +48,18 @@ function settles(pending: PendingPermission, payload: HookPayload): boolean {
   );
 }
 
+/** PostModelRequest 的 error：字串或物件（文件沒寫格式），沒有或空的就是 null。 */
+function errorText(value: unknown): string | null {
+  if (value === undefined || value === null || value === '' || value === false) return null;
+  if (typeof value === 'string') return value.slice(0, 500);
+  try {
+    const text = JSON.stringify(value);
+    return text === '{}' ? null : text.slice(0, 500);
+  } catch {
+    return 'model request failed';
+  }
+}
+
 function stringField(payload: HookPayload, key: string): string | null {
   const value = payload[key];
   return typeof value === 'string' && value.length > 0 ? value : null;
@@ -67,6 +85,8 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
    * 所以在第一個 prompt 或工具之前看到的限流訊息都視為舊訊息。
    */
   let hasWorked = false;
+  /** Codex：這一輪最後一次模型請求失敗的訊息；成功或新的一輪就清掉。Stop 時還在就是 error。 */
+  let modelError: string | null = null;
   /** PTY 結束或 dispose 之後，遲到的事件一律忽略。 */
   let closed = false;
 
@@ -181,6 +201,7 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     const reason = `hook:${event}`;
     switch (event) {
       case 'UserPromptSubmit':
+        modelError = null;
         hasWorked = true;
         lastActivityAt = now().getTime();
         transition('running', reason, null);
@@ -212,8 +233,35 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
       case 'Stop':
         // 計畫是用 ExitPlanMode 的權限請求送出的（實測 2.1.316）。plan 模式下的 Stop 可能只是提問
         // 或計畫剛被拒絕，當成審計畫會誤報。
+        // Codex：這一輪最後一次模型請求失敗就結束了＝錯誤（額度用完的已經是 rate_limited，不蓋掉）。
+        if (modelError !== null) {
+          if (status !== 'rate_limited') transition('error', `${reason}:model-error`, modelError);
+          modelError = null;
+        } else {
+          transition('waiting_input', reason, null);
+        }
+        break;
+      case 'Interrupt':
+        // Codex：使用者按 Esc 中斷這一輪，回到輸入框（和 Claude 中斷後一樣是等你）。
+        modelError = null;
         transition('waiting_input', reason, null);
         break;
+      case 'PostModelRequest': {
+        // Codex：每次模型請求結束都有。成功＝還在工作；失敗先記著，額度用完立刻標 rate_limited。
+        const error = errorText(payload.error);
+        lastActivityAt = now().getTime();
+        if (error === null) {
+          modelError = null;
+          // Codex 自己重試成功（例如暫時的 429）：回到工作中。
+          if (status === 'stuck' || status === 'rate_limited') transition('running', reason, null);
+        } else if (CODEX_QUOTA_ERROR.test(error)) {
+          modelError = null;
+          transition('rate_limited', `${reason}:quota`, error);
+        } else {
+          modelError = error;
+        }
+        break;
+      }
       case 'StopFailure': {
         const error = stringField(payload, 'error');
         const detail = stringField(payload, 'error_details') ?? error;
@@ -282,6 +330,11 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
       transition('waiting_input', 'output:trust-prompt', 'trust');
   }
 
+  function onReadyScreen(): void {
+    if (!closed && status === 'starting')
+      transition('waiting_input', 'output:ready', IDLE_START_DETAIL);
+  }
+
   function onProgress(): void {
     if (closed) return;
     lastActivityAt = now().getTime();
@@ -318,6 +371,7 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     onOutput,
     onProgress,
     onTrustPrompt,
+    onReadyScreen,
     onExit,
     setStuckMinutes,
     dispose,

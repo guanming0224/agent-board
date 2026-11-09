@@ -1,6 +1,7 @@
 // SQLite 存取層。欄位 snake_case ↔ API camelCase 的轉換集中在這裡。
 import { randomUUID } from 'node:crypto';
 import {
+  AgentKind,
   AUDIT_SYSTEM_USER,
   AUTO_STAFF_DEFAULT,
   AutoContinue,
@@ -58,6 +59,11 @@ const TEAM_HOLD_PREFIX = 'teamHold:';
 const MEMBER_ADDED_PREFIX = 'memberAdded:';
 /** 團隊動態（同上）：settings 表 `teamActivity`，新的在前，最多 TEAM_ACTIVITY_KEEP 筆。 */
 const TEAM_ACTIVITY_KEY = 'teamActivity';
+/**
+ * session 跑的是哪個 CLI（Codex 接口第一版，GM 2026-11-10）：settings 表 `sessionAgent:<sessionId>`，不升 schema。
+ * 只有 Codex 才寫；沒有這個鍵＝Claude Code（舊資料都是）。
+ */
+const SESSION_AGENT_PREFIX = 'sessionAgent:';
 
 const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   listenAddress,
@@ -438,6 +444,8 @@ export class Store {
    * 不每次查 settings 表。setMemberAdded、deleteSession 時清掉，下次整批重讀。
    */
   private addedCache: Map<string, MemberAdded> | null = null;
+  /** `sessionAgent:*` 的快取（session 清單在熱路徑上）。setSessionAgent、deleteSession 時清掉。 */
+  private agentCache: Map<string, AgentKind> | null = null;
 
   constructor(
     readonly db: Db,
@@ -688,7 +696,40 @@ export class Store {
   getSession(id: string): Session | null {
     const row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as
       SessionRow | undefined;
-    return row ? toSession(row) : null;
+    return row ? this.toSession(row) : null;
+  }
+
+  /** 資料列轉成 Session，補上存在 settings 表的 agent（只有 Codex 有）。 */
+  private toSession = (row: SessionRow): Session => {
+    const session = toSession(row);
+    const agent = this.allAgents().get(row.id);
+    return agent ? { ...session, agent } : session;
+  };
+
+  private allAgents(): Map<string, AgentKind> {
+    if (this.agentCache) return this.agentCache;
+    const out = new Map<string, AgentKind>();
+    const rows = this.db
+      .prepare(`SELECT key, value FROM settings WHERE key LIKE '${SESSION_AGENT_PREFIX}%'`)
+      .all() as { key: string; value: string }[];
+    for (const row of rows) {
+      const parsed = AgentKind.safeParse(safeJson(row.value));
+      if (parsed.success) out.set(row.key.slice(SESSION_AGENT_PREFIX.length), parsed.data);
+    }
+    this.agentCache = out;
+    return out;
+  }
+
+  /** 記下 session 跑的 CLI；Claude Code 是預設值，不寫。 */
+  setSessionAgent(sessionId: string, agent: AgentKind): void {
+    if (agent === 'claude') {
+      this.db
+        .prepare('DELETE FROM settings WHERE key = ?')
+        .run(`${SESSION_AGENT_PREFIX}${sessionId}`);
+    } else {
+      this.setRaw(`${SESSION_AGENT_PREFIX}${sessionId}`, agent);
+    }
+    this.agentCache = null;
   }
 
   sessionMachineId(id: string): string | null {
@@ -704,7 +745,7 @@ export class Store {
         : this.db
             .prepare('SELECT * FROM sessions WHERE archived = ? ORDER BY created_at, rowid')
             .all(archived ? 1 : 0);
-    return (rows as SessionRow[]).map(toSession);
+    return (rows as SessionRow[]).map(this.toSession);
   }
 
   /**
@@ -719,6 +760,8 @@ export class Store {
         .run(id);
       this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${MEMBER_ADDED_PREFIX}${id}`);
       this.addedCache = null;
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${SESSION_AGENT_PREFIX}${id}`);
+      this.agentCache = null;
       return this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes === 1;
     })();
   }
@@ -767,7 +810,7 @@ export class Store {
     const rows = this.db
       .prepare('SELECT * FROM sessions WHERE machine_id = ? ORDER BY created_at, rowid')
       .all(machineId) as SessionRow[];
-    return rows.map(toSession);
+    return rows.map(this.toSession);
   }
 
   /** 佔用併發名額的 session：還活著、不在排隊、使用者沒標完成。 */
@@ -787,7 +830,7 @@ export class Store {
       .all() as SessionRow[];
     return rows.flatMap((row) =>
       row.pending_spec
-        ? [{ session: toSession(row), spec: JSON.parse(row.pending_spec) as SessionSpec }]
+        ? [{ session: this.toSession(row), spec: JSON.parse(row.pending_spec) as SessionSpec }]
         : [],
     );
   }
@@ -832,7 +875,7 @@ export class Store {
     const rows = this.db
       .prepare('SELECT * FROM sessions WHERE dispatched_by = ? ORDER BY created_at, rowid')
       .all(callerId) as SessionRow[];
-    return rows.map(toSession);
+    return rows.map(this.toSession);
   }
 
   /** 回傳 false 表示 id 已存在（daemon 重送）。 */
@@ -1541,7 +1584,8 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT key, value FROM settings WHERE key NOT LIKE '${USAGE_KEY_PREFIX}%'
-           AND key NOT LIKE '${MEMBER_ADDED_PREFIX}%' AND key != '${TEAM_ACTIVITY_KEY}'`,
+           AND key NOT LIKE '${MEMBER_ADDED_PREFIX}%' AND key != '${TEAM_ACTIVITY_KEY}'
+           AND key NOT LIKE '${SESSION_AGENT_PREFIX}%'`,
       )
       .all() as {
       key: string;

@@ -9,6 +9,9 @@ const STRICT_PATTERNS: readonly RegExp[] = [
   // `fast limit` 只是快速模式降速，工作不會停，不算。
   /^You've hit your (?!fast\b)[\w -]{0,40}\blimit · resets? .+$/,
   /^Usage limit reached(?: again)? · (?:limit resets|continuing automatically) .+$/,
+  // Codex（未驗證：取自 codex 原始碼的錯誤訊息，沒有真的撞過上限）。TUI 的錯誤行前面有 ■，
+  // 要求這個前綴，agent 自己的文字不會被當成限流。
+  /^■ ?You've hit your usage limit\b.*$/,
 ];
 
 /** 沒有重置時間的短訊息，只在 agent 沒在工作時才算。 */

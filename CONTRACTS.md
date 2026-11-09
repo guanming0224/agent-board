@@ -79,6 +79,8 @@ hub 在記憶體留每個 session 最後 2 KB 輸出（不落地），只用來�
 
 ### 3.1 daemon 開 PTY
 
+Codex session（`SessionSpec.agent: 'codex'`）的指令、hook 帶入與接回見 §19；下面是 Claude Code。
+
 指令：`claude [--session-id <uuid>|--resume <id>] [--permission-mode <mode>] [--disallowedTools Edit Write NotebookEdit] [--model <m>] [--mcp-config <file> --allowedTools <4 個派工工具>] [--name <n>]`（`--disallowedTools` 只有唯讀 session 帶，見「團隊事件」；`--mcp-config`／`--allowedTools` 只有派工設定開著時帶，見 §11），**權限模式一定要明確帶**，`default` 傳 `manual`：不帶的話 claude 會用使用者設定裡的預設模式（可能是 auto），畫面的放手線就會說謊。
 env 加入 `AGENT_BOARD_SESSION_ID`、`AGENT_BOARD_SOCKET`，有 `accountProfile` 時加 `CLAUDE_CONFIG_DIR`，`TERM=xterm-256color`。
 
@@ -577,3 +579,85 @@ hub／protocol 在 P2 第一輪；前端（底部指令列、暫停提示列、�
 - **顏色**：STYLE.md 的狀態色只給狀態、綠色只給 DONE 與 diff，所以圖表不用多色相類別色盤，改用 QUOTA 紫 `--quota` 的四階（`usage/usage.css` 有色碼與 `validate_palette.js` 實測數字），一定有圖例、提示框與表格檢視。
 - **no-llm**：只讀本機對話紀錄檔（和原本的總數同一支），hub 只讀記憶體與 settings 表。沒有新的連線、行程或送字寫法。
 - **protocol 權限**：本節的 protocol 變更（`usage.ts`、`usageReport.ts`、`ws.ts` 的 `usage.detail`、`routes.usageReport`）與 `shared/backend.ts`、`hubBackend.ts`、`fakeBackend.ts`、`App.tsx` 的修改由實作者修改，**合併前須由 Lead 審查**（§8）。
+
+## 19. Codex 節點（Codex 接口第一版，GM 2026-11-10）
+
+決策與範圍見 `../docs/dispatch/2026-11-10_核對與決策.md`「Codex 接口第一版」。Codex 和 Claude Code 一樣是使用者自己登入的官方互動式 CLI，由 daemon 開在 PTY 裡；PTY、送字佇列、approvals、危險規則、終端機串流全部共用，只有下面幾件事依 agent 分開。**第一版不做**：派工／進度卡 MCP 工具給 Codex、用量統計、交叉審查、Windows（hook 設定預留 `commandWindows`，還沒帶）、帳號資料夾（`CODEX_HOME`）。
+
+### 19.1 資料與協定
+
+- `AgentKind = 'claude' | 'codex'`（`protocol/src/models.ts`）。`SessionSpec.agent`、`Session.agent` 都是選用欄位，**不送＝Claude Code**（舊 hub、舊資料、舊 daemon 全部相容）。
+- `MachineCapabilities.codexVersion`（選用）：daemon 開機時跑 `codex --version`（`AGENT_BOARD_CODEX_BIN`，預設 `codex`），找不到就不回報。偵測到才在 hello `features` 宣告 `DAEMON_FEATURES.codex`（`agent.codex`）。
+- hub 只把 `agent: 'codex'` 的 spec 送給宣告 `agent.codex` 的 daemon：建立／接續時沒有 → 409 `codex_unavailable`；排隊期間 daemon 換成沒有的版本 → 不送、`failStart('codex_unavailable')`（舊 daemon 不認得 agent 欄位，會照 Claude 開）。Codex 帶 `accountProfile` → 400 `codex_account_profile`。
+- **不升 schema**：hub 把 agent 存在 settings 表 `sessionAgent:<sessionId>`（只寫 Codex；`getSettings` 不讀、刪 session 時一起刪），和 `memberAdded:*` 同一種做法。`Store` 讀 session 時補上 `agent`。
+- `Session.claudeSessionId` 在 Codex session 裡存 **Codex 的 thread id**（SessionStart 的 `session_id`）：Codex 不能指定新對話的 id，所以新開時是 null，等第一個 hook 回報。daemon 本機清單 `PersistedSession.claudeSessionId` 因此改成可為 null。
+- 帳號（§3.4 排隊、自主擴編的限流判斷）多看一個 agent：Claude 限流不擋 Codex，反之亦然（額度是不同方案）。
+- `HookEventName` 多了 `Interrupt`、`PostModelRequest`（只有 Codex 送）；`HookRequest.agent`（hook CLI 帶 `--agent codex` 時是 `codex`）；`HookPayload.transcript_path` 可為 null。
+
+### 19.2 開 Codex（`daemon/src/codex.ts`）
+
+```
+codex [resume <thread id>] <權限參數> [-m <model>] --dangerously-bypass-hook-trust \
+      -c 'hooks.<Event>=[{hooks=[{type="command",command="agent-board-hook --agent codex <Event>",timeout=N}]}]' …（每個事件一個 -c） \
+      [-- <第一句>]
+```
+
+- **hook 設定只在這次啟動有效**（`-c` 覆寫，`protocol/src/codex.ts` 的 `codexHookOverrides`）：不寫 `~/.codex`、不建專案 `.codex`、不讀 `~/.codex/auth.json`（GM 決策 1、§13.3）。事件：SessionStart、UserPromptSubmit、PreToolUse、PermissionRequest、PostToolUse、Stop、SessionEnd、Interrupt、PostModelRequest；timeout：PreToolUse／PermissionRequest 600 秒（同 Claude）、SessionEnd／Interrupt 3 秒（文件上限）、其他 30 秒。不寫 matcher（全部工具都送，daemon 只對 Bash 比對危險指令）。
+- `--dangerously-bypass-hook-trust` 只有中控台開的 Codex 帶，只對這次啟動有效。副作用：這次啟動裡其他已啟用的 hook（使用者自己的、外掛的、**已信任**專案 `.codex` 的）也不必再確認信任。
+- `-c hooks.<Event>` 會蓋掉使用者 `~/.codex/config.toml` 裡同一個事件的 `[hooks]`（只在這次啟動）；`hooks.json` 裡的照樣合併執行。
+- 第一句（`firstPrompt`）用官方的 `codex [PROMPT]` 帶入，放在 `--` 之後；開 PTY 時就算送出（本機清單清掉，daemon 重啟不會再送）。接續（`resume`）不帶。
+- 環境變數同 Claude（`AGENT_BOARD_SESSION_ID`、`AGENT_BOARD_SOCKET`、PATH 前面加 hook 的資料夾），但不設 `CLAUDE_CONFIG_DIR`。
+- 不寫任何 hook 設定檔，所以 §4.1 的 `settings.local.json` 安裝不適用；hook 執行檔一樣要找得到才開（§4.3）。找不到 codex → `session.createFailed`。
+- **daemon 重啟接回**：知道 thread id、而且 `CODEX_HOME`（沒設就是 `$HOME/.codex`）的 `sessions/**/rollout-*-<id>.jsonl` 存在 → `codex resume <id>`；否則重新開始（沒送出的第一句照常帶）。只看檔名，不讀內容。
+
+**權限換算**（`codexPermission`／`codexPermissionArgs`，新增頁的預覽與說明用同一份；原則：寬鬆程度相當、不比選的更寬）：
+
+| Claude 模式                | Codex 參數                                                | 說明                                                                                                                                 |
+| -------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| plan                       | `-s read-only -a on-request`                              | 唯讀沙盒；要寫檔、連網、跑沙盒外的指令都要你允許。Codex 沒有「先交計畫」的審核，PLAN 狀態不會出現                                    |
+| default                    | `-s read-only -a on-request`                              | 同上（Claude default 是讀不問、其他每步問）                                                                                          |
+| acceptEdits                | `-s workspace-write -a on-request`                        | 工作資料夾可寫；**沙盒內的指令不問就跑**（不能連網、不能寫工作區外），沙盒外才問。比 Claude acceptEdits 多「沙盒內指令不問」，見待決 |
+| auto                       | `-s workspace-write -a on-request`                        | 同 acceptEdits。沒有用 `--approve-for-me`（由 Codex 的自動審查模型決定核准，可能核准沙盒外的動作），見待決                           |
+| dontAsk                    | `-s read-only -a never`                                   | 唯讀、從不問，做不到的直接失敗回給模型                                                                                               |
+| bypassPermissions          | `--dangerously-bypass-approvals-and-sandbox`              | 沿用 bypass 的警示（新增頁紅框、卡片紅粗線）                                                                                         |
+| 唯讀 session（`readOnly`） | 沙盒一律 `read-only`；bypass 改成 `-s read-only -a never` |                                                                                                                                      |
+
+危險指令清單在所有模式（含 bypass）照樣經 PreToolUse 攔。
+
+### 19.3 狀態
+
+| Codex 事件                                                                                            | 狀態                                                                                               |
+| ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `SessionStart`（source startup）且目前 starting                                                       | `waiting_input`，detail `idle:start`（NEW）                                                        |
+| `SessionStart`（source resume）且目前 starting                                                        | `waiting_input`（ASK）                                                                             |
+| 畫面出現 `OpenAI Codex` 標題 3 秒後還是 starting（SessionStart 若要等第一句才送，未驗證）             | `waiting_input`，detail `idle:start`                                                               |
+| 畫面出現 Codex 的資料夾信任畫面（未驗證字串）                                                         | `waiting_input`，detail `trust`；要使用者自己在終端機回答，daemon 不替他選                         |
+| `UserPromptSubmit`、主線 `PreToolUse`                                                                 | `running`（RUN）                                                                                   |
+| `PermissionRequest`                                                                                   | `waiting_permission`（PERM）                                                                       |
+| `Stop`                                                                                                | `waiting_input`（ASK）；這一輪最後一次 `PostModelRequest` 帶 error → `error`（ERR，detail 是錯誤） |
+| `Interrupt`（使用者按 Esc）                                                                           | `waiting_input`                                                                                    |
+| `PostModelRequest` 的 error 符合額度字樣（usage limit、quota、insufficient credits、rate limit、429） | `rate_limited`（QUOTA）；之後成功的 PostModelRequest 回 `running`                                  |
+| 畫面出現 `■ You've hit your usage limit…`（未驗證）                                                   | `rate_limited`                                                                                     |
+| `SessionEnd`                                                                                          | 不改（PTY 結束時才判斷：Codex 的 `/new` 之類也可能送 SessionEnd）                                  |
+| PTY exit 0 ／≠ 0                                                                                      | `done`（DONE）／`error`（ERR）                                                                     |
+| daemon 失聯                                                                                           | `offline`（OFF，hub）                                                                              |
+
+其他照 §5（stuck、PostToolUse 只結算等待中的請求）。
+
+### 19.4 核准與危險指令
+
+- `PermissionRequest` 走同一套 approvals（網頁、手機可核准）。daemon 把回答換成 Codex 的格式（`codexHookOutput`）：`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`，或 `behavior: "deny"` 加 `message`。**不帶** `updatedPermissions`／`updatedInput`（Codex 不收）：「記住」對 Codex 沒有作用；提問的回答改成 deny 帶說明（Codex 沒有提問工具）。逾時、沒決定、連不上 → 不輸出，照常跳 Codex 原生確認。
+- 危險指令：`PreToolUse` 且工具是 shell（hook CLI 把 `Bash`、`shell`、`local_shell`、`exec_command`、`unified_exec`、`container.exec` 統一成 `Bash`、陣列指令接成字串）→ 同 §4.3 等網頁決定。Codex **不支援 ask**：允許 → 不輸出（照常執行）；拒絕、逾時 → `permissionDecision: "deny"`；**連不上 daemon 也回 deny**（Claude 是 ask），往安全的方向。
+
+### 19.5 前端
+
+- 新增 session 頁：「Agent」分段選 Claude Code／Codex；那台的 `capabilities.codexVersion` 沒有就停用並說明。選 Codex 時：每個權限模式下面列換算後的 Codex 參數、整段換算說明；模型不給 Claude 別名；帳號欄停用；接續清單只列 Codex 的對話；預覽是 codex 指令（hook 設定以 `-c <hooks>` 表示）。
+- 卡片（畫布、團隊頁）：`AgentChip` 中性色「Codex」晶片（Claude Code 是預設，不標）。狀態、收件匣、核准沿用。
+
+### 19.6 未驗證（沒有跑過真的 codex，見回報）
+
+1. `-c hooks.<Event>=[…]` 能不能讓 Codex 0.167.0 載入 hook（文件只寫 `config.toml` 的 `[hooks]` 與 `hooks.json`，沒寫 `-c`）。
+2. hook 子程序有沒有繼承 Codex 的環境變數（`AGENT_BOARD_SESSION_ID`、`AGENT_BOARD_SOCKET`、PATH）。沒有的話 hook 會安靜結束，狀態停在啟動中、危險指令不攔。
+3. SessionStart 是開好就送，還是等第一句；`session_id` 是否等於 `codex resume` 用的 id；`transcript_path` 是否為 null。
+4. shell 工具的 `tool_name` 與 `tool_input.command` 格式；`PostModelRequest` 的 `status`／`error` 格式；額度用完的實際訊息；資料夾信任畫面與標題的文字。
+5. PreToolUse 回 allow（不帶 updatedInput）的行為——所以 daemon 改成不輸出。

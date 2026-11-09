@@ -44,6 +44,16 @@ export const PermissionMode = z.enum([
 ]);
 export type PermissionMode = z.infer<typeof PermissionMode>;
 
+/**
+ * session 裡跑的是哪個官方 CLI（Codex 接口第一版，GM 2026-11-10）。都是使用者自己登入的互動式 CLI，
+ * 由 daemon 開在 PTY 裡；中控台本身不呼叫模型。舊資料、舊版 hub／daemon 不送＝`claude`。
+ */
+export const AgentKind = z.enum(['claude', 'codex']);
+export type AgentKind = z.infer<typeof AgentKind>;
+/** 沒寫 agent 的 session 或 spec 一律當成 Claude Code。 */
+export const agentOf = (value: { agent?: AgentKind | undefined }): AgentKind =>
+  value.agent ?? 'claude';
+
 export const UserRole = z.enum(['owner', 'member']);
 /** 雙向交接的來回上限（`HandoffRule.action.maxRounds`）。 */
 export const HANDOFF_MAX_ROUNDS = 10;
@@ -91,6 +101,11 @@ export const MachineCapabilities = z.object({
   cpuCores: z.number().int().positive(),
   memoryBytes: z.number().int().nonnegative(),
   claudeVersion: z.string().nullable(),
+  /**
+   * `codex --version` 的版本號（Codex 接口第一版）。找不到 codex、或舊版 daemon 不送＝沒有；
+   * 新增 session 只有這台回報了版本才能選 Codex（hub 也會擋）。
+   */
+  codexVersion: z.string().nullable().optional(),
 });
 export type MachineCapabilities = z.infer<typeof MachineCapabilities>;
 
@@ -204,6 +219,12 @@ export const Session = z.object({
    * （離開團隊時 hub 把它設成團隊所在的工作區）。舊版 hub 不送＝預設工作區。
    */
   zoneId: Id.default(DEFAULT_ZONE_ID),
+  /**
+   * 跑的是哪個 CLI（`AgentKind`）。不送＝Claude Code（舊 hub、舊資料）。hub 存在 settings 表
+   * `sessionAgent:<id>`（只有 codex 才寫，不升 schema）。`claudeSessionId` 在 Codex session 裡是 Codex 的
+   * thread id（`codex resume <id>` 用）。
+   */
+  agent: AgentKind.optional(),
 });
 export type Session = z.infer<typeof Session>;
 

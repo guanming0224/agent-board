@@ -1,6 +1,13 @@
 // 新增 session：左邊表單，右邊即時預覽實際執行的指令與額度警告（DISPATCH §5.3-2）。
 import { useCallback, useEffect, useState } from 'react';
-import { AbsolutePath, ClaudeSessionId, PermissionMode } from '@agent-board/protocol';
+import {
+  AbsolutePath,
+  agentOf,
+  AgentKind,
+  ClaudeSessionId,
+  codexPermissionArgs,
+  PermissionMode,
+} from '@agent-board/protocol';
 import type { Machine, Session, Settings } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
@@ -133,6 +140,7 @@ export function NewSessionPage() {
   const fillName = useFolderNameFill(name, setName);
   const [browsing, setBrowsing] = useState(false);
   const [worktreeChoice, setWorktreeChoice] = useState<boolean | null>(null);
+  const [agent, setAgent] = useState<AgentKind>('claude');
   const [mode, setMode] = useState<PermissionMode>('default');
   const [model, setModel] = useState('');
   const [account, setAccount] = useState('');
@@ -153,15 +161,22 @@ export function NewSessionPage() {
   // 同一個 working tree 才會互相改到檔案：同 repo 的不同子資料夾也算（daemon 回報的根目錄）。
   const advice = useWorktreeAdvice(machine, cwd);
   const useWorktree = worktreeOn(advice, worktreeChoice);
-  // 舊資料可能有不合格的 id（hub 會拒絕），不放進建議清單。
+  // Codex 只在那台的 daemon 回報了 codex 版本時可選（舊版 daemon、沒裝 codex 都不行，CONTRACTS §19）。
+  const codexVersion = machine?.capabilities.codexVersion ?? null;
+  const codex = agent === 'codex';
+  // 舊資料可能有不合格的 id（hub 會拒絕），不放進建議清單。接續只列同一種 CLI 的對話。
   const resumable = sessions.filter(
-    (s) => s.claudeSessionId && ClaudeSessionId.safeParse(s.claudeSessionId).success,
+    (s) =>
+      s.claudeSessionId &&
+      ClaudeSessionId.safeParse(s.claudeSessionId).success &&
+      agentOf(s) === agent,
   );
   const resumed = sessions.find((s) => s.claudeSessionId === resume.trim());
   const accounts = [
     ...new Set(sessions.flatMap((s) => (s.accountProfile ? [s.accountProfile] : []))),
   ];
-  const trimmedAccount = account.trim();
+  // 帳號資料夾是 Claude Code 的設定；Codex 不帶（hub 也會擋）。
+  const trimmedAccount = codex ? '' : account.trim();
 
   // 換機器後資料夾清單就不是同一台的了。
   useEffect(() => setBrowsing(false), [machineId]);
@@ -174,6 +189,10 @@ export function NewSessionPage() {
         ? t('flows.new.err.machineOffline', { machine: machine.name })
         : null,
     cwd: cwd.trim() ? null : t('flows.new.err.cwd'),
+    agent:
+      codex && machine && !codexVersion
+        ? t('flows.new.err.codex', { machine: machine.name })
+        : null,
     // 和 hub 的 SessionSpec 用同一組規則（protocol 的 AbsolutePath、ClaudeSessionId）。
     account:
       trimmedAccount && !AbsolutePath.safeParse(trimmedAccount).success
@@ -187,6 +206,7 @@ export function NewSessionPage() {
   const firstError = Object.values(errors).find(Boolean) ?? null;
 
   const preview = commandPreview({
+    ...(codex ? { agent } : {}),
     readOnly: false,
     name: name.trim(),
     cwd: cwd.trim(),
@@ -238,6 +258,7 @@ export function NewSessionPage() {
         resumeClaudeSessionId: resume.trim() || null,
         firstPrompt: firstPrompt.trim() || null,
         readOnly: false,
+        ...(codex ? { agent } : {}),
         // 新建 session 放在目前工作區（P2 §2.3）。
         zoneId: currentZoneId(),
       });
@@ -422,6 +443,30 @@ export function NewSessionPage() {
             </select>
           </Field>
 
+          <fieldset className="field" data-testid="agent-picker">
+            <legend>{t('flows.new.agent')}</legend>
+            <div className="segmented">
+              {AgentKind.options.map((option) => (
+                <label key={option} className={agent === option ? 'on' : ''}>
+                  <input
+                    type="radio"
+                    name="ns-agent"
+                    checked={agent === option}
+                    disabled={option === 'codex' && !codexVersion}
+                    onChange={() => setAgent(option)}
+                  />
+                  {t(`flows.new.agent.${option}`)}
+                </label>
+              ))}
+            </div>
+            <p className="hint" data-testid="agent-hint">
+              {codexVersion
+                ? t('flows.new.agentHint', { version: codexVersion })
+                : t('flows.new.agentNoCodex', { machine: machine?.name ?? '—' })}
+            </p>
+            {errors.agent && <p className="field-error">{errors.agent}</p>}
+          </fieldset>
+
           <Field label={t('flows.new.cwd')} htmlFor="ns-cwd" error={tried ? errors.cwd : null}>
             <div className="input-row">
               <input
@@ -484,12 +529,22 @@ export function NewSessionPage() {
                 <span className="mode-text">
                   <ModeChip mode={option} />
                   <span className="sub">{t(`flows.mode.desc.${option}`)}</span>
+                  {codex && (
+                    <span className="sub mono" data-testid={`codex-mode-${option}`}>
+                      {t('flows.new.codexMode', { args: codexPermissionArgs(option).join(' ') })}
+                    </span>
+                  )}
                 </span>
               </label>
             ))}
+            {codex && <p className="hint">{t('flows.new.codexModeNote')}</p>}
           </fieldset>
 
-          <Field label={t('flows.new.model')} htmlFor="ns-model" hint={t('flows.new.modelHint')}>
+          <Field
+            label={t('flows.new.model')}
+            htmlFor="ns-model"
+            hint={t(codex ? 'flows.new.modelHintCodex' : 'flows.new.modelHint')}
+          >
             <input
               id="ns-model"
               list="ns-model-list"
@@ -497,7 +552,7 @@ export function NewSessionPage() {
               onChange={(e) => setModel(e.target.value)}
             />
             <datalist id="ns-model-list">
-              {MODEL_ALIASES.map((alias) => (
+              {(codex ? [] : MODEL_ALIASES).map((alias) => (
                 <option key={alias} value={alias} />
               ))}
             </datalist>
@@ -506,14 +561,15 @@ export function NewSessionPage() {
           <Field
             label={t('flows.new.account')}
             htmlFor="ns-account"
-            hint={t('flows.new.accountHint')}
+            hint={t(codex ? 'flows.new.accountCodex' : 'flows.new.accountHint')}
             error={errors.account}
           >
             <input
               id="ns-account"
               className="mono"
               list="ns-account-list"
-              value={account}
+              value={codex ? '' : account}
+              disabled={codex}
               aria-invalid={!!errors.account}
               onChange={(e) => setAccount(e.target.value)}
             />
@@ -527,7 +583,7 @@ export function NewSessionPage() {
           <Field
             label={t('flows.new.resume')}
             htmlFor="ns-resume"
-            hint={t('flows.new.resumeHint')}
+            hint={t(codex ? 'flows.new.resumeHintCodex' : 'flows.new.resumeHint')}
             error={errors.resume}
           >
             <input
@@ -605,7 +661,7 @@ export function NewSessionPage() {
           <p className="hint">{t('flows.new.previewNote')}</p>
           {firstPrompt.trim() && (
             <>
-              <h3>{t('flows.new.previewFirst')}</h3>
+              <h3>{t(codex ? 'flows.new.previewFirstCodex' : 'flows.new.previewFirst')}</h3>
               <pre className="command">{firstPrompt.trim()}</pre>
             </>
           )}

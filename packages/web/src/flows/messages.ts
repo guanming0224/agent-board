@@ -209,6 +209,20 @@ export const zhTW: Record<string, string> = {
   'flows.new.worktreeNotGit': '這個資料夾不是 git repo，不能用 worktree。',
   'flows.new.worktreeNotGitShared':
     '這個資料夾已有 {n} 個 session（{names}），但它不是 git repo，不能用 worktree，兩邊會改到同一份檔案。要同時改請換資料夾，或先在這裡 git init。',
+  'flows.new.agent': 'Agent',
+  'flows.new.agent.claude': 'Claude Code',
+  'flows.new.agent.codex': 'Codex',
+  'flows.new.agentHint': '這台機器有 Codex CLI {version}，用它自己登入的帳號與額度。',
+  'flows.new.agentNoCodex':
+    '{machine} 沒有回報 Codex CLI（沒安裝或 daemon 版本太舊），只能開 Claude Code。',
+  'flows.new.err.codex': '{machine} 沒有 Codex CLI，換一台或改選 Claude Code',
+  'flows.new.codexMode': 'Codex：{args}',
+  'flows.new.codexModeNote':
+    'Codex 沒有同名的權限模式，換算成沙盒與核准設定，不會比選的模式寬。plan、default 用唯讀沙盒，要寫檔或連網都會問你；acceptEdits、auto 可寫工作資料夾，沙盒內的指令不問就跑（不能連網、不能寫工作區外）；dontAsk 唯讀、不問、做不到的直接失敗。危險指令清單照樣攔。',
+  'flows.new.modelHintCodex': '留空用 Codex 的預設模型；要指定就填完整的模型名稱。',
+  'flows.new.accountCodex': 'Codex 不支援分帳號，用這台機器上 Codex 登入的帳號。',
+  'flows.new.resumeHintCodex': '留空開新對話；要接續就選或貼上 Codex 的對話 ID。',
+  'flows.new.previewFirstCodex': '啟動時一起帶入（codex [PROMPT]）',
   'flows.new.mode': '權限模式',
   'flows.new.model': '模型',
   'flows.new.modelHint': '留空用預設；可填別名或完整名稱。',
@@ -940,6 +954,23 @@ export const en: Record<string, string> = {
   'flows.new.worktreeNotGit': 'This folder is not a git repo, so a worktree is not available.',
   'flows.new.worktreeNotGitShared':
     'This folder already has {n} session(s) ({names}), but it is not a git repo, so a worktree is not available and they will edit the same files. To work in parallel, pick another folder or run git init here first.',
+  'flows.new.agent': 'Agent',
+  'flows.new.agent.claude': 'Claude Code',
+  'flows.new.agent.codex': 'Codex',
+  'flows.new.agentHint':
+    'This machine has Codex CLI {version}; it uses its own signed-in account and quota.',
+  'flows.new.agentNoCodex':
+    '{machine} did not report a Codex CLI (not installed, or the daemon is too old), so only Claude Code is available.',
+  'flows.new.err.codex': '{machine} has no Codex CLI. Choose another machine or Claude Code.',
+  'flows.new.codexMode': 'Codex: {args}',
+  'flows.new.codexModeNote':
+    'Codex has no modes with these names, so each is mapped to sandbox and approval settings that are never looser than the mode you pick. plan and default use a read-only sandbox and ask before writing or using the network; acceptEdits and auto can write the working folder and run sandboxed commands without asking (no network, nothing outside the workspace); dontAsk is read-only, never asks, and fails what it cannot do. The dangerous command list still applies.',
+  'flows.new.modelHintCodex': "Leave empty for Codex's default model, or enter a full model name.",
+  'flows.new.accountCodex':
+    "Codex doesn't support separate accounts; it uses the account Codex is signed in to on this machine.",
+  'flows.new.resumeHintCodex':
+    'Leave empty for a new conversation, or pick or paste a Codex session ID.',
+  'flows.new.previewFirstCodex': 'Passed at launch (codex [PROMPT])',
   'flows.new.mode': 'Permission mode',
   'flows.new.model': 'Model',
   'flows.new.modelHint': 'Leave empty for the default. An alias or full name both work.',

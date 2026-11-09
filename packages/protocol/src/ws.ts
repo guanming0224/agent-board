@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import { TeamPreset } from './presets';
 import {
+  AgentKind,
   TeamActivity,
   Approval,
   BoardPauseState,
@@ -58,6 +59,11 @@ export const DAEMON_FEATURES = {
    * 舊版 daemon 沒有：hub 不送請求，那台機器標「版本太舊不支援」。
    */
   search: SEARCH_DEEP_FEATURE,
+  /**
+   * 開得了 Codex session（`SessionSpec.agent: 'codex'`，Codex 接口第一版）。只有偵測到 codex 的 daemon 才宣告；
+   * 舊版 daemon 不認得 agent 欄位、會照 Claude 開，所以 hub 只把 Codex 的 spec 送給有這個旗標的 daemon。
+   */
+  codex: 'agent.codex',
 } as const;
 
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);
@@ -106,6 +112,11 @@ export const SessionSpec = z.object({
    * 只擋這些工具，透過 Bash 仍然寫得了檔案。建立後不能改，接續與 daemon 重啟照舊套用。
    */
   readOnly: z.boolean().default(false),
+  /**
+   * 開哪個 CLI。不送＝Claude Code。Codex：`resumeClaudeSessionId` 是 Codex 的 thread id；`accountProfile`
+   * 不適用（hub 拒絕）；權限模式照 `codexPermissionArgs` 換算成 sandbox／approval（CONTRACTS §19）。
+   */
+  agent: AgentKind.optional(),
 });
 export type SessionSpec = z.infer<typeof SessionSpec>;
 

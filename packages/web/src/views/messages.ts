@@ -123,6 +123,8 @@ registerMessages('zh-TW', {
     '{name} 用派工工具開了這個 session，做完一回合的結果會自動送回 {name}。',
   'views.readOnly': '唯讀',
   'views.readOnly.title': '拿掉了改檔工具（Edit、Write 等）。Bash 仍然寫得了檔案。',
+  'views.agent.codex': 'Codex',
+  'views.agent.codex.title': '這個 session 跑的是 Codex CLI（不是 Claude Code）。',
   'views.ctx.window': '這個模型的 context 上限是 {window} tokens',
   'views.ctx.unknownWindow': '還不知道這個模型的 context 上限，先只顯示 token 數',
   'views.age.waiting': '等了 {span}',
@@ -278,6 +280,8 @@ registerMessages('en', {
   'views.readOnly': 'Read-only',
   'views.readOnly.title':
     'File-edit tools (Edit, Write, …) are removed. Bash can still write files.',
+  'views.agent.codex': 'Codex',
+  'views.agent.codex.title': 'This session runs the Codex CLI (not Claude Code).',
   'views.ctx.window': 'This model has a {window}-token context window',
   'views.ctx.unknownWindow':
     'Context window for this model is not known yet, so only the token count is shown',

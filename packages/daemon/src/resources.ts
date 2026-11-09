@@ -57,11 +57,33 @@ async function sampleCpuMem(): Promise<CpuMemSample> {
   };
 }
 
+/** `<bin> --version` 輸出裡的版本號（claude：`2.1.316 (Claude Code)`；codex：`codex-cli 0.167.0`）。 */
+export function parseVersion(stdout: string): string | null {
+  const tokens = stdout.trim().split(/\s+/);
+  return tokens.find((token) => /^\d+\.\d+/.test(token)) ?? tokens[0] ?? null;
+}
+
+async function probeCodex(codexBin: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(codexBin, ['--version'], {
+      timeout: PROBE_TIMEOUT_MS,
+      env,
+    });
+    return parseVersion(stdout) || null;
+  } catch {
+    // 沒裝 codex 是常態，不記警告。
+    return null;
+  }
+}
+
 export async function probeCapabilities(
   claudeBin: string,
   env: NodeJS.ProcessEnv,
+  codexBin?: string,
 ): Promise<MachineCapabilities> {
   const gpu = await queryNvidiaGpu();
+  // 找不到 codex 就不回報（hub 與新增 session 頁據此不讓選 Codex）。
+  const codexVersion = codexBin ? await probeCodex(codexBin, env) : null;
   let claudeVersion: string | null = null;
   try {
     const { stdout } = await execFileAsync(claudeBin, ['--version'], {
@@ -78,6 +100,7 @@ export async function probeCapabilities(
     cpuCores: availableParallelism(),
     memoryBytes: totalmem(),
     claudeVersion,
+    ...(codexVersion ? { codexVersion } : {}),
   };
 }
 

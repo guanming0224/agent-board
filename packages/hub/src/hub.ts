@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import {
+  agentOf,
   ClientToHub,
   DAEMON_FEATURES,
   SEARCH_DEEP_DEADLINE_MS,
@@ -227,10 +228,15 @@ const HUB_ONLY_STATUSES: readonly SessionStatus[] = ['queued', 'done', 'offline'
 const holdsSlot = (s: Session): boolean =>
   s.endedAt === null && s.status !== 'queued' && s.status !== 'done';
 
-/** 同一個 Claude 帳號：同機器、同 CLAUDE_CONFIG_DIR（null 是該機器的預設帳號）。 */
-type AccountKey = Pick<Session, 'machineId' | 'accountProfile'>;
+/**
+ * 同一個帳號：同機器、同 CLI、同 CLAUDE_CONFIG_DIR（null 是該機器的預設帳號）。
+ * Codex 用的是 ChatGPT 方案的額度，Claude 限流不擋 Codex，反之亦然（§19）。
+ */
+type AccountKey = Pick<Session, 'machineId' | 'accountProfile' | 'agent'>;
 const sameAccount = (a: AccountKey, b: AccountKey): boolean =>
-  a.machineId === b.machineId && (a.accountProfile || null) === (b.accountProfile || null);
+  a.machineId === b.machineId &&
+  agentOf(a) === agentOf(b) &&
+  (a.accountProfile || null) === (b.accountProfile || null);
 
 /** approval 對應的狀態（危險指令命中時 session 常常還是 running）。 */
 const APPROVAL_STATUS: Record<Approval['kind'], SessionStatus> = {
@@ -1259,6 +1265,8 @@ export class Hub {
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     this.requireZone(zoneId);
     if (!this.daemonFor(machineId)) throw conflict('machine_offline', 'Machine is offline');
+    const agent = agentOf(spec);
+    if (agent === 'codex') this.assertCodexReady(machineId, spec);
     this.assertCwdNotDeleting(machineId, spec.cwd);
     const now = this.nowIso();
     const session: Session = {
@@ -1290,6 +1298,7 @@ export class Hub {
       autoContinue: null,
       dispatchedBy,
       zoneId,
+      ...(agent === 'codex' ? { agent } : {}),
     };
     const blocked = this.queueReason(session);
     if (blocked !== undefined) {
@@ -1298,11 +1307,13 @@ export class Hub {
     }
     this.store.db.transaction(() => {
       this.store.insertSession(session, spec);
+      if (agent === 'codex') this.store.setSessionAgent(session.id, agent);
       this.audit(
         userId,
         session.id,
         'session.create',
         JSON.stringify({
+          ...(agent === 'codex' ? { agent } : {}),
           name: spec.name,
           machineId,
           cwd: spec.cwd,
@@ -1392,9 +1403,31 @@ export class Hub {
     this.resetTimer.unref();
   }
 
+  /**
+   * 開 Codex 的前提（§19）：那台的 daemon 宣告了 agent.codex（偵測到 codex；舊版 daemon 不認得 agent 欄位、
+   * 會照 Claude 開，絕不能送）；帳號資料夾是 Claude Code 的設定，Codex 不支援。
+   */
+  private assertCodexReady(machineId: string, spec: Pick<SessionSpec, 'accountProfile'>): void {
+    if (!this.daemonFor(machineId)?.features.has(DAEMON_FEATURES.codex)) {
+      throw conflict('codex_unavailable', 'Codex CLI is not available on this machine');
+    }
+    if (spec.accountProfile) {
+      throw new HttpError(
+        400,
+        'codex_account_profile',
+        'Codex sessions do not support account folders',
+      );
+    }
+  }
+
   private dispatchCreate(session: Session, spec: SessionSpec): void {
     const conn = this.daemonFor(session.machineId);
     if (!conn) return;
+    // 排隊期間 daemon 換成沒有 codex 的版本：不送（舊 daemon 會照 Claude 開），直接標失敗。
+    if (agentOf(spec) === 'codex' && !conn.features.has(DAEMON_FEATURES.codex)) {
+      this.guarded('codex unavailable', () => this.failStart(session.id, 'codex_unavailable'));
+      return;
+    }
     const requestId = randomUUID();
     const timer = setTimeout(() => {
       if (!this.pendingCreates.delete(requestId)) return;
@@ -1495,6 +1528,7 @@ export class Hub {
       throw conflict('invalid_account_profile', 'The account folder is not an absolute path');
     }
     if (!this.daemonFor(session.machineId)) throw conflict('machine_offline', 'Machine is offline');
+    if (agentOf(session) === 'codex') this.assertCodexReady(session.machineId, { accountProfile });
     // 接續已封存的：先還原，不然它會在跑卻不出現在畫布上（§9.1）。
     if (session.archived) session = this.restore(session, user, 'resume');
     const spec: SessionSpec = {
@@ -1509,6 +1543,8 @@ export class Hub {
       firstPrompt: null,
       // 唯讀是建立時決定的，接續時照舊（daemon 才會再帶 --disallowedTools）。
       readOnly: session.readOnly,
+      // Codex：`codex resume <thread id>`（claudeSessionId 存的是 thread id）。
+      ...(agentOf(session) === 'codex' ? { agent: 'codex' as const } : {}),
     };
     this.audit(user.id, id, 'session.resume', '');
     this.store.setPendingSpec(id, spec);

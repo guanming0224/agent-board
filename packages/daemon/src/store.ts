@@ -8,7 +8,8 @@ import { errorMessage, log } from './log';
 export const PersistedSession = z.object({
   sessionId: Id,
   spec: SessionSpec,
-  claudeSessionId: z.string().min(1),
+  /** CLI 的對話 id。Codex 新開、SessionStart 還沒回報 thread id 前是 null（§19）。 */
+  claudeSessionId: z.string().min(1).nullable(),
   cwd: z.string().min(1),
   branch: z.string().nullable(),
   worktreePath: z.string().nullable(),

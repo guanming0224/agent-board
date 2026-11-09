@@ -113,6 +113,8 @@ export class Harness {
         token: 'test-machine-token',
         dataDir: this.dataDir,
         claudeBin: this.bin,
+        // Codex 也用同一支假程式（它只記 argv、照輸入印字）。
+        codexBin: this.bin,
         hookBin: this.hookBin,
         machineName: 'test-machine',
         claudeConfigDir: this.claudeDir,
@@ -241,6 +243,7 @@ export class HookClient {
     sessionId: string,
     event: HookEventName,
     fields: Record<string, unknown> = {},
+    agent?: 'claude' | 'codex',
   ): Promise<HookReply> {
     const requestId = `hook-${Math.random().toString(36).slice(2)}`;
     return new Promise((resolve) => {
@@ -252,6 +255,7 @@ export class HookClient {
           sessionId,
           event,
           payload: { session_id: 'claude-reported', hook_event_name: event, ...fields },
+          ...(agent ? { agent } : {}),
         })}\n`,
       );
     });

@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-// agent-board-hook <EventName>：把 Claude Code 的 hook 事件轉給 daemon（CONTRACTS.md §4.2、§4.3）。
+// agent-board-hook [--agent codex] <EventName>：把 Claude Code／Codex 的 hook 事件轉給 daemon
+// （CONTRACTS.md §4.2、§4.3、§19）。
 // 跑在使用者每一次工具呼叫的路徑上：只用 node 內建模組，runtime 不 import protocol（zod 太慢）。
 // 鐵律：永遠 exit 0、stdout 只會有一個 JSON 物件或什麼都沒有。
 import { connect } from 'node:net';
 import type { Socket } from 'node:net';
 import type { HookPayload, HookRequest } from '@agent-board/protocol';
 import {
+  AGENT_FLAG,
+  AGENTS,
   BLOCKING_EVENTS,
+  CODEX_SHELL_TOOLS,
   CONNECT_DEADLINE_MS,
   HOOK_EVENTS,
   HOOK_WAIT_MS,
@@ -120,19 +124,59 @@ function handleReply(line: string, requestId: string, unreachable: Output): void
   else finish(unreachable);
 }
 
+/** `[--agent <claude|codex>] <EventName>`；認不得就回 null（安靜結束）。 */
+function parseArgs(argv: readonly string[]): { agent: string; event: string } | null {
+  let agent = 'claude';
+  let rest = argv;
+  if (rest[0] === AGENT_FLAG) {
+    agent = rest[1] ?? '';
+    rest = rest.slice(2);
+  }
+  const event = rest[0];
+  if (!AGENTS.includes(agent) || event === undefined || !HOOK_EVENTS.includes(event)) return null;
+  return { agent, event };
+}
+
+/**
+ * Codex 的 shell 工具統一成 Bash、指令統一成字串，daemon 的危險指令比對才認得（§19）。
+ * 陣列形式（`["bash","-lc","…"]`）用空白接起來：比對的是實際會執行的那段文字。
+ */
+function normalizeCodexPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const tool = payload.tool_name;
+  if (typeof tool !== 'string' || !CODEX_SHELL_TOOLS.includes(tool)) return payload;
+  const input = isRecord(payload.tool_input) ? payload.tool_input : {};
+  const command = input.command ?? input.cmd;
+  const text = Array.isArray(command)
+    ? command.filter((part): part is string => typeof part === 'string').join(' ')
+    : command;
+  return { ...payload, tool_name: 'Bash', tool_input: { ...input, command: text } };
+}
+
 async function main(): Promise<void> {
   const sessionId = process.env[SESSION_ID_ENV];
   if (!sessionId) return finish();
-  const event = process.argv[2];
-  if (event === undefined || !HOOK_EVENTS.includes(event)) return finish();
+  const parsed = parseArgs(process.argv.slice(2));
+  if (parsed === null) return finish();
+  const { agent, event } = parsed;
+  const codex = agent === 'codex';
 
-  const payload: unknown = JSON.parse(await readStdin());
-  if (!isRecord(payload)) return finish();
+  const raw: unknown = JSON.parse(await readStdin());
+  if (!isRecord(raw)) return finish();
+  const payload = codex ? normalizeCodexPayload(raw) : raw;
 
   // §4.3：只有 Bash 要檢查危險指令，檢查不了就要往安全的方向。
+  // Codex 的 PreToolUse 不支援 ask（會當成 hook 失敗、照樣執行），所以連不上時改成 deny（§19.4）。
   const isBashCheck = event === 'PreToolUse' && payload.tool_name === 'Bash';
   const unreachable = isBashCheck
-    ? preToolUseDecision('ask', 'Agent Board daemon unreachable: dangerous-command check skipped.')
+    ? codex
+      ? preToolUseDecision(
+          'deny',
+          'Agent Board daemon unreachable: dangerous-command check could not run, so this command was blocked.',
+        )
+      : preToolUseDecision(
+          'ask',
+          'Agent Board daemon unreachable: dangerous-command check skipped.',
+        )
     : null;
   const timeoutOutput = isBashCheck
     ? preToolUseDecision('deny', 'Agent Board: no decision received before the time limit.')
@@ -155,6 +199,7 @@ async function main(): Promise<void> {
     sessionId,
     event: event as HookRequest['event'],
     payload: payload as HookPayload,
+    ...(codex ? { agent: 'codex' as const } : {}),
   };
   const line = `${JSON.stringify(request)}\n`;
   if (BLOCKING_EVENTS.includes(event)) {

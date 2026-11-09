@@ -1,7 +1,7 @@
 // agent-board-hook ↔ daemon 的本機 socket 協定（NDJSON，一行一則）。
 // Claude Code 的欄位以 docs/claude-code-notes.md 為準；未列出的欄位用 loose 保留，避免版本更新就解析失敗。
 import { z } from 'zod';
-import { Id } from './models';
+import { AgentKind, Id } from './models';
 import { AgentBoardTool } from './progress';
 
 export const HOOK_ENV = {
@@ -12,6 +12,8 @@ export const HOOK_ENV = {
 } as const;
 
 export const HOOK_COMMAND = 'agent-board-hook';
+/** `agent-board-hook --agent codex <Event>`：Codex 開的 hook。沒帶就是 Claude Code。 */
+export const HOOK_AGENT_FLAG = '--agent';
 
 /** 需要安裝的 hook 事件。 */
 export const HookEventName = z.enum([
@@ -25,6 +27,9 @@ export const HookEventName = z.enum([
   'Stop',
   'StopFailure',
   'SessionEnd',
+  // 以下兩個只有 Codex 有（Codex 接口第一版）：使用者中斷這一輪、每次模型請求結束（帶 error）。
+  'Interrupt',
+  'PostModelRequest',
 ]);
 export type HookEventName = z.infer<typeof HookEventName>;
 
@@ -36,7 +41,8 @@ export const BLOCKING_HOOK_EVENTS = [
 
 export const HookPayload = z.looseObject({
   session_id: z.string(),
-  transcript_path: z.string().optional(),
+  // Codex 在還沒有對話紀錄時可能送 null（文件沒寫明，往寬鬆的方向收）。
+  transcript_path: z.string().nullish(),
   cwd: z.string().optional(),
   permission_mode: z.string().optional(),
   hook_event_name: z.string(),
@@ -49,6 +55,8 @@ export const HookRequest = z.object({
   sessionId: Id,
   event: HookEventName,
   payload: HookPayload,
+  /** 送 hook 的是哪個 CLI（hook CLI 的 `--agent`）。daemon 依此決定回答的格式；不送＝Claude Code。 */
+  agent: AgentKind.optional(),
 });
 export type HookRequest = z.infer<typeof HookRequest>;
 

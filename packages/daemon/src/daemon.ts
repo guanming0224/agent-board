@@ -4,12 +4,14 @@ import { accessSync, constants, statSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { basename, delimiter, dirname, extname, resolve, sep } from 'node:path';
 import {
+  agentOf,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   HOOK_COMMAND,
   HOOK_ENV,
   MachineOs,
   DAEMON_FEATURES,
+  type AgentKind,
   type DaemonToHub,
   type HookRequest,
   type HubToDaemon,
@@ -20,6 +22,7 @@ import {
 } from '@agent-board/protocol';
 import pkg from '../package.json' with { type: 'json' };
 import { ApprovalManager } from './approvals';
+import { buildCodexArgs, codexHome, codexHookOutput, codexThreadExists } from './codex';
 import type { DaemonConfig } from './config';
 import { DeepSearcher } from './deepSearch';
 import { listDirectory, makeDirectory } from './fsList';
@@ -304,7 +307,11 @@ export class Daemon {
     await this.hookServer.start();
     this.capabilities =
       this.deps.capabilities ??
-      (await probeCapabilities(this.deps.config.claudeBin, this.childEnv()));
+      (await probeCapabilities(
+        this.deps.config.claudeBin,
+        this.childEnv(),
+        this.deps.config.codexBin,
+      ));
     // 先把 session 接回來（status=starting），第一則 hello 才對得上帳（CONTRACTS §3.2）。
     await this.resumePersistedSessions();
     this.hub.start();
@@ -357,7 +364,13 @@ export class Daemon {
       capabilities: this.capabilities,
       sessions: [...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.runtime()),
       pendingApprovals: this.approvals.pending(),
-      features: [DAEMON_FEATURES.signalGuard, DAEMON_FEATURES.memory, DAEMON_FEATURES.search],
+      features: [
+        DAEMON_FEATURES.signalGuard,
+        DAEMON_FEATURES.memory,
+        DAEMON_FEATURES.search,
+        // 偵測到 codex 才宣告：hub 只把 Codex 的 spec 送給有這個旗標的 daemon（§19）。
+        ...(this.capabilities.codexVersion ? [DAEMON_FEATURES.codex] : []),
+      ],
     };
   }
 
@@ -675,14 +688,17 @@ export class Daemon {
         throw new Error('session_deleting');
       }
       this.sessionDirs.set(sessionId, realCwd);
-      this.assertCanLaunch();
+      const agent = agentOf(spec);
+      this.assertCanLaunch(agent);
       assertDirectory(spec.cwd);
       if (spec.useWorktree) worktree = await createWorktree(spec.cwd, spec.name, sessionId);
-      await this.installHooksOrThrow(worktree?.cwd ?? spec.cwd);
+      // Codex 的 hook 用 -c 在啟動時帶入，不寫任何設定檔（§19.1）。
+      if (agent === 'claude') await this.installHooksOrThrow(worktree?.cwd ?? spec.cwd);
       const persisted: PersistedSession = {
         sessionId,
         spec: { ...spec, firstPrompt: null },
-        claudeSessionId: spec.resumeClaudeSessionId ?? randomUUID(),
+        // Codex 不能指定新對話的 id：等 SessionStart 回報 thread id。
+        claudeSessionId: spec.resumeClaudeSessionId ?? (agent === 'codex' ? null : randomUUID()),
         cwd: worktree?.cwd ?? spec.cwd,
         branch: worktree?.branch ?? (await currentBranch(spec.cwd)),
         // 接續舊對話時 hub 把原 worktree 當 cwd 傳來，worktreePath 不能因此變成 null。
@@ -717,22 +733,26 @@ export class Daemon {
     }
   }
 
-  private assertCanLaunch(): void {
+  private agentBin(agent: AgentKind): string {
+    return agent === 'codex' ? (this.deps.config.codexBin ?? 'codex') : this.deps.config.claudeBin;
+  }
+
+  private assertCanLaunch(agent: AgentKind): void {
     const env = this.childEnv();
-    findExecutable(this.deps.config.claudeBin, env);
+    findExecutable(this.agentBin(agent), env);
     findHook(this.deps.config.hookBin, env);
   }
 
   private async resumePersistedSessions(): Promise<void> {
     if (this.store.sessions.length === 0) return;
-    try {
-      this.assertCanLaunch();
-    } catch (error) {
-      // 環境問題（PATH 沒設好之類）修好就能接回，清單要留著；這次只是都不開。
-      log.error(`本次不接回任何 session：${errorMessage(error)}`);
-      return;
-    }
     for (const entry of [...this.store.sessions]) {
+      try {
+        this.assertCanLaunch(agentOf(entry.spec));
+      } catch (error) {
+        // 環境問題（PATH 沒設好之類）修好就能接回，清單要留著；這次只是不開。
+        log.error(`這次不接回 session ${entry.sessionId}：${errorMessage(error)}`);
+        continue;
+      }
       try {
         assertDirectory(entry.cwd);
       } catch (error) {
@@ -742,7 +762,7 @@ export class Daemon {
         continue;
       }
       try {
-        await this.installHooksOrThrow(entry.cwd);
+        if (agentOf(entry.spec) === 'claude') await this.installHooksOrThrow(entry.cwd);
       } catch (error) {
         // 使用者修好設定檔就能接回，清單留著；沒裝上 hook 不可開 PTY。
         log.error(`這次不接回 session ${entry.sessionId}：${errorMessage(error)}`);
@@ -764,7 +784,15 @@ export class Daemon {
    */
   private async restartHow(
     entry: PersistedSession,
-  ): Promise<{ resumeId: string } | { newSessionId: string }> {
+  ): Promise<{ resumeId: string } | { newSessionId: string | null }> {
+    if (agentOf(entry.spec) === 'codex') {
+      // Codex：知道 thread id 而且有對話紀錄才 `codex resume <id>`，否則重新開始（沒送出的第一句照常帶）。
+      const id = entry.claudeSessionId;
+      if (id && (await codexThreadExists(codexHome(this.childEnv()), id))) return { resumeId: id };
+      log.warn(`Codex session ${entry.sessionId} 沒有對話紀錄，改為重新開始`);
+      return { newSessionId: null };
+    }
+    if (entry.claudeSessionId === null) return { newSessionId: randomUUID() };
     const configDir = claudeConfigFor(entry.spec.accountProfile, this.deps.config.claudeConfigDir);
     const files = await findTranscriptFiles(configDir, entry.claudeSessionId);
     if (files.jsonl.length > 0) return { resumeId: entry.claudeSessionId };
@@ -786,7 +814,7 @@ export class Daemon {
 
   private async launch(
     entry: PersistedSession,
-    how: { resumeId: string } | { newSessionId: string },
+    how: { resumeId: string } | { newSessionId: string | null },
   ): Promise<ManagedSession> {
     const { spec, sessionId } = entry;
     // 接續同一個 session：上一輪還沒送出的結果已不適用，不可蓋掉新的狀態。
@@ -796,18 +824,51 @@ export class Daemon {
       this.store.rememberAccountProfile(spec.accountProfile);
     }
 
-    const args = buildClaudeArgs({
-      ...how,
-      permissionMode: spec.permissionMode,
-      model: spec.model,
-      name: spec.name,
-      readOnly: spec.readOnly,
-      mcp: this.prepareMcp(sessionId),
-    });
+    const agent = agentOf(spec);
+    let args: string[];
+    let launchEntry = entry;
+    if (agent === 'codex') {
+      // 第一句用官方的 `codex [PROMPT]` 帶入（不必等 SessionStart 再打字）；派工工具第一版不給 Codex。
+      const resumeId = 'resumeId' in how ? how.resumeId : null;
+      args = buildCodexArgs({
+        resumeId,
+        permissionMode: spec.permissionMode,
+        readOnly: spec.readOnly,
+        model: spec.model,
+        firstPrompt: resumeId ? null : entry.pendingFirstPrompt,
+      });
+      if (!resumeId && entry.pendingFirstPrompt !== null) {
+        launchEntry = { ...entry, pendingFirstPrompt: null };
+      }
+    } else {
+      const claudeHow =
+        'resumeId' in how ? how : { newSessionId: how.newSessionId ?? randomUUID() };
+      if ('newSessionId' in claudeHow && entry.claudeSessionId !== claudeHow.newSessionId) {
+        entry.claudeSessionId = claudeHow.newSessionId;
+        if (this.store.sessions.some((s) => s.sessionId === sessionId)) {
+          this.store.patch(sessionId, { claudeSessionId: claudeHow.newSessionId });
+        }
+      }
+      args = buildClaudeArgs({
+        ...claudeHow,
+        permissionMode: spec.permissionMode,
+        model: spec.model,
+        name: spec.name,
+        readOnly: spec.readOnly,
+        mcp: this.prepareMcp(sessionId),
+      });
+    }
     const repo = await repoInfo(entry.cwd);
     let session: ManagedSession;
     try {
-      session = this.newManagedSession(entry, args, repo);
+      session = this.newManagedSession(launchEntry, args, repo);
+      // Codex 的第一句已經在參數裡，算送出了：重啟時不能再送一次。
+      if (launchEntry.pendingFirstPrompt !== entry.pendingFirstPrompt) {
+        entry.pendingFirstPrompt = null;
+        if (this.store.sessions.some((s) => s.sessionId === sessionId)) {
+          this.store.patch(sessionId, { pendingFirstPrompt: null });
+        }
+      }
     } catch (error) {
       this.dropMcp(sessionId);
       throw error;
@@ -826,7 +887,8 @@ export class Daemon {
     const { spec, sessionId } = entry;
     return new ManagedSession({
       id: sessionId,
-      bin: this.deps.config.claudeBin,
+      agent: agentOf(spec),
+      bin: this.agentBin(agentOf(spec)),
       args,
       env: this.sessionEnv(sessionId, spec),
       cwd: entry.cwd,
@@ -993,7 +1055,10 @@ export class Daemon {
       [HOOK_ENV.sessionId]: sessionId,
       [HOOK_ENV.socket]: this.hookServer.path,
       TERM: 'xterm-256color',
-      ...(spec.accountProfile ? { CLAUDE_CONFIG_DIR: spec.accountProfile } : {}),
+      // 帳號資料夾是 Claude Code 的設定；Codex 第一版不支援（hub 已擋），也不設 CODEX_HOME。
+      ...(spec.accountProfile && agentOf(spec) === 'claude'
+        ? { CLAUDE_CONFIG_DIR: spec.accountProfile }
+        : {}),
     };
   }
 
@@ -1022,7 +1087,10 @@ export class Daemon {
     }
     this.approvals.settleAnsweredInTerminal(event, sessionId, payload);
     // 不認得的 session 也照樣比對危險指令，往安全的方向。
-    return this.approvals.handleHook(event, sessionId, payload, signal);
+    const output = await this.approvals.handleHook(event, sessionId, payload, signal);
+    // Codex 收的格式不同（§19.4）：hook CLI 說了是 codex，或這個 session 是 Codex 開的。
+    const codex = request.agent === 'codex' || session?.agent === 'codex';
+    return codex ? codexHookOutput(event, output) : output;
   }
 
   // ── 用量 ─────────────────────────────────────────────────

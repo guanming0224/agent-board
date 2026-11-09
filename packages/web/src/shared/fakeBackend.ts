@@ -84,6 +84,8 @@ const machine = (id: string, name: string, online: boolean, hasGpu: boolean): Ma
     cpuCores: 12,
     memoryBytes: 32 * 1024 ** 3,
     claudeVersion: '0.0.0-demo',
+    // 示範：有 GPU 的那台也裝了 Codex CLI（新增 session 頁可以選 Codex，CONTRACTS §19）。
+    ...(hasGpu ? { codexVersion: '0.0.0-demo' } : {}),
   },
 });
 
@@ -1096,6 +1098,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         permissionMode: input.permissionMode,
         model: input.model,
         projectId: input.projectId,
+        ...(input.agent === 'codex' ? { agent: 'codex' as const } : {}),
         zoneId: input.zoneId ?? DEFAULT_ZONE_ID,
       });
       state.sessions = [...state.sessions, created];

@@ -18,6 +18,10 @@
   全域搜尋（P3 項目三，快速層與 2026-11-09 的深層）只讀資料、回片段，不送任何字進 PTY、不呼叫模型。
   用量詳情（2026-11-09）沿用原本的用量統計：daemon 只讀本機對話紀錄檔算 token，hub 只存每台最新一筆，不送任何字進 PTY、不呼叫模型。
   daemon 不會自己產生 prompt。
+  Codex 節點（2026-11-10，CONTRACTS §19）：Codex CLI 和 `claude` 一樣是使用者自己登入的官方互動式 CLI，由 daemon
+  開在 PTY 裡（同一支 `session.ts`、同一個 `node-pty` 呼叫點），送進去的字是上面同樣的來源（使用者打的、新增 session
+  時填的第一個指令——Codex 用官方的 `codex [PROMPT]` 帶入）。不用 `codex exec`／`review` 等非互動子指令，不帶
+  `OPENAI_API_KEY`、不讀 `~/.codex/auth.json`。hook 只回權限決定（allow／deny），不輸出 `additionalContext`。
 
 ## 重跑
 
@@ -46,6 +50,11 @@ corepack pnpm check:no-llm    # scripts/check-no-llm.mjs
    `--disallowedTools`、`--model`、`--mcp-config`、`--allowedTools`、`--name`（以及探測版本用的 `--version`），daemon 原始碼不得出現 `-p`／`--print`（非互動模式會直接
    耗用模型）。另外確認 `--allowedTools` 只會列 agent-board 自己的工具：protocol 的 `DispatchTool`＋`MemoryTool`
    必須正好是審查過的 7 個（`AGENT_BOARD_TOOLS`；2026-11-10 加 `release_member`），daemon 一律用 `mcp__agent-board__<tool>` 組全名（2026-11-08 加）。
+   codex（2026-11-10 加，3c）：`packages/daemon/src/codex.ts` 與 `packages/protocol/src/codex.ts` 裡的參數只能是
+   `resume`、`-s`、`-a`、`-m`、`-c`、`--dangerously-bypass-hook-trust`、`--dangerously-bypass-approvals-and-sandbox`
+   （`CODEX_FLAGS`），不得出現 `exec`、`e`、`review`、`--json`、`-o`／`--output-last-message`（非互動模式會直接耗用模型）；
+   daemon 原始碼不得出現 `codex exec`。開 codex 和開 claude 是同一個 `node-pty` 呼叫點（`session.ts`），
+   探測版本是 `resources.ts` 既有的 `child_process`（多跑一次 `codex --version`），所以 `CALL_SITES` 沒有新增項目，仍是 29 處。
 
 另外 `eslint.config.js:17-18` 用 `no-restricted-imports` 擋 `@anthropic-ai/*` 與 `openai`，
 `corepack pnpm lint` 會跑。發布檔的第三方套件清單怎麼算見 `scripts/release-shipped.mjs`
@@ -132,6 +141,22 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
   （`packages/hook/src/cli.ts:37-40`、`packages/daemon/src/approvals.ts:77-86`），不加
   `additionalContext`，不會往對話裡塞字。
 
+## Codex 的唯一使用方式：PTY 裡的 `codex`（2026-11-10）
+
+- 執行檔：`AGENT_BOARD_CODEX_BIN`，預設 `codex`（`packages/daemon/src/config.ts`）。開機時跑一次 `codex --version`
+  探測版本（`resources.ts` 的 `probeCodex`，不送 prompt），找不到就不回報、不能開 Codex session。
+- 參數：`buildCodexArgs`（`packages/daemon/src/codex.ts`）只會產生 `resume <thread id>`（接回使用者自己的對話）、
+  權限換算的 `-s <sandbox> -a <approval>` 或 `--dangerously-bypass-approvals-and-sandbox`（使用者選了 bypass）、
+  可選的 `-m <model>`、`--dangerously-bypass-hook-trust`（只讓這次啟動跳過 hook 信任確認）、每個 hook 事件一個
+  `-c hooks.<Event>=[{hooks=[{type="command",command="agent-board-hook --agent codex <Event>",…}]}]`，以及新對話時
+  `--` 後面使用者填的第一個指令。沒有 `exec`，所以永遠是互動式 TUI，等使用者輸入。`codex.test.ts` 有測試。
+- hook：只有 `type = "command"`，不用 `prompt`／`agent`／`mcp_tool` 型別（`prompt`／`agent` 會讓 CLI 另外呼叫模型）。
+  hook 的輸出只有權限決定（`codexHookOutput`），不輸出 `additionalContext`、`systemMessage`，Stop 不回 `decision: block`
+  （那會把 reason 當新的使用者 prompt 送進去）。
+- 環境：同 claude（拿掉 session 標記與機器 token），不設 `CLAUDE_CONFIG_DIR`，也不設 `OPENAI_API_KEY`、
+  `OPENAI_BASE_URL`、`CODEX_API_KEY`，模型呼叫由使用者自己登入的 `codex` 決定。daemon 不寫 `~/.codex`、不建專案 `.codex`、
+  不讀 `auth.json`；重啟接回時只列 `$CODEX_HOME/sessions` 底下的檔名找 thread 的對話紀錄是否存在。
+
 ## 送進 `claude` 的字從哪裡來（全部）
 
 PTY 只有兩個寫入點：`ManagedSession.write`（`packages/daemon/src/session.ts:295`）與
@@ -185,6 +210,8 @@ Claude Code 決定，不在中控台範圍。
 - 加入任何 LLM SDK 或直接打 LLM API（例如用模型產生交接摘要、拆解任務、偵測狀態）。
 - daemon 用 `claude -p`／`--print`、`--input-format stream-json` 等非互動模式，或在背景開
   `claude` 做事。
+- daemon 用 `codex exec`、`codex review`、`codex app-server` 驅動 Codex，或在背景開 `codex` 做事；
+  Codex 的 hook 改用 `prompt`／`agent` 型別、輸出 `additionalContext`，或 Stop hook 回 `decision: block`（會自動送新 prompt）。
 - hub 或 daemon 在使用者沒有動作、也沒有啟用規則的情況下送字進 PTY（例如自動回答對話框、
   自動 `/clear`、自動 `/compact`、定時「繼續」）。額度恢復後自動接續是唯一的「繼續」，
   只在使用者打開設定時、知道重置時間時送一次固定的一行。
@@ -208,5 +235,5 @@ Claude Code 決定，不在中控台範圍。
   這要靠 `CALL_SITES` 清單（任何新的 `fetch`／WebSocket／行程都會被擋下來審查）。
 - 第三方套件只掃 `.js/.cjs/.mjs/.json`；原生模組（`.node`）沒掃，三個原生模組
   （`node-pty`、`better-sqlite3`、`argon2`）的用途與 LLM 無關。
-- `claude` CLI 本身的行為不在範圍內。
+- `claude`、`codex` CLI 本身的行為不在範圍內（例如 Codex 的 `--approve-for-me` 會用 Codex 自己的審查模型，daemon 沒有用）。
 - 本次沒有實際監聽網路流量（未驗證）。

@@ -13,6 +13,7 @@ export {
   Lamp,
   Meter,
   ModeChip,
+  AgentChip,
   ReadOnlyChip,
   DispatchedByChip,
   useClock,

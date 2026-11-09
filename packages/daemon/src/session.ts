@@ -1,6 +1,7 @@
 // 單一 session：一個 PTY + 一個 headless xterm（畫面的權威來源）+ 狀態機。
 import { createRequire } from 'node:module';
 import type {
+  AgentKind,
   DaemonToHub,
   HookEventName,
   HookPayload,
@@ -128,6 +129,16 @@ export function screenFingerprint(lines: readonly string[]): string {
 
 /** 字串取自 claude 2.1.316，換版比對不到就退回 starting，不會誤報。要讀渲染後的畫面：輸出裡是分散的游標移動。 */
 const TRUST_PROMPT = /Yes, I trust this folder/;
+/**
+ * Codex 的資料夾信任畫面（未驗證：沒有在真的 codex 上看過，字串取自 codex 的 onboarding 文字）。
+ * 認不出來就只是一直顯示啟動中，不會誤報。回答要使用者自己在終端機按，daemon 不替他選。
+ */
+const CODEX_TRUST_PROMPT =
+  /Do you trust the contents of this directory|allow Codex to work in this folder/;
+/** Codex 開好後畫面頂端的標題框（`>_ OpenAI Codex (v…)`，未驗證）。 */
+const CODEX_READY = /OpenAI Codex/;
+/** 看到 Codex 標題後再等多久還沒有 SessionStart，才自己標成「剛開好」（§19.3）。 */
+const CODEX_READY_GRACE_MS = 3_000;
 
 const RULE_LINE = /^[\s─╌━-]+(?:\S+[\s─╌━-]+)?$/;
 
@@ -169,6 +180,8 @@ export function withoutPromptBox(lines: readonly string[]): string[] {
 
 export interface ManagedSessionOptions {
   id: string;
+  /** 跑的是哪個 CLI；不給＝Claude Code。只影響畫面上的提示比對（信任對話框、開好的畫面）。 */
+  agent?: AgentKind;
   bin: string;
   args: string[];
   env: Record<string, string>;
@@ -179,7 +192,8 @@ export interface ManagedSessionOptions {
   repo?: RepoInfo | null;
   /** `--model` 指定的值，用來推 context 上限。 */
   model?: string | null;
-  claudeSessionId: string;
+  /** CLI 的對話 id。Codex 新開時還不知道（等 SessionStart 回報），是 null。 */
+  claudeSessionId: string | null;
   pendingFirstPrompt: string | null;
   stuckMinutes: number;
   createStatusTracker: CreateStatusTracker;
@@ -219,6 +233,7 @@ export class ManagedSession {
   private killTimer: NodeJS.Timeout | null = null;
   private runtimeTimer: NodeJS.Timeout | null = null;
   private idleResizeTimer: NodeJS.Timeout | null = null;
+  private readyTimer: NodeJS.Timeout | null = null;
   private exited: Promise<void>;
   private resolveExited: () => void = () => {};
 
@@ -236,7 +251,7 @@ export class ManagedSession {
   private transcriptReads = 0;
   private endedAt: string | null = null;
   private exitCode: number | null = null;
-  private claudeSessionId: string;
+  private claudeSessionId: string | null;
   private pendingFirstPrompt: string | null;
 
   constructor(private readonly options: ManagedSessionOptions) {
@@ -283,11 +298,15 @@ export class ManagedSession {
     this.pty.onExit(({ exitCode, signal }) => this.handleExit(exitCode, signal ?? 0));
   }
 
+  get agent(): AgentKind {
+    return this.options.agent ?? 'claude';
+  }
+
   get isAlive(): boolean {
     return this.alive;
   }
 
-  get currentClaudeSessionId(): string {
+  get currentClaudeSessionId(): string | null {
     return this.claudeSessionId;
   }
 
@@ -448,12 +467,7 @@ export class ManagedSession {
     } catch (error) {
       log.error(`狀態機處理 hook ${event} 失敗：${errorMessage(error)}`);
     }
-    const reported = this.tracker.claudeSessionId;
-    if (reported && reported !== this.claudeSessionId) {
-      this.claudeSessionId = reported;
-      this.options.onClaudeSessionId(reported);
-      this.scheduleRuntime();
-    }
+    if (this.syncClaudeSessionId()) this.scheduleRuntime();
     if (event === 'SessionStart') {
       if (typeof payload.context_tokens === 'number' && payload.context_tokens >= 0) {
         this.contextTokens = Math.floor(payload.context_tokens);
@@ -524,6 +538,7 @@ export class ManagedSession {
   private handleExit(exitCode: number, signal: number): void {
     this.alive = false;
     this.cancelIdleResize();
+    this.cancelReadyTimer();
     if (this.killTimer) clearTimeout(this.killTimer);
     this.resolveExited();
     if (this.detached) return;
@@ -548,6 +563,7 @@ export class ManagedSession {
   }
 
   private disposeTracker(): void {
+    this.cancelReadyTimer();
     if (this.trackerDisposed) return;
     this.trackerDisposed = true;
     this.guardTracker(() => this.tracker.dispose());
@@ -587,7 +603,20 @@ export class ManagedSession {
     }
   }
 
+  /**
+   * tracker 從 hook 讀到的對話 id 變了就記下來（`/clear` 之後；Codex 新開的 session 第一次知道 thread id）。
+   * 狀態變化的 runtime 也要帶到新 id，所以 handleStatusChange 先同步一次。
+   */
+  private syncClaudeSessionId(): boolean {
+    const reported = this.trackerDisposed ? null : this.tracker.claudeSessionId;
+    if (!reported || reported === this.claudeSessionId) return false;
+    this.claudeSessionId = reported;
+    this.options.onClaudeSessionId(reported);
+    return true;
+  }
+
   private handleStatusChange(change: StatusChange): void {
+    this.syncClaudeSessionId();
     this.status = change.to;
     this.statusDetail = change.detail;
     this.statusSince = change.at.toISOString();
@@ -600,13 +629,39 @@ export class ManagedSession {
   private noteProgress(): void {
     if (this.termDisposed) return;
     const screen = readScreen(this.term);
-    if (screen.some((line) => TRUST_PROMPT.test(line))) {
+    const codex = this.options.agent === 'codex';
+    const trust = codex ? CODEX_TRUST_PROMPT : TRUST_PROMPT;
+    if (screen.some((line) => trust.test(line))) {
       this.guardTracker(() => this.tracker.onTrustPrompt());
+    } else if (
+      codex &&
+      this.status === 'starting' &&
+      !this.readyTimer &&
+      screen.some((line) => CODEX_READY.test(line))
+    ) {
+      this.scheduleReady();
     }
     const fingerprint = screenFingerprint(screen);
     if (fingerprint === this.fingerprint) return;
     this.fingerprint = fingerprint;
     this.guardTracker(() => this.tracker.onProgress());
+  }
+
+  /** Codex 開好了但 SessionStart 還沒到：等一下，還在 starting 才自己標成「剛開好」。 */
+  private scheduleReady(): void {
+    this.readyTimer = setTimeout(() => {
+      this.readyTimer = null;
+      if (!this.alive || this.detached || this.status !== 'starting') return;
+      const screen = this.termDisposed ? [] : readScreen(this.term);
+      if (screen.some((line) => CODEX_TRUST_PROMPT.test(line))) return;
+      this.guardTracker(() => this.tracker.onReadyScreen());
+    }, CODEX_READY_GRACE_MS);
+    this.readyTimer.unref();
+  }
+
+  private cancelReadyTimer(): void {
+    if (this.readyTimer) clearTimeout(this.readyTimer);
+    this.readyTimer = null;
   }
 
   private refreshLastLines(): void {

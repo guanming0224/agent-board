@@ -652,4 +652,138 @@ describe('agent-board-hook CLI', () => {
       });
     });
   });
+
+  // Codex（`--agent codex`，CONTRACTS §19）：欄位取自官方 hooks 文件；PreToolUse 不支援 ask。
+  describe('Codex', () => {
+    const codexBase = {
+      session_id: '0199a3c2-0000-7000-8000-000000000001',
+      transcript_path: null,
+      cwd: '/tmp',
+      model: 'gpt-test',
+      turn_id: 'turn-1',
+      permission_mode: 'default',
+    };
+    const codexBash = {
+      ...codexBase,
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push --force' },
+      tool_use_id: 'call_1',
+    };
+
+    it('帶 --agent codex：request 標 agent codex，事件照送', async () => {
+      daemon = await startDaemon(dir);
+      expectSilentExit(
+        await runCli({
+          args: ['--agent', 'codex', 'Stop'],
+          env: env(daemon.path),
+          stdin: JSON.stringify({ ...codexBase, hook_event_name: 'Stop' }),
+        }),
+      );
+      expect(daemon.requests).toHaveLength(1);
+      expect(daemon.requests[0]?.agent).toBe('codex');
+      expect(daemon.requests[0]?.event).toBe('Stop');
+    });
+
+    it('Codex 才有的事件（Interrupt、PostModelRequest）也送', async () => {
+      daemon = await startDaemon(dir);
+      for (const event of ['Interrupt', 'PostModelRequest']) {
+        expectSilentExit(
+          await runCli({
+            args: ['--agent', 'codex', event],
+            env: env(daemon.path),
+            stdin: JSON.stringify({ ...codexBase, hook_event_name: event }),
+          }),
+        );
+      }
+      expect(daemon.requests.map((r) => r.event)).toEqual(['Interrupt', 'PostModelRequest']);
+    });
+
+    it('不帶 --agent：request 沒有 agent（Claude Code，舊行為）', async () => {
+      daemon = await startDaemon(dir);
+      await runCli({ args: ['Stop'], env: env(daemon.path), stdin: JSON.stringify(stopInput) });
+      expect(daemon.requests[0]?.agent).toBeUndefined();
+    });
+
+    it('認不得的 agent 或缺事件：安靜結束、不送', async () => {
+      daemon = await startDaemon(dir);
+      for (const args of [['--agent', 'gemini', 'Stop'], ['--agent', 'codex'], ['--agent']]) {
+        expectSilentExit(
+          await runCli({ args, env: env(daemon.path), stdin: JSON.stringify(stopInput) }),
+        );
+      }
+      expect(daemon.requests).toEqual([]);
+    });
+
+    it('shell 工具統一成 Bash、陣列指令接成字串，daemon 才比對得到', async () => {
+      daemon = await startDaemon(dir, (request, socket) => reply(socket, request.requestId, null));
+      await runCli({
+        args: ['--agent', 'codex', 'PreToolUse'],
+        env: env(daemon.path),
+        stdin: JSON.stringify({
+          ...codexBash,
+          tool_name: 'shell',
+          tool_input: { command: ['bash', '-lc', 'rm -rf /'] },
+        }),
+      });
+      expect(daemon.requests[0]?.payload.tool_name).toBe('Bash');
+      expect(daemon.requests[0]?.payload.tool_input).toEqual({ command: 'bash -lc rm -rf /' });
+    });
+
+    it('連不上：PreToolUse + Bash 回 deny（Codex 不支援 ask）', async () => {
+      const result = await runCli({
+        args: ['--agent', 'codex', 'PreToolUse'],
+        env: env(missingSocket()),
+        stdin: JSON.stringify(codexBash),
+      });
+      expect(result.code).toBe(0);
+      expect(decisionOf(result.stdout)).toBe('deny');
+    });
+
+    it('超時：PreToolUse + Bash 回 deny', async () => {
+      daemon = await startDaemon(dir);
+      const result = await runCli({
+        args: ['--agent', 'codex', 'PreToolUse'],
+        env: env(daemon.path, { [WAIT_OVERRIDE_ENV]: '300' }),
+        stdin: JSON.stringify(codexBash),
+      });
+      expect(decisionOf(result.stdout)).toBe('deny');
+    });
+
+    it('連不上：PermissionRequest 安靜結束（照常跳 Codex 原生確認）', async () => {
+      expectSilentExit(
+        await runCli({
+          args: ['--agent', 'codex', 'PermissionRequest'],
+          env: env(missingSocket()),
+          stdin: JSON.stringify({
+            ...codexBase,
+            hook_event_name: 'PermissionRequest',
+            tool_name: 'Bash',
+            tool_input: { command: 'touch a.txt' },
+          }),
+        }),
+      );
+    });
+
+    it('PermissionRequest：daemon 的回答原樣印出', async () => {
+      const output = {
+        hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } },
+      };
+      daemon = await startDaemon(dir, (request, socket) =>
+        reply(socket, request.requestId, output),
+      );
+      const result = await runCli({
+        args: ['--agent', 'codex', 'PermissionRequest'],
+        env: env(daemon.path),
+        stdin: JSON.stringify({
+          ...codexBase,
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'touch a.txt' },
+        }),
+      });
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(output);
+    });
+  });
 });

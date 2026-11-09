@@ -15,6 +15,24 @@ export const HOOK_EVENTS: readonly string[] = [
   'Stop',
   'StopFailure',
   'SessionEnd',
+  // Codex 才有（`--agent codex`）。
+  'Interrupt',
+  'PostModelRequest',
+];
+/** `agent-board-hook --agent codex <Event>`（protocol 的 HOOK_AGENT_FLAG）。 */
+export const AGENT_FLAG = '--agent';
+export const AGENTS: readonly string[] = ['claude', 'codex'];
+/**
+ * Codex 跑 shell 指令的工具名稱。文件說 Bash 的 tool_input.command 是字串；其他名稱是舊版或內部名稱（未驗證），
+ * 一律當成 Bash 交給 daemon 比對危險指令，往安全的方向。
+ */
+export const CODEX_SHELL_TOOLS: readonly string[] = [
+  'Bash',
+  'shell',
+  'local_shell',
+  'exec_command',
+  'unified_exec',
+  'container.exec',
 ];
 export const BLOCKING_EVENTS: readonly string[] = ['PreToolUse', 'PermissionRequest'];
 

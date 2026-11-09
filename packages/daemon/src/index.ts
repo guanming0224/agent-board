@@ -44,6 +44,7 @@ async function pair(argv: string[]): Promise<void> {
     capabilities: await probeCapabilities(
       process.env.AGENT_BOARD_CLAUDE_BIN || 'claude',
       process.env,
+      process.env.AGENT_BOARD_CODEX_BIN || 'codex',
     ),
   });
   console.log(

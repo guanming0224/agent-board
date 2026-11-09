@@ -5,6 +5,7 @@
 //   2. 原始碼裡每個對外連線、開行程、把字送進終端機的位置都要在 CALL_SITES 清單裡。
 //      出現新的位置就失敗：先審查，確認不是呼叫 LLM、不是自動送 prompt，再加進清單與審查文件。
 //   3. daemon 給 claude 的參數只能是互動模式用的那幾個，不能有 -p／--print（非互動，直接耗用模型）。
+//      codex 同樣只能用互動式 TUI 的參數，不能用 exec／review 這類非互動子指令（2026-11-10 Codex 接口第一版）。
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { collectShipped } from './release-shipped.mjs';
@@ -117,6 +118,23 @@ const CLAUDE_FLAGS = new Set([
   '--version',
 ]);
 
+/**
+ * daemon 開 codex 時可以帶的參數與子指令（全部是互動式 TUI 用的，2026-11-10 Codex 接口第一版，CONTRACTS §19）。
+ * 組參數的程式只在 packages/daemon/src/codex.ts 與 packages/protocol/src/codex.ts（權限換算），這裡掃這兩個檔。
+ * `exec`、`e`、`review`、`--json` 是非互動模式（直接耗用模型），一律不准出現。
+ */
+const CODEX_FLAGS = new Set([
+  'resume', // codex resume <thread id>：接回使用者自己的互動式對話
+  '-s', // --sandbox
+  '-a', // --ask-for-approval
+  '-m', // --model
+  '-c', // 這次啟動的設定覆寫：只用來帶 hooks（不寫進 ~/.codex）
+  '--dangerously-bypass-hook-trust', // 只讓這次啟動跳過 hook 信任確認（GM 決策 1）
+  '--dangerously-bypass-approvals-and-sandbox', // 使用者選 bypassPermissions 時（沿用 bypass 警示）
+]);
+const CODEX_FILES = ['packages/daemon/src/codex.ts', 'packages/protocol/src/codex.ts'];
+const CODEX_NON_INTERACTIVE = /'(exec|e|review|--json|--output-last-message|-o)'/;
+
 const isTest = (path) =>
   /\.test\.[cm]?[jt]sx?$|[\\/](test|test-support|e2e|__tests__)[\\/]/.test(path);
 const CODE = /\.(ts|tsx|mjs|cjs|js|sh|ps1)$/;
@@ -192,6 +210,25 @@ for (const file of ['packages/daemon/src/session.ts', 'packages/daemon/src/resou
 for (const file of sources.filter((f) => rel(f).startsWith('packages/daemon/'))) {
   if (/'(-p|--print)'/.test(readFileSync(file, 'utf8'))) {
     problems.push(`${rel(file)}：出現 -p／--print，daemon 不能用非互動模式跑 claude`);
+  }
+}
+
+// 3c. codex 的參數與子指令（只允許互動式 TUI 用的）。
+for (const file of CODEX_FILES) {
+  const text = readFileSync(join(root, file), 'utf8');
+  for (const [, flag] of text.matchAll(/'(--?[a-z][\w-]*)'/g)) {
+    if (!CODEX_FLAGS.has(flag)) problems.push(`${file}：codex 參數 ${flag} 不在允許清單`);
+  }
+  for (const [, word] of text.matchAll(/args\.push\('([a-z][\w-]*)'/g)) {
+    if (!CODEX_FLAGS.has(word)) problems.push(`${file}：codex 子指令 ${word} 不在允許清單`);
+  }
+  if (CODEX_NON_INTERACTIVE.test(text)) {
+    problems.push(`${file}：出現非互動的 codex 子指令或參數，daemon 只能開互動式 codex`);
+  }
+}
+for (const file of sources.filter((f) => rel(f).startsWith('packages/daemon/'))) {
+  if (/['"]exec['"],\s*['"]--json['"]|codex exec/.test(readFileSync(file, 'utf8'))) {
+    problems.push(`${rel(file)}：出現 codex exec，daemon 不能用非互動模式跑 codex`);
   }
 }
 

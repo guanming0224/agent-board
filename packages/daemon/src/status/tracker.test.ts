@@ -1091,4 +1091,103 @@ describe('createStatusTracker', () => {
       expect(changes).toHaveLength(count);
     });
   });
+
+  // Codex（CONTRACTS §19.3）：NEW←SessionStart、RUN←UserPromptSubmit、PERM←PermissionRequest、ASK←Stop。
+  describe('Codex', () => {
+    const codex = (event: HookEventName, extra: Record<string, unknown> = {}) =>
+      payload(event, {
+        session_id: '0199a3c2-0000-7000-8000-000000000001',
+        turn_id: 't1',
+        ...extra,
+      });
+
+    it('NEW → RUN → PERM → RUN → ASK，thread id 記下來', () => {
+      tracker.onHook('SessionStart', codex('SessionStart', { source: 'startup' }));
+      expect(tracker.status).toBe('waiting_input');
+      expect(last()?.detail).toBe(IDLE_START_DETAIL);
+      expect(tracker.claudeSessionId).toBe('0199a3c2-0000-7000-8000-000000000001');
+      tracker.onHook('UserPromptSubmit', codex('UserPromptSubmit', { prompt: 'ok' }));
+      expect(tracker.status).toBe('running');
+      tracker.onHook(
+        'PermissionRequest',
+        codex('PermissionRequest', { tool_name: 'Bash', tool_input: { command: 'touch a' } }),
+      );
+      expect(tracker.status).toBe('waiting_permission');
+      tracker.onHook(
+        'PostToolUse',
+        codex('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'touch a' } }),
+      );
+      expect(tracker.status).toBe('running');
+      tracker.onHook('Stop', codex('Stop', { last_assistant_message: 'ok' }));
+      expect(tracker.status).toBe('waiting_input');
+      expect(last()?.detail).toBeNull();
+    });
+
+    it('Interrupt：回到等你', () => {
+      toRunning();
+      tracker.onHook('Interrupt', codex('Interrupt'));
+      expect(tracker.status).toBe('waiting_input');
+      expect(last()?.reason).toBe('hook:Interrupt');
+    });
+
+    it('模型請求失敗、之後重試成功：不報錯', () => {
+      toRunning();
+      tracker.onHook(
+        'PostModelRequest',
+        codex('PostModelRequest', { error: 'stream disconnected' }),
+      );
+      expect(tracker.status).toBe('running');
+      tracker.onHook('PostModelRequest', codex('PostModelRequest', { status: 'completed' }));
+      tracker.onHook('Stop', codex('Stop'));
+      expect(tracker.status).toBe('waiting_input');
+    });
+
+    it('這一輪最後一次模型請求失敗就結束：ERR，帶錯誤訊息', () => {
+      toRunning();
+      tracker.onHook(
+        'PostModelRequest',
+        codex('PostModelRequest', { error: { message: 'unexpected status 500' } }),
+      );
+      tracker.onHook('Stop', codex('Stop'));
+      expect(tracker.status).toBe('error');
+      expect(last()?.detail).toContain('unexpected status 500');
+      // 下一句話：重新開始
+      toRunning();
+      tracker.onHook('Stop', codex('Stop'));
+      expect(tracker.status).toBe('waiting_input');
+    });
+
+    it('額度用完：QUOTA，之後的 Stop 不蓋掉', () => {
+      toRunning();
+      tracker.onHook(
+        'PostModelRequest',
+        codex('PostModelRequest', { error: "You've hit your usage limit. Try again later." }),
+      );
+      expect(tracker.status).toBe('rate_limited');
+      tracker.onHook('Stop', codex('Stop'));
+      expect(tracker.status).toBe('waiting_input');
+    });
+
+    it('畫面上的 Codex 限流訊息（■ 開頭）', () => {
+      toRunning();
+      tracker.onOutput("■ You've hit your usage limit. Upgrade to Pro or try again at 3:05 PM.\n");
+      expect(tracker.status).toBe('rate_limited');
+    });
+
+    it('對話裡只是提到這句話（沒有 ■）不算', () => {
+      toRunning();
+      tracker.onOutput("You've hit your usage limit. Upgrade to Pro or try again at 3:05 PM.\n");
+      expect(tracker.status).toBe('running');
+    });
+
+    it('輸入畫面出現但還沒 SessionStart：NEW；SessionStart 先到就不動', () => {
+      tracker.onReadyScreen();
+      expect(tracker.status).toBe('waiting_input');
+      expect(last()).toMatchObject({ reason: 'output:ready', detail: IDLE_START_DETAIL });
+      toRunning();
+      const count = changes.length;
+      tracker.onReadyScreen();
+      expect(changes).toHaveLength(count);
+    });
+  });
 });

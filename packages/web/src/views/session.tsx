@@ -1,7 +1,7 @@
 // 航班條、待處理清單共用的小元件（STYLE.md §5）。
 import { useEffect, useState } from 'react';
 import { QUEUE_DETAIL_RATE_LIMITED } from '@agent-board/protocol';
-import type { Machine, PermissionMode, Project, Session } from '@agent-board/protocol';
+import type { AgentKind, Machine, PermissionMode, Project, Session } from '@agent-board/protocol';
 import { useT, useLocale } from '../shared/i18n';
 import {
   codeClass,
@@ -108,6 +108,17 @@ export function ModeChip({ mode }: { mode: PermissionMode }) {
     <span className="chip mode bypass">{t('views.mode.bypass')}</span>
   ) : (
     <span className="chip mode">{mode}</span>
+  );
+}
+
+/** 跑的是 Codex CLI（CONTRACTS §19）。Claude Code 是預設，不標。 */
+export function AgentChip({ session }: { session: { agent?: AgentKind } }) {
+  const t = useT();
+  if (session.agent !== 'codex') return null;
+  return (
+    <span className="chip agent" data-testid="agent-chip" title={t('views.agent.codex.title')}>
+      {t('views.agent.codex')}
+    </span>
   );
 }
 

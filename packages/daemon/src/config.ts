@@ -8,6 +8,8 @@ export interface DaemonConfig {
   token: string;
   dataDir: string;
   claudeBin: string;
+  /** codex 的路徑或指令名（AGENT_BOARD_CODEX_BIN，預設 codex）。找不到就不開 Codex session（§19）。 */
+  codexBin?: string;
   /** agent-board-hook 的路徑或指令名。 */
   hookBin: string;
   machineName: string;
@@ -62,6 +64,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     token,
     dataDir,
     claudeBin: env.AGENT_BOARD_CLAUDE_BIN || 'claude',
+    codexBin: env.AGENT_BOARD_CODEX_BIN || 'codex',
     hookBin: env.AGENT_BOARD_HOOK_BIN || HOOK_COMMAND,
     machineName: env.AGENT_BOARD_MACHINE_NAME || hostname(),
     claudeConfigDir: env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),

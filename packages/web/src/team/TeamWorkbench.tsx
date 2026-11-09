@@ -19,6 +19,7 @@ import {
   handsClass,
   Lamp,
   ModeChip,
+  AgentChip,
   ReadOnlyChip,
   resumeErrorText,
   useClock,
@@ -193,6 +194,7 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
                 <div className="sign">
                   <Callsign session={s} />
                   <ModeChip mode={s.permissionMode} />
+                  <AgentChip session={s} />
                   <ReadOnlyChip session={s} />
                   {team.phase && (
                     <span className="chip" data-testid={`member-kind-${s.id}`}>

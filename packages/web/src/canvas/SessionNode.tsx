@@ -25,6 +25,7 @@ import {
   inboxHash,
   Lamp,
   ModeChip,
+  AgentChip,
   ReadOnlyChip,
   DispatchedByChip,
   useViewsUi,
@@ -164,6 +165,7 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
       <div className="sign">
         <Callsign session={session} />
         <ModeChip mode={session.permissionMode} />
+        <AgentChip session={session} />
         <ReadOnlyChip session={session} />
         <DispatchedByChip session={session} />
         <AutoContinueNote session={session} />

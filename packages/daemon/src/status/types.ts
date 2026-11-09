@@ -31,6 +31,11 @@ export interface StatusTracker {
   onProgress(): void;
   /** 畫面上出現新資料夾的信任對話框。回答前 hook 不會跑，不偵測的話會一直顯示「啟動中」。 */
   onTrustPrompt(): void;
+  /**
+   * 畫面已經是 CLI 的輸入畫面，但還沒收到 SessionStart（Codex 未驗證 SessionStart 是否在開啟時就送，§19.3）。
+   * 還在 starting 才轉成「剛開好、閒著」，SessionStart 先到就沒事。
+   */
+  onReadyScreen(): void;
   onExit(exitCode: number): void;
   setStuckMinutes(minutes: number): void;
   dispose(): void;
