@@ -35,7 +35,7 @@ describe('Codex session', () => {
 
   it('Codex 不支援帳號資料夾：400', async () => {
     const { create } = await setup();
-    const res = await create({ agent: 'codex', accountProfile: '/Users/someone/.claude-2' });
+    const res = await create({ agent: 'codex', accountProfile: '/home/demo/.claude-2' });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('codex_account_profile');
   });
