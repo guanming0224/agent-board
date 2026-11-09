@@ -126,16 +126,22 @@ function ArchivedRow({
         </div>
       </div>
       <div className="acts">
-        <a className="button" href={`#/archive/${encodeURIComponent(session.id)}`}>
+        {/* 列內動作一律精簡（.sm 32，手機 44）；順序和舊資料頁一樣：開啟／還原 → 刪除（危險放最後）。 */}
+        <a className="button sm" href={`#/archive/${encodeURIComponent(session.id)}`}>
           {t('flows.archived.open')}
         </a>
-        <button type="button" disabled={busy || !connected} onClick={() => void restore()}>
+        <button
+          type="button"
+          className="sm"
+          disabled={busy || !connected}
+          onClick={() => void restore()}
+        >
           {t('flows.archived.restore')}
         </button>
         {isOwner && (
           <button
             type="button"
-            className="danger"
+            className="danger sm"
             disabled={!connected}
             onClick={() => onDelete(session)}
           >

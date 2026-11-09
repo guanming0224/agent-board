@@ -1,5 +1,14 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { get as httpGet, type IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -781,6 +790,50 @@ describe('static web', () => {
     expect(sw.headers.get('content-security-policy')).toContain("worker-src 'self'");
     // 其他靜態檔不受影響。
     expect((await hub.api('GET', '/app.js')).headers.get('cache-control')).not.toBe('no-cache');
+  });
+
+  it('never lets the page or boot check go through a 304; hashed assets are cached for good', async () => {
+    // iPhone Safari 走 304 快取載入首頁與主程式時停在「畫面沒有載入成功」（2026-11-09），整頁 200 才正常。
+    const webDir = mkdtempSync(join(tmpdir(), 'agent-board-web-'));
+    writeFileSync(join(webDir, 'index.html'), '<title>board</title>');
+    writeFileSync(join(webDir, 'boot-check.js'), 'boot();');
+    writeFileSync(join(webDir, 'sw.js'), 'self.addEventListener("push", () => {});');
+    writeFileSync(join(webDir, 'manifest.webmanifest'), '{}');
+    mkdirSync(join(webDir, 'assets'));
+    writeFileSync(join(webDir, 'assets', 'index-Ab12Cd34.js'), 'ok();');
+    hub = await startHub({ webDir });
+    const cacheOf = async (path: string) =>
+      (await hub.api('GET', path)).headers.get('cache-control');
+
+    for (const path of ['/', '/index.html', '/some/client/route', '/boot-check.js']) {
+      expect(await cacheOf(path), path).toBe('no-store');
+    }
+    expect(await cacheOf('/assets/index-Ab12Cd34.js')).toBe('public, max-age=31536000, immutable');
+    expect(await cacheOf('/sw.js')).toBe('no-cache');
+    // 其他根目錄檔案維持預設（每次重新驗證）。
+    expect(await cacheOf('/manifest.webmanifest')).toBe('public, max-age=0');
+
+    // 304 也帶同樣的 cache-control，瀏覽器不會把舊規則留在快取裡。用 node:http：fetch 帶條件標頭時
+    // 會自己加 cache-control: no-cache，伺服器就照規格回 200。
+    const asset = '/assets/index-Ab12Cd34.js';
+    const etag = (await hub.api('GET', asset)).headers.get('etag');
+    expect(etag).toBeTruthy();
+    const again = await new Promise<IncomingMessage>((done, fail) =>
+      httpGet(
+        {
+          host: '127.0.0.1',
+          port: hub.port,
+          path: asset,
+          headers: { 'if-none-match': etag ?? '' },
+        },
+        (res) => {
+          res.resume();
+          done(res);
+        },
+      ).on('error', fail),
+    );
+    expect(again.statusCode).toBe(304);
+    expect(again.headers['cache-control']).toBe('public, max-age=31536000, immutable');
   });
 
   it('runs fine without a web build', async () => {

@@ -4,6 +4,7 @@ import { MaskChip } from '../security';
 import { ZoneTabs } from '../zones';
 import { useLocale, useT, type Locale } from '../shared/i18n';
 import { useBoard } from '../shared/store';
+import { USAGE_HASH } from './overlay';
 import { openSearch, useOverlay, toggleInbox } from './overlayStore';
 import { nextInQueue, pendingQueue } from './queue';
 import { useViewsUi } from './uiStore';
@@ -32,14 +33,21 @@ function UsageSummaryText() {
   const totals = usageTotals(machines.map((m) => byMachine[m.id]));
   if (!totals) {
     return (
-      <span title={t('views.usage.noneTitle')} data-testid="usage-total">
+      <a
+        className="usage-open"
+        href={USAGE_HASH}
+        title={t('views.usage.noneTitle')}
+        data-testid="usage-total"
+      >
         {t('views.usage.none')}
-      </span>
+      </a>
     );
   }
   return (
-    <span
-      className="num"
+    // 點了打開用量詳情（#/usage，GM 2026-11-09）。
+    <a
+      className="num usage-open"
+      href={USAGE_HASH}
       data-testid="usage-total"
       title={t('views.usage.title', {
         days: totals.days,
@@ -49,7 +57,7 @@ function UsageSummaryText() {
       })}
     >
       {t('views.usage.short', { days: totals.days, tokens: formatTokens(totals.tokens, locale) })}
-    </span>
+    </a>
   );
 }
 
@@ -149,7 +157,7 @@ export function AppHeader() {
           <UsageSummaryText />
         </span>
         <MaskChip />
-        <div className="seg" role="group" aria-label={t('views.locale.aria')}>
+        <div className="seg locale-seg" role="group" aria-label={t('views.locale.aria')}>
           {LOCALES.map((l) => (
             <button
               key={l.value}
@@ -198,7 +206,10 @@ export function AppHeader() {
           data-testid="inbox-button"
         >
           {t('views.inbox.label')}
-          <b className="num">{waiting}</b>
+          {/* 0 是灰的，> 0 才用 --you（views.css）。 */}
+          <b className="num" data-waiting={waiting > 0 ? 'true' : undefined}>
+            {waiting}
+          </b>
           <kbd>I</kbd>
         </button>
         <a

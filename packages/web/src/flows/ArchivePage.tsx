@@ -461,10 +461,8 @@ export function ArchivePage() {
           <Lamp status={session.status} detail={session.statusDetail} />
         </header>
         <Callsign text={callsign(session, machines, projects.data ?? [])} />
+        {/* 主按鈕放第一個、危險放最後（報告 C4）。 */}
         <div className="acts">
-          <button type="button" disabled={busy || !connected} onClick={() => void restore()}>
-            {t('flows.archived.restore')}
-          </button>
           {canResume(session) && (
             <button
               type="button"
@@ -476,6 +474,9 @@ export function ArchivePage() {
               {resumer.busy ? t('views.resume.busy') : t('flows.archive.resume')}
             </button>
           )}
+          <button type="button" disabled={busy || !connected} onClick={() => void restore()}>
+            {t('flows.archived.restore')}
+          </button>
           {me.data?.role === 'owner' && (
             <button
               type="button"

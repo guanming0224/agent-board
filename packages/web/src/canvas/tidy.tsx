@@ -6,9 +6,10 @@ import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { useTeams } from '../team/store';
-import { useArchiveUi, UNDO_MS } from './archive';
+import { UNDO_MS } from './archive';
 import { arrangeCanvas, arrangeTeam, restoreLayout, type ArrangeInput } from './arrange';
 import type { Rect } from './layout';
+import { PROGRESS_K_MAX } from '../progress/CanvasProgress';
 import { motion } from './motion';
 import type { SessionNodeType } from './SessionNode';
 
@@ -19,13 +20,19 @@ const ease = (t: number) => (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2);
 
 /**
  * 畫布上收合的進度卡最高多高（畫布 px，progress/CanvasProgress.tsx 的 .progress-anchor）。
- * 收合的卡沒有縮放（scale 1），offsetHeight 就是畫布 px；展開的卡和縮很小時的小標籤都不算。
+ * 寫過的收合卡縮小畫布時會反向放大（--progress-k，寬度除回去、字換行後高度跟著變高）。整理後鏡頭會換縮放，
+ * 所以不用「現在」的倍數，一律用最大倍數 PROGRESS_K_MAX 量（暫時改 --progress-k、量完放回）：
+ * 結果不取決於按下整理時的縮放，整理後縮到哪裡預留都夠。展開的卡和縮很小時的小標籤都不算。
  */
 function measureProgressHeight(): number {
   let max = 0;
   for (const el of document.querySelectorAll<HTMLElement>('.progress-anchor')) {
     if (el.classList.contains('expanded') || el.querySelector('.progress-tiny')) continue;
-    max = Math.max(max, el.offsetHeight);
+    const k = el.dataset.grows === 'true' ? PROGRESS_K_MAX : 1;
+    const before = el.style.getPropertyValue('--progress-k');
+    el.style.setProperty('--progress-k', String(k));
+    max = Math.max(max, el.offsetHeight * k);
+    el.style.setProperty('--progress-k', before);
   }
   return max;
 }
@@ -58,6 +65,8 @@ interface Options {
   rectOf: (node: SessionNodeType) => Rect;
   /** 整理完移鏡頭：ids 為 null 表示全部顯示。 */
   fit: (ids: string[] | null) => void;
+  /** 畫布可視範圍（螢幕 px）：整理照它的長寬比排（GM 2026-11-09 妥善利用空間）。量不到回 null。 */
+  viewSize?: () => { w: number; h: number } | null;
 }
 
 export function useTidy({
@@ -68,9 +77,11 @@ export function useTidy({
   saveNow,
   rectOf,
   fit,
+  viewSize,
 }: Options): Tidy {
   const teams = useTeams((s) => s.teams);
   const members = useTeams((s) => s.members);
+  const rules = useTeams((s) => s.rules);
   const progress = useBoard((s) => s.progress);
   const [hasPrevious, setHasPrevious] = useState(() => tidyState.current.previous !== null);
   const [toastKey, setToastKey] = useState<number | null>(null);
@@ -145,9 +156,12 @@ export function useTidy({
       })),
       teams,
       members,
+      // 交接順序決定同分工成員的左右順序，交接線才只跨相鄰的空隙。
+      links: rules.map((r) => ({ source: r.fromSessionId, target: r.action.toSessionId })),
       progressH: measureProgressHeight(),
+      view: viewSize?.() ?? undefined,
     }),
-    [current, members, progress, sessions, teams],
+    [current, members, progress, rules, sessions, teams, viewSize],
   );
 
   /** 先記下整理前的全部位置當「上一次擺設」，再一次存好新位置與快照。 */
@@ -221,11 +235,21 @@ export function TidyPanel({ tidy, empty }: { tidy: Tidy; empty: boolean }) {
       role="group"
       aria-label={t('canvas.tidy.toolbar')}
     >
-      <button type="button" title={t('canvas.tidy.canvasHint')} onClick={tidy.tidyCanvas}>
+      <button
+        type="button"
+        className="sm"
+        title={t('canvas.tidy.canvasHint')}
+        onClick={tidy.tidyCanvas}
+      >
         {t('canvas.tidy.canvas')}
       </button>
       {tidy.hasPrevious && (
-        <button type="button" title={t('canvas.tidy.previousHint')} onClick={tidy.restorePrevious}>
+        <button
+          type="button"
+          className="sm"
+          title={t('canvas.tidy.previousHint')}
+          onClick={tidy.restorePrevious}
+        >
           {t('canvas.tidy.previous')}
         </button>
       )}
@@ -237,8 +261,6 @@ export function TidyPanel({ tidy, empty }: { tidy: Tidy; empty: boolean }) {
 export function TidyToast({ tidy }: { tidy: Tidy }) {
   const t = useT();
   const { toastKey, dismissToast } = tidy;
-  // 封存提示也在下方中央：同時出現時往上讓。
-  const archiveShown = useArchiveUi((s) => s.toast !== null || s.error !== null);
   useEffect(() => {
     if (toastKey === null) return;
     const timer = setTimeout(dismissToast, UNDO_MS);
@@ -246,17 +268,12 @@ export function TidyToast({ tidy }: { tidy: Tidy }) {
   }, [toastKey, dismissToast]);
   if (toastKey === null) return null;
   return (
-    <Panel
-      position="bottom-center"
-      className={`archive-toast tidy-toast${archiveShown ? ' raised' : ''}`}
-      data-testid="tidy-toast"
-    >
-      <div className="toast-row" role="status">
-        <span>{t('canvas.tidy.done')}</span>
-        <button type="button" onClick={tidy.restorePrevious}>
-          {t('canvas.tidy.undo')}
-        </button>
-      </div>
-    </Panel>
+    // 和封存提示疊在同一欄（CanvasPage 的 .toast-stack），不用自己算讓位。
+    <div className="toast-row tidy-toast" role="status" data-testid="tidy-toast">
+      <span>{t('canvas.tidy.done')}</span>
+      <button type="button" className="sm" onClick={tidy.restorePrevious}>
+        {t('canvas.tidy.undo')}
+      </button>
+    </div>
   );
 }

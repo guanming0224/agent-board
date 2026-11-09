@@ -2,10 +2,12 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { FakeTerminalStream } from '../src/shared/fakeBackend';
-import '../src/shared/styles/tokens.css';
 import type { TerminalServerMessage, TerminalStream } from '../src/shared/terminal-contract';
 import { TerminalView } from '../src/terminal';
 import { terminalForTest } from '../src/terminal/controller';
+// 和 main.tsx 同一個順序：各區 CSS 先、tokens／controls 後（同權重時 controls 贏）。
+import '../src/shared/styles/tokens.css';
+import '../src/shared/styles/controls.css';
 
 const SESSION = 'e2e';
 

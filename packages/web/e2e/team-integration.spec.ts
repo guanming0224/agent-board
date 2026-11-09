@@ -497,6 +497,8 @@ test('全部暫停（真 hub）：按暫停→自動交接被擋下、另一個�
 test('全隊停止：規則先關，session 真的結束，不會因結束再觸發交接', async ({ page }) => {
   await page.goto(`/#/team/${teamId}`);
   await page.getByRole('button', { name: '全隊停止' }).click();
+  await expect(page.getByRole('button', { name: /再按一次，停止/ })).toBeVisible();
+  await page.waitForTimeout(400); // 350ms 內的連點不算確認（useTwoStep）
   await page.getByRole('button', { name: /再按一次，停止/ }).click();
   await expect(page.getByTestId('team-controls-msg')).toContainText('已要求停止');
   await expect
@@ -509,6 +511,44 @@ test('全隊停止：規則先關，session 真的結束，不會因結束再觸
     enabled: boolean;
   }[];
   expect(rules.every((r) => !r.enabled)).toBe(true);
+});
+
+test('全隊啟動：真的用 --resume 接回當初停掉的 session，規則恢復，按鈕回到全隊暫停', async ({
+  page,
+}) => {
+  await page.goto(`/#/team/${teamId}`);
+  const holds = await auditOf(page, 'team.hold');
+  const held = JSON.parse(holds[0]!.detail) as { rules: string[]; stopped: string[] };
+  expect(held.stopped).toContain(worker.id);
+  const before = await getSession(page.request, worker.id);
+  expect(before.endedAt).not.toBeNull();
+  // 停止後：只剩「全隊啟動」（其他裝置靠 team.updated 同步，這裡是重新開的頁面）。
+  await expect(page.getByRole('button', { name: '全隊暫停' })).toHaveCount(0);
+  await expect(page.getByTestId('team-hold-note')).toContainText('--resume');
+  await page.getByRole('button', { name: '全隊啟動' }).click();
+  const msg = page.getByTestId('team-controls-msg');
+  await expect(msg).toContainText(`已啟動：接回 ${held.stopped.length} 個 session`);
+  await expect(msg).toContainText(`打開 ${held.rules.length} 條交接規則`);
+  // 假 claude 用 --resume 接回同一段對話，回到等輸入；不送字。
+  await expectStatus(page.request, worker.id, 'waiting_input');
+  const after = await getSession(page.request, worker.id);
+  expect(after.endedAt).toBeNull();
+  expect(after.claudeSessionId).toBe(before.claudeSessionId);
+  const rules = (await (await page.request.get(`/api/teams/${teamId}/handoff-rules`)).json()) as {
+    id: string;
+    enabled: boolean;
+  }[];
+  for (const id of held.rules) expect(rules.find((r) => r.id === id)?.enabled).toBe(true);
+  await expect(page.getByRole('button', { name: '全隊暫停' })).toBeVisible();
+  await expect(page.getByTestId('team-hold-note')).toHaveCount(0);
+  const team = (
+    (await (await page.request.get('/api/teams')).json()) as { id: string; hold?: unknown }[]
+  ).find((x) => x.id === teamId);
+  expect(team?.hold).toBeUndefined();
+  const resumed = JSON.parse((await auditOf(page, 'team.resume'))[0]!.detail) as {
+    resumed: string[];
+  };
+  expect(resumed.resumed.sort()).toEqual([...held.stopped].sort());
 });
 
 test('建立團隊時一起開 LD + BD + RV：真的建出 session、BD 有自己的 worktree、RV 只讀共用資料夾', async ({

@@ -1521,6 +1521,11 @@ test.describe('等你的數量與上限（GM 2026-11-06）', () => {
 test.describe('一鍵整理', () => {
   const STEP_X = 680 + 140;
   const STEP_Y = 640 + 72;
+  /**
+   * 團隊裡上下兩列的距離（arrange.ts TEAM_ROW_GAP，由線上標籤高 24＋上下各 6＋2 在最小縮放下推算，
+   * ＝(24 + 12 + 2) × TEAM_BLOCK_GAP 240 ÷ TEAM_GAP_SCREEN 36 ≈ 253.33；GM 2026-11-09 最小縮放 0.2→0.15）。
+   */
+  const TEAM_STEP_Y = 640 + ((24 + 2 * 6 + 2) * 240) / 36;
   const IDS = ['s-auth', 's-tests', 's-etl', 's-ml', 's-docs', 's-web'];
   type Box = { x: number; y: number };
 
@@ -1581,6 +1586,74 @@ test.describe('一鍵整理', () => {
     's-web': { x: -2 * STEP_X, y: STEP_Y },
   };
 
+  /**
+   * 線與線上的字看得到（GM 2026-11-09）：每條線取樣的點都不在任何卡片矩形裡（線畫在卡片底下），
+   * 字不壓到卡、也沒有被卡片蓋住。
+   */
+  async function expectLinksVisible(page: Page, minLabels = 1) {
+    const report = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.react-flow__node')].map((n) => ({
+        id: n.getAttribute('data-id'),
+        r: n.getBoundingClientRect(),
+      }));
+      const inCard = (x: number, y: number) =>
+        cards
+          .filter(
+            (c) => x > c.r.left + 1 && x < c.r.right - 1 && y > c.r.top + 1 && y < c.r.bottom - 1,
+          )
+          .map((c) => c.id ?? '');
+      const edges = [...document.querySelectorAll('.react-flow__edge')].map((e) => {
+        const path = e.querySelector<SVGPathElement>('path.react-flow__edge-path')!;
+        const len = path.getTotalLength();
+        const m = path.getScreenCTM()!;
+        const hidden: string[] = [];
+        for (let i = 0; i <= 60; i += 1) {
+          const at = path.getPointAtLength((len * i) / 60);
+          const p = new DOMPoint(at.x, at.y).matrixTransform(m);
+          hidden.push(...inCard(p.x, p.y));
+        }
+        return { id: e.getAttribute('data-id'), len, hidden };
+      });
+      // 畫面外的字（整理後放不下、留給捲動的部分）量不到有沒有被蓋住，只看畫面裡的。
+      const host = document.querySelector('.react-flow')!.getBoundingClientRect();
+      const shown = [...document.querySelectorAll<HTMLElement>('.edge-label')].filter((el) => {
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        return x > host.left && x < host.right && y > host.top && y < host.bottom;
+      });
+      const labels = shown.map((el) => {
+        const r = el.getBoundingClientRect();
+        const under = cards
+          .filter(
+            (c) =>
+              r.left < c.r.right && c.r.left < r.right && r.top < c.r.bottom && c.r.top < r.bottom,
+          )
+          .map((c) => c.id);
+        // 沒有卡片蓋在字上面（線本身透明的感應區在上面不算）。標籤平常不接滑鼠，
+        // elementsFromPoint 會跳過它，量的時候暫時打開。
+        const was = el.style.pointerEvents;
+        el.style.pointerEvents = 'auto';
+        const stack = document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        el.style.pointerEvents = was;
+        const mine = stack.findIndex((x) => el.contains(x));
+        const cover = stack.findIndex((x) => x.closest('.react-flow__node'));
+        return { id: el.dataset.testid, under, onTop: mine >= 0 && (cover < 0 || mine < cover) };
+      });
+      return { edges, labels };
+    });
+    expect(report.edges.length).toBeGreaterThan(0);
+    for (const edge of report.edges) {
+      expect(edge.len, `${edge.id} 有長度`).toBeGreaterThan(20);
+      expect(edge.hidden, `${edge.id} 不從卡片底下穿過`).toEqual([]);
+    }
+    expect(report.labels.length).toBeGreaterThanOrEqual(minLabels);
+    for (const l of report.labels) {
+      expect(l.under, `${l.id} 不壓到卡`).toEqual([]);
+      expect(l.onTop, `${l.id} 沒被蓋住`).toBe(true);
+    }
+  }
+
   test('整理畫布：不重疊、團隊相鄰；重新載入後可回到上一次擺設，再按一次換回來', async ({
     page,
   }) => {
@@ -1598,7 +1671,8 @@ test.describe('一鍵整理', () => {
     expect(overlapPairs(tidied)).toEqual([]);
     // 隊長在上一列、成員正下方
     expect(tidied['s-auth']!.x).toBe(tidied['s-tests']!.x);
-    expect(tidied['s-auth']!.y).toBe(tidied['s-tests']!.y + STEP_Y);
+    // 畫面上讀回的座標只到小數第三位（TEAM_ROW_GAP 不是整數）。
+    expect(tidied['s-auth']!.y).toBeCloseTo(tidied['s-tests']!.y + TEAM_STEP_Y, 2);
     await shot(page, 'tidy-canvas');
 
     // 一次存好：目前位置＋上一次擺設
@@ -1621,6 +1695,132 @@ test.describe('一鍵整理', () => {
     await page.getByRole('button', { name: '回到上一次擺設' }).click();
     await expect.poll(() => positions(page)).toEqual(MESSY);
   });
+
+  test('整理畫布後關係線與線上的字看得到：線不從任何卡片底下穿過，字不壓到卡（GM 2026-11-09）', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openWith(page, MESSY);
+    await page.getByRole('button', { name: '整理畫布' }).click();
+    await expect(page.getByTestId('tidy-toast')).toBeVisible();
+    await page.waitForTimeout(800);
+    // 交接規則 s-auth → s-tests：成員在隊長正下方，以前的線整條藏在兩張卡底下。
+    const label = page.getByTestId('handoff-label-s-auth-s-tests');
+    await expect(label).toBeVisible();
+    await expectLinksVisible(page);
+    await shot(page, 'tidy-edges');
+  });
+
+  /**
+   * 用假後端加 session、團隊、交接規則（GM 實際的量級）。teams[i] 是第 i 個團隊的人數；
+   * 第 0 個團隊用 demo 原本的「登入重構」（s-tests 隊長、s-auth 成員），其他新建。
+   * 每個團隊：隊長、開發、最後一位審查，交接鏈 開發 → … → 審查 → 隊長。
+   */
+  async function addTeams(page: Page, sizes: number[]) {
+    await page.evaluate(
+      async ({ url, teamsUrl, sizes }) => {
+        const { useBoard } = await import(/* @vite-ignore */ url);
+        const { refreshTeams } = await import(/* @vite-ignore */ teamsUrl);
+        const b = useBoard.getState().backend;
+        const spec = (name: string) => ({
+          name,
+          machineId: 'm-studio',
+          cwd: '/home/demo/project',
+          useWorktree: false,
+          readOnly: false,
+          permissionMode: 'default',
+          model: null,
+          projectId: null,
+          firstPrompt: null,
+        });
+        for (let t = 0; t < sizes.length; t += 1) {
+          const n = sizes[t]!;
+          let teamId = 'team-demo-auth';
+          let ids = ['s-tests', 's-auth'];
+          if (t > 0) {
+            const team = await b.createTeam({
+              name: `團隊 ${t + 1}`,
+              goal: '',
+              doneCriteria: '',
+              color: 'teal',
+              contextMd: '',
+            });
+            teamId = team.id;
+            ids = [];
+          }
+          while (ids.length < n) {
+            const s = await b.createSession(spec(`T${t + 1} 成員 ${ids.length + 1}`));
+            ids.push(s.id);
+          }
+          for (let i = 0; i < n; i += 1) {
+            const role = i === 0 ? 'lead' : i === n - 1 && n > 2 ? 'reviewer' : 'worker';
+            await b.putTeamMember(teamId, ids[i], role);
+          }
+          for (let i = 1; i < n - 1; i += 1) {
+            await b.createHandoffRule(teamId, {
+              fromSessionId: ids[i],
+              trigger: 'on_done',
+              action: { toSessionId: ids[i + 1] },
+              enabled: true,
+            });
+          }
+        }
+        await refreshTeams(b);
+      },
+      { url: STORE, teamsUrl: '/src/team/store.ts', sizes },
+    );
+  }
+
+  /** 整理後畫面上的範圍（卡片＋團隊框，螢幕 px）與畫布可視範圍。 */
+  const screenRange = (page: Page) =>
+    page.evaluate(() => {
+      const host = document.querySelector('.react-flow')!.getBoundingClientRect();
+      const rs = [...document.querySelectorAll('.react-flow__node, .team')].map((n) =>
+        n.getBoundingClientRect(),
+      );
+      const left = Math.min(...rs.map((r) => r.left));
+      const top = Math.min(...rs.map((r) => r.top));
+      const right = Math.max(...rs.map((r) => r.right));
+      const bottom = Math.max(...rs.map((r) => r.bottom));
+      // 畫面使用率：範圍落在可視範圍裡的面積 ÷ 可視範圍面積。
+      const w = Math.max(0, Math.min(right, host.right) - Math.max(left, host.left));
+      const h = Math.max(0, Math.min(bottom, host.bottom) - Math.max(top, host.top));
+      return {
+        aspect: (right - left) / (bottom - top),
+        usage: (w * h) / (host.width * host.height),
+        cards: document.querySelectorAll('.react-flow__node').length,
+      };
+    });
+
+  for (const [name, sizes, minUsage] of [
+    ['1 個團隊 16 人', [16], 0.6],
+    ['6 個團隊各 3–5 人', [3, 4, 5, 3, 4, 5], 0.6],
+  ] as const) {
+    test(`妥善利用空間（GM 2026-11-09）：${name}整理後全部顯示，範圍接近畫面比例、畫面使用率高；線與字看得到`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await openCanvas(page);
+      await addTeams(page, [...sizes]);
+      const total = sizes.reduce((a, b) => a + b, 0);
+      await expect
+        .poll(() => page.locator('.react-flow__node').count())
+        .toBeGreaterThanOrEqual(total);
+      await page.getByRole('button', { name: '全部顯示' }).click();
+      await page.waitForTimeout(400);
+      await shot(page, `tidy-space-${sizes.length}-before`);
+      await page.getByRole('button', { name: '整理畫布' }).click();
+      await expect(page.getByTestId('tidy-toast')).toBeVisible();
+      await page.waitForTimeout(800);
+      const range = await screenRange(page);
+      expect(range.aspect, JSON.stringify(range)).toBeGreaterThanOrEqual(1.2);
+      expect(range.aspect, JSON.stringify(range)).toBeLessThanOrEqual(2.2);
+      expect(range.usage, JSON.stringify(range)).toBeGreaterThanOrEqual(minUsage);
+      await expectLinksVisible(page, 0);
+      await shot(page, `tidy-space-${sizes.length}-after`);
+    });
+  }
 
   test('整理團隊：只動團隊與被壓到的卡；存一次；「復原」還原；拖曳後就不能復原', async ({
     page,
@@ -1646,7 +1846,13 @@ test.describe('一鍵整理', () => {
     );
 
     await page.getByTestId('tidy-team-team-demo-auth').click();
-    await expect.poll(() => positions(page).then((p) => p['s-auth'])).toEqual({ x: 0, y: STEP_Y });
+    await expect
+      .poll(() =>
+        positions(page).then(
+          (p) => p['s-auth'] && { x: p['s-auth'].x, y: Math.round(p['s-auth'].y) },
+        ),
+      )
+      .toEqual({ x: 0, y: Math.round(TEAM_STEP_Y) });
     const after = await positions(page);
     expect(after['s-tests']).toEqual({ x: 0, y: 0 });
     expect(after['s-docs']).not.toEqual(before['s-docs']);
@@ -2597,7 +2803,9 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
     { width: 1440, height: 900 },
     { width: 390, height: 844 },
   ]) {
-    test(`一鍵整理後團隊之間在畫面上至少 48px（${view.width}px）`, async ({ page }) => {
+    test(`一鍵整理後團隊之間在畫面上至少 36px（GM 2026-11-09 放寬）（${view.width}px）`, async ({
+      page,
+    }) => {
       await page.emulateMedia({ reducedMotion: 'reduce' });
       await page.setViewportSize(view);
       await page.goto('/#/canvas');
@@ -2608,7 +2816,7 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
       const z = await page
         .locator('.canvas')
         .evaluate((el) => Number(getComputedStyle(el).getPropertyValue('--z')));
-      expect(z).toBeGreaterThanOrEqual(0.2 - 1e-6);
+      expect(z).toBeGreaterThanOrEqual(0.15 - 1e-6);
       // 螢幕上：團隊框和框外的卡、和別的團隊框之間的最小距離。
       const min = await page.evaluate(() => {
         type R = { x: number; y: number; r: number; b: number };
@@ -2628,7 +2836,8 @@ test.describe('團隊框質感與拖線把手（P2 §4）', () => {
       });
       expect(min.frames).toBeGreaterThan(0);
       expect(min.out).not.toBe(Infinity);
-      expect(min.out).toBeGreaterThanOrEqual(48);
+      // 縮放剛好停在 0.15 時是 240 × 0.15＝36，量到的螢幕座標有次像素誤差（例如 35.99995）。
+      expect(min.out).toBeGreaterThanOrEqual(36 - 0.01);
     });
   }
 
@@ -3015,6 +3224,24 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
     await expect(page.getByTestId('pause-button')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByTestId('pause-button')).toContainText('已暫停：做完這輪就停');
     await expect(page.getByTestId('pause-msg')).toHaveText('已暫停：做完這輪就停。');
+    // 暫停中再打開選單，標得出目前的模式：白框＋淡底（以前 CSS 選錯屬性，看不出來）。
+    await page.getByTestId('pause-button').click();
+    await expect(page.getByTestId('pause-finish-turn')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('pause-finish-turn')).toHaveCSS(
+      'border-top-color',
+      'rgb(255, 255, 255)',
+    );
+    await expect(page.getByTestId('pause-finish-turn')).toHaveCSS(
+      'background-color',
+      'rgba(255, 255, 255, 0.1)',
+    );
+    // 沒選中的項目：浮層選單項目（controls.css .menu-item）沒有框，只有選中的才有白框。
+    await expect(page.getByTestId('pause-interrupt')).toHaveCSS(
+      'border-top-color',
+      'rgba(0, 0, 0, 0)',
+    );
+    await page.getByTestId('pause-button').click();
+    await expect(page.getByTestId('pause-menu')).toHaveCount(0);
     await expect(page.getByTestId('resume-button').first()).toBeEnabled();
     await expect(page.getByTestId('resume-release')).toHaveText('會放出：沒有排隊中的');
     // 做完這輪就停不送 Esc：RUN 照樣在跑。
@@ -3067,6 +3294,11 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
     await option.click();
     // 第一次只上膛：還沒暫停，RUN 還在跑。
     await expect(option).toContainText('再按一次：中斷 1 個 RUN');
+    // 危險按鈕的 hover 是紅底（--fault 20%），不再被一般按鈕的 hover 蓋成中性灰 --raise。
+    await option.hover();
+    await expect
+      .poll(() => option.evaluate((el) => getComputedStyle(el).backgroundColor))
+      .toMatch(/^color\(srgb 0\.94\d* 0\.4\d* 0\.37\d* \/ 0\.2\)$/);
     await expect(strip(page)).toHaveCount(0);
     await expect(lamp(page, 's-tests')).toHaveText('●RUN');
     // 3 秒內沒按就退回，不執行。
@@ -3183,10 +3415,10 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
     await expect(page.getByTestId('command-bar')).toBeHidden();
     const pauseButton = phone.getByTestId('pause-button');
     const resumeButton = phone.getByTestId('resume-button');
-    for (const button of [pauseButton, resumeButton]) {
-      expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(56);
-    }
-    await expect(resumeButton).toBeDisabled();
+    expect((await pauseButton.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+    // 沒暫停時不放一顆停用的「全部繼續」佔掉拇指區（審視報告 inbox #13）：暫停鈕自己佔滿一排。
+    await expect(resumeButton).toHaveCount(0);
+    expect((await pauseButton.boundingBox())!.width).toBeGreaterThan(300);
 
     await pauseButton.click();
     const interrupt = phone.getByTestId('pause-interrupt');
@@ -3204,12 +3436,13 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
       '（沒送到的：Nav tweaks）',
     );
     await expect(phone.getByTestId('resume-release')).toHaveText('會放出：沒有排隊中的');
+    expect((await resumeButton.boundingBox())!.height).toBeGreaterThanOrEqual(56);
     await shot(page, 'phone-paused');
 
     await resumeButton.click();
     await expect(phone.getByTestId('pause-strip')).toHaveCount(0);
     await expect(phone.getByTestId('pause-msg')).toHaveText('已繼續（沒有排隊中的）');
-    await expect(resumeButton).toBeDisabled();
+    await expect(resumeButton).toHaveCount(0);
     const width = await page.evaluate(() => document.documentElement.scrollWidth);
     expect(width).toBeLessThanOrEqual(390);
   });
@@ -3231,11 +3464,222 @@ test.describe('全部暫停＋底部指令列（P2 §3）', () => {
       await expect(screen).toBeVisible();
       await expect(screen.getByTestId('pause-strip')).toBeVisible();
       await expect(screen.getByTestId('pause-strip')).toContainText('已暫停（做完這輪就停）');
+      // 全螢幕頁的「全部繼續」和收件匣一樣是 56px（會動到 session 的動作，GM Q1）；「← 返回」至少 44。
+      const resume = screen.getByTestId('resume-button');
+      expect((await resume.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+      expect((await screen.getByTestId('phone-back').boundingBox())!.height).toBeGreaterThanOrEqual(
+        44,
+      );
     }
     // 繼續之後就收起來。
     await page.getByTestId('phone-new').getByTestId('resume-button').click();
     await expect(page.getByTestId('pause-strip')).toHaveCount(0);
     const width = await page.evaluate(() => document.documentElement.scrollWidth);
     expect(width).toBeLessThanOrEqual(390);
+  });
+});
+
+test.describe('設計統一：畫布區（GM 2026-11-09 Q1、Q2、Q4）', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  /** 螢幕上的實際大小（含畫布縮放與摘要條的 scale）。 */
+  const screenBox = async (page: Page, selector: string) =>
+    (await page.locator(selector).first().boundingBox())!;
+
+  test('Q2：等你的卡用代碼色框＋淡底；只有「下一個等我的」框出那張是白色主按鈕', async ({
+    page,
+  }) => {
+    await openCanvas(page);
+    const inCards = page.locator('.react-flow__node');
+    const cues = inCards.locator('.acts button.cue');
+    await expect.poll(() => cues.count()).toBeGreaterThanOrEqual(2);
+    // 還沒聚焦任何一張：畫布上沒有白色實心按鈕（頁首的「下一個等我的」不在畫布裡）。
+    await expect(inCards.locator('button.primary')).toHaveCount(0);
+    for (const b of await cues.all()) {
+      const look = await b.evaluate((el) => {
+        const frame = el.closest('.frame')!;
+        const probe = document.createElement('i');
+        probe.style.color = getComputedStyle(frame).getPropertyValue('--sc');
+        frame.appendChild(probe);
+        const sc = getComputedStyle(probe).color;
+        probe.remove();
+        const s = getComputedStyle(el);
+        return { border: s.borderTopColor, bg: s.backgroundColor, sc };
+      });
+      expect(look.border).toBe(look.sc);
+      expect(look.bg).not.toBe('rgb(255, 255, 255)');
+    }
+    // 按 N：框出的那張換成白色主按鈕，其他等你的卡仍是代碼色框。
+    await page.keyboard.press('n');
+    const spot = page.locator('.frame.spot');
+    await expect(spot).toHaveCount(1);
+    await expect(spot.locator('.acts button.primary')).toHaveCount(1);
+    await expect(inCards.locator('button.primary')).toHaveCount(1);
+    await expect(spot.locator('.acts button.cue')).toHaveCount(0);
+    await shot(page, 'design-q2-focus');
+  });
+
+  test('Q4：畫布縮到 30% 以下只留標題列；點兩下照樣打開', async ({ page }) => {
+    await openCanvasAt(page, 0.25);
+    const auth = card(page, 's-auth');
+    await expect(page.locator('.canvas')).toHaveAttribute('data-compact', '');
+    await expect(auth.locator('.head .lamp')).toBeVisible();
+    await expect(auth.locator('.head .title')).toBeVisible();
+    // 名稱自己一行，不會被徽章與等待時間擠到看不見。
+    const title = (await auth.locator('.head .title').boundingBox())!;
+    expect(title.width).toBeGreaterThan(40);
+    for (const sel of ['.acts', '.cmd-row', '.menu-btn', '.tail']) {
+      await expect(auth.locator(sel)).toBeHidden();
+    }
+    await shot(page, 'design-q4-compact');
+    // 30% 以上：按鈕與輸入框回來。
+    await openCanvasAt(page, 0.5);
+    await expect(page.locator('.canvas')).not.toHaveAttribute('data-compact', '');
+    await expect(auth.locator('.cmd-row')).toBeVisible();
+    await expect(auth.locator('.acts button').first()).toBeVisible();
+    // 縮很小時點兩下標題列：照樣換成終端機並放大到看得清楚。
+    await openCanvasAt(page, 0.25);
+    await auth.locator('.head .title').dblclick();
+    await expect(auth).toHaveAttribute('data-mode', 'terminal');
+    await expect.poll(() => zoomLevel(page)).toBeGreaterThanOrEqual(30);
+    await expect(page.locator('.canvas')).not.toHaveAttribute('data-compact', '');
+  });
+
+  test('Q4：摘要模式關掉時，縮到 30% 以下點兩下終端機卡的標題列也會放大、按鈕回來', async ({
+    page,
+  }) => {
+    await openCanvas(page);
+    const toggle = page.getByRole('button', { name: /^摘要模式/ });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await openCanvasAt(page, 0.25);
+    const auth = card(page, 's-auth');
+    await expect(auth).toHaveAttribute('data-mode', 'terminal');
+    await expect(page.locator('.canvas')).toHaveAttribute('data-compact', '');
+    await expect(auth.locator('.term-acts')).toBeHidden();
+    await auth.locator('.termcard header .title').dblclick();
+    await expect.poll(() => zoomLevel(page)).toBeGreaterThanOrEqual(30);
+    await expect(page.locator('.canvas')).not.toHaveAttribute('data-compact', '');
+    await expect(auth.locator('.term-acts')).toBeVisible();
+  });
+
+  test('摘要條（89%）和終端機卡（90%）的按鈕、輸入框在螢幕上一樣大，切換不跳', async ({ page }) => {
+    const measure = async () =>
+      card(page, 's-tests').evaluate((frame) => {
+        const h = (sel: string) => frame.querySelector(sel)!.getBoundingClientRect().height;
+        const f = (sel: string) => {
+          const el = frame.querySelector<HTMLElement>(sel)!;
+          // 螢幕上的字級＝computed 字級 × 螢幕倍率（外框的螢幕寬 ÷ 外框的 CSS 寬）
+          const k = frame.getBoundingClientRect().width / (frame as HTMLElement).offsetWidth;
+          const strip = el.closest<HTMLElement>('.strip');
+          const s = strip ? strip.getBoundingClientRect().width / strip.offsetWidth / k : 1;
+          return parseFloat(getComputedStyle(el).fontSize) * k * s;
+        };
+        return { input: h('input.cmd'), menu: h('.menu-btn'), font: f('input.cmd') };
+      });
+    await openCanvasAt(page, 0.89);
+    await expect(card(page, 's-tests')).toHaveAttribute('data-mode', 'summary');
+    const strip = await measure();
+    await openCanvasAt(page, 0.9);
+    await expect(card(page, 's-tests')).toHaveAttribute('data-mode', 'terminal');
+    const term = await measure();
+    // 精簡一級：螢幕上 32／13。
+    for (const m of [strip, term]) {
+      expect(m.input).toBeGreaterThan(31);
+      expect(m.input).toBeLessThan(33);
+      expect(m.menu).toBeGreaterThan(31);
+      expect(m.menu).toBeLessThan(33);
+      expect(m.font).toBeGreaterThan(12.5);
+      expect(m.font).toBeLessThan(13.5);
+    }
+  });
+
+  test('左上（側欄開關、線）和右上（整理畫布）中線對齊；縮放列和指令列一樣高', async ({ page }) => {
+    await openCanvas(page);
+    const mid = (b: { y: number; height: number }) => b.y + b.height / 2;
+    const side = await screenBox(page, '.side-toggle');
+    const links = await screenBox(page, '.link-panel-toggle');
+    const tidy = await page.getByRole('button', { name: '整理畫布' }).boundingBox();
+    expect(Math.abs(mid(side) - mid(links))).toBeLessThan(1);
+    expect(Math.abs(mid(side) - mid(tidy!))).toBeLessThan(1);
+    for (const b of [side, links, tidy!]) expect(b.height).toBe(32);
+    const zoom = await screenBox(page, '.canvas .zoom');
+    const bar = await screenBox(page, '.command-bar');
+    expect(Math.abs(zoom.height - bar.height)).toBeLessThan(1);
+    expect(Math.abs(zoom.y + zoom.height - (bar.y + bar.height))).toBeLessThan(1);
+    // 小地圖在縮放列上方 8px。
+    const mini = await screenBox(page, '.canvas .minimap');
+    expect(Math.round(zoom.y - (mini.y + mini.height))).toBe(8);
+  });
+
+  test('1280 寬、側欄開著：底部指令列不壓到右下的縮放列（看畫布寬，不看視窗寬）', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await openCanvas(page);
+    await expect(page.locator('.board.side-open')).toHaveCount(1);
+    const bar = await screenBox(page, '.command-bar');
+    const zoom = await screenBox(page, '.canvas .zoom');
+    const overlap =
+      bar.x < zoom.x + zoom.width &&
+      zoom.x < bar.x + bar.width &&
+      bar.y < zoom.y + zoom.height &&
+      zoom.y < bar.y + bar.height;
+    expect(overlap).toBe(false);
+  });
+
+  test('封存與整理的「復原」疊在同一欄，不互相蓋住，也不蓋到指令列', async ({ page }) => {
+    await openCanvas(page);
+    await page.getByRole('button', { name: '整理畫布' }).click();
+    await page.locator('.react-flow__node[data-id="s-web"] .menu-btn').click();
+    await card(page, 's-web').getByRole('menuitem', { name: '封存' }).click();
+    const archive = (await page.getByTestId('archive-toast').boundingBox())!;
+    const tidy = (await page.getByTestId('tidy-toast').boundingBox())!;
+    const bar = await screenBox(page, '.command-bar');
+    const overlap = (a: typeof archive, b: typeof archive) =>
+      a.y < b.y + b.height && b.y < a.y + a.height;
+    expect(overlap(archive, tidy)).toBe(false);
+    expect(Math.max(archive.y + archive.height, tidy.y + tidy.height)).toBeLessThanOrEqual(bar.y);
+    await shot(page, 'design-toast-stack');
+  });
+
+  test('頁首：遮蔽開著是「按下」框線不是實心白；收件匣 0 是灰的；⚙ 和其他按鈕同高', async ({
+    page,
+  }) => {
+    await openCanvas(page);
+    const mask = page.getByTestId('mask-chip');
+    if ((await mask.getAttribute('aria-pressed')) !== 'true') await mask.click();
+    await expect(mask).toHaveAttribute('aria-pressed', 'true');
+    // 全站「按下」樣式：白框＋10% 白底（有 0.15 秒的轉場，用 toHaveCSS 等它停下）。
+    await expect(mask).toHaveCSS('border-top-color', 'rgb(255, 255, 255)');
+    await expect(mask).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.1)');
+    await expect(mask).toHaveCSS('font-size', '14px');
+    const gear = (await page.getByTestId('settings-button').boundingBox())!;
+    const inbox = (await page.getByTestId('inbox-button').boundingBox())!;
+    expect(gear.height).toBe(inbox.height);
+    expect(gear.width).toBe(gear.height);
+    // 有等你的：數字是琥珀色；沒有：灰色。
+    const count = page.getByTestId('inbox-button').locator('b');
+    const amber = await count.evaluate((el) => getComputedStyle(el).color);
+    await patchStore(
+      page,
+      `const s = useBoard.getState();
+       useBoard.setState({ sessions: s.sessions.map((x) => ({ ...x, status: 'running', permissionMode: 'default' })), approvals: [] });`,
+    );
+    await expect(count).toHaveText('0');
+    const grey = await count.evaluate((el) => getComputedStyle(el).color);
+    expect(grey).not.toBe(amber);
+  });
+
+  test('摘要模式開著＝按下樣式；關掉不加框', async ({ page }) => {
+    await openCanvas(page);
+    const toggle = page.locator('.summary-toggle');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle).toHaveCSS('border-top-color', 'rgb(255, 255, 255)');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    // 關著＝一般精簡按鈕的 --border-2 框（以前反過來：關著才加白框）。
+    await expect(toggle).toHaveCSS('border-top-color', 'rgb(51, 60, 73)');
+    await toggle.click();
   });
 });

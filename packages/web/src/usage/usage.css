@@ -1,0 +1,510 @@
+/*
+ * 用量詳情（GM 2026-11-09）。只用在這個次畫面，不改共用樣式。
+ * 控制項用 controls.css 的共用元件（STYLE.md §5.1）：標題列 .panel-head（✕ 由次畫面外框的 button.close 給，
+ * 手機是 PhonePage 的「← 返回」）、分段切換 .seg.sm（期間、計算、堆疊、圖／表、排行分頁）、
+ * 排序與名稱鈕 button.link、重新讀取等 button.sm、空狀態 .empty；尺寸、字級、間距一律用 token。
+ * 這裡只留位置、表格與圖表本身的樣式。
+ *
+ * 圖表顏色：STYLE.md 規定狀態代碼色只給狀態、綠色只給 DONE 與 diff、額度相關一律用 QUOTA 紫，
+ * 所以這裡不用 dataviz 的多色相類別色盤（藍、橙、綠、紅都會撞到狀態色），改用 QUOTA 紫的四階：
+ *   s1 #9b6bff（= --quota，單一系列一律用它）、s2 #6236cc、s3 #bea0ff、s4 #ede6ff；s0 灰是「其他」。
+ * 2026-11-09 用 dataviz 的 validate_palette.js 對 --surface #14181f 實測：
+ *   - 依堆疊順序的相鄰配對：色盲 ΔE 最差 13.6（protan，s1↔s2）、正常視覺最差 16.8，都過門檻（8／15）。
+ *   - 由淺到深排成序列色階（--ordinal）全部通過；最深一階對比 2.47:1（≥ 2:1）。
+ *   - 類別色盤的「亮度帶」與「彩度下限」不過（單一色相本來就會），所以一定有圖例、提示框與表格檢視，
+ *     段與段之間留 2px 底色。
+ */
+.usage-page {
+  --uv-1: var(--quota);
+  --uv-2: #6236cc;
+  --uv-3: #bea0ff;
+  --uv-4: #ede6ff;
+  --uv-0: #5c6573;
+}
+.page.usage-page {
+  max-width: 1120px;
+  padding: 0 var(--space-6) var(--space-8);
+}
+.uv-s1 {
+  --uv: var(--uv-1);
+}
+.uv-s2 {
+  --uv: var(--uv-2);
+}
+.uv-s3 {
+  --uv: var(--uv-3);
+}
+.uv-s4 {
+  --uv: var(--uv-4);
+}
+.uv-s0 {
+  --uv: var(--uv-0);
+}
+
+/* 標題列（.panel-head）貼齊次畫面左右兩邊，右邊讓出外框的 ✕（精簡 32＋右距 8＋間距 8）。 */
+.modal-body .page.usage-page {
+  padding-top: 0;
+}
+.usage-page > .usage-page-head {
+  margin: 0 calc(-1 * var(--space-6)) var(--space-3);
+  padding-right: calc(var(--ctl-h-sm) + var(--space-2) * 2);
+}
+.usage-note {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-ctl-sm);
+}
+.usage-page .alert {
+  margin-top: var(--space-3);
+}
+.usage-detail.refreshing {
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+.usage-detail > .empty {
+  margin-top: var(--space-4);
+}
+
+.usage-machines {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.usage-machine {
+  display: flex;
+  gap: var(--space-1h);
+}
+.usage-machine.st-old_daemon,
+.usage-machine.st-not_reported,
+.usage-machine.off {
+  color: var(--fg-muted);
+}
+
+.usage-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 var(--space-3);
+}
+.usage-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.usage-control-label {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.usage-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
+
+.usage-card {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  min-width: 0;
+}
+.usage-card h3 {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+.usage-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-2);
+}
+.usage-card > .empty {
+  margin-top: var(--space-2);
+}
+
+/* 總覽：三張 KPI 磚 */
+.usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.usage-tile {
+  min-width: 0;
+}
+.usage-tile + .usage-tile {
+  border-left: 1px solid var(--border);
+  padding-left: var(--space-3);
+}
+.usage-tile-label {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.usage-tile-value {
+  margin: 2px 0 0;
+  font-size: var(--fs-h1);
+  font-weight: 650;
+  line-height: 1.2;
+}
+.usage-change {
+  margin: 2px 0 var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.usage-partial {
+  color: var(--muted);
+  cursor: help;
+}
+.usage-breakdown {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px var(--space-3);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.usage-breakdown > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-1h);
+  min-width: 0;
+}
+.usage-breakdown dt {
+  color: var(--muted);
+}
+.usage-breakdown dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.usage-breakdown-all {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+  padding-top: 2px;
+}
+
+/* 每日趨勢 */
+.usage-chart-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1h);
+}
+.usage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.usage-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+}
+.usage-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--uv);
+}
+.usage-plot {
+  position: relative;
+}
+.usage-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border-radius: var(--radius-control);
+}
+.usage-scroll svg {
+  display: block;
+}
+.usage-bar {
+  fill: var(--uv);
+}
+.usage-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.usage-axis {
+  stroke: var(--border-2);
+  stroke-width: 1;
+}
+/* 刻度字和畫布線標籤同一級（--fs-xs）：SVG 左邊只留 PAD.left 給數字。 */
+.usage-tick {
+  fill: var(--faint);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.usage-hover {
+  fill: var(--accent-bg);
+}
+.usage-hit {
+  fill: transparent;
+  cursor: crosshair;
+}
+.usage-tooltip {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  min-width: 160px;
+  padding: var(--space-2);
+  background: var(--raise);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+  z-index: 2;
+}
+.usage-tooltip-day {
+  color: var(--muted);
+}
+.usage-tooltip-total b {
+  font-size: var(--fs-base);
+}
+.usage-tooltip-row {
+  display: grid;
+  grid-template-columns: 14px auto 1fr;
+  align-items: center;
+  gap: var(--space-1h);
+}
+.usage-tooltip-row span:last-child {
+  color: var(--muted);
+}
+/* 提示框用短線當圖例鍵，不用色塊 */
+.usage-key {
+  height: 2px;
+  background: var(--uv);
+}
+.usage-data-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--fs-sm);
+}
+.usage-data-table th,
+.usage-data-table td {
+  padding: 3px var(--space-2);
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.usage-data-table th:first-child {
+  text-align: left;
+}
+.usage-data-table thead th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* 排行 */
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-ctl-sm);
+}
+.usage-table th,
+.usage-table td {
+  padding: var(--space-1h) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.usage-table thead th {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.usage-table thead th:first-child,
+.usage-table tbody th {
+  text-align: left;
+}
+.usage-table td {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.usage-table td.sorted {
+  color: var(--fg);
+  font-weight: 600;
+}
+.usage-table tbody th {
+  font-weight: 400;
+  min-width: 180px;
+  max-width: 360px;
+}
+.usage-table tr.go {
+  cursor: pointer;
+}
+.usage-table tr.go:hover {
+  background: var(--accent-bg);
+}
+/* 欄名排序鈕（button.link）：字跟著表頭，排序中的欄名不加底線。 */
+.usage-table button.usage-sort {
+  font-size: inherit;
+  font-weight: 600;
+}
+/* 名稱鈕（button.link）：一般文字色、粗體、可換行，靠左貼齊表格。 */
+.usage-table button.usage-link {
+  padding: 0;
+  color: var(--fg);
+  font-weight: 600;
+  text-align: left;
+  white-space: normal;
+  text-decoration: underline;
+  text-decoration-color: var(--border-2);
+  text-underline-offset: 3px;
+}
+.usage-table button.usage-link:hover:not(:disabled) {
+  text-decoration-color: var(--fg);
+}
+.usage-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.usage-sub {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.usage-meter {
+  display: block;
+  height: 4px;
+  margin-top: var(--space-1);
+  border-radius: 2px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.usage-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--uv-1);
+}
+.usage-card > button {
+  margin-top: var(--space-2);
+}
+
+/* 分布 */
+.usage-shares-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.usage-shares {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+  font-size: var(--fs-ctl-sm);
+}
+.usage-shares li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 var(--space-2);
+}
+.usage-share-label {
+  overflow-wrap: anywhere;
+}
+.usage-share-value {
+  font-variant-numeric: tabular-nums;
+}
+.usage-shares .usage-meter {
+  grid-column: 1 / -1;
+}
+
+/* 手機（版面切換）：表格改成清單，圖可以橫向捲。控制項的觸控尺寸由 controls.css 給。 */
+@media (max-width: 640px) {
+  .page.usage-page {
+    padding: 0 var(--space-4) var(--space-8);
+  }
+  .usage-page > .usage-page-head {
+    margin: 0 calc(-1 * var(--space-4)) var(--space-3);
+    padding-right: var(--space-4);
+  }
+  .usage-tiles,
+  .usage-shares-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .usage-tile + .usage-tile {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--border);
+    padding-top: var(--space-2);
+  }
+  .usage-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .usage-table,
+  .usage-table tbody {
+    display: block;
+  }
+  .usage-table tr {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px var(--space-2);
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .usage-table th,
+  .usage-table td {
+    padding: 0;
+    border: 0;
+  }
+  .usage-table tbody th {
+    grid-column: 1 / -1;
+    max-width: none;
+    min-width: 0;
+  }
+  .usage-table td {
+    text-align: left;
+    font-size: var(--fs-sm);
+  }
+  .usage-table td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--muted);
+    font-size: var(--fs-sm);
+  }
+}
+
+/* 頁首與側欄的入口（樣式放這裡，不改共用的 views.css） */
+a.usage-open {
+  color: inherit;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 3px;
+}
+a.usage-open:hover {
+  color: var(--fg);
+  text-decoration-color: var(--fg);
+}
+a.usage-open.side {
+  display: inline-block;
+  margin-top: var(--space-1h);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.usage-caption {
+  margin-left: var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--muted);
+}

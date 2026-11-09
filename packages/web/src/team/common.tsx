@@ -1,5 +1,6 @@
 // 工作台內共用的小元件。
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useTwoStep } from '../flows/common';
 import { useT } from '../shared/i18n';
 import { errorText } from '../views';
 import { TEAM_COLORS, teamColorVar } from './store';
@@ -50,38 +51,40 @@ export function ActionMessage({
   );
 }
 
-const ARM_MS = 5000;
-
-/** 危險操作按兩次（STYLE.md 邏輯 6），不用原生 confirm。第二次之前說清楚會發生什麼。 */
+/**
+ * 危險操作按兩次（STYLE.md 邏輯 6），不用原生 confirm。第二次之前說清楚會發生什麼。
+ * 和流程頁共用 useTwoStep（4 秒內有效、350ms 內連點不算）；上膛時 data-armed（實心紅，controls.css）。
+ * 失焦就解除：按完第一下去做別的事，不會留著一顆隨時會執行的按鈕。
+ */
 export function TwoClickButton({
   label,
   armedLabel,
   onConfirm,
   disabled,
+  className,
+  role,
+  testId,
 }: {
   label: string;
   armedLabel: string;
   onConfirm: () => void;
   disabled?: boolean;
+  /** 加在 danger 之後的 class（例如 sm、menu-item）。 */
+  className?: string;
+  role?: string;
+  testId?: string;
 }) {
-  const [armed, setArmed] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(timer.current), []);
+  const { armed, press, disarm } = useTwoStep();
   return (
     <button
-      className="danger"
+      type="button"
+      className={className ? `danger ${className}` : 'danger'}
+      role={role}
+      data-armed={armed ? 'true' : undefined}
+      data-testid={testId}
       disabled={disabled}
-      onClick={() => {
-        clearTimeout(timer.current);
-        if (armed) {
-          setArmed(false);
-          onConfirm();
-          return;
-        }
-        setArmed(true);
-        timer.current = setTimeout(() => setArmed(false), ARM_MS);
-      }}
-      onBlur={() => setArmed(false)}
+      onClick={() => press(onConfirm)}
+      onBlur={disarm}
     >
       {armed ? armedLabel : label}
     </button>
@@ -106,7 +109,7 @@ export function ColorPicker({
           <button
             key={color}
             type="button"
-            className="color-pick"
+            className="icon color-pick"
             aria-label={name}
             title={name}
             aria-pressed={current === color}

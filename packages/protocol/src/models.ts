@@ -344,6 +344,30 @@ export const Note = z.object({
 });
 export type Note = z.infer<typeof Note>;
 
+/**
+ * 全隊暫停／全隊停止記下的「這次為了這個團隊關掉的東西」（GM 2026-11-09，CONTRACTS §17）。
+ * 存在 hub 的 settings 表（鍵 `teamHold:<teamId>`，不升 schema），hub 重啟後仍在；「全隊繼續／全隊啟動」照它恢復，
+ * 恢復完就清掉。pause＝送了 Esc；stop＝停了 session（暫停後再停止也算 stop）。
+ */
+export const TeamHoldMode = z.enum(['pause', 'stop']);
+export type TeamHoldMode = z.infer<typeof TeamHoldMode>;
+
+export const TeamHold = z.object({
+  mode: TeamHoldMode,
+  /** 第一次按暫停或停止的時間；之後再按不重算。 */
+  since: IsoTime,
+  /** 最後一次按的使用者。 */
+  by: Id,
+  byName: z.string(),
+  /** 為了這個團隊關掉的交接規則（原本是開的）。 */
+  ruleIds: z.array(Id),
+  /** 任務自動執行原本是開的、被關掉了。 */
+  taskAuto: z.boolean(),
+  /** 停止時被停掉的成員（原本活著、停止要求有送出）。全隊啟動只接回這些。 */
+  stoppedSessionIds: z.array(Id),
+});
+export type TeamHold = z.infer<typeof TeamHold>;
+
 export const Team = z.object({
   id: Id,
   name: z.string().min(1),
@@ -360,8 +384,59 @@ export const Team = z.object({
   taskAuto: z.boolean().optional(),
   /** 團隊所在的工作區（schema v9 `teams.zone_id`）；成員跟著團隊。 */
   zoneId: Id,
+  /** 全隊暫停／停止後還沒恢復時才有（hub 回傳時附上；建立、修改時不能帶）。 */
+  hold: TeamHold.optional(),
 });
 export type Team = z.infer<typeof Team>;
+
+/** 回報結果裡提到的 session。 */
+export const TeamSessionRef = z.object({ sessionId: Id, name: z.string() });
+export type TeamSessionRef = z.infer<typeof TeamSessionRef>;
+
+/** 全隊暫停／停止的結果。rules、taskAuto 是這次才關掉的（已經關著的不算）。 */
+export const TeamHoldResult = z.object({
+  team: Team,
+  rules: z.number().int().nonnegative(),
+  taskAuto: z.boolean(),
+  /** pause：送了 Esc 的（工作中、卡住的）。 */
+  interrupted: z.array(TeamSessionRef),
+  /** pause：該送 Esc 但機器失聯、沒送到的。 */
+  offline: z.array(TeamSessionRef),
+  /** stop：已要求停止的。 */
+  stopped: z.array(TeamSessionRef),
+  /** stop：停不了的（code 例如 machine_offline）。 */
+  failed: z.array(TeamSessionRef.extend({ code: z.string() })),
+});
+export type TeamHoldResult = z.infer<typeof TeamHoldResult>;
+
+/** 全隊繼續／全隊啟動的結果。mode 是 null＝沒有記錄（別的裝置已經恢復過），什麼都沒做。 */
+export const TeamResumeResult = z.object({
+  team: Team,
+  mode: TeamHoldMode.nullable(),
+  rules: z.object({
+    /** 這次打開的。 */
+    enabled: z.number().int().nonnegative(),
+    /** 暫停後已經被手動打開的（不重複開）。 */
+    alreadyOn: z.number().int().nonnegative(),
+    /** 暫停後被刪掉的（略過）。 */
+    deleted: z.number().int().nonnegative(),
+  }),
+  /** enabled：這次打開；already_on：已被手動打開；none：當初沒關它。 */
+  taskAuto: z.enum(['enabled', 'already_on', 'none']),
+  /** stop：已用 `--resume` 接回原對話的。 */
+  resumed: z.array(TeamSessionRef),
+  /** stop：機器失聯、還沒接回的（記錄留著，機器回來再按一次）。 */
+  offline: z.array(TeamSessionRef),
+  /** stop：已經在跑（例如手動接續過）的，略過。 */
+  alreadyRunning: z.array(TeamSessionRef),
+  /** stop：接不回的（code 例如 no_claude_session）。 */
+  failed: z.array(TeamSessionRef.extend({ code: z.string() })),
+  /** stop：已刪除或已離開團隊的成員，略過的數量。 */
+  gone: z.number().int().nonnegative(),
+  /** 目前是全部暫停中：規則打開了，但自動送字仍會被擋。 */
+  boardPaused: z.boolean(),
+});
+export type TeamResumeResult = z.infer<typeof TeamResumeResult>;
 
 export const TeamMember = z.object({
   teamId: Id,

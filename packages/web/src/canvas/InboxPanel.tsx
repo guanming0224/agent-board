@@ -2,7 +2,7 @@
 // 清單本身在 flows/InboxBoard（排序、直接動作、展開審核卡、鍵盤）。
 import { InboxBoard, type TeamOption } from '../flows';
 import { useT } from '../shared/i18n';
-import { useTeamSync, useTeams } from '../team/store';
+import { teamColorVar, useTeamSync, useTeams } from '../team/store';
 import { closeRight, ErrorState, LoadingState, useBoardLoad, useViewsUi } from '../views';
 import { CloseButton, SidePanel } from '../views/Overlays';
 import './canvas.css';
@@ -17,6 +17,7 @@ function useTeamOptions(): TeamOption[] {
   return teams.map((team) => ({
     id: team.id,
     name: team.name,
+    color: teamColorVar(team.color),
     memberIds: members.filter((m) => m.teamId === team.id).map((m) => m.sessionId),
   }));
 }
@@ -60,7 +61,7 @@ export function InboxDrawer({ target, nonce }: { target: string | null; nonce: n
           <>
             <button
               type="button"
-              className="ghost"
+              className="sm"
               aria-pressed={wide}
               onClick={() => setWide(!wide)}
               title={t('canvas.inbox.wideHint')}

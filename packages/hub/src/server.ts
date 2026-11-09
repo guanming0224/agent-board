@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { resolve, sep } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
@@ -79,6 +79,22 @@ const DAEMON_MAX_PAYLOAD = 64 * 1024 * 1024;
 
 /** 推播用的 service worker，放在網站根目錄，scope 才涵蓋整個 app（web 的 flows/pwa/sw.js）。 */
 const SERVICE_WORKER_FILE = 'sw.js';
+
+/**
+ * 首頁與開機檢查每次都重抓（no-store），檔名帶 hash 的 assets/ 永久快取（immutable），兩邊都不會走 304。
+ * 2026-11-09 iPhone Safari 從入口頁點進來時，首頁與主程式走 304 快取就停在「畫面沒有載入成功」，整頁 200 才正常
+ * （hub.log 01:57:03／:19／:34）；首頁換新版時也不會再拿舊首頁去要已經不存在的舊 hash 檔。
+ */
+const NO_STORE_FILES = new Set(['index.html', 'boot-check.js']);
+const IMMUTABLE_DIR = 'assets';
+
+function cacheControlFor(webDir: string, path: string): string | null {
+  const rel = relative(webDir, path);
+  if (rel === SERVICE_WORKER_FILE) return 'no-cache';
+  if (NO_STORE_FILES.has(rel)) return 'no-store';
+  if (rel.startsWith(`${IMMUTABLE_DIR}${sep}`)) return 'public, max-age=31536000, immutable';
+  return null;
+}
 
 const SECURITY_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
@@ -217,10 +233,10 @@ export function createHub(options: HubOptions): RunningHub {
     app.register(fastifyStatic, {
       root: webDir,
       wildcard: false,
-      // service worker 每次都要回來問有沒有新版，不然改了推播處理要等快取過期。
+      // service worker 每次都要回來問有沒有新版，不然改了推播處理要等快取過期。其他規則見 cacheControlFor。
       setHeaders: (reply, path) => {
-        if (path.endsWith(`${sep}${SERVICE_WORKER_FILE}`))
-          reply.header('cache-control', 'no-cache');
+        const cacheControl = cacheControlFor(webDir, path);
+        if (cacheControl) reply.header('cache-control', cacheControl);
       },
     });
   }

@@ -2,16 +2,26 @@
 // 研究階段、任務板、交接規則、目標與 TEAM.md）收合呈現；底部群發指令框。
 import { useCallback, useEffect, useState } from 'react';
 import { TeamRole } from '@agent-board/protocol';
-import type { Session, Task, Team, TeamMember } from '@agent-board/protocol';
+import type {
+  Session,
+  Task,
+  Team,
+  TeamMember,
+  TeamResumeResult,
+  TeamSessionRef,
+} from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import {
   Callsign,
+  closeRight,
   errorText,
   handsClass,
   Lamp,
   ModeChip,
   ReadOnlyChip,
+  resumeErrorText,
+  useClock,
   useViewsUi,
 } from '../views';
 import { moveTeamToZone, useZones } from '../zones';
@@ -36,6 +46,9 @@ import { refreshTeams, teamColorVar, useTeams } from './store';
 import { TaskBoard } from './TaskBoard';
 import { ROLE_ABBR } from './teamPlan';
 import { memberClashes, worktreeConflicts } from './worktree';
+import { PHONE_QUERY } from '../shared/breakpoints';
+import { Empty } from '../flows/common';
+import { PanelHead, WideButton } from '../views/Overlays';
 
 /** STYLE 沒定義字數，DISPATCH §8-3 的「1 頁」以約 3000 字計。 */
 export const TEAM_MD_PAGE_CHARS = 3000;
@@ -44,8 +57,6 @@ const TASKS_POLL_MS = 5000;
 type Role = TeamMember['role'];
 
 const isLive = (s: Session) => s.endedAt === null && s.status !== 'done';
-/** Esc 只送給正在動的：對權限對話框按 Esc 等於拒絕。 */
-const isInterruptible = (s: Session) => s.status === 'running' || s.status === 'stuck';
 
 function GoalPanel({ team }: { team: Team }) {
   const t = useT();
@@ -81,7 +92,11 @@ function GoalPanel({ team }: { team: Team }) {
         placeholder={t('team.goal.criteriaPlaceholder')}
       />
       <div className="row">
-        <button disabled={busy || !(goal.dirty || criteria.dirty)} onClick={() => void save()}>
+        <button
+          className="primary"
+          disabled={busy || !(goal.dirty || criteria.dirty)}
+          onClick={() => void save()}
+        >
           {t('team.save')}
         </button>
         <ActionMessage message={message} />
@@ -160,7 +175,7 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
     <section className="panel" aria-labelledby="members-title">
       <h2 id="members-title">{t('team.members.title')}</h2>
       {members.length === 0 ? (
-        <p className="sub">{t('team.members.empty')}</p>
+        <Empty title={t('team.members.emptyTitle')} next={t('team.members.empty')} />
       ) : (
         <ul className="members">
           {members.map((s) => {
@@ -197,7 +212,7 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
                 <div className="row">
                   {/* 角色在上面的名單裡改（P2 §2.3），這裡只放完成、移除。 */}
                   {isLive(s) && (
-                    <button onClick={() => void markDone(s.id)}>
+                    <button className="sm" onClick={() => void markDone(s.id)}>
                       {t('team.members.markDone')}
                     </button>
                   )}
@@ -207,7 +222,9 @@ function MembersPanel({ team, members }: { team: Team; members: Session[] }) {
                       <span className="sub">{t('team.members.markDoneHint')}</span>
                     </>
                   )}
-                  <button onClick={() => void remove(s.id)}>{t('team.members.remove')}</button>
+                  <button className="sm" onClick={() => void remove(s.id)}>
+                    {t('team.members.remove')}
+                  </button>
                 </div>
               </li>
             );
@@ -286,6 +303,7 @@ function ContextPanel({ team }: { team: Team }) {
       )}
       <div className="row">
         <button
+          className="primary"
           disabled={busy || !context.dirty}
           onClick={() =>
             void run(async () => {
@@ -307,60 +325,152 @@ function ContextPanel({ team }: { team: Team }) {
   );
 }
 
+/** 名字清單（訊息裡用）。 */
+const names = (list: TeamSessionRef[]) => list.map((x) => x.name).join('、');
+
+/** 全隊繼續／啟動的結果訊息：打開幾條、略過哪些、接回幾個、幾個失聯（CONTRACTS §17）。 */
+function resumeText(
+  t: ReturnType<typeof useT>,
+  r: TeamResumeResult,
+  machineOf: (sessionId: string) => string,
+): string {
+  if (r.mode === null) return t('team.resumed.none');
+  const parts = [
+    r.mode === 'stop'
+      ? t('team.started', { n: r.resumed.length, rules: r.rules.enabled })
+      : t('team.resumed', { rules: r.rules.enabled }),
+  ];
+  if (r.rules.alreadyOn > 0) parts.push(t('team.resumed.alreadyOn', { n: r.rules.alreadyOn }));
+  if (r.rules.deleted > 0) parts.push(t('team.resumed.deleted', { n: r.rules.deleted }));
+  if (r.taskAuto === 'enabled') parts.push(t('team.resumed.tasks'));
+  if (r.taskAuto === 'already_on') parts.push(t('team.resumed.tasksAlready'));
+  if (r.alreadyRunning.length > 0) {
+    parts.push(
+      t('team.started.running', { n: r.alreadyRunning.length, names: names(r.alreadyRunning) }),
+    );
+  }
+  if (r.failed.length > 0) {
+    const detail = r.failed
+      .map((f) => `${f.name}（${resumeErrorText(t, f, machineOf(f.sessionId))}）`)
+      .join('、');
+    parts.push(t('team.started.failed', { n: r.failed.length, names: detail }));
+  }
+  if (r.gone > 0) parts.push(t('team.started.gone', { n: r.gone }));
+  if (r.offline.length > 0) {
+    parts.push(t('team.started.offline', { n: r.offline.length, names: names(r.offline) }));
+  }
+  if (r.boardPaused) parts.push(t('team.resumed.boardPaused'));
+  return parts.join(' ');
+}
+
+/**
+ * 全隊暫停／停止，以及暫停、停止之後的全隊繼續／啟動（CONTRACTS §17）。關規則、送 Esc、停 session、
+ * 記下關了哪些都在 hub 一次做完（瀏覽器做到一半斷線也不會只關一半）；記錄在 team.hold，別的裝置跟著換按鈕。
+ */
 function TeamControls({ team, members }: { team: Team; members: Session[] }) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
-  const rules = useTeams((s) => s.rules);
+  const sessions = useBoard((s) => s.sessions);
+  const machines = useBoard((s) => s.machines);
+  const clock = useClock();
   const { busy, message, run } = useAction();
-  const enabledRules = rules.filter((r) => r.teamId === team.id && r.enabled);
   const live = members.filter(isLive);
+  const hold = team.hold;
+  // 停止後還活著、又不是當初停掉的（停不了的、手動接回的）：仍可再按「全隊停止」。
+  const canStop = hold?.mode !== 'stop' || live.some((s) => !hold.stoppedSessionIds.includes(s.id));
 
-  // 兩者都先關規則與任務自動執行：不然中斷或結束本身又會觸發交接、送下一個任務。
-  const tasksWereAuto = team.taskAuto === true;
-  const disableRules = async () => {
-    if (tasksWereAuto) await backend.updateTeam(team.id, { taskAuto: false });
-    await Promise.all(enabledRules.map((r) => backend.updateHandoffRule(r.id, { enabled: false })));
-  };
-  const withTasks = (text: string) => (tasksWereAuto ? `${text} ${t('team.paused.tasks')}` : text);
+  const withTasks = (turnedOff: boolean, text: string) =>
+    turnedOff ? `${text} ${t('team.paused.tasks')}` : text;
 
   const pause = () =>
     run(async () => {
-      await disableRules();
-      const targets = members.filter(isInterruptible);
-      for (const s of targets) {
-        backend.terminal.send({ type: 'terminal.signal', sessionId: s.id, signal: 'escape' });
-      }
+      const r = await backend.holdTeam(team.id, 'pause');
       await refreshTeams(backend);
-      return withTasks(t('team.paused', { n: targets.length, rules: enabledRules.length }));
+      let text = t('team.paused', { n: r.interrupted.length, rules: r.rules });
+      if (r.offline.length > 0) {
+        text += ` ${t('team.paused.offline', { n: r.offline.length, names: names(r.offline) })}`;
+      }
+      return withTasks(r.taskAuto, text);
     });
 
   const stop = () =>
     run(async () => {
-      await disableRules();
-      const results = await Promise.allSettled(live.map((s) => backend.stopSession(s.id)));
+      const r = await backend.holdTeam(team.id, 'stop');
       await refreshTeams(backend);
-      const failed = results.filter((r) => r.status === 'rejected').length;
-      if (failed > 0) throw new Error(t('team.stopPartial', { failed, n: live.length }));
-      return withTasks(t('team.stopped', { n: live.length }));
+      const n = r.stopped.length + r.failed.length;
+      if (r.failed.length > 0)
+        throw new Error(t('team.stopPartial', { failed: r.failed.length, n }));
+      return withTasks(r.taskAuto, t('team.stopped', { n }));
     });
+
+  const machineOf = (sessionId: string) => {
+    const machineId = sessions.find((s) => s.id === sessionId)?.machineId;
+    return machines.find((m) => m.id === machineId)?.name ?? machineId ?? '';
+  };
+  const resume = () =>
+    run(async () => {
+      const r = await backend.resumeTeam(team.id);
+      await refreshTeams(backend);
+      return resumeText(t, r, machineOf);
+    });
+
+  const holdNote = hold
+    ? t(hold.mode === 'stop' ? 'team.hold.stop' : 'team.hold.pause', {
+        since: clock(hold.since),
+        by: hold.byName,
+        n: hold.stoppedSessionIds.length,
+        rules: hold.ruleIds.length,
+        tasks: hold.taskAuto ? t('team.hold.tasks') : '',
+      })
+    : null;
 
   return (
     <div className="row team-controls">
-      <button disabled={busy || live.length === 0} onClick={() => void pause()}>
-        {t('team.pause')}
-      </button>
-      <TwoClickButton
-        label={t('team.stop')}
-        armedLabel={t('team.stopArmed', { n: live.length })}
-        disabled={busy || live.length === 0}
-        onConfirm={() => void stop()}
-      />
+      {hold?.mode === 'pause' && (
+        <button
+          className="act"
+          disabled={busy}
+          onClick={() => void resume()}
+          data-testid="team-resume"
+        >
+          {t('team.resumeHeld')}
+        </button>
+      )}
+      {hold?.mode === 'stop' && (
+        <button
+          className="act"
+          disabled={busy}
+          onClick={() => void resume()}
+          data-testid="team-start"
+        >
+          {t('team.startHeld')}
+        </button>
+      )}
+      {!hold && (
+        <button className="act" disabled={busy || live.length === 0} onClick={() => void pause()}>
+          {t('team.pause')}
+        </button>
+      )}
+      {canStop && (
+        <TwoClickButton
+          label={t('team.stop')}
+          armedLabel={t('team.stopArmed', { n: live.length })}
+          className="act"
+          disabled={busy || live.length === 0}
+          onConfirm={() => void stop()}
+        />
+      )}
+      {holdNote && (
+        <span className="hint-inline" data-testid="team-hold-note">
+          {holdNote}
+        </span>
+      )}
       <ActionMessage message={message} testId="team-controls-msg" />
     </div>
   );
 }
 
-export function TeamWorkbench({ team }: { team: Team }) {
+export function TeamWorkbench({ team, inPanel = false }: { team: Team; inPanel?: boolean }) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
   const sessions = useBoard((s) => s.sessions);
@@ -400,15 +510,32 @@ export function TeamWorkbench({ team }: { team: Team }) {
       style={{ ['--team' as string]: teamColorVar(team.color) }}
       data-testid="team-workbench"
     >
-      <p className="crumb">
-        <a href="#/team">← {t('team.backToList')}</a>
-      </p>
-      <div className="team-head">
+      {/* 右側面板：名稱與寬版、✕ 在共用的標題列（和 Memory、收件匣同一個長相）；手機是一般 h1。 */}
+      {inPanel ? (
+        <PanelHead
+          title={
+            <>
+              <i className="swatch" aria-hidden="true" />
+              {team.name}
+            </>
+          }
+          onClose={closeRight}
+          closeTestId="team-close"
+        >
+          {!phone && <WideToggle />}
+        </PanelHead>
+      ) : (
         <h1>
           <i className="swatch" aria-hidden="true" />
           {team.name}
         </h1>
-        <ColorPicker
+      )}
+      <p className="crumb">
+        <a href="#/team">← {t('team.backToList')}</a>
+      </p>
+      <div className="team-head">
+        <ZonePicker team={team} />
+        <TeamColor
           value={team.color}
           onChange={(color) =>
             void run(async () => {
@@ -418,9 +545,23 @@ export function TeamWorkbench({ team }: { team: Team }) {
           }
         />
         <span className="spacer" />
-        <ZonePicker team={team} />
-        {!phone && <WideToggle />}
-        <SaveTeamPreset team={team} records={records} />
+        {/* 「⋯」：存成 Preset、刪除團隊（不和每天在用的群發送出放在一起，報告 E5）。 */}
+        <SaveTeamPreset team={team} records={records}>
+          <TwoClickButton
+            className="menu-item"
+            role="menuitem"
+            label={t('team.delete')}
+            armedLabel={t('team.deleteArmed')}
+            testId="team-delete"
+            onConfirm={() =>
+              void run(async () => {
+                await backend.deleteTeam(team.id);
+                await refreshTeams(backend);
+                location.hash = '#/team';
+              })
+            }
+          />
+        </SaveTeamPreset>
       </div>
       <TeamHeldFirstPrompts teamId={team.id} />
       <div className="row team-head-controls">
@@ -478,19 +619,6 @@ export function TeamWorkbench({ team }: { team: Team }) {
           <ContextPanel team={team} />
         </div>
       </Fold>
-      <div className="row team-delete">
-        <TwoClickButton
-          label={t('team.delete')}
-          armedLabel={t('team.deleteArmed')}
-          onConfirm={() =>
-            void run(async () => {
-              await backend.deleteTeam(team.id);
-              await refreshTeams(backend);
-              location.hash = '#/team';
-            })
-          }
-        />
-      </div>
       <BroadcastBox team={team} rows={records} />
     </div>
   );
@@ -514,7 +642,6 @@ function TeamProgress({ team }: { team: Team }) {
 }
 
 const FOLDS_KEY = 'agent-board.team.folds';
-const PHONE_QUERY = '(max-width: 640px)';
 
 function readFolds(): string[] {
   try {
@@ -611,7 +738,7 @@ function Fold({
     <div className="fold" data-testid={`fold-${id}`} data-open={open ? 'true' : undefined}>
       <button
         type="button"
-        className="fold-toggle"
+        className="ghost sm fold-toggle"
         aria-expanded={open}
         onClick={() => {
           const next = !open;
@@ -671,14 +798,46 @@ function WideToggle() {
   const wide = useViewsUi((s) => s.teamWide);
   const setWide = useViewsUi((s) => s.setTeamWide);
   return (
-    <button
-      type="button"
-      aria-pressed={wide}
-      onClick={() => setWide(!wide)}
-      data-testid="team-wide"
-      title={t('team.wide.hint')}
-    >
-      {wide ? t('team.wide.off') : t('team.wide.on')}
-    </button>
+    <WideButton
+      wide={wide}
+      onToggle={() => setWide(!wide)}
+      label={wide ? t('team.wide.off') : t('team.wide.on')}
+      hint={t('team.wide.hint')}
+      testId="team-wide"
+    />
+  );
+}
+
+/**
+ * 團隊顏色：平常只佔一顆精簡按鈕（目前顏色＋「團隊顏色」），按了才展開 8 個色塊。
+ * 420px 面板放不下整排色塊（以前佔了標題列 82% 寬，報告 D4）。
+ */
+function TeamColor({ value, onChange }: { value: string; onChange: (color: string) => void }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        className="sm team-color-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        data-testid="team-color-toggle"
+      >
+        <i className="swatch" aria-hidden="true" />
+        {t('team.color')}
+      </button>
+      {open && (
+        <div className="team-color-row">
+          <ColorPicker
+            value={value}
+            onChange={(color) => {
+              onChange(color);
+              setOpen(false);
+            }}
+          />
+        </div>
+      )}
+    </>
   );
 }

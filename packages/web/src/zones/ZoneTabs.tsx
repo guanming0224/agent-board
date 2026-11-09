@@ -119,17 +119,24 @@ function ZoneMenu({
   return (
     <div
       ref={box}
-      className="zone-menu"
+      className="menu zone-menu"
       role="menu"
       aria-label={t('zones.menu.aria', { name: zone.name })}
       data-testid="zone-menu"
     >
-      <button type="button" role="menuitem" onClick={onRename} data-testid="zone-rename">
+      <button
+        type="button"
+        role="menuitem"
+        className="menu-item"
+        onClick={onRename}
+        data-testid="zone-rename"
+      >
         {t('zones.menu.rename')}
       </button>
       <button
         type="button"
         role="menuitem"
+        className="menu-item"
         disabled={blocked || isLast}
         onClick={() => void remove()}
         data-testid="zone-delete"
@@ -218,7 +225,7 @@ function ZoneTab({
         role={item ? 'menuitem' : 'tab'}
         aria-selected={item ? undefined : current}
         aria-current={item && current ? 'true' : undefined}
-        className={`${item ? 'zone-item' : 'zone-tab'}${over ? ' is-over' : ''}${dragging ? ' is-drop' : ''}`}
+        className={`${item ? 'menu-item zone-item' : 'tab zone-tab'}${over ? ' is-over' : ''}${dragging ? ' is-drop' : ''}`}
         title={t('zones.tab.hint')}
         data-testid={item ? `zone-more-${zone.id}` : `zone-tab-${zone.id}`}
         data-zone-name={zone.name}
@@ -329,7 +336,7 @@ function MoreZones({
     <span className="zone-tab-wrap" ref={box}>
       <button
         type="button"
-        className="zone-tab zone-more"
+        className="tab zone-tab zone-more"
         aria-expanded={open}
         aria-selected={active !== undefined}
         onClick={() => setOpen((v) => !v)}
@@ -343,7 +350,7 @@ function MoreZones({
         <span aria-hidden="true"> ▾</span>
       </button>
       {open && (
-        <div className="zone-menu zone-more-menu" role="menu" data-testid="zone-more-menu">
+        <div className="menu zone-menu zone-more-menu" role="menu" data-testid="zone-more-menu">
           {zones.map((z) => (
             <ZoneTab
               key={z.id}
@@ -402,7 +409,7 @@ export function ZoneTabs() {
         ) : (
           <button
             type="button"
-            className="zone-add"
+            className="icon sm zone-add"
             aria-label={t('zones.add.aria')}
             title={t('zones.add.aria')}
             onClick={() => setAdding(true)}
@@ -452,7 +459,13 @@ function MoveNoticeLine() {
     return (
       <span className="zone-notice is-error" role="alert" data-testid="zone-move-error">
         {t('zones.moveFailed', { detail: moveError })}
-        <button type="button" onClick={clear} aria-label={t('zones.notice.close')}>
+        <button
+          type="button"
+          className="close"
+          onClick={clear}
+          aria-label={t('zones.notice.close')}
+          title={t('zones.notice.close')}
+        >
           ✕
         </button>
       </span>
@@ -464,6 +477,7 @@ function MoveNoticeLine() {
       {t('zones.moved', { name: notice.zoneName })}
       <button
         type="button"
+        className="sm"
         onClick={() => {
           setCurrent(notice.zoneId);
           clear();

@@ -383,13 +383,17 @@ test.describe('收件匣（待處理＋審核中心合併）', () => {
     await perm2.getByRole('button', { name: '拒絕' }).click();
     const reason = perm2.getByLabel('拒絕原因（必填）');
     await expect(reason).toBeFocused();
-    await perm2.getByRole('button', { name: '送出拒絕' }).click();
+    // 填原因 → 紅框「拒絕」（GM Q3，和展開卡、手機同一套）：展開後只剩框裡那一顆。
+    const deny = perm2.getByRole('button', { name: '拒絕', exact: true });
+    await expect(deny).toHaveCount(1);
+    await expect(deny).toHaveClass(/\bdanger\b/);
+    await deny.click();
     await expect(perm2.locator('.msg')).toHaveText('要填拒絕原因才能送出');
     await reason.fill('   ');
-    await perm2.getByRole('button', { name: '送出拒絕' }).click();
+    await deny.click();
     expect(await calls(page)).toHaveLength(1);
     await reason.fill(' 先跑 lint --fix ');
-    await perm2.getByRole('button', { name: '送出拒絕' }).click();
+    await deny.click();
     await expect
       .poll(async () => (await calls(page))[1])
       .toEqual({
@@ -546,13 +550,17 @@ test.describe('收件匣：展開審核卡（原審核中心）', () => {
     expect(await calls(page)).toHaveLength(1);
   });
 
-  test('決定列：拒絕和必填原因在同一排；長計畫先收合，可以展開', async ({ page }) => {
+  test('決定列：拒絕先展開原因框（紅框拒絕＋取消）；長計畫先收合，可以展開', async ({ page }) => {
     await open(page, 'inbox', board());
     await page.getByTestId('inbox-toggle-perm').click();
     const card = page.getByTestId('review-a-perm');
-    const row = card.locator('.decision-bar .deny-row');
-    await expect(row.getByLabel('拒絕原因（必填）')).toBeVisible();
-    await expect(row.getByRole('button', { name: '拒絕' })).toBeVisible();
+    await card.getByRole('button', { name: '拒絕' }).click();
+    const form = card.locator('.decision-bar [data-testid="deny-form"]');
+    await expect(form.getByLabel('拒絕原因（必填）')).toBeVisible();
+    await expect(form.getByRole('button', { name: '拒絕' })).toHaveClass(/\bdanger\b/);
+    await expect(card.getByRole('button', { name: '允許一次' })).toHaveCount(0);
+    await form.getByRole('button', { name: '取消' }).click();
+    await expect(card.getByRole('button', { name: '允許一次' })).toBeVisible();
 
     await page.getByTestId('inbox-toggle-plan').click();
     const plan = page.getByTestId('review-a-plan');

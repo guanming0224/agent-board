@@ -194,8 +194,17 @@ export function PushDeviceSection() {
   } else {
     body = (
       <>
-        <p className="hint" data-testid="push-state">
-          {t(state === 'on' ? 'flows.push.isOn' : 'flows.push.isOff')}
+        {/* 狀態用晶片（開著是白框），比下面的說明醒目（審視報告 inbox #26）。 */}
+        <p className="push-state-line">
+          <span
+            className={state === 'on' ? 'chip push-chip on' : 'chip push-chip'}
+            data-testid="push-chip"
+          >
+            {t(state === 'on' ? 'flows.push.chipOn' : 'flows.push.chipOff')}
+          </span>
+          <span className="hint" data-testid="push-state">
+            {t(state === 'on' ? 'flows.push.isOn' : 'flows.push.isOff')}
+          </span>
         </p>
         <div className="acts">
           {state === 'on' ? (

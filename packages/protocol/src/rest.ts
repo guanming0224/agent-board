@@ -27,7 +27,10 @@ import {
   Task,
   TaskColumn,
   Team,
+  TeamHoldMode,
+  TeamHoldResult,
   TeamMember,
+  TeamResumeResult,
   TeamRole,
   ResearchKind,
   Template,
@@ -39,6 +42,7 @@ import {
   Zone,
   ZoneName,
 } from './models';
+import { UsageReport } from './usage';
 import { ProgressCard, ProgressRevision, ProgressWrite } from './progress';
 import { SearchQuery, SearchResults } from './search';
 import { TeamPreset, TeamPresetConfig, TeamPresetName, TeamPresetUsed } from './presets';
@@ -279,6 +283,13 @@ export const routes = {
     path: '/api/machines/:id/usage',
     auth: 'user',
     response: UsageSummary.nullable(),
+  }),
+  /** 用量詳情（GM 2026-11-09）：跨機器彙整的細項，Claude session 已對應到 Agent Board 的 session、團隊、工作區、專案。 */
+  usageReport: route({
+    method: 'GET',
+    path: '/api/usage',
+    auth: 'user',
+    response: UsageReport,
   }),
 
   // Session
@@ -529,17 +540,38 @@ export const routes = {
     path: '/api/teams',
     auth: 'user',
     /** zoneId 沒帶＝排第一個的工作區。 */
-    body: Team.omit({ id: true, zoneId: true }).extend({ zoneId: Id.optional() }),
+    body: Team.omit({ id: true, zoneId: true, hold: true }).extend({ zoneId: Id.optional() }),
     response: Team,
   }),
   teamsUpdate: route({
     method: 'PATCH',
     path: '/api/teams/:id',
     auth: 'user',
-    body: Team.omit({ id: true }).partial(),
+    body: Team.omit({ id: true, hold: true }).partial(),
     response: Team,
   }),
   teamsDelete: route({ method: 'DELETE', path: '/api/teams/:id', auth: 'user', response: Ok }),
+  /**
+   * 全隊暫停／全隊停止（CONTRACTS §17）：hub 一次做完「關掉啟用中的交接規則與任務自動執行＋對工作中的成員送 Esc
+   * （pause）或停掉活著的成員（stop）」，並記下關了哪些（Team.hold）。已有記錄時再按＝合併（停止優先）。
+   */
+  teamHold: route({
+    method: 'POST',
+    path: '/api/teams/:id/hold',
+    auth: 'user',
+    body: z.object({ mode: TeamHoldMode }),
+    response: TeamHoldResult,
+  }),
+  /**
+   * 全隊繼續／全隊啟動：只打開當初關掉、現在還關著的規則與任務自動執行，不自動送字；stop 另外對當初停掉、
+   * 現在仍結束、機器在線的成員 `--resume` 接回。失聯的留在記錄裡，其餘清掉。
+   */
+  teamResume: route({
+    method: 'POST',
+    path: '/api/teams/:id/resume',
+    auth: 'user',
+    response: TeamResumeResult,
+  }),
   teamMembersList: route({
     method: 'GET',
     path: '/api/teams/:id/members',

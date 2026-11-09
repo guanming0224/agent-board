@@ -381,6 +381,7 @@ export function SecuritySection({ form }: { form: ServerSettingsForm }) {
               <code>{rule}</code>
               <button
                 type="button"
+                className="sm"
                 aria-label={t('flows.security.removeRule', { rule })}
                 onClick={() => patch({ dangerRules: draft.dangerRules.filter((r) => r !== rule) })}
               >

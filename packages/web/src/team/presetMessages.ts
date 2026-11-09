@@ -11,8 +11,8 @@ registerMessages('zh-TW', {
   'team.preset.loading': '讀取中…',
   'team.preset.loadFailed': '讀不到 Presets：{detail}',
   'team.preset.retry': '再試一次',
-  'team.preset.empty':
-    '還沒有 Preset。在團隊面板按「⋯ → 存成 Preset」，或在新增團隊表單按「存成 Preset」。',
+  'team.preset.emptyTitle': '還沒有 Preset',
+  'team.preset.empty': '在團隊面板按「⋯ → 存成 Preset」，或在新增團隊表單按「存成 Preset」。',
   'team.preset.filter': '篩選 Preset',
   'team.preset.noMachine': '（機器不存在）',
   'team.preset.back': '回清單',
@@ -117,8 +117,9 @@ registerMessages('en', {
   'team.preset.loading': 'Loading…',
   'team.preset.loadFailed': 'Could not load presets: {detail}',
   'team.preset.retry': 'Try again',
+  'team.preset.emptyTitle': 'No presets yet',
   'team.preset.empty':
-    'No presets yet. In a team panel press “⋯ → Save as preset”, or press “Save as preset” in the new team form.',
+    'In a team panel press “⋯ → Save as preset”, or press “Save as preset” in the new team form.',
   'team.preset.filter': 'Filter presets',
   'team.preset.noMachine': '(machine removed)',
   'team.preset.back': 'Back to list',

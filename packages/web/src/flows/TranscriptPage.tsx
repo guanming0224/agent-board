@@ -14,7 +14,8 @@ import {
   useLoad,
   useProjects,
 } from './common';
-import { transcriptTarget } from '../views/overlay';
+import { isSearchHash, transcriptTarget } from '../views/overlay';
+import { cameFrom, closeModal } from '../views/overlayStore';
 import { Transcript } from './ArchivePage';
 
 function useHashTarget() {
@@ -43,6 +44,18 @@ export function TranscriptPage() {
   const session = live ?? archived.data?.find((s) => s.id === id) ?? null;
   const machine = machines.find((m) => m.id === session?.machineId);
   const machineName = machine?.name ?? session?.machineId ?? '';
+  // 從搜尋按 ⌘Enter 開來的：畫面上給一個回去的路（關掉 ✕／Esc 也一樣回到搜尋，見 closeStep）。
+  const [fromSearch] = useState(() => isSearchHash(cameFrom()));
+  const back = fromSearch ? (
+    <button
+      type="button"
+      className="link transcript-back"
+      onClick={closeModal}
+      data-testid="transcript-back"
+    >
+      {t('flows.transcript.backToSearch')}
+    </button>
+  ) : null;
 
   let body;
   if (!live && archived.error) {
@@ -59,7 +72,8 @@ export function TranscriptPage() {
   } else {
     body = (
       <>
-        <header className="page-head archive-head">
+        {back}
+        <header className="page-head archive-head transcript-head">
           <h1>{session.name}</h1>
           <Lamp status={session.status} detail={session.statusDetail} />
         </header>
@@ -74,5 +88,10 @@ export function TranscriptPage() {
       </>
     );
   }
-  return <Page>{body}</Page>;
+  return (
+    <Page>
+      {!session && back}
+      {body}
+    </Page>
+  );
 }

@@ -1,13 +1,7 @@
-/* 顏色只回答「球在誰手上」，所以開著時用白底反白，不佔語意色。 */
+/*
+ * 遮蔽開關是按鈕：開著時用全站的「按下」樣式（aria-pressed，controls.css：淡白底＋白框），
+ * 不用實心白，免得和白色主按鈕「下一個等我的」長得一樣（GM Q2、STYLE §4）。
+ */
 .mask-chip {
-  font-size: 12px;
-  font-weight: 600;
   white-space: nowrap;
-}
-/* 要蓋過 tokens.css 的 button:hover，滑鼠停在晶片上時也看得出開著。 */
-.mask-chip.on,
-.mask-chip.on:hover:not(:disabled) {
-  background: var(--fg);
-  color: var(--bg);
-  border-color: var(--fg);
 }

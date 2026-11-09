@@ -1,12 +1,14 @@
 // 對話框：封存確認、刪除確認共用。不用原生 confirm（STYLE.md 邏輯 6）。
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useT } from '../shared/i18n';
+import { CloseButton } from '../views/Overlays';
 
 const FOCUSABLE =
   'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]';
 
 /**
- * 放在 body 底下，不受畫布縮放影響。Esc 關閉、Tab 留在框裡、關掉後焦點回到原本的按鈕。
+ * 放在 body 底下，不受畫布縮放影響。Esc 或右上 ✕ 關閉（觸控沒有 Esc）、Tab 留在框裡、關掉後焦點回到原本的按鈕。
  * 點背景不關：危險操作的框被誤點關掉，使用者會以為已經做了。
  */
 export function Dialog({
@@ -20,6 +22,7 @@ export function Dialog({
   children: ReactNode;
   testId?: string;
 }) {
+  const t = useT();
   const titleId = useId();
   const box = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -68,7 +71,14 @@ export function Dialog({
         data-testid={testId}
         onKeyDown={onKeyDown}
       >
-        <h2 id={titleId}>{title}</h2>
+        <div className="dialog-head">
+          <h2 id={titleId}>{title}</h2>
+          <CloseButton
+            onClose={() => close.current()}
+            testId={testId && `${testId}-close`}
+            label={t('views.dialog.close')}
+          />
+        </div>
         {children}
       </div>
     </div>,

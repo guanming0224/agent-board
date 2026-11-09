@@ -86,7 +86,7 @@ function TaskCard({
 
   const move = (column: Task['column'], label: string, disabled: boolean, glyph: string) => (
     <button
-      className="move"
+      className="move sm"
       aria-label={t('team.tasks.moveTo', { column: label })}
       title={t('team.tasks.moveTo', { column: label })}
       disabled={busy || disabled}
@@ -134,7 +134,7 @@ function TaskCard({
         {following && move(following, t(`team.column.${following}`), unassigned, '▸')}
         <span className="spacer" />
         <button
-          className="link"
+          className="danger sm"
           disabled={busy}
           onClick={() =>
             void run(async () => {

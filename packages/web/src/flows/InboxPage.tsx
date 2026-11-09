@@ -36,6 +36,8 @@ import {
   type Loaded,
   type Note,
 } from './common';
+import { codeClass, statusCode } from '../shared/status';
+import { DenyForm } from './DenyForm';
 import { summarizeTool } from './toolView';
 import { isFault, workItems, type WorkItem } from './workItems';
 
@@ -47,53 +49,15 @@ interface ItemContext {
   settling: boolean;
 }
 
-function DenyPanel({
+function PermissionItem({
+  approval,
   disabled,
-  decide,
+  lead,
 }: {
+  approval: Approval;
   disabled: boolean;
-  decide: ReturnType<typeof useDecide>;
+  lead: boolean;
 }) {
-  const t = useT();
-  const [reason, setReason] = useState('');
-  const [invalid, setInvalid] = useState(false);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const send = () => {
-    const text = reason.trim();
-    if (!text) {
-      setInvalid(true);
-      decide.setNote({ text: t('flows.review.denyNeedsReason'), tone: 'err' });
-      inputRef.current?.focus();
-      return;
-    }
-    void decide.decide({ behavior: 'deny', reason: text });
-  };
-  return (
-    <>
-      <textarea
-        ref={inputRef}
-        autoFocus
-        className="field-input"
-        rows={2}
-        value={reason}
-        aria-label={t('flows.review.denyReason')}
-        aria-invalid={invalid}
-        placeholder={t('flows.review.denyReason')}
-        onChange={(e) => {
-          setReason(e.target.value);
-          setInvalid(false);
-        }}
-      />
-      <div className="big">
-        <button type="button" className="wide" disabled={disabled} onClick={send}>
-          {t('flows.inbox.sendDeny')}
-        </button>
-      </div>
-    </>
-  );
-}
-
-function PermissionItem({ approval, disabled }: { approval: Approval; disabled: boolean }) {
   const t = useT();
   const decide = useDecide(approval);
   const twoStep = useTwoStep();
@@ -109,27 +73,34 @@ function PermissionItem({ approval, disabled }: { approval: Approval; disabled: 
   return (
     <>
       <ToolBody approval={approval} />
-      <div className="big">
-        <button
-          type="button"
-          className={danger ? 'danger' : 'primary'}
-          disabled={off}
-          onClick={allow}
-        >
-          {twoStep.armed ? t('flows.review.confirmAgain') : t('flows.review.allowOnce')}
-        </button>
-        <button
-          type="button"
-          disabled={off}
-          aria-expanded={denying}
-          onClick={() => {
-            twoStep.disarm();
-            setDenying(true);
-          }}
-        >
-          {t('flows.review.deny')}
-        </button>
-      </div>
+      {/*
+       * 拒絕展開時整排「允許一次／拒絕」收起（審查 blocker）：不然「允許一次」會補到剛才「拒絕」的格子，
+       * 連點兩下「拒絕」第二下就變成允許；危險指令也不會同時有兩顆紅鈕。
+       */}
+      {!denying && (
+        <div className="big">
+          <button
+            type="button"
+            className={`${danger ? 'danger' : lead ? 'primary' : 'cue'} act`}
+            disabled={off}
+            onClick={allow}
+          >
+            {twoStep.armed ? t('flows.review.confirmAgain') : t('flows.review.allowOnce')}
+          </button>
+          <button
+            type="button"
+            className="act"
+            disabled={off}
+            aria-expanded={false}
+            onClick={() => {
+              twoStep.disarm();
+              setDenying(true);
+            }}
+          >
+            {t('flows.review.deny')}
+          </button>
+        </div>
+      )}
       {twoStep.armed && (
         <div className="armed" role="status">
           <div>{t('flows.review.armedHint')}</div>
@@ -138,7 +109,9 @@ function PermissionItem({ approval, disabled }: { approval: Approval; disabled: 
           )}
         </div>
       )}
-      {denying && <DenyPanel disabled={off} decide={decide} />}
+      {denying && (
+        <DenyForm phone disabled={off} decide={decide} onCancel={() => setDenying(false)} />
+      )}
       <Msg note={decide.note} />
     </>
   );
@@ -175,14 +148,19 @@ function ReplyBox({
   return (
     <>
       {options.length > 0 && (
-        <div className="big">
+        // 先選（選中反白）再按「送出回答」（GM Q3）：手機以前按了選項直接送出，看錯 session 也收不回。
+        <div className="big options" role="group" aria-label={t('flows.review.options')}>
           {options.map((option) => (
             <button
               type="button"
               key={option}
               className="wide"
+              aria-pressed={text === option}
               disabled={disabled}
-              onClick={() => onSend(option)}
+              onClick={() => {
+                setText(option);
+                setInvalid(false);
+              }}
             >
               {option}
             </button>
@@ -203,7 +181,13 @@ function ReplyBox({
         }}
       />
       <div className="big">
-        <button type="button" className="wide" disabled={disabled} onClick={send}>
+        {/* 開始填了（選了選項或打了字）就是主按鈕；還沒填時用代碼色框，畫面上不會一排白色（GM Q2）。 */}
+        <button
+          type="button"
+          className={`${text.trim() ? 'primary' : 'cue'} act wide`}
+          disabled={disabled}
+          onClick={send}
+        >
           {t('flows.review.sendAnswer')}
         </button>
       </div>
@@ -262,10 +246,13 @@ function InboxItem({
   item,
   context,
   targeted,
+  lead,
 }: {
   item: WorkItem;
   context: ItemContext;
   targeted: boolean;
+  /** 排第一的（＝「下一個等我的」）：允許鈕用白色主按鈕，其他卡用代碼色框（GM Q2）。 */
+  lead: boolean;
 }) {
   const t = useT();
   const itemRef = useRef<HTMLElement>(null);
@@ -284,7 +271,7 @@ function InboxItem({
 
   let body;
   if (approval?.kind === 'permission' || approval?.kind === 'danger') {
-    body = <PermissionItem approval={approval} disabled={disabled} />;
+    body = <PermissionItem approval={approval} disabled={disabled} lead={lead} />;
   } else if (approval?.kind === 'question') {
     body = <QuestionItem approval={approval} disabled={disabled} />;
   } else if (session?.status === 'waiting_input') {
@@ -301,7 +288,8 @@ function InboxItem({
     <article
       ref={itemRef}
       tabIndex={-1}
-      className={`inbox-item ${session ? handsClass(session.permissionMode) : ''}${fault ? ' is-fault' : ''}${gone ? ' gone' : ''}${targeted ? ' targeted' : ''}`}
+      // 卡片外框跟狀態代碼同色（STYLE 規則一，和畫布上同一張卡一樣）：--sc 由 c-<code> 給。
+      className={`inbox-item ${codeClass(statusCode({ status: item.status, statusDetail: null }))} ${session ? handsClass(session.permissionMode) : ''}${fault ? ' is-fault' : ''}${gone ? ' gone' : ''}${targeted ? ' targeted' : ''}`}
       data-testid={`inbox-${item.key}`}
     >
       {approval?.kind === 'danger' && (
@@ -330,7 +318,7 @@ function InboxItem({
       {/* 屬於有進度卡的團隊：呼號下一行淡色「下一步：…」，點了展開整張卡（P3 §1.6）。 */}
       {session && <InboxProgressHint session={session} />}
       <div className="head">
-        <Lamp status={item.status} />
+        <Lamp status={item.status} badge />
         {session && <span className="title">{session.name}</span>}
         <WaitAge since={item.since} now={context.now} />
       </div>
@@ -370,7 +358,7 @@ export function InboxPage() {
         </span>
         {/* 全域搜尋（P3 §3.4）：手機的入口在收件匣頂部，開全螢幕搜尋頁。 */}
         <a
-          className="button icon inbox-search"
+          className="button icon touch inbox-search"
           href="#/search"
           aria-label={t('flows.inbox.search')}
           title={t('flows.inbox.search')}
@@ -395,12 +383,13 @@ export function InboxPage() {
         <Empty title={t('flows.waiting.none')} next={t('flows.inbox.emptyNext')} />
       ) : (
         <div className="phone">
-          {items.map((item) => (
+          {items.map((item, i) => (
             <InboxItem
               key={item.key}
               item={item}
               context={context}
               targeted={item.key === targetKey}
+              lead={i === 0}
             />
           ))}
         </div>

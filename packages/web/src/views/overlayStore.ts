@@ -46,7 +46,8 @@ export function replaceHash(hash: string): void {
 }
 
 export function closeModal(): void {
-  const step = closeStep(cameFrom(), 'modal', useOverlay.getState().right);
+  const { right, modal } = useOverlay.getState();
+  const step = closeStep(cameFrom(), 'modal', right, modal);
   if (step.back) history.back();
   else replaceHash(step.to);
 }

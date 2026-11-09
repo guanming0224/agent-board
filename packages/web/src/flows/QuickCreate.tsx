@@ -5,6 +5,7 @@ import { PermissionMode } from '@agent-board/protocol';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
+import { CloseButton } from '../views/Overlays';
 import { currentZoneId } from '../zones';
 import { createErrorText, ModeChip, Msg, useProjects, type Note } from './common';
 import {
@@ -279,14 +280,10 @@ export function QuickCreate({
             <Msg note={note} />
           </>
         )}
-        <button
-          type="button"
-          className="quick-close"
-          aria-label={t('flows.new.browseClose')}
-          onClick={onClose}
-        >
-          ×
-        </button>
+        {/* 關閉：全站同一顆 ✕（views/Overlays 的 CloseButton，精簡 32、手機 44）。 */}
+        <div className="quick-close">
+          <CloseButton onClose={onClose} testId="quick-close" />
+        </div>
       </form>
     </div>
   );

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { closeStep, parseHash, resolve, rightHash } from './overlay';
+import { closeStep, isSearchHash, parseHash, resolve, rightHash } from './overlay';
 
 describe('網址規則（P2 §1.4）', () => {
   it('畫布、收件匣、團隊、設定、新增、封存細節', () => {
@@ -34,6 +34,8 @@ describe('網址規則（P2 §1.4）', () => {
     });
     expect(parseHash('#/new')).toEqual({ kind: 'board', right: 'keep', modal: 'new' });
     expect(parseHash('#/archive/s1')).toEqual({ kind: 'board', right: 'keep', modal: 'archive' });
+    // 用量詳情（GM 2026-11-09）：置中次畫面，疊在右側面板上。
+    expect(parseHash('#/usage')).toEqual({ kind: 'board', right: 'keep', modal: 'usage' });
   });
 
   it('終端機、登入、首次引導照舊是整頁', () => {
@@ -89,5 +91,21 @@ describe('網址規則（P2 §1.4）', () => {
     expect(closeStep('#/canvas', 'modal', inbox)).toEqual({ back: false, to: '#/inbox' });
     // 上一筆是另一個次畫面
     expect(closeStep('#/settings', 'modal', null)).toEqual({ back: false, to: '#/canvas' });
+
+    // 搜尋 ⌘Enter 開的對話紀錄：關掉回到搜尋（上一頁，結果與查詢字都還在）
+    expect(closeStep('#/search?q=risk', 'modal', null, 'transcript')).toEqual({ back: true });
+    expect(closeStep('#/search', 'modal', inbox, 'transcript')).toEqual({ back: true });
+    // 不是從搜尋來的對話紀錄、或關的是別的次畫面：照舊
+    expect(closeStep('#/settings', 'modal', null, 'transcript')).toEqual({
+      back: false,
+      to: '#/canvas',
+    });
+    expect(closeStep('#/search', 'modal', null, 'settings')).toEqual({
+      back: false,
+      to: '#/canvas',
+    });
+    expect(isSearchHash('#/search?q=a')).toBe(true);
+    expect(isSearchHash('#/transcript/s1')).toBe(false);
+    expect(isSearchHash(null)).toBe(false);
   });
 });

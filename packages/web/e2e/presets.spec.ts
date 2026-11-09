@@ -135,7 +135,7 @@ test('從團隊存成 Preset：4 列、角色與模式一致、交接規則 1 �
   await expect(dialog.getByTestId('preset-save-rules')).toContainText('交接規則 1 條（開啟 0 條）');
   await dialog.getByTestId('preset-save-submit').click();
   await expect(dialog.getByTestId('preset-saved')).toContainText('策略驗證');
-  await dialog.getByRole('button', { name: '關閉' }).click();
+  await dialog.getByRole('button', { name: '關閉', exact: true }).click();
 
   const [preset] = await run<
     {
@@ -172,6 +172,11 @@ test('從團隊存成 Preset：4 列、角色與模式一致、交接規則 1 �
   await expect(row.locator('.chip.cost')).toHaveCount(0);
   await row.click();
   await expect(page.getByTestId('preset-team-name')).toHaveValue('策略驗證 2');
+  // 彈出區的輸入框套共用樣式（controls.css；以前是瀏覽器預設外觀）：--surface-2 底、--border-2 框、高 36。
+  const nameInput = page.getByTestId('preset-team-name');
+  await expect(nameInput).toHaveCSS('background-color', 'rgb(27, 33, 43)');
+  await expect(nameInput).toHaveCSS('border-top-color', 'rgb(51, 60, 73)');
+  expect((await nameInput.boundingBox())!.height).toBeGreaterThanOrEqual(36);
   await expect(page.getByTestId('preset-zone')).toContainText('主要');
   await expect(page.getByTestId('preset-rows').locator('li')).toHaveCount(4);
   await expect(page.getByTestId('preset-row-4')).toContainText('主資料夾（唯讀）');
@@ -439,6 +444,32 @@ test('全部暫停中套用含第一個指令的 Preset：隊長建好時沒收�
   await expect(cardButton).toBeVisible();
   // 隊長等輸入時按下：群發（點名隊長）送出。
   await run(page, `backend.setSessionStatus(arg, 'waiting_input');`, leadId);
+  // 畫布縮到 30% 以下時卡片上的按鈕會藏起來（GM 2026-11-09 Q4）。團隊面板開著時畫布會把整個團隊框進左邊，
+  // 可能剛好低於 30%，所以先關面板回畫布，在隊長卡上用滾輪放大到看得清楚再按（面板裡另有同一顆按鈕）。
+  await page.evaluate(() => (location.hash = '#/canvas'));
+  await expect(page.getByTestId('team-held-first')).toHaveCount(0);
+  const zoom = async () =>
+    parseInt((await page.getByTestId('zoom-level').textContent()) ?? '0', 10);
+  // 等「框出團隊」的鏡頭動畫停下（縮放連續 0.5 秒沒變），不然放大到一半又被拉回去。
+  let last = -1;
+  await expect
+    .poll(
+      async () => {
+        const now = await zoom();
+        const still = now === last;
+        last = now;
+        return still;
+      },
+      { intervals: [500] },
+    )
+    .toBe(true);
+  for (let i = 0; i < 8 && (await zoom()) < 40; i += 1) {
+    const lead = (await page.getByTestId(`card-${leadId}`).boundingBox())!;
+    await page.mouse.move(lead.x + lead.width / 2, lead.y + 12);
+    await page.mouse.wheel(0, -120);
+    await page.waitForTimeout(100);
+  }
+  expect(await zoom()).toBeGreaterThanOrEqual(30);
   await cardButton.click();
   await expect(
     page.getByTestId(`card-${leadId}`).getByTestId(`held-first-${leadId}`),
@@ -491,11 +522,12 @@ test('手機（390×844）：團隊清單「從 Preset 建立」完成套用；�
   await page.goto('/#/team');
   await createPreset(page, '手機');
   await page.getByTestId('preset-entry').click();
-  expect((await page.getByTestId('preset-entry').boundingBox())!.height).toBeGreaterThanOrEqual(56);
+  // 手機可點元素至少 44（GM 2026-11-09 Q1；56 只給允許、拒絕、暫停、繼續、送出回答這類會動到 session 的動作）。
+  expect((await page.getByTestId('preset-entry').boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await presetRow(page, '手機').click();
   const create = page.getByTestId('preset-create');
   await expect(create).toBeEnabled();
-  expect((await create.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+  expect((await create.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await create.click();
   await expect(page).toHaveURL(/#\/team\/.+/);
   await expect(page.getByRole('heading', { name: '手機' })).toBeVisible();

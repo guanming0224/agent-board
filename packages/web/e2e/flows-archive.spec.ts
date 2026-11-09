@@ -228,7 +228,11 @@ test.describe('刪除確認框', () => {
         options: { removeWorktree: true, removeTranscript: false, removeHooks: true },
       },
     ]);
-    await dialog.getByRole('button', { name: '關閉' }).click();
+    // 對話框右上有 ✕（觸控沒有 Esc），和面板、次畫面同一顆。
+    const x = dialog.getByTestId('purge-dialog-close');
+    await expect(x).toHaveText('✕');
+    await expect(x).toHaveAttribute('aria-label', '關閉對話框');
+    await x.click();
     await expect(dialog).toHaveCount(0);
     await expect(page.getByTestId('archived-s-old-api')).toHaveCount(0);
   });
@@ -497,13 +501,19 @@ test.describe('舊資料頁', () => {
 
   test('舊資料頁可以還原與刪除（owner）', async ({ page }) => {
     await open(page, 'archive/s-old-api');
+    // 主按鈕在第一個、危險在最後（和已封存列同一個順序規則，報告 C4）。
+    const acts = page.locator('.acts', {
+      has: page.getByRole('button', { name: '還原並接續' }),
+    });
+    await expect(acts.getByRole('button')).toHaveText(['還原並接續', '還原', '刪除']);
+    await expect(acts.getByRole('button').first()).toHaveClass(/primary/);
     await page.getByRole('button', { name: '刪除' }).click();
     const dialog = page.getByTestId('purge-dialog');
     await dialog.getByRole('button', { name: '刪除', exact: true }).click();
     await page.waitForTimeout(400);
     await dialog.getByRole('button', { name: '確認刪除' }).click();
     await expect(dialog.getByTestId('purge-result')).toBeVisible();
-    await dialog.getByRole('button', { name: '關閉' }).click();
+    await dialog.getByRole('button', { name: '關閉', exact: true }).click();
     await expect(page.locator('[data-state=empty]')).toContainText('已刪除');
 
     await open(page, 'archive/s-old-shared');

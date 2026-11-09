@@ -64,46 +64,30 @@
   text-underline-offset: 2px;
 }
 
-.flows a.button {
-  display: inline-flex;
-  align-items: center;
-  min-height: 36px;
-  padding: 0 14px;
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.flows a.button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-}
+/* a.button 的外觀（含 .primary .ghost .sm）在 shared/styles/controls.css；這裡不再重寫，免得權重蓋掉 .ghost／.sm。 */
 
 /* 主角計數 */
 .flows .waiting {
   display: inline-flex;
   align-items: baseline;
-  gap: 6px;
+  gap: var(--space-1h);
   color: var(--you);
 }
 
 .flows .waiting span {
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
   font-weight: 600;
 }
 
 .flows .waiting b {
-  font-size: 26px;
+  font-size: var(--fs-hero);
   font-weight: 650;
   line-height: 1.1;
 }
 
 .flows .waiting.none {
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
   font-weight: 600;
 }
 
@@ -112,39 +96,24 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1h);
 }
 
 .flows .head {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 8px;
-  margin-top: 6px;
+  gap: var(--space-1) var(--space-2);
+  margin-top: var(--space-1h);
 }
 
 .flows .callsign {
-  font: 12px var(--font-mono);
+  font: var(--fs-sm) var(--font-mono);
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
-.flows .chip {
-  display: inline-flex;
-  padding: 1px 7px;
-  border: 1px solid var(--border-2);
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.flows .chip.bypass {
-  border-color: var(--fault);
-  background: color-mix(in srgb, var(--fault) 14%, transparent);
-  color: var(--fg);
-}
+/* .chip、.chip.bypass 在 shared/styles/controls.css。 */
 
 .flows .chip.unsaved {
   border-color: var(--you);
@@ -154,20 +123,20 @@
 .flows .lamp {
   display: inline-flex;
   align-items: baseline;
-  gap: 5px;
-  font-size: 12px;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
   font-weight: 600;
   white-space: nowrap;
 }
 
 .flows .lamp i {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-style: normal;
   line-height: 1;
 }
 
 .flows .title {
-  font-size: 15px;
+  font-size: var(--fs-base);
   font-weight: 650;
   overflow-wrap: anywhere;
 }
@@ -175,7 +144,7 @@
 .flows .age {
   margin-left: auto;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 
@@ -194,27 +163,43 @@
   color: var(--you);
 }
 
+/* 推播設定的狀態列：晶片＋一句說明（AccountSettings.tsx）。開著＝白框（中性，不佔狀態色）。 */
+.flows .push-state-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-1h) 0 0;
+}
+.flows .push-state-line .hint {
+  margin: 0;
+}
+.flows .chip.push-chip.on {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
 .flows .tool {
-  margin: 10px 0 6px;
+  margin: var(--space-2) 0 var(--space-1h);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 
 .flows .body-text {
-  margin: 10px 0 6px;
+  margin: var(--space-2) 0 var(--space-1h);
   overflow-wrap: anywhere;
 }
 
 .flows .blocked {
-  margin: 10px 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .msg {
   align-self: center;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
   overflow-wrap: anywhere;
 }
 
@@ -226,16 +211,21 @@
   color: var(--fault);
 }
 
+/* 錯誤文字全站一種：--fault 字＋✕ 符號（審視報告 §3.6）。 */
+.flows .msg.err::before {
+  content: '✕ ';
+}
+
 .flows .acts {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .flows .acts.inline {
   display: inline-flex;
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .flows .dot {
@@ -249,13 +239,13 @@
 
 .flows .alert {
   display: flex;
-  gap: 10px;
-  margin-bottom: 10px;
-  padding: 10px 14px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid color-mix(in srgb, var(--fault) 55%, transparent);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--fault) 10%, transparent);
-  font-size: 13.5px;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .alert-body {
@@ -275,17 +265,6 @@
   text-align: center;
 }
 
-.flows .state strong {
-  display: block;
-  color: var(--fg);
-  font-size: 15px;
-}
-
-.flows .state-next {
-  margin-top: 6px;
-  font-size: 13px;
-}
-
 /* 卡片與放手線（STYLE.md 規則二） */
 .flows .card,
 .flows .inbox-item {
@@ -297,17 +276,14 @@
 }
 
 .flows .card {
-  padding: 16px 16px 16px 20px;
+  padding: var(--space-4) var(--space-4) var(--space-4) var(--space-4);
   border: 1px solid var(--border);
 }
 
+/* 手機收件匣卡：外框跟狀態代碼同色（STYLE 規則一），--sc 由元素上的 c-<code> 給。 */
 .flows .inbox-item {
-  padding: 14px 14px 14px 18px;
-  border: 2px solid var(--you);
-}
-
-.flows .inbox-item.is-fault {
-  border-color: var(--fault);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
+  border: 2px solid var(--sc, var(--you));
 }
 
 .flows .card::before,
@@ -355,22 +331,22 @@
 
 .flows .review,
 .flows .inbox-item {
-  scroll-margin-top: calc(var(--app-header-height, 0px) + 12px);
+  scroll-margin-top: calc(var(--app-header-height, 0px) + var(--space-3));
 }
 
-.flows .review:focus,
-.flows .inbox-item:focus {
+.flows .review:focus:not(:focus-visible),
+.flows .inbox-item:focus:not(:focus-visible) {
   outline: none;
 }
 
 .flows .review.targeted,
 .flows .inbox-item.targeted {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: var(--focus-w) solid var(--accent);
+  outline-offset: var(--focus-offset);
 }
 
 .flows .target-missing {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
 }
 
 .flows .review .acts button {
@@ -381,11 +357,11 @@
 .flows .diff {
   max-height: 420px;
   overflow: auto;
-  padding: 8px 0;
+  padding: var(--space-2) 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--term-bg);
-  font: 12.5px/1.6 var(--font-mono);
+  font: var(--fs-sm) / 1.6 var(--font-mono);
 }
 
 .flows .diff-lines {
@@ -394,7 +370,7 @@
 }
 
 .flows .diff-lines > div {
-  padding: 0 10px;
+  padding: 0 var(--space-2);
   white-space: pre;
 }
 
@@ -416,13 +392,13 @@
 
 /* 指令全文一律換行顯示，不截斷也不撐版面 */
 .flows .command {
-  margin: 8px 0 0;
-  padding: 8px 10px;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--term-bg);
   color: var(--fg-muted);
-  font: 12.5px/1.6 var(--font-mono);
+  font: var(--fs-sm) / 1.6 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -433,9 +409,9 @@
 }
 
 .flows .armed {
-  margin-top: 8px;
+  margin-top: var(--space-2);
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .armed .command {
@@ -445,47 +421,53 @@
 /* 收件匣 */
 .flows .phone {
   display: grid;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
+/* 手機收件匣的按鈕排：高度由 .act（56）／手機下限（44）決定，這裡只管排列。 */
 .flows .big {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 12px;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .flows .big button {
-  min-height: 56px;
-  padding: 6px 10px;
-  font-size: 16px;
+  padding: var(--space-1h) var(--ctl-px-sm);
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+/* 提問選項：一個一排，選中用全站的「按下」樣式（aria-pressed）。 */
+.flows .big.options {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* 等你的卡（不是「下一個」那張）的處理鈕：controls.css 的 button.cue（代碼色框＋淡底，GM Q2）。 */
 
 .flows .big .wide {
   grid-column: 1 / -1;
 }
 
 .flows .back {
-  margin: 10px 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .inbox-item .msg {
   display: block;
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .flows .inbox-item .msg:empty {
   display: none;
 }
 
-/* 表單 */
+/* 表單：控制項的高度、底色、框、字級用 controls.css 的全站預設，這裡只管排版。 */
 .flows .form-card {
   min-width: 0;
-  padding: 16px;
+  padding: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   background: var(--surface);
@@ -497,7 +479,7 @@
 
 .flows .field {
   min-width: 0;
-  margin: 14px 0 0;
+  margin: var(--space-3) 0 0;
   padding: 0;
   border: 0;
 }
@@ -512,28 +494,24 @@
   display: block;
   padding: 0;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
   font-weight: 600;
 }
 
 .flows .field > label,
 .flows .field > legend,
 .flows .field > .label {
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 
-.flows input:not([type='radio'], [type='checkbox']),
-.flows select,
+/* 精簡版（.sm，例如收件匣篩選）的高度與字級交給 controls.css，這裡不蓋掉。 */
+.flows input:not([type='radio'], [type='checkbox'], .sm),
+.flows select:not(.sm),
 .flows textarea {
   display: block;
   width: 100%;
-  min-height: 36px;
-  padding: 6px 10px;
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
-  color: var(--fg);
-  font: 14px/1.4 var(--font-sans);
+  font-weight: 400;
+  line-height: 1.4;
 }
 
 .flows textarea {
@@ -541,13 +519,13 @@
 }
 
 .flows .field-input {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .flows input.mono,
 .flows textarea.mono {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows input.short {
@@ -564,21 +542,16 @@
   border-color: var(--fault);
 }
 
-.flows input[type='radio'],
-.flows input[type='checkbox'] {
-  accent-color: var(--accent);
-}
-
 .flows .field-error {
-  margin: 4px 0 0;
+  margin: var(--space-1) 0 0;
   color: var(--fault);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 .flows .input-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: flex-end;
 }
 
@@ -591,29 +564,52 @@
 .flows .check {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 32px;
+  gap: var(--space-2);
+  min-height: var(--ctl-h-sm);
   font-weight: 500;
 }
 
+/*
+ * 單選的分段切換（語言、任務類型）：和 controls.css 的 .seg 同一個長相（相連、頭尾圓角、
+ * 每顆 -1px 疊框、選中＝--accent-bg 底＋--accent 框）。用 radio 是因為它本來就是單選群組。
+ */
 .flows .segmented {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
-  gap: 4px;
 }
 
 .flows .segmented label {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: var(--ctl-h);
+  padding: 0 var(--ctl-px-sm);
   border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
+  border-radius: 0;
   background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--fs-base);
   cursor: pointer;
 }
 
+.flows .segmented label + label {
+  margin-left: -1px;
+}
+
+.flows .segmented label:first-child {
+  border-radius: var(--radius-control) 0 0 var(--radius-control);
+}
+
+.flows .segmented label:last-child {
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+}
+
+.flows .segmented label:hover {
+  background: var(--raise);
+}
+
 .flows .segmented label.on {
+  z-index: 1;
   border-color: var(--accent);
   background: var(--accent-bg);
   color: var(--fg);
@@ -626,7 +622,8 @@
 }
 
 .flows .segmented label:has(input:focus-visible) {
-  outline: 2px solid var(--ring);
+  z-index: 2;
+  outline: var(--focus-w) solid var(--ring);
   outline-offset: 2px;
 }
 
@@ -703,9 +700,10 @@
   margin-top: 6px;
 }
 
+/* 資料夾瀏覽器：按鈕一律精簡（.sm 32，手機 44，controls.css），這裡只管排版與字型。 */
 .flows .browser {
-  margin-top: 8px;
-  padding: 10px;
+  margin-top: var(--space-2);
+  padding: var(--space-2);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface-2);
@@ -716,23 +714,20 @@
 .flows .browser-tools {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1h);
   align-items: center;
   min-width: 0;
 }
 
 .flows .browser-quick .label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
 .flows .browser-quick button {
   max-width: 100%;
-  min-height: 28px;
-  padding: 0 10px;
   overflow: hidden;
-  font-size: 12.5px;
   text-overflow: ellipsis;
 }
 
@@ -743,13 +738,13 @@
 
 .flows .crumbs {
   gap: 0;
-  margin-top: 10px;
+  margin-top: var(--space-2);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .crumb-machine {
-  margin-right: 4px;
+  margin-right: var(--space-1);
   color: var(--muted);
   overflow-wrap: anywhere;
 }
@@ -765,28 +760,26 @@
 }
 
 .flows .crumbs button {
-  min-height: 28px;
   max-width: 100%;
-  padding: 0 4px;
+  padding: 0 var(--space-1);
   overflow: hidden;
-  border-color: transparent;
-  background: transparent;
-  font: inherit;
+  color: var(--fg);
+  font-family: inherit;
+  font-weight: 400;
   text-overflow: ellipsis;
 }
 
-.flows .crumbs button:hover:not(:disabled) {
-  border-color: var(--border-2);
-}
-
+/* 目前位置：粗體底線（麵包屑不用「按下」的底色）。 */
 .flows .crumbs button[aria-current] {
+  border-color: transparent;
+  background: transparent;
   font-weight: 700;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
 
 .flows .browser-tools {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .flows .browser-tools input {
@@ -796,7 +789,7 @@
 }
 
 .flows .browser-list {
-  margin: 8px 0 0;
+  margin: var(--space-2) 0 0;
   padding: 0;
   max-height: 240px;
   overflow-y: auto;
@@ -806,7 +799,7 @@
 .flows .browser-list li {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1h);
   padding: 2px;
   border-radius: var(--radius-control);
 }
@@ -817,33 +810,23 @@
 
 .flows .browser-list .pick {
   flex: 1 1 auto;
+  justify-content: flex-start;
   min-width: 0;
-  min-height: 32px;
   overflow: hidden;
-  border-color: transparent;
-  background: transparent;
+  color: var(--fg);
   font-family: var(--font-mono);
-  font-size: 13px;
   font-weight: 400;
   text-align: left;
   text-overflow: ellipsis;
 }
 
-.flows .browser-list .pick:hover:not(:disabled) {
-  border-color: var(--border-2);
-}
-
+/* 選中的資料夾：整列淡底（li.on），按鈕本身用全站的「按下」外觀。 */
 .flows .browser-list li.on .pick {
-  border-color: var(--ring);
   font-weight: 600;
 }
 
 .flows .browser-list .enter {
   flex: none;
-  min-height: 32px;
-  padding: 0 12px;
-  font-size: 16px;
-  line-height: 1;
 }
 
 .flows .browser-selected {
@@ -858,7 +841,7 @@
 .flows .browser-start {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1h);
   align-items: center;
   overflow-wrap: anywhere;
 }
@@ -868,24 +851,18 @@
   color: var(--fg-muted);
 }
 
-.flows .browser-start button {
-  min-height: 28px;
-  padding: 0 10px;
-  font-size: 12.5px;
-}
-
 /* 設定 */
 /* 左側分類選單＋右邊只放選中的分類；手機（≤ 640px）選單變成上方分頁 */
 .flows .settings-layout {
   display: grid;
   grid-template-columns: 216px minmax(0, 1fr);
-  gap: 24px;
+  gap: var(--space-6);
   align-items: start;
 }
 
 .flows .settings-nav {
   position: sticky;
-  top: calc(var(--app-header-height, 0px) + 16px);
+  top: calc(var(--app-header-height, 0px) + var(--space-4));
   min-width: 0;
 }
 
@@ -897,13 +874,14 @@
   list-style: none;
 }
 
+/* 分類選單：直排的分頁，目前那一類＝左側 2px 白線＋淡底；高度和標準按鈕一樣 36（手機 44）。 */
 .flows .settings-nav a {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
-  min-height: 40px;
-  padding: 6px 12px;
+  gap: var(--space-1) var(--space-2);
+  min-height: var(--ctl-h);
+  padding: var(--space-1) var(--space-3);
   border-left: 2px solid transparent;
   border-radius: 0 var(--radius-control) var(--radius-control) 0;
   color: var(--muted);
@@ -925,7 +903,7 @@
 
 .flows .settings-panel {
   display: grid;
-  gap: 16px;
+  gap: var(--space-4);
   min-width: 0;
   max-width: 880px;
 }
@@ -936,7 +914,7 @@
 
 .flows .settings-group {
   display: grid;
-  gap: 16px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
@@ -963,18 +941,18 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
 .flows .rows {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
   padding: 0;
   list-style: none;
 }
 
 .flows .rig-row {
-  padding: 10px 0;
+  padding: var(--space-2) 0;
   border-top: 1px solid var(--border);
 }
 
@@ -984,7 +962,7 @@
 }
 
 .flows .rig-row .acts {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .flows .rig-name {
@@ -1026,14 +1004,12 @@
 
 .flows .rule-list code {
   min-width: 0;
-  font: 12.5px var(--font-mono);
+  font: var(--fs-sm) var(--font-mono);
   overflow-wrap: anywhere;
 }
 
 .flows .rule-list button {
   flex-shrink: 0;
-  min-height: 30px;
-  font-size: 13px;
 }
 
 /* 聚焦時別被底部黏住的儲存列蓋住 */
@@ -1044,14 +1020,14 @@
 
 .flows .save-bar {
   position: sticky;
-  bottom: 8px;
+  bottom: var(--space-2);
   z-index: 5;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px 12px;
-  padding: 10px 14px;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-card);
   background: var(--surface-2);
@@ -1080,11 +1056,7 @@
   margin: 0;
 }
 
-/* 操作紀錄：設定頁底下滿寬 */
-.flows .form-card.audit {
-  margin-top: 16px;
-}
-
+/* 操作紀錄：設定頁底下滿寬（區塊間距由 .settings-group 的 gap 給，不另加 margin，報告 D2）。 */
 .flows .audit-filters {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1184,8 +1156,8 @@
   }
 
   .flows .settings-nav a {
-    min-height: 40px;
-    padding: 4px 10px;
+    min-height: var(--ctl-h-touch);
+    padding: var(--space-1) var(--space-2);
     border-left: 0;
     border-bottom: 2px solid transparent;
     border-radius: 0;
@@ -1195,12 +1167,17 @@
     border-bottom-color: var(--accent);
     background: none;
   }
+}
 
-  /* iOS 在字級小於 16px 的輸入框聚焦時會放大整頁 */
-  .flows input:not([type='radio'], [type='checkbox']),
-  .flows select,
-  .flows textarea {
-    font-size: 16px;
+/* 手機（全站唯一的斷點）：等寬字的輸入框也要 16px，iOS 才不會放大整頁；標籤列與分段切換至少 44。 */
+@media (max-width: 640px), (pointer: coarse) {
+  .flows input.mono,
+  .flows textarea.mono {
+    font-size: var(--fs-lg);
+  }
+  .flows .check,
+  .flows .segmented label {
+    min-height: var(--ctl-h-touch);
   }
 }
 
@@ -1218,46 +1195,42 @@
   max-height: calc(100% - 24px);
   overflow-y: auto;
   pointer-events: auto;
-  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  box-shadow: var(--shadow-pop);
 }
 
 .flows .quick-create .quick-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-right: 28px;
+  gap: var(--space-2);
+  padding-right: var(--ctl-h-sm);
 }
 
+/* 浮框的標題一律 16（--fs-lg）：快速建立、對話框。 */
 .flows .quick-create h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-lg);
 }
 
 .flows .quick-create .quick-close {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  min-width: 32px;
-  min-height: 32px;
-  padding: 0;
-  font-size: 18px;
-  line-height: 1;
+  top: var(--space-2);
+  right: var(--space-2);
 }
 
 .flows .quick-create .acts {
   align-items: center;
-  margin-top: 14px;
+  margin-top: var(--space-3);
 }
 
 .flows .quick-create .quick-more {
-  margin-top: 4px;
-  padding-top: 4px;
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
   border-top: 1px dashed var(--border-2);
 }
 
 .flows .new-folder,
 .flows .new-project {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 @media (max-width: 640px) {
@@ -1287,15 +1260,26 @@
   width: min(560px, 100%);
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
-  box-shadow: 0 16px 40px rgb(0 0 0 / 50%);
+  box-shadow: var(--shadow-modal);
 }
 
-.flows .dialog:focus {
+.flows .dialog:focus:not(:focus-visible) {
   outline: none;
 }
 
+/* 標題列：標題＋右上 ✕（觸控沒有 Esc，報告 B4）。 */
+.flows .dialog-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-2)) var(--space-2) 0;
+}
+
 .flows .dialog h2 {
-  margin-bottom: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: var(--space-1);
+  font-size: var(--fs-lg);
   overflow-wrap: anywhere;
 }
 
@@ -1325,18 +1309,14 @@
   font-size: 13px;
 }
 
-/* 已封存清單（設定頁） */
-.flows .form-card.archived {
-  margin-top: 16px;
-}
-
+/* 已封存清單（設定頁）：區塊間距由 .settings-group 的 gap 給。 */
 .flows .archived > .sub {
   margin: 4px 0 12px;
 }
 
 .flows .archived-total {
-  margin: 0 0 8px;
-  font-size: 13px;
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-ctl-sm);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1351,11 +1331,11 @@
 .flows .archived-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
+  gap: var(--space-2) var(--space-4);
   align-items: center;
   justify-content: space-between;
   min-width: 0;
-  padding: 10px 12px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface-2);
@@ -1380,17 +1360,12 @@
   margin-top: 0;
 }
 
-.flows .archived-row .acts a.button,
-.flows .archived-row .acts button {
-  min-height: 32px;
-}
-
 /* 舊資料頁 */
 .flows .back-link {
   display: inline-block;
-  margin-bottom: 10px;
+  margin-bottom: var(--space-2);
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .archive-head {
@@ -1462,6 +1437,18 @@
 
 .flows .transcript-search input {
   flex: 1 1 200px;
+}
+
+/* 對話紀錄次畫面（TranscriptPage.tsx）：標題右邊讓出次畫面 ✕ 的位置，長名稱換行不會鑽到 ✕ 底下。 */
+.modal-body .flows .transcript-head {
+  padding-right: calc(var(--ctl-h-sm) + var(--space-3));
+}
+.flows .transcript-back {
+  margin: 0 0 var(--space-2) calc(-1 * var(--space-1));
+}
+/* 手機全螢幕頁頂已有「← 返回」（回到搜尋），不再放第二個。 */
+.phone-page .flows .transcript-back {
+  display: none;
 }
 
 /* 對話紀錄：角色用標籤文字與版面分，不用狀態色（STYLE.md 規則一） */
@@ -1587,16 +1574,35 @@
   }
 }
 
-/* 會花額度的開關（和任務板的 ◈ 一樣用額度色）。 */
+/* 會花額度的開關：◈ 晶片的顏色在 controls.css，這裡只管位置。 */
 .flows .chip.cost {
-  border-color: var(--quota);
-  color: var(--quota);
   margin-left: 6px;
 }
 
 /* 狀態徽章（StatusBadge.tsx）用共用的 .lamp.badge（shared/styles/status.css），這裡只調字級。 */
 .flows .lamp.badge {
-  font-size: 12px;
+  font-size: var(--fs-sm);
+}
+
+/* 模式晶片（ModeChip）：等寬字，和團隊晶片（團隊色框）、工作區晶片（「工作區：」前綴）一眼分得開。 */
+.flows .chip.mode {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+/* 團隊晶片：團隊色 1px 框＋色點（STYLE §4）；--team 由元件給（var(--team-<色名>)）。
+   不用 .team：那是畫布團隊框的 class（絕對定位）。 */
+.flows .chip.team-chip {
+  gap: var(--space-1h);
+  border-color: var(--team, var(--border-2));
+  color: var(--fg-muted);
+}
+.flows .chip.team-chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--team, var(--muted));
 }
 
 .flows .link-button {
@@ -1605,7 +1611,7 @@
   border: 0;
   background: none;
   color: var(--fg);
-  font-size: 12.5px;
+  font-size: var(--fs-ctl-sm);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -1614,56 +1620,64 @@
   background: none;
 }
 
-.flows a.button.ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--muted);
-}
-
-.flows a.button.ghost:hover {
-  border-color: var(--border-2);
-  color: var(--fg);
-}
-
 .flows .count {
   display: inline-flex;
   justify-content: center;
   min-width: 22px;
-  margin-left: 8px;
-  padding: 0 6px;
-  border-radius: 999px;
+  margin-left: var(--space-2);
+  padding: 0 var(--space-1h);
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 650;
   line-height: 20px;
 }
 
-/* ── 收件匣的列（InboxBoard.tsx，原待處理） ── */
-.flows.triage {
-  max-width: 1100px;
+/*
+ * ── 收件匣抽屜（InboxBoard.tsx，P2 §1.2）：480／760px 寬，列一律單欄，動作在下面 ──
+ * 尺寸與顏色用 controls.css 的 class（標題列 .panel-head、排序 .seg.sm、篩選 select.sm、
+ * 列尾 .ghost.sm）；這裡只管位置。處理動作（允許、拒絕、回覆、批准）一律標準 36px，
+ * 列上和展開的審核卡同一個大小（GM Q1）。
+ */
+.flows.triage.inbox {
+  padding: 0 var(--space-4) var(--space-8);
 }
 
-.flows .triage-head {
+.flows.inbox .triage-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 calc(-1 * var(--space-4));
+  background: var(--bg);
+}
+
+/* 面板標題 18px（--fs-h2）；.flows h1 的 20px 是頁面標題。 */
+.flows .panel-head > h1 {
+  font-size: var(--fs-h2);
+  font-weight: 650;
+}
+
+.flows.inbox .triage-tools {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 16px;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
 }
 
 .flows .triage-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-left: auto;
+  gap: var(--space-2);
 }
 
 .flows .triage-filters label {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1h);
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-ctl-sm);
   font-weight: 600;
 }
 
@@ -1671,38 +1685,33 @@
   width: auto;
   min-width: 0;
   max-width: 180px;
-  min-height: 32px;
-  padding: 4px 8px;
-  font-size: 13px;
 }
 
 .flows .triage-note {
-  margin: 6px 0 0;
+  margin: var(--space-1h) 0 0;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-ctl-sm);
   line-height: 1.6;
 }
 
 .flows .triage-keys {
+  margin: var(--space-2) 0 var(--space-3);
   color: var(--faint);
-  font-size: 12px;
-}
-
-.flows .triage-keys {
-  margin: 2px 0 18px;
+  font-size: var(--fs-sm);
 }
 
 .flows .triage-groups {
   display: grid;
-  gap: 22px;
+  gap: var(--space-6);
 }
 
+/* 清單分組標題（收件匣分組、搜尋分組同一種）：12px／650／--fg-muted。 */
 .flows .triage-group h2 {
   display: flex;
   align-items: center;
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 650;
   letter-spacing: 0.02em;
 }
@@ -1713,11 +1722,11 @@
 
 .flows .group-empty {
   margin: 0;
-  padding: 10px 14px;
+  padding: var(--space-2) var(--space-3);
   border: 1px dashed var(--border);
   border-radius: var(--radius-control);
   color: var(--faint);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .triage-list {
@@ -1730,13 +1739,17 @@
   overflow: hidden;
 }
 
+/*
+ * 一列三塊：資訊（滿寬）／處理動作（左）＋列尾的終端機、畫布連結（右，同一排，不另佔一行）／
+ * 展開的原因框、審核卡（滿寬）。
+ */
 .flows .triage-row {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 6px 16px;
-  padding: 10px 14px 10px 18px;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) var(--space-2) var(--space-4);
   cursor: pointer;
 }
 
@@ -1748,17 +1761,18 @@
   background: var(--surface-2);
 }
 
+/* 可聚焦的列：全站焦點樣式（往內畫，列之間不重疊）。 */
 .flows .triage-row:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: -2px;
+  outline: var(--focus-w) solid var(--ring);
+  outline-offset: calc(-1 * var(--focus-w));
 }
 
 /* 放手線：和卡片一樣在左緣，列比較矮所以留一點上下空隙 */
 .flows .triage-row::before {
   content: '';
   position: absolute;
-  top: 8px;
-  bottom: 8px;
+  top: var(--space-2);
+  bottom: var(--space-2);
   left: 0;
 }
 
@@ -1766,9 +1780,33 @@
   background: color-mix(in srgb, var(--fault) 7%, transparent);
 }
 
+.flows .triage-row.expanded {
+  cursor: auto;
+  background: var(--surface-2);
+}
+
+.flows .triage-row.expanded .session-reviews {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* 推播指到的那一列：閃一下白框（2 秒）。 */
+.flows .triage-row.targeted {
+  outline: var(--focus-w) solid var(--accent);
+  outline-offset: calc(-1 * var(--focus-w));
+}
+
+/* 畫布框選的那一列＝「目前這一列」：.list-row[aria-current]（controls.css，淡底＋左側白線）。 */
+
+.flows .row-main,
+.flows .row-panel,
+.flows .triage-row .session-reviews {
+  grid-column: 1 / -1;
+}
+
 .flows .row-main {
   display: grid;
-  gap: 2px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -1776,19 +1814,26 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
+  gap: var(--space-1) var(--space-2);
   min-width: 0;
 }
 
-.flows .row-name {
+.flows .row-name.link-button {
   min-width: 0;
-  font-size: 14.5px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font-size: var(--fs-base);
   font-weight: 650;
+  text-align: left;
   text-decoration: none;
   overflow-wrap: anywhere;
+  cursor: pointer;
 }
 
-.flows a.row-name:hover {
+.flows .row-name.link-button:hover {
   text-decoration: underline;
 }
 
@@ -1796,23 +1841,35 @@
   margin-left: 0;
 }
 
-.flows .row-sign .callsign {
-  font-size: 11.5px;
+/* 呼號在列的最上面、不截斷（STYLE.md 邏輯 2）：長了就換行 */
+.flows .row-sign {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
 }
 
-.flows .row-rule {
-  color: var(--fault);
-  font-size: 12.5px;
+.flows .row-sign .callsign {
+  font-size: var(--fs-sm);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* 危險指令：審核卡警示列的精簡版 */
+.flows .alert.row-rule {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
 /* 一行摘要：長了就截斷，完整內容在提示框、展開的審核卡與終端機 */
 .flows .triage-context {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1h);
   min-width: 0;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .triage-context > span {
@@ -1824,37 +1881,29 @@
 
 .flows .triage-context .mono {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 .flows .triage-row .blocked {
-  margin: 2px 0 0;
-  font-size: 12.5px;
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-ctl-sm);
 }
 
+/* 處理動作一排（標準 36px）；開終端機、在畫布上看在列尾（.ghost.sm）。 */
 .flows .row-acts {
+  grid-column: 1;
+  grid-row: 2;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.flows .row-acts button,
-.flows .row-acts a.button {
-  min-height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
+  gap: var(--space-2);
 }
 
 .flows .row-acts .msg {
   flex-basis: 100%;
-  text-align: right;
-  font-size: 12.5px;
 }
 
 .flows .row-panel {
-  grid-column: 1 / -1;
   min-width: 0;
   cursor: auto;
 }
@@ -1864,59 +1913,61 @@
 }
 
 .flows .row-panel .acts {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .flows .row-panel.armed {
   margin-top: 0;
 }
 
-@media (max-width: 720px) {
-  .flows .triage-row {
-    grid-template-columns: minmax(0, 1fr);
-    padding: 12px 12px 12px 16px;
-  }
-  .flows .row-acts {
-    justify-content: flex-start;
-  }
-  .flows .row-acts button,
-  .flows .row-acts a.button {
-    min-height: 40px;
-  }
-  .flows .row-acts .msg {
-    text-align: left;
-  }
-  .flows .triage-filters {
-    margin-left: 0;
+.flows .row-foot {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: start;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  margin-right: calc(-1 * var(--space-2));
+}
+
+.flows.inbox .target-missing {
+  margin: var(--space-3) 0 0;
+}
+
+.flows.inbox.is-stale > :not(.triage-head, .stale-line) {
+  opacity: 0.55;
+}
+
+.flows.inbox .stale-line {
+  margin: 0 calc(-1 * var(--space-4));
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  /* 上面補 canvas.css 漏出來的那條：手機一樣回到 44px 下限。 */
+  .flows .acts > button:not(.sm, .link, .icon, .close, .act) {
+    min-height: var(--ctl-h-touch);
   }
   /* 手機沒有鍵盤，不顯示快捷鍵說明 */
   .flows .triage-keys {
     display: none;
   }
   .flows .triage-note {
-    margin-bottom: 16px;
+    margin-bottom: var(--space-4);
   }
 }
 
-/* ── 審核卡展開在收件匣裡（ReviewCards.tsx） ── */
-.flows .review.detail {
-  padding: 18px 20px 18px 24px;
-}
-
-.flows .review.detail .title {
-  font-size: 18px;
-}
-
+/* ── 審核卡（ReviewCards.tsx）：收件匣展開一列、全尺寸終端機旁 ── */
 .flows .why {
-  margin: 8px 0 0;
+  margin: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 
 /* 決定列：允許在上一排，拒絕和必填原因綁在同一排 */
 .flows .decision-bar {
-  margin-top: 14px;
-  padding-top: 12px;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
   border-top: 1px solid var(--border);
 }
 
@@ -1927,8 +1978,8 @@
 .flows .deny-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  margin-top: 10px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 .flows .deny-row .field-input {
@@ -1953,8 +2004,8 @@
 }
 
 .flows .session-tail {
-  margin-top: 14px;
-  font-size: 13px;
+  margin-top: var(--space-3);
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .session-tail summary,
@@ -1966,26 +2017,21 @@
 
 .flows .tail-lines {
   max-height: 200px;
-  margin: 8px 0 0;
-  padding: 8px 10px;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-2);
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--term-bg);
   color: var(--fg-muted);
-  font: 12px/1.6 var(--font-mono);
+  font: var(--fs-sm) / 1.6 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.flows .detail-links {
-  margin-top: 12px;
-  font-size: 13px;
-}
-
 .flows .history {
-  margin-top: 24px;
-  padding: 12px 16px;
+  margin-top: var(--space-6);
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   background: var(--surface);
@@ -1993,7 +2039,7 @@
 
 .flows .history-list {
   list-style: none;
-  margin: 10px 0 0;
+  margin: var(--space-2) 0 0;
   padding: 0;
 }
 
@@ -2001,9 +2047,9 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 10px;
-  padding: 6px 0;
-  font-size: 13px;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1h) 0;
+  font-size: var(--fs-ctl-sm);
 }
 
 .flows .history-row + .history-row {
@@ -2012,7 +2058,7 @@
 
 .flows .history-row time {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .flows .history-name {
@@ -2030,113 +2076,23 @@
   overflow-wrap: anywhere;
 }
 
+/* 展開在收件匣列裡：列已經畫了放手線與呼號，卡片只當內容框（省一層內距、不畫第二條放手線）。 */
+.flows .triage-row .review.detail {
+  padding: var(--space-3);
+}
+.flows .triage-row .review.detail::before {
+  display: none;
+}
+
 @media (max-width: 899px) {
-  .flows .review.detail {
-    padding: 14px 14px 14px 18px;
+  .flows .review.detail:not(.triage-row *) {
+    padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 640px), (pointer: coarse) {
   .flows .deny-row {
     flex-direction: column;
     align-items: stretch;
   }
-}
-
-/* ── 收件匣抽屜（InboxBoard.tsx，P2 §1.2）：480px 寬，列一律單欄，動作在下面 ── */
-.flows.triage.inbox {
-  max-width: none;
-  padding: 12px 16px 32px 20px;
-}
-.flows.inbox .triage-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  margin: -12px -16px 0 -20px;
-  padding: 10px 12px 10px 20px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-}
-.flows.inbox .triage-head h1 {
-  margin: 0;
-  font-size: 18px;
-}
-.flows.inbox .triage-head .spacer {
-  flex: 1;
-}
-.flows.inbox .triage-tools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin: 12px 0 0;
-}
-.flows.inbox .triage-filters {
-  margin-left: 0;
-}
-.flows.inbox .triage-keys {
-  margin: 8px 0 14px;
-}
-.flows.inbox .triage-row {
-  grid-template-columns: minmax(0, 1fr);
-}
-.flows.inbox .row-acts {
-  justify-content: flex-start;
-}
-.flows.inbox .row-acts .msg {
-  text-align: left;
-}
-.flows.inbox .row-name.link-button {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--fg);
-  min-height: 0;
-  text-align: left;
-  cursor: pointer;
-}
-.flows.inbox .row-name.link-button:hover {
-  text-decoration: underline;
-}
-/* 呼號不截斷（STYLE.md 邏輯 2）：長了就換行 */
-.flows.inbox .row-sign .callsign {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.flows.inbox .row-foot {
-  display: flex;
-  justify-content: flex-end;
-}
-.flows.inbox .row-foot button {
-  min-height: 28px;
-  padding: 0 8px;
-  font-size: 12.5px;
-}
-.flows.inbox .triage-row.expanded {
-  cursor: auto;
-  background: var(--surface-2);
-}
-.flows.inbox .triage-row.expanded .session-reviews {
-  display: grid;
-  gap: 12px;
-}
-.flows.inbox .triage-row.targeted {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-.flows.inbox .triage-row.focused::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border: 1px solid var(--ring);
-  pointer-events: none;
-}
-.flows.inbox .target-missing {
-  margin: 12px 0 0;
-}
-.flows.inbox.is-stale > :not(.triage-head, .stale-line) {
-  opacity: 0.55;
-}
-.flows.inbox .stale-line {
-  margin: 0 -16px 0 -20px;
 }

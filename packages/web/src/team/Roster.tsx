@@ -12,6 +12,7 @@ import { Age, errorText, Lamp, useViewsUi } from '../views';
 import { activeMention, parseCommand, sortRoster } from './broadcast';
 import { refreshTeams } from './store';
 import { ROLE_ABBR } from './teamPlan';
+import { Empty } from '../flows/common';
 
 type Role = TeamMember['role'];
 
@@ -145,7 +146,7 @@ export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
     <section className="roster" aria-labelledby={`roster-${team.id}`} data-testid="team-roster">
       <h2 id={`roster-${team.id}`}>{t('team.roster.title', { n: rows.length })}</h2>
       {rows.length === 0 ? (
-        <p className="sub">{t('team.roster.empty')}</p>
+        <Empty title={t('team.roster.emptyTitle')} next={t('team.roster.empty')} />
       ) : (
         <ul className="roster-list">
           {sorted.map(({ member, session }) => {
@@ -176,7 +177,7 @@ export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
                   {session.name}
                 </button>
                 <select
-                  className="roster-role"
+                  className="roster-role sm"
                   aria-label={t('team.members.roleOf', { name: session.name })}
                   value={member.role}
                   onChange={(e) => void changeRole(session.id, e.target.value as Role)}
@@ -301,11 +302,12 @@ export function BroadcastBox({ team, rows }: { team: Team; rows: RosterRow[] }) 
   return (
     <div className="broadcast" data-testid="team-broadcast">
       {options.length > 0 && (
-        <ul className="mention-menu" role="listbox" data-testid="mention-menu">
+        <ul className="menu mention-menu" role="listbox" data-testid="mention-menu">
           {options.map((row, i) => (
             <li key={row.session.id} role="option" aria-selected={i === picked}>
               <button
                 type="button"
+                className="menu-item"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => choose(row)}
                 data-testid={`mention-${row.session.id}`}
@@ -320,7 +322,7 @@ export function BroadcastBox({ team, rows }: { team: Team; rows: RosterRow[] }) 
       <div className="broadcast-row">
         <input
           ref={input}
-          className="cmd"
+          className="broadcast-input"
           value={value}
           placeholder={t('team.broadcast.placeholder')}
           aria-label={t('team.broadcast.aria', { name: team.name })}

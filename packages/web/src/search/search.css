@@ -21,43 +21,47 @@
 
 .search-top {
   display: grid;
-  gap: 10px;
-  padding: 16px 56px 12px 16px;
+  gap: var(--space-2);
+  /* 右邊留出次畫面 ✕（32px＋右上 10px）的位置 */
+  padding: var(--space-4) calc(var(--ctl-h-sm) + var(--space-6)) var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
 }
 .search-box {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
-  background: var(--surface);
+  background: var(--surface-2);
 }
+/* 焦點和全站一樣：2px --ring 外框、偏移 2px（框在外面這層；輸入框本身不再畫第二層）。 */
 .search-box:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--ring);
+  outline: var(--focus-w) solid var(--ring);
+  outline-offset: var(--focus-offset);
 }
 .search-box > span {
   color: var(--muted);
-  font-size: 18px;
+  font-size: var(--fs-lg);
 }
+/* 和對話紀錄的搜尋框同字級：桌面 14、手機 16（iOS 不放大）。 */
 .search-box input {
   flex: 1;
   min-width: 0;
-  min-height: 40px;
+  min-height: var(--ctl-h);
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--fg);
-  font-size: 16px;
+  font-size: var(--fs-base);
   outline: none;
 }
 .search-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
-  font-size: 13px;
+  gap: var(--space-2) var(--space-3);
+  font-size: var(--fs-ctl-sm);
 }
 .search-archived-toggle {
   display: inline-flex;
@@ -71,35 +75,43 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 4px 16px 12px;
+  padding: var(--space-1) var(--space-4) var(--space-3);
 }
 .search-hint {
-  margin: 12px 0;
-  font-size: 13px;
+  margin: var(--space-3) 0;
+  font-size: var(--fs-ctl-sm);
   color: var(--muted);
 }
-.search-hint.err {
-  color: var(--fg);
+/* 錯誤文字全站一種：--fault 字＋✕ 符號（審視報告 §3.6）。 */
+.search-hint.err,
+.search-note.err {
+  color: var(--fault);
+}
+.search-hint.err::before,
+.search-note.err::before {
+  content: '✕ ';
 }
 .search-panel .search-top .search-hint {
   margin: 0;
 }
-.search-empty p:first-child {
-  margin: 16px 0 4px;
-  font-weight: 600;
+/* 空狀態、載入中：和收件匣同一種 .empty（虛線框，controls.css），這裡只留上下距離。 */
+.search-results .empty {
+  margin: var(--space-3) 0;
 }
 
 .search-group {
-  padding: 10px 0 6px;
+  padding: var(--space-2) 0 var(--space-1h);
   border-bottom: 1px solid var(--border);
 }
 .search-group:last-child {
   border-bottom: 0;
 }
+/* 清單分組標題（和收件匣分組同一種）：12px／650／--fg-muted。 */
 .search-group h3 {
-  margin: 0 0 6px;
-  font-size: 12.5px;
-  font-weight: 600;
+  margin: 0 0 var(--space-1h);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+  letter-spacing: 0.02em;
   color: var(--fg-muted);
 }
 .search-group ul {
@@ -112,17 +124,14 @@
   /* 每列各自是一個 grid：欄寬固定，上下列才對得齊。 */
   grid-template-columns: 76px 150px minmax(0, 1fr) 64px 112px;
   align-items: baseline;
-  gap: 10px;
-  padding: 6px 8px;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-2);
   border-radius: var(--radius-control);
   cursor: pointer;
 }
-.search-row:hover,
-.search-row.selected {
-  background: var(--accent-bg);
-}
-.search-row.selected {
-  box-shadow: inset 2px 0 0 var(--accent);
+/* 選中的那一列：.list-row[aria-selected]（controls.css，淡底＋左側白線）。 */
+.search-row:hover {
+  background: var(--surface-2);
 }
 .search-row .lamp-label {
   display: none;
@@ -143,16 +152,16 @@
 .search-snippet {
   min-width: 0;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
   overflow-wrap: anywhere;
 }
 .search-snippet .mono {
   font-family: var(--font-mono);
 }
 .search-field {
-  margin-right: 6px;
+  margin-right: var(--space-1h);
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 .search-hit {
   color: var(--fg);
@@ -161,14 +170,14 @@
   text-underline-offset: 2px;
 }
 .search-count {
-  margin-left: 8px;
+  margin-left: var(--space-2);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .search-time {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   text-align: right;
 }
@@ -180,20 +189,20 @@
 .search-archived {
   font-weight: 500;
 }
+/* 「顯示全部 N 筆」：文字鈕 .link（controls.css），這裡只管位置。 */
 .search-more {
-  margin: 4px 0 0 8px;
-  font-size: 12.5px;
+  margin: var(--space-1) 0 0 var(--space-1);
 }
 .search-note {
-  margin: 6px 8px 0;
-  font-size: 12px;
+  margin: var(--space-1h) var(--space-2) 0;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .search-note.asked {
   color: var(--fg-muted);
 }
 .search-deep-actions {
-  margin: 6px 0 0 8px;
+  margin: var(--space-1h) 0 0 var(--space-2);
 }
 .search-deep-busy {
   font-weight: 400;
@@ -203,29 +212,30 @@
 .search-deep-machines {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 0 0 6px 8px !important;
-  font-size: 12px;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-1h) var(--space-2) !important;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .search-deep-machines li[data-state='searching'] {
   color: var(--muted);
 }
-.search-note.err {
-  color: var(--fg);
-}
 .search-keys {
   margin: 0;
-  padding: 8px 16px;
+  padding: var(--space-2) var(--space-4);
   border-top: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
 /* 手機（≤ 640px）：全螢幕頁；一列拆兩行，不橫向捲動。 */
-@media (max-width: 640px) {
+@media (max-width: 640px), (pointer: coarse) {
   .search-top {
-    padding: 12px 16px;
+    padding: var(--space-3) var(--space-4);
+  }
+  .search-box input {
+    min-height: var(--ctl-h-touch);
+    font-size: var(--fs-lg);
   }
   .search-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
@@ -233,8 +243,8 @@
       'lamp name time'
       'snippet snippet snippet'
       'machine machine machine';
-    padding: 10px 8px;
-    min-height: 56px;
+    padding: var(--space-2);
+    min-height: var(--ctl-h-thumb);
   }
   .search-lamp {
     grid-area: lamp;
@@ -258,6 +268,6 @@
     display: none;
   }
   .search-results {
-    padding-bottom: 32px;
+    padding-bottom: var(--space-8);
   }
 }

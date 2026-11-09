@@ -240,12 +240,18 @@ test.describe('收件匣抽屜：審核卡（原審核中心）', () => {
     await open(page, 'inbox');
     await pick(page, 's-auth');
     const card = page.getByTestId('review-a-1');
-    await expect(card.locator('.sign .callsign')).toHaveText('demo-studio / project @ ab/fix-auth');
-    await expect(card.locator('.sign .chip')).toHaveText('default');
+    // 展開時呼號、狀態、名稱只在列上畫一次（審視報告 inbox P7），卡片不重複。
+    const row = page.getByTestId('queue-s-auth');
+    await expect(row.locator('.row-sign .callsign')).toHaveText(
+      'demo-studio / project @ ab/fix-auth',
+    );
+    await expect(row.locator('.row-top .chip.mode')).toHaveText('default');
+    await expect(row.locator('.lamp')).toHaveCount(1);
+    await expect(card.locator('.sign, .head')).toHaveCount(0);
     await expect(card.locator('.command')).toHaveText('npm test -- auth');
-    const order = await card.evaluate((el) => {
-      const sign = el.querySelector('.sign')!;
-      const tool = el.querySelector('.tool')!;
+    const order = await row.evaluate((el) => {
+      const sign = el.querySelector('.row-sign')!;
+      const tool = el.querySelector('.review .tool')!;
       return sign.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING;
     });
     expect(order).toBeTruthy();
@@ -265,6 +271,11 @@ test.describe('收件匣抽屜：審核卡（原審核中心）', () => {
     await pick(page, 's1');
     const card = page.getByTestId('review-a1');
     const reason = card.getByLabel('拒絕原因（必填）');
+    // 灰色「拒絕」→ 原因框＋紅框「拒絕」＋「取消」（和收件匣列、手機同一套，GM Q3）；展開時「允許」收起。
+    await expect(reason).toHaveCount(0);
+    await card.getByRole('button', { name: '拒絕' }).click();
+    await expect(card.getByRole('button', { name: '允許一次' })).toHaveCount(0);
+    await expect(card.getByRole('button', { name: '拒絕' })).toHaveClass(/\bdanger\b/);
     await card.getByRole('button', { name: '拒絕' }).click();
     await expect(card.locator('.msg')).toHaveText('要填拒絕原因才能送出');
     await expect(reason).toHaveAttribute('aria-invalid', 'true');
@@ -312,8 +323,10 @@ test.describe('收件匣抽屜：審核卡（原審核中心）', () => {
     const card = page.getByTestId('review-d1');
     await expect(card.getByRole('alert')).toContainText('⛔');
     await expect(card.getByRole('alert')).toContainText('git push --force');
-    await expect(card.locator('.chip.bypass')).toHaveText('略過權限');
-    const line = await card.evaluate((el) => {
+    // 模式晶片與放手線在列上（展開的審核卡不重複畫）。
+    const row = page.getByTestId('queue-s1');
+    await expect(row.locator('.chip.bypass')).toHaveText('略過權限');
+    const line = await row.evaluate((el) => {
       const before = getComputedStyle(el, '::before');
       return {
         width: before.borderLeftWidth,
@@ -453,7 +466,7 @@ test.describe('收件匣抽屜：審核卡（原審核中心）', () => {
     await pick(page, 's1');
     const card = page.getByTestId('review-p1');
     await expect(card.locator('.command')).toContainText('2. Backfill');
-    await expect(card.locator('.lamp')).toContainText('▣');
+    await expect(page.getByTestId('queue-s1').locator('.lamp')).toContainText('▣');
     await card.getByRole('button', { name: '要求修改' }).click();
     await expect(card.locator('.msg')).toHaveText('要填修改意見才能送出');
     expect(await calls(page)).toEqual([]);
@@ -582,6 +595,7 @@ test.describe('收件匣抽屜：審核卡（原審核中心）', () => {
     await expect(row).not.toHaveClass(/targeted/, { timeout: 4000 });
 
     await pick(page, 's6');
+    await page.getByTestId('review-a6').getByRole('button', { name: '拒絕' }).click();
     const other = page.getByTestId('review-a6').getByLabel('拒絕原因（必填）');
     await other.focus();
     await setBoard(page, { machines: [{ ...rigA }] });
@@ -826,11 +840,23 @@ test.describe('手機收件匣', () => {
     await open(page, 'inbox', inboxSeed());
     const item = page.getByTestId('inbox-a-perm');
     await item.getByRole('button', { name: '拒絕' }).click();
-    await item.getByRole('button', { name: '送出拒絕' }).click();
+    // 填原因 → 紅框「拒絕」（GM Q3）：原本的「拒絕」鈕收起，同一時間只有一顆，是 danger、56px。
+    const deny = item.getByRole('button', { name: '拒絕', exact: true });
+    await expect(deny).toHaveCount(1);
+    await expect(deny).toHaveClass(/\bdanger\b/);
+    expect((await deny.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+    // 「允許一次」不會補到剛才「拒絕」的格子（審查 blocker）：展開時整排收起。
+    await expect(item.getByRole('button', { name: '允許一次' })).toHaveCount(0);
+    // 取消：收起原因框，回到「允許一次／拒絕」
+    await item.getByRole('button', { name: '取消' }).click();
+    await expect(item.getByLabel('拒絕原因（必填）')).toHaveCount(0);
+    await expect(deny).not.toHaveClass(/\bdanger\b/);
+    await deny.click();
+    await deny.click();
     await expect(item.locator('.msg')).toHaveText('要填拒絕原因才能送出');
     expect(await calls(page)).toEqual([]);
     await item.getByLabel('拒絕原因（必填）').fill('不要');
-    await item.getByRole('button', { name: '送出拒絕' }).click();
+    await deny.click();
     await expect(item).toHaveCount(0);
 
     await expect(page.getByTestId('inbox-a-plan')).toContainText('回電腦處理');
@@ -886,8 +912,19 @@ test.describe('手機收件匣', () => {
         }),
       ],
     });
-    await page.getByTestId('inbox-q1').getByRole('button', { name: 'zh', exact: true }).click();
-    await expect(page.getByTestId('inbox-q1')).toHaveCount(0);
+    // 先選（選中反白、填進回答框），再按「送出回答」才送（GM Q3；以前手機按選項就直接送出）。
+    const item = page.getByTestId('inbox-q1');
+    const option = item.getByRole('button', { name: 'zh', exact: true });
+    await option.click();
+    await expect(option).toHaveAttribute('aria-pressed', 'true');
+    await expect(option).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.1)');
+    await expect(item.getByLabel('你的回答')).toHaveValue('zh');
+    expect(await calls(page)).toEqual([]);
+    const send = item.getByRole('button', { name: '送出回答' });
+    await expect(send).toHaveClass(/\bprimary\b/);
+    expect((await send.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+    await send.click();
+    await expect(item).toHaveCount(0);
     expect(await calls(page)).toEqual([
       { type: 'decide', id: 'q1', decision: { behavior: 'answer', text: 'zh' } },
     ]);
@@ -2221,6 +2258,44 @@ test.describe('登入', () => {
     await expect(page.getByRole('heading', { name: 'Log in to Agent Board' })).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem('agent-board.locale'))).toBe('en');
   });
+
+  const loginSizes = (page: Page) =>
+    page.evaluate(() => {
+      const font = (id: string) =>
+        parseFloat(getComputedStyle(document.getElementById(id)!).fontSize);
+      const button = document.querySelector<HTMLElement>('.login-form button[type="submit"]')!;
+      return {
+        coarse: matchMedia('(pointer: coarse)').matches,
+        name: font('login-name'),
+        password: font('login-password'),
+        button: button.getBoundingClientRect().height,
+      };
+    });
+
+  test.describe('iPad 寬度的觸控裝置', () => {
+    test.use({ viewport: { width: 810, height: 1080 }, hasTouch: true });
+
+    test('輸入框至少 16px（iOS 不放大），登入鈕至少 44px', async ({ page }) => {
+      await open(page, 'login', { patch: recordLogin() });
+      const sizes = await loginSizes(page);
+      expect(sizes.coarse).toBe(true);
+      expect(sizes.name).toBeGreaterThanOrEqual(16);
+      expect(sizes.password).toBeGreaterThanOrEqual(16);
+      expect(sizes.button).toBeGreaterThanOrEqual(44);
+    });
+  });
+
+  test.describe('電腦（滑鼠）', () => {
+    test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false });
+
+    test('維持原本的 14px 輸入框與緊湊按鈕', async ({ page }) => {
+      await open(page, 'login', { patch: recordLogin() });
+      const sizes = await loginSizes(page);
+      expect(sizes.coarse).toBe(false);
+      expect(sizes.name).toBe(14);
+      expect(sizes.button).toBeLessThan(44);
+    });
+  });
 });
 
 test.describe('語系與版面', () => {
@@ -2404,7 +2479,7 @@ test.describe('語系與版面', () => {
       await expect(plan.getByRole('button', { name: 'Approve plan' })).toBeVisible();
       await expect(plan.getByRole('button', { name: 'Request changes' })).toBeVisible();
       await pick(page, 's2');
-      await expect(page.getByTestId('review-a2').locator('.chip.bypass')).toHaveText(
+      await expect(page.getByTestId('queue-s2').locator('.chip.bypass')).toHaveText(
         'Bypass permissions',
       );
     });

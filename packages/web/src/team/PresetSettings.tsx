@@ -2,7 +2,7 @@
 // 清單：名稱、角色縮寫串、最後使用時間；每列改名、上移／下移、編輯、複製、刪除（刪了 10 秒內可復原）。
 // 編輯用和新增團隊同一套列編輯與檢查，另有交接規則、第一個指令、初始進度卡三個區塊；手機只能改名、刪除（編輯回電腦）。
 // 另外放團隊面板的「⋯ → 存成 Preset」。
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   HANDOFF_MAX_ROUNDS,
   PROGRESS_FIELD_MAX,
@@ -19,6 +19,7 @@ import {
 import { registerSettingsCategory } from '../flows/settingsExtra';
 import type { Trigger as HandoffTrigger } from './handoffRules';
 import { Section } from '../flows/settingsParts';
+import { Empty } from '../flows/common';
 import { errorCode } from '../shared/backend';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
@@ -41,10 +42,10 @@ import { useTeams } from './store';
 import { validatePlan, type PlanRow } from './teamPlan';
 import './presetMessages';
 import './presets.css';
+import { PHONE_QUERY } from '../shared/breakpoints';
 
 type T = ReturnType<typeof useT>;
 
-const PHONE_QUERY = '(max-width: 640px)';
 const UNDO_MS = 10_000;
 const TRIGGERS: readonly HandoffTrigger[] = ['on_done', 'on_file', 'on_fail', 'on_marker'];
 
@@ -68,7 +69,16 @@ const failText = (t: T, e: unknown, name: string) =>
 
 // ── 團隊面板「⋯ → 存成 Preset」 ────────────────────────────
 
-export function SaveTeamPreset({ team, records }: { team: Team; records: TeamRecord[] }) {
+/** 團隊面板「⋯」：存成 Preset，加上呼叫端給的其他項目（刪除團隊）。 */
+export function SaveTeamPreset({
+  team,
+  records,
+  children,
+}: {
+  team: Team;
+  records: TeamRecord[];
+  children?: ReactNode;
+}) {
   const t = useT();
   const rules = useTeams((s) => s.rules);
   const [menu, setMenu] = useState(false);
@@ -93,6 +103,7 @@ export function SaveTeamPreset({ team, records }: { team: Team; records: TeamRec
     <div className="team-more" ref={box}>
       <button
         type="button"
+        className="icon sm"
         aria-label={t('team.preset.more')}
         aria-expanded={menu}
         onClick={() => setMenu((open) => !open)}
@@ -101,9 +112,10 @@ export function SaveTeamPreset({ team, records }: { team: Team; records: TeamRec
         ⋯
       </button>
       {menu && (
-        <div className="team-more-menu" role="menu">
+        <div className="menu team-more-menu" role="menu">
           <button
             type="button"
+            className="menu-item"
             role="menuitem"
             disabled={!captured}
             title={captured ? undefined : t('team.preset.noMembers')}
@@ -115,6 +127,7 @@ export function SaveTeamPreset({ team, records }: { team: Team; records: TeamRec
           >
             {t('team.preset.saveAs')}
           </button>
+          {children}
         </div>
       )}
       {dialog && captured && (
@@ -219,6 +232,7 @@ function PresetSettingsRow({
             }}
           >
             <input
+              className="sm"
               value={name}
               maxLength={TEAM_PRESET_NAME_MAX}
               autoFocus
@@ -234,7 +248,7 @@ function PresetSettingsRow({
               }}
               data-testid="preset-rename-input"
             />
-            <button disabled={busy} data-testid="preset-rename-save">
+            <button className="primary sm" disabled={busy} data-testid="preset-rename-save">
               {t('team.save')}
             </button>
           </form>
@@ -248,10 +262,28 @@ function PresetSettingsRow({
           <span className="chip mode bypass">{t('views.mode.bypass')}</span>
         )}
       </div>
+      {/* 列內動作一律精簡 32（手機 44）：編輯在最前面，刪除在最後、和其他動作隔開（報告 C5）。 */}
       <div className="row preset-admin-acts">
+        {phone ? (
+          <span className="sub" data-testid="preset-edit-desktop">
+            {t('team.preset.editDesktop')}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="sm"
+            aria-pressed={editing}
+            disabled={busy}
+            onClick={onEdit}
+            data-testid="preset-edit"
+          >
+            {t('team.preset.edit')}
+          </button>
+        )}
         {!renaming && (
           <button
             type="button"
+            className="sm"
             disabled={busy}
             onClick={() => {
               setName(preset.name);
@@ -264,6 +296,16 @@ function PresetSettingsRow({
         )}
         <button
           type="button"
+          className="sm"
+          disabled={busy}
+          onClick={duplicate}
+          data-testid="preset-duplicate"
+        >
+          {t('team.preset.duplicate')}
+        </button>
+        <button
+          type="button"
+          className="icon sm"
           disabled={busy || index === 0}
           aria-label={t('team.preset.up', { name: preset.name })}
           onClick={() => move(index - 1)}
@@ -273,6 +315,7 @@ function PresetSettingsRow({
         </button>
         <button
           type="button"
+          className="icon sm"
           disabled={busy || index === count - 1}
           aria-label={t('team.preset.down', { name: preset.name })}
           onClick={() => move(index + 1)}
@@ -280,27 +323,9 @@ function PresetSettingsRow({
         >
           ↓
         </button>
-        {phone ? (
-          <span className="sub" data-testid="preset-edit-desktop">
-            {t('team.preset.editDesktop')}
-          </span>
-        ) : (
-          <button
-            type="button"
-            aria-pressed={editing}
-            disabled={busy}
-            onClick={onEdit}
-            data-testid="preset-edit"
-          >
-            {t('team.preset.edit')}
-          </button>
-        )}
-        <button type="button" disabled={busy} onClick={duplicate} data-testid="preset-duplicate">
-          {t('team.preset.duplicate')}
-        </button>
         <button
           type="button"
-          className="danger"
+          className="danger sm preset-admin-delete"
           disabled={busy}
           onClick={remove}
           data-testid="preset-delete"
@@ -348,7 +373,12 @@ export function PresetsSettings() {
       {deleted && (
         <div className="preset-undo" role="status" data-testid="preset-undo">
           <span>{t('team.preset.deleted', { name: deleted.name })}</span>
-          <button type="button" onClick={() => void undo()} data-testid="preset-undo-button">
+          <button
+            type="button"
+            className="sm"
+            onClick={() => void undo()}
+            data-testid="preset-undo-button"
+          >
             {t('team.preset.undo')}
           </button>
         </div>
@@ -371,9 +401,11 @@ export function PresetsSettings() {
           </div>
         </div>
       ) : presets.length === 0 ? (
-        <p className="sub" data-testid="preset-admin-empty">
-          {t('team.preset.empty')}
-        </p>
+        <Empty
+          title={t('team.preset.emptyTitle')}
+          next={t('team.preset.empty')}
+          testId="preset-admin-empty"
+        />
       ) : (
         <ol className="preset-admin" data-testid="preset-admin">
           {presets.map((preset, i) => (
@@ -560,15 +592,17 @@ function RulesEditor({
           {rule.enabled && <CostChip />}
           <button
             type="button"
+            className="sm"
             aria-label={t('team.preset.ruleRemove', { n: i + 1 })}
             onClick={() => setRules((list) => list.filter((r) => r.id !== rule.id))}
           >
-            ×
+            {t('team.plan.remove')}
           </button>
         </div>
       ))}
       <button
         type="button"
+        className="sm"
         disabled={rows.length < 2}
         onClick={() =>
           setRules((list) => [

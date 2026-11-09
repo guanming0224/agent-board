@@ -32,12 +32,16 @@ import type {
   Settings,
   Task,
   Team,
+  TeamHoldMode,
+  TeamHoldResult,
   TeamMember,
+  TeamResumeResult,
   TeamPreset,
   TeamPresetConfig,
   TeamPresetUsed,
   Template,
   TranscriptPage,
+  UsageReport,
   UsageSummary,
   User,
   Zone,
@@ -217,6 +221,8 @@ export interface BoardBackend {
   removeMachine(id: string): Promise<void>;
   /** daemon 讀本機對話紀錄算出的 token 用量（不是官方額度）；還沒回報過是 null。 */
   machineUsage(machineId: string): Promise<UsageSummary | null>;
+  /** 用量詳情（GM 2026-11-09）：跨機器彙整的細項。 */
+  usageReport(): Promise<UsageReport>;
 
   getLayouts(workspace: string): Promise<Layout[]>;
   saveLayouts(layouts: Layout[]): Promise<void>;
@@ -239,9 +245,16 @@ export interface BoardBackend {
 
   /** 團隊工作台與畫布的團隊框、交接線（Phase 3）。 */
   listTeams(): Promise<Team[]>;
-  createTeam(input: Omit<Team, 'id' | 'zoneId'> & { zoneId?: string }): Promise<Team>;
-  updateTeam(id: string, patch: Partial<Omit<Team, 'id'>>): Promise<Team>;
+  createTeam(input: Omit<Team, 'id' | 'zoneId' | 'hold'> & { zoneId?: string }): Promise<Team>;
+  updateTeam(id: string, patch: Partial<Omit<Team, 'id' | 'hold'>>): Promise<Team>;
   deleteTeam(id: string): Promise<void>;
+  /**
+   * 全隊暫停（pause）／全隊停止（stop）（CONTRACTS §17）：hub 一次關規則與任務自動執行、送 Esc 或停 session，
+   * 並記下關了哪些（Team.hold）。
+   */
+  holdTeam(id: string, mode: TeamHoldMode): Promise<TeamHoldResult>;
+  /** 全隊繼續／全隊啟動：照 Team.hold 恢復（不自動送字）；停止後的另外 `--resume` 接回當初停掉的成員。 */
+  resumeTeam(id: string): Promise<TeamResumeResult>;
   listTeamMembers(teamId: string): Promise<TeamMember[]>;
   /** `kind` 是研究團隊的分工；不帶時 hub 保留原本的。 */
   putTeamMember(

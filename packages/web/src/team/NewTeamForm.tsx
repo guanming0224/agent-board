@@ -316,7 +316,10 @@ export function NewTeamForm() {
 
       <div className="row">
         {created ? (
-          <a className="open-team" href={`#/team/${encodeURIComponent(created.teamId)}`}>
+          <a
+            className="button primary open-team"
+            href={`#/team/${encodeURIComponent(created.teamId)}`}
+          >
             {t('team.new.open')}
           </a>
         ) : (

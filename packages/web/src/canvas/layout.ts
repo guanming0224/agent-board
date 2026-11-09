@@ -25,6 +25,19 @@ export interface Rect {
   h: number;
 }
 
+/**
+ * 低於這個縮放，卡片上的按鈕、輸入框、⋯ 都藏起來，只留標題列（GM 2026-11-09 Q4，canvas.css 的 [data-compact]）。
+ * 「點兩下處理」、「下一個等我的」、團隊面板移鏡頭時，縮放至少夾到這裡，放大後按鈕才看得到。
+ */
+export const COMPACT_ZOOM = 0.3;
+
+/** 縮放顯示（%）：和 COMPACT_ZOOM 的隱藏門檻對齊，0.295 不會顯示成「30%」卻已經藏起按鈕。 */
+export function zoomPercent(zoom: number): number {
+  const pct = Math.round(zoom * 100);
+  const edge = Math.round(COMPACT_ZOOM * 100);
+  return zoom < COMPACT_ZOOM ? Math.min(edge - 1, pct) : Math.max(edge, pct);
+}
+
 /** 放大到一張卡剛好看得完整的倍率。 */
 export function fitCardZoom(rect: Rect, viewportW: number, viewportH: number): number {
   return Math.min(viewportW / (rect.w + 40), viewportH / (rect.h + 40));

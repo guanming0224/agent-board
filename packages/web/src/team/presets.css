@@ -16,18 +16,19 @@
   width: min(520px, calc(100vw - 32px));
   max-height: min(70vh, 640px);
   overflow: auto;
-  padding: 10px;
+  padding: var(--space-2);
   transform: translateX(-50%);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 50%);
+  box-shadow: var(--shadow-pop);
   text-align: left;
 }
 
+/* 控制項（輸入框、按鈕）用 controls.css 的全站樣式；這裡只管排版。 */
 .preset-picker {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .preset-head,
@@ -35,7 +36,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .preset-preview-head {
   justify-content: flex-start;
@@ -45,7 +46,7 @@
 }
 .preset-list {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -53,16 +54,26 @@
   max-height: calc(8 * 60px);
   overflow: auto;
 }
+/* 可點的清單列（和團隊清單、Memory 同一種：--surface 底、1px 框、圓角 8、內距 8 12、hover --surface-2）。 */
 .preset-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 10px;
+  gap: 2px var(--space-2);
   width: 100%;
   min-height: 52px;
   height: auto;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
+  border-color: var(--border);
+  background: var(--surface);
+  font-weight: 400;
   text-align: left;
   white-space: normal;
+}
+.preset-row:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.preset-row .preset-name {
+  font-weight: 600;
 }
 .preset-row .preset-name {
   overflow-wrap: anywhere;
@@ -70,48 +81,52 @@
 .preset-row .preset-abbr {
   grid-column: 2;
   grid-row: 1;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .preset-row .preset-where {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
 .preset-row .preset-marks {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
   justify-content: flex-end;
-}
-.preset-empty {
-  margin: 4px 0;
 }
 
 .preset-preview {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
+/* 表單標籤：和流程頁、團隊面板同一種（13px／600／--fg-muted），標籤在上。 */
 .preset-field {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-ctl-sm);
+  font-weight: 600;
+}
+.preset-field input {
+  font-weight: 400;
 }
 .preset-place {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
-  font-size: 12.5px;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
 .preset-place-edit {
   display: grid;
-  gap: 8px;
-  padding: 8px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
 }
 .preset-rows {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -120,12 +135,12 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
-  padding: 6px 10px 6px 14px;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1h) var(--space-2) var(--space-1h) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface-2);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 /* 略過權限：紅線紅框（STYLE 規則二）。 */
 .preset-plan-row.bypass {
@@ -138,7 +153,7 @@
 .preset-plan-row .step {
   flex-basis: 100%;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .preset-plan-row .step.err {
   color: var(--fault);
@@ -147,78 +162,64 @@
   display: grid;
   gap: 2px;
   margin: 0;
-  padding-left: 18px;
-  font-size: 13px;
+  padding-left: var(--space-4);
+  font-size: var(--fs-ctl-sm);
 }
 .preset-first pre {
-  margin: 4px 0 0;
-  padding: 6px 8px;
-  border-radius: 6px;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1h) var(--space-2);
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.preset-actions {
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
+/* .preset-actions 是 .row（全站：flex、換行、間距 8）。 */
 
 /* 團隊清單頂部「從 Preset 建立」。 */
 .preset-entry {
   display: grid;
-  gap: 8px;
-  margin: 0 0 12px;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
 }
 .preset-entry .preset-picker {
-  padding: 10px;
+  padding: var(--space-2);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface);
 }
 
-/* 團隊面板「⋯」選單。 */
+/* 團隊面板「⋯」選單：外觀是共用的 .menu／.menu-item，這裡只管位置。 */
 .team-more {
   position: relative;
 }
 .team-more-menu {
   position: absolute;
   right: 0;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--space-1));
   z-index: 10;
-  display: grid;
-  min-width: 180px;
-  padding: 4px;
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 50%);
-}
-.team-more-menu button {
-  text-align: left;
 }
 
 /* 存成 Preset 對話框。 */
 .preset-save form {
   display: grid;
-  gap: 10px;
+  gap: var(--space-2);
   min-width: min(480px, calc(100vw - 64px));
 }
 
 /* 設定「Presets」。 */
 .preset-admin {
   display: grid;
-  gap: 6px;
-  margin: 8px 0 0;
+  gap: var(--space-1h);
+  margin: var(--space-2) 0 0;
   padding: 0;
   list-style: none;
 }
 .preset-admin-row {
   display: grid;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: var(--space-1h);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
 }
@@ -229,54 +230,47 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 10px;
+  gap: var(--space-1) var(--space-2);
 }
 .preset-admin-name {
   overflow-wrap: anywhere;
 }
-.preset-admin-acts {
-  flex-wrap: wrap;
-  gap: 6px;
+/* 列內動作是 .row（flex、間距 8）；刪除推到最右邊，和其他動作隔開。 */
+.preset-admin-acts .preset-admin-delete {
+  margin-left: auto;
 }
 .preset-undo {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-2);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface-2);
 }
 .preset-editor {
   display: grid;
-  gap: 10px;
-  margin-top: 12px;
-  padding: 12px;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-card);
 }
-.preset-editor label {
+.preset-editor label:not(.check) {
   display: grid;
-  gap: 4px;
-}
-.preset-editor label.check {
-  display: flex;
+  gap: var(--space-1);
 }
 .preset-rules,
 .preset-first-edit,
 .preset-progress-edit {
   display: grid;
-  gap: 6px;
+  gap: var(--space-1h);
   margin: 0;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
 }
-.preset-rule {
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
+/* .preset-rule 是 .row（全站）。 */
 
 /* 「送出第一個指令」（隊長卡片與團隊面板）。 */
 .held-first {
@@ -292,16 +286,15 @@
   margin-top: 6px;
 }
 
-/* 手機：按鈕至少 56px（§2.4）。 */
-@media (max-width: 640px) {
-  .preset-entry-toggle,
-  .preset-picker button,
-  .preset-picker .open-team,
-  .held-first button,
-  .preset-admin-acts button,
-  .team-more button {
-    min-height: 56px;
+/*
+ * 手機：Presets 的按鈕跟全站一樣至少 44（controls.css，GM Q1）；「送出第一個指令」會動到 session，留 56。
+ */
+@media (max-width: 640px), (pointer: coarse) {
+  .held-first button {
+    min-height: var(--ctl-h-thumb);
   }
+}
+@media (max-width: 640px) {
   .preset-row .preset-abbr {
     grid-column: 1;
     grid-row: auto;

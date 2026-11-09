@@ -1,0 +1,491 @@
+/*
+ * 共用控制項（GM 2026-11-09 Q1–Q3，STYLE.md §5「控制項尺寸與層級」）。token 在 tokens.css。
+ *
+ * 載入順序：main.tsx 在 tokens.css 之後 import。因為 App 的模組先載入，這個檔案在各區 CSS「之後」，
+ * 所以元素層的預設值一律包在 :where()（權重 0），各區有寫的就以各區為準，不會被這裡蓋掉；
+ * 變體 class（.primary .ghost .link .danger .icon、.sm .touch .act）才有正常權重。
+ * 各區 CSS 之後只調「位置」，尺寸與顏色用這裡的 class；對照表見 docs/design/controls-migration.md。
+ */
+
+/* ── 按鈕：<a class="button">、.btn 和 <button> 長得一樣（次要・標準） ── */
+:where(a.button, .btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1h);
+  min-height: var(--ctl-h);
+  padding: 0 var(--ctl-px);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+:where(a.button, .btn):hover {
+  background: var(--raise);
+}
+
+/* 主要：白色實心只給「下一個等我的」、表單送出、目前聚焦那張卡（Q2）。button.primary 在 tokens.css。 */
+:where(a.button, .btn).primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+:where(a.button, .btn).primary:hover {
+  background: var(--fg-muted);
+}
+
+/* 低調：透明、無框、--muted 字；hover 給 --raise 底。 */
+button.ghost,
+:where(a.button, .btn).ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+button.ghost:hover:not(:disabled),
+:where(a.button, .btn).ghost:hover {
+  background: var(--raise);
+  color: var(--fg);
+}
+
+/* 文字連結：透明、無框、字重 500；hover 底線。點擊範圍靠內距至少 24px。 */
+button.link,
+:where(a.button, .btn).link {
+  min-height: var(--ctl-h-xs);
+  padding: 0 var(--space-1);
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+}
+button.link:hover:not(:disabled),
+:where(a.button, .btn).link:hover {
+  background: transparent;
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+/* 危險：button.danger 與它的 hover／focus 在 tokens.css。這裡補 <a> 與「按兩次的第一下之後」。 */
+:where(a.button, .btn).danger {
+  background: color-mix(in srgb, var(--fault) 12%, transparent);
+  border-color: var(--fault);
+  color: var(--fg);
+}
+:where(a.button, .btn).danger:hover {
+  background: color-mix(in srgb, var(--fault) 20%, transparent);
+}
+button.danger[data-armed='true'],
+button.danger[data-armed='true']:hover:not(:disabled) {
+  background: var(--fault);
+  border-color: var(--fault);
+  color: var(--on-fault);
+}
+
+/* 圖示鈕：正方形、寬等於高，圖示 16px（✕ ⚙ ⋯ ‹ › − + ↑↓）。 */
+button.icon,
+:where(a.button, .btn).icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ctl-h);
+  min-width: var(--ctl-h);
+  padding: 0;
+  font-size: var(--fs-lg);
+  line-height: 1;
+}
+
+/* ── 尺寸：標準（預設）36／精簡 .sm 32；手機另有觸控 .touch 44／動作 .act 56 ── */
+button.sm,
+:where(a.button, .btn).sm {
+  min-height: var(--ctl-h-sm);
+  padding: 0 var(--ctl-px-sm);
+  font-size: var(--fs-ctl-sm);
+}
+button.icon.sm,
+:where(a.button, .btn).icon.sm {
+  width: var(--ctl-h-sm);
+  min-width: var(--ctl-h-sm);
+  padding: 0;
+  font-size: var(--fs-base);
+}
+/* 觸控 .touch（44）與動作 .act（56）只在手機／粗指標生效（檔尾的媒體查詢）：桌面只有 36／32 兩級（Q1）。 */
+
+/*
+ * 代碼色框＋淡底 .cue：等你的卡（不是「下一個」／聚焦那張）的處理鈕（GM Q2）。白色實心只留給
+ * 「下一個等我的」、表單送出、目前聚焦的那一列／那張卡，畫面上不會同時出現好幾塊白。
+ * --sc 由列或卡片上的 c-<code>（狀態代碼色）給；畫布卡片、收件匣列、手機收件匣三處共用這一份。
+ */
+button.cue,
+:where(a.button, .btn).cue {
+  border-color: var(--sc, var(--border-2));
+  background: color-mix(in srgb, var(--sc, var(--border-2)) 14%, transparent);
+  color: var(--fg);
+}
+button.cue:hover:not(:disabled),
+:where(a.button, .btn).cue:hover {
+  background: color-mix(in srgb, var(--sc, var(--border-2)) 24%, transparent);
+}
+
+/* ── 按下／選中／目前（全站同一種：--accent-bg 底＋--accent 1px 框） ── */
+button[aria-pressed='true'],
+button[aria-pressed='true']:hover:not(:disabled),
+:where(a.button, .btn, .chip, .menu-item)[aria-pressed='true'],
+:where(.btn, .menu-item, .seg > *, .chip)[aria-selected='true'],
+:where(a.button, .btn, .menu-item, .seg > *, .chip):is([aria-current]:not([aria-current='false'])) {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--fg);
+}
+/* 分頁：選中＝白色 2px 底線。 */
+:where(.tab) {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--ctl-h);
+  padding: 0 var(--ctl-px);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+}
+:where(.tab):is([aria-selected='true'], [aria-current]:not([aria-current='false'])) {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+}
+/* 清單上的「目前這一列」：淡底＋左側 2px 白色內線。 */
+:where(.list-row):is([aria-selected='true'], [aria-current]:not([aria-current='false'])) {
+  background: var(--accent-bg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* ── 輸入框、下拉、textarea（預設值權重 0，各區有寫的優先） ── */
+:where(
+  input:not(
+    [type='checkbox'],
+    [type='radio'],
+    [type='range'],
+    [type='file'],
+    [type='color'],
+    [type='hidden'],
+    [type='submit'],
+    [type='button'],
+    [type='reset'],
+    [type='image']
+  ),
+  select,
+  textarea
+) {
+  min-height: var(--ctl-h);
+  padding: 6px 10px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-base);
+}
+:where(textarea) {
+  line-height: 1.5;
+}
+:where(input, textarea)::placeholder {
+  color: var(--faint);
+}
+:where(input, select, textarea):disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+:where(input, select, textarea).sm {
+  min-height: var(--ctl-h-sm);
+  padding: 4px 8px;
+  font-size: var(--fs-ctl-sm);
+}
+/* 核取、單選：選中＝白（不是瀏覽器藍），不套文字輸入框的高度與內距。 */
+:where(input[type='checkbox'], input[type='radio']) {
+  accent-color: var(--accent);
+}
+:where(label.check) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+/*
+ * 表單欄位：標籤 13px／600／--fg-muted，block，和控制項間距 4（沿用 flows 的寫法）。
+ * 欄位本身維持 block、min-width 0：不用 grid，免得裡面一段不換行的長字（例如資料夾路徑）
+ * 把整欄撐寬、手機出現整頁水平捲軸。
+ */
+:where(.field) {
+  min-width: 0;
+}
+:where(.field) > :where(label, legend, .label) {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-ctl-sm);
+  font-weight: 600;
+}
+
+/* ── 分段切換 .seg：按鈕相連，只有頭尾有圓角，選中用上面的「按下」樣式 ── */
+.seg {
+  display: inline-flex;
+}
+.seg > button {
+  position: relative;
+  padding: 0 var(--ctl-px-sm);
+  border-radius: 0;
+  color: var(--muted);
+}
+.seg > button + button {
+  margin-left: -1px;
+}
+.seg > button:first-child {
+  border-radius: var(--radius-control) 0 0 var(--radius-control);
+}
+.seg > button:last-child {
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+}
+.seg > button:only-child {
+  border-radius: var(--radius-control);
+}
+.seg > button[aria-pressed='true'] {
+  z-index: 1;
+  color: var(--fg);
+}
+.seg.sm > button {
+  min-height: var(--ctl-h-sm);
+  font-size: var(--fs-ctl-sm);
+}
+
+/* ── 晶片（全站只定義這一次） ── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+/* 略過權限（規則二）：紅框；模式晶片元件只有 views/session.tsx 的 ModeChip。 */
+.chip.bypass {
+  border-color: var(--fault);
+  background: color-mix(in srgb, var(--fault) 14%, transparent);
+  color: var(--fg);
+}
+/* ◈ 耗額度（規則三之二）：額度紫。 */
+.chip.cost {
+  border-color: var(--quota);
+  color: var(--quota);
+}
+
+/* ── 浮層選單與選單項目：直排、無框、hover 換 --raise 底；桌面 32、手機 44 ── */
+:where(.menu) {
+  display: grid;
+  gap: 2px;
+  min-width: 180px;
+  padding: var(--space-1);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+button.menu-item,
+:where(a.menu-item) {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-height: var(--ctl-h-sm);
+  /* 上下 4：單行 13px（行高 19.5）＋框 2 剛好 32，不會撐成 34（面板區 2026-11-09）。 */
+  padding: var(--space-1) var(--ctl-px-sm);
+  border-color: transparent;
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-ctl-sm);
+  text-align: left;
+  text-decoration: none;
+  white-space: normal;
+}
+button.menu-item:hover:not(:disabled),
+:where(a.menu-item):hover {
+  background: var(--raise);
+}
+/* 選單項目的「按下／目前」與危險：上面 button.menu-item 的透明底權重比較高，這裡補回來（畫布區 2026-11-09）。 */
+button.menu-item:is([aria-pressed='true'], [aria-current]:not([aria-current='false'])),
+button.menu-item:is([aria-pressed='true'], [aria-current]:not([aria-current='false'])):hover:not(
+    :disabled
+  ) {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+button.menu-item.danger {
+  border-color: var(--fault);
+  background: color-mix(in srgb, var(--fault) 12%, transparent);
+}
+button.menu-item.danger:hover:not(:disabled) {
+  border-color: var(--fault);
+  background: color-mix(in srgb, var(--fault) 20%, transparent);
+}
+:where(.menu-item) :where(.sub) {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+}
+
+/* ── 面板標題列＋關閉鈕 ── */
+:where(.panel-head) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+:where(.panel-head) > :where(h1, h2) {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-h2);
+  font-weight: 650;
+}
+:where(.panel-head) > :where(.panel-acts) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+/* 關閉：圖示鈕・精簡 32×32，字元一律 ✕（U+2715）。 */
+button.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ctl-h-sm);
+  min-width: var(--ctl-h-sm);
+  min-height: var(--ctl-h-sm);
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-base);
+  line-height: 1;
+}
+button.close:hover:not(:disabled) {
+  background: var(--raise);
+  color: var(--fg);
+}
+
+/* ── 空狀態：虛線框＋標題＋下一步，左右內距相同 ── */
+:where(.empty) {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  border: 1px dashed var(--border-2);
+  border-radius: var(--radius-card);
+  color: var(--muted);
+  text-align: center;
+}
+:where(.empty) > :where(strong, .empty-title) {
+  color: var(--fg);
+  font-size: var(--fs-base);
+}
+
+/* ── 一列控制項 ── */
+:where(.row) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/*
+ * ── 手機：唯一的斷點（max-width 640 或粗指標） ──
+ * 可點元素至少 44；輸入框字級 16（iOS 聚焦時才不會放大整頁）。會動到 session 的動作自己加 .act（56）。
+ * 只用元素權重，各區寫死的 min-height 仍會贏，那些由各區換成 token（見 controls-migration.md）。
+ * 畫布卡片裡的控制項跟著畫布縮放，不套這條。
+ */
+@media (max-width: 640px), (pointer: coarse) {
+  button:where(:not(.react-flow__node *)),
+  :where(a.button, .btn):where(:not(.react-flow__node *)) {
+    min-height: var(--ctl-h-touch);
+  }
+  button.sm:where(:not(.react-flow__node *)),
+  button.link:where(:not(.react-flow__node *)),
+  button.menu-item:where(:not(.react-flow__node *)),
+  button.close:where(:not(.react-flow__node *)),
+  .seg.sm > button:where(:not(.react-flow__node *)) {
+    min-height: var(--ctl-h-touch);
+  }
+  button.icon:where(:not(.react-flow__node *)),
+  button.icon.sm:where(:not(.react-flow__node *)),
+  button.close:where(:not(.react-flow__node *)) {
+    width: var(--ctl-h-touch);
+    min-width: var(--ctl-h-touch);
+  }
+  button.touch,
+  :where(a.button, .btn).touch {
+    min-height: var(--ctl-h-touch);
+  }
+  button.icon.touch,
+  :where(a.button, .btn).icon.touch {
+    width: var(--ctl-h-touch);
+    min-width: var(--ctl-h-touch);
+  }
+  button.act,
+  :where(a.button, .btn).act {
+    min-height: var(--ctl-h-thumb);
+    font-size: var(--fs-lg);
+  }
+  :where(
+    input:not(
+      [type='checkbox'],
+      [type='radio'],
+      [type='range'],
+      [type='file'],
+      [type='color'],
+      [type='hidden'],
+      [type='submit'],
+      [type='button'],
+      [type='reset'],
+      [type='image']
+    ),
+    select,
+    textarea
+  ):where(:not(.react-flow__node *)) {
+    min-height: var(--ctl-h-touch);
+  }
+  /* 精簡輸入框（.sm 有 class 權重）在手機也要 44（面板區 2026-11-09）。 */
+  :where(input, select, textarea).sm:where(:not(.react-flow__node *)) {
+    min-height: var(--ctl-h-touch);
+  }
+  /*
+   * 字級下限 16：iOS 在字級小於 16px 的輸入框聚焦時會放大整頁。這條一定要贏過各區的
+   * `.flows input { font: … }`、`.team-page textarea.mono { font: … }` 這類規則（權重比元素高、
+   * 載入順序在測試頁和 App 也不一樣），所以用 !important；全站只有這一處，各區不必再各補手機字級。
+   * 比 16 大的字級（1em 繼承自父層）保留。畫布卡片裡的輸入框跟著畫布縮放，不套。
+   */
+  input:not(
+      [type='checkbox'],
+      [type='radio'],
+      [type='range'],
+      [type='file'],
+      [type='color'],
+      [type='hidden'],
+      [type='submit'],
+      [type='button'],
+      [type='reset'],
+      [type='image']
+    ):where(:not(.react-flow__node *)),
+  select:where(:not(.react-flow__node *)),
+  textarea:where(:not(.react-flow__node *)) {
+    font-size: max(var(--fs-lg), 1em) !important;
+  }
+}

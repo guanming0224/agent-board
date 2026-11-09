@@ -11,91 +11,85 @@
   --team-violet: #7d5fc7;
 }
 
-.chip.cost {
-  border-color: var(--quota);
-  color: var(--quota);
-}
-
 .swatch {
   display: inline-block;
   width: 10px;
   height: 10px;
-  margin-right: 6px;
-  border-radius: 3px;
+  margin-right: var(--space-1h);
+  border-radius: var(--radius-sm);
   background: var(--team);
 }
 
+/* 色塊：圖示鈕（.icon，桌面 36、手機 44），選中用全站的「按下」外觀，再加一圈白讓小色塊看得出來。 */
 .color-picker {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-}
-.team-page button.color-pick {
-  width: 36px;
-  min-width: 36px;
-  padding: 0;
-  display: inline-grid;
-  place-items: center;
+  gap: var(--space-1);
 }
 .color-pick .swatch {
   width: 18px;
   height: 18px;
   margin: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
 }
-.team-page button.color-pick[aria-pressed='true'] {
-  border-color: var(--accent);
+button.color-pick[aria-pressed='true'] {
   box-shadow: 0 0 0 1px var(--accent);
 }
+/*
+ * 標題：面板裡的 h1 在共用標題列（PanelHead），這裡只管手機全螢幕頁的 h1（直接子層）。
+ * 控制項（輸入框、下拉、按鈕、核取方塊）用 controls.css 的全站樣式，這裡不再寫高度、底色、內距。
+ */
+.team-page > h1 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-h1);
+  overflow-wrap: anywhere;
+}
 .team-page h1 {
-  margin: 0;
-  font-size: 20px;
   overflow-wrap: anywhere;
 }
 .team-page h2 {
-  margin: 0 0 8px;
-  font-size: 15px;
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-base);
 }
 .team-page h3 {
-  margin: 12px 0 6px;
-  font-size: 13px;
+  margin: var(--space-3) 0 var(--space-1h);
+  font-size: var(--fs-ctl-sm);
 }
 .team-page p {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
 }
 .team-page ul {
   list-style: none;
   margin: 0;
   padding: 0;
 }
-.team-page label {
+/* 表單標籤：和流程頁同一種（13px／600／--fg-muted），標籤在上、控制項在下。 */
+.team-page label:not(.check) {
   display: grid;
-  gap: 4px;
-  margin-bottom: 10px;
-  font-size: 13px;
-  color: var(--muted);
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-ctl-sm);
+  font-weight: 600;
 }
-.team-page input,
-.team-page select,
-.team-page textarea {
-  min-height: 36px;
+.team-page label :is(input, select, textarea) {
+  font-weight: 400;
+}
+.team-page label.check {
+  margin-bottom: var(--space-2);
+}
+.team-page :is(input, select, textarea) {
   min-width: 0;
   max-width: 100%;
-  padding: 6px 10px;
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
 }
 .team-page textarea {
   display: block;
   width: 100%;
-  margin-bottom: 10px;
+  margin-bottom: var(--space-2);
   resize: vertical;
 }
 .team-page textarea.mono {
-  font: 13px/1.5 var(--font-mono);
+  font: var(--fs-ctl-sm) / 1.5 var(--font-mono);
 }
 .team-page .msg {
   overflow-wrap: anywhere;
@@ -103,33 +97,19 @@
 .team-page .msg.err {
   color: var(--fault);
 }
-.team-page button.link {
-  min-height: 28px;
-  padding: 0 6px;
-  border-color: transparent;
-  background: transparent;
-  color: var(--muted);
-  font-weight: 500;
-}
-.team-page .row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
 .team-page .spacer {
   flex: 1;
 }
 .panel {
-  padding: 14px 16px;
-  margin-bottom: 14px;
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   background: var(--surface);
   min-width: 0;
 }
 .crumb {
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 .crumb a {
   color: var(--muted);
@@ -137,23 +117,34 @@
 .team-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 14px;
+  gap: var(--space-2);
   align-items: center;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3);
 }
-.team-head h1 .swatch {
-  width: 12px;
-  height: 12px;
+/* 工作區下拉：標籤和下拉同一行（不吃 .team-page label 的上下排）。 */
+.team-head label.zone-picker {
+  display: inline-flex;
+  min-width: 0;
+  margin: 0;
+}
+.team-color-row {
+  flex-basis: 100%;
 }
 .team-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: var(--space-3);
+}
+/* 標題的色塊大一點（面板標題列與手機 h1）。 */
+.panel-head h1 .swatch,
+.team-page > h1 .swatch {
+  width: 12px;
+  height: 12px;
 }
 .new-team {
   display: grid;
-  gap: 10px;
-  margin-top: 12px;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 .new-team fieldset {
   min-width: 0;
@@ -164,127 +155,114 @@
 .new-team-basics {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--space-2);
   align-items: end;
 }
-.new-team-basics label {
+.new-team-basics label:not(.check) {
   flex: 1 1 220px;
   margin: 0;
 }
 .new-team .seg {
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 .new-team-place {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--space-2);
 }
 .new-team-place > label,
 .new-team-place > .new-team-project {
   flex: 1 1 220px;
   min-width: 0;
 }
-.new-team-project {
-  display: grid;
-  gap: 4px;
-  align-content: start;
-}
 .new-team-project > label {
   margin: 0;
 }
 .new-team .input-line {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .new-team .input-line input {
   flex: 1 1 auto;
 }
 .new-team-folder .browser {
-  margin-bottom: 10px;
-}
-.new-team a.open-team {
-  display: inline-flex;
-  align-items: center;
-  min-height: 36px;
-  padding: 0 14px;
-  border-radius: var(--radius-control);
-  background: var(--accent);
-  color: var(--on-accent);
-  font-weight: 600;
-  text-decoration: none;
+  margin-bottom: var(--space-2);
 }
 .new-team .you-alert p {
   margin: 0;
 }
 .plan-rows {
   list-style: none;
-  margin: 10px 0 8px;
+  margin: var(--space-2) 0;
   padding: 0;
   display: grid;
-  gap: 6px;
+  gap: var(--space-1h);
 }
 .plan-row {
   display: grid;
-  /* 每列欄寬一致：說明欄固定寬，不跟著文字長短縮放。 */
-  grid-template-columns: minmax(120px, 160px) minmax(120px, 1fr) minmax(110px, 140px) 11em 36px;
-  gap: 6px 8px;
+  /* 每列欄寬一致：說明欄固定寬，不跟著文字長短縮放。最後一欄是「移除」。 */
+  grid-template-columns: minmax(120px, 160px) minmax(120px, 1fr) minmax(110px, 140px) 11em auto;
+  gap: var(--space-1h) var(--space-2);
   align-items: center;
 }
 .plan-row .where {
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .plan-row .step {
   grid-column: 1 / -1;
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
   overflow-wrap: anywhere;
 }
 .plan-row .step.err {
   color: var(--fault);
 }
 .member-clash {
-  margin: 6px 0 0;
-  font-size: 12px;
+  margin: var(--space-1h) 0 0;
+  font-size: var(--fs-sm);
   color: var(--you);
   overflow-wrap: anywhere;
 }
-@media (max-width: 640px) {
-  .plan-row {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
+.team-list {
+  display: grid;
+  gap: var(--space-2);
 }
-.team-row {
+/* 團隊清單列：可點的清單列（和 Memory、Preset 清單同一種：--surface 底、1px 框、圓角 8、內距 8 12）。 */
+.panel.team-row {
   display: grid;
   gap: 2px;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--team);
+  border-radius: var(--radius-control);
   color: inherit;
   text-decoration: none;
-  border-left: 3px solid var(--team);
 }
 .team-row:hover {
   background: var(--surface-2);
 }
 .member {
-  padding: 8px 10px 10px 14px;
-  margin-bottom: 8px;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+  margin-bottom: var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface-2);
   overflow: hidden;
 }
 .member .row {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 .member-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: var(--space-1) var(--space-2);
   align-items: center;
   justify-content: space-between;
 }
 .add-member {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 .you-alert {
-  margin-top: 10px;
+  margin-top: var(--space-2);
   border-color: color-mix(in srgb, var(--you) 55%, transparent);
   background: color-mix(in srgb, var(--you) 10%, transparent);
 }
@@ -292,12 +270,12 @@
   color: var(--you);
 }
 .you-alert button {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 .decompose {
   display: grid;
-  gap: 4px;
-  margin-bottom: 10px;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
 }
 .decompose p {
   margin: 0;
@@ -305,23 +283,23 @@
 .columns {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--space-2);
 }
 .column {
   min-width: 0;
-  padding: 2px 10px 10px;
+  padding: 2px var(--space-2) var(--space-2);
   border-radius: var(--radius-control);
   background: var(--bg);
 }
 .new-task {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 .new-task input {
   flex: 1 1 100px;
 }
 .task {
-  padding: 8px 10px;
-  margin-bottom: 8px;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface);
@@ -334,46 +312,35 @@
   overflow-wrap: anywhere;
 }
 .team-page .task-hint {
-  margin: 6px 0 0;
-  font-size: 12px;
+  margin: var(--space-1h) 0 0;
+  font-size: var(--fs-sm);
   color: var(--you);
 }
 .task-actions {
-  margin-top: 6px;
-}
-.team-page button.move {
-  min-height: 28px;
-  padding: 0 10px;
+  margin-top: var(--space-1h);
 }
 .rule {
-  padding: 8px 0;
+  padding: var(--space-2) 0;
   border-top: 1px solid var(--border);
 }
 .rule-route {
-  margin-bottom: 6px;
+  margin-bottom: var(--space-1h);
   overflow-wrap: anywhere;
-}
-.rule button[aria-pressed='true'] {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
 }
 .rule-limit {
   flex-basis: 100%;
 }
 .new-rule {
-  padding-top: 10px;
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border);
 }
 .activity li {
   padding: 2px 0;
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
   overflow-wrap: anywhere;
 }
-.team-delete {
-  justify-content: flex-end;
-}
 
+/* 寬版面（不在 420px 面板裡）的兩欄、四欄。 */
 @media (max-width: 1040px) {
   .team-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -383,26 +350,20 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@media (max-width: 560px) {
-  .columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 
 /* ── 團隊面板（P2 §2.3）：名單、收合區塊、底部群發指令框 ── */
 .team-head-controls {
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 .zone-picker {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1h);
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 .roster h2 {
-  font-size: 14px;
-  margin: 12px 0 6px;
+  margin: var(--space-3) 0 var(--space-1h);
 }
 .roster-list {
   list-style: none;
@@ -412,6 +373,7 @@
   flex-direction: column;
   gap: 2px;
 }
+/* 名單列：整列可點（畫布聚焦那張卡），兩行字＋內距約 48 高，手機也夠大。 */
 .roster-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -419,8 +381,8 @@
     'lamp name role'
     'lamp age result';
   align-items: center;
-  gap: 2px 10px;
-  padding: 6px 8px;
+  gap: 2px var(--space-2);
+  padding: var(--space-1h) var(--space-2);
   border-radius: var(--radius-control);
   cursor: pointer;
 }
@@ -434,7 +396,7 @@
 .roster-row > .lamp .lamp-label {
   display: none;
 }
-.roster-name {
+.roster-row > .roster-name {
   grid-area: name;
   justify-self: start;
   min-height: 0;
@@ -448,13 +410,11 @@
 }
 .roster-role {
   grid-area: role;
-  min-height: 28px;
-  font-size: 12.5px;
 }
 .roster-age {
   grid-area: age;
   color: var(--fg-muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .roster-results {
   grid-area: result;
@@ -467,8 +427,8 @@
 .roster-result {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
+  gap: var(--space-1h);
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .roster-result.is-sent {
@@ -481,63 +441,54 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.roster-result .link {
-  min-height: 0;
-  padding: 0 6px;
-  font-size: 12px;
-}
+/* 收合區塊：標題是低調按鈕（.ghost.sm），白字粗體。 */
 .fold {
   border-top: 1px solid var(--border);
-  padding: 6px 0;
+  padding: var(--space-1) 0;
 }
-.fold-toggle {
-  min-height: 32px;
-  border: 0;
-  background: none;
-  padding: 0 4px;
+.fold > .fold-toggle {
+  padding: 0 var(--space-1);
   color: var(--fg);
-  font-weight: 600;
 }
 .fold-body {
-  padding-top: 6px;
+  padding-top: var(--space-1h);
 }
 .fold-phone {
   display: flex;
   justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 4px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-1);
 }
 .fold-desktop {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--space-1h);
   min-width: 0;
 }
 .fold-url {
   width: 100%;
   min-width: 0;
-  font-size: 12.5px;
 }
 .broadcast {
   position: sticky;
   bottom: 0;
   z-index: 2;
-  margin: 12px 0 0;
-  padding: 10px 0 12px;
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) 0 var(--space-3);
   background: var(--bg);
   border-top: 1px solid var(--border-2);
 }
 .broadcast-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   flex-wrap: wrap;
 }
-.broadcast-row .cmd {
+.broadcast-input {
   flex: 1 1 14em;
   min-width: 0;
 }
@@ -547,38 +498,35 @@
   overflow-wrap: anywhere;
 }
 .broadcast-paused {
-  margin: 6px 0 0;
+  margin: var(--space-1h) 0 0;
 }
-.mention-menu {
+/* @ 選單：共用 .menu／.menu-item，這裡只管位置與捲動。 */
+.team-page .mention-menu {
   list-style: none;
-  margin: 0 0 6px;
-  padding: 4px;
+  margin: 0 0 var(--space-1h);
   max-height: 200px;
   overflow-y: auto;
-  background: var(--surface);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
+  box-shadow: none;
 }
-.mention-menu button {
+.mention-menu .menu-item {
   display: flex;
-  gap: 8px;
-  width: 100%;
-  justify-content: flex-start;
-  border: 0;
-  background: none;
+  gap: var(--space-2);
+  align-items: baseline;
 }
-.mention-menu [aria-selected='true'] button {
+.mention-menu [aria-selected='true'] > .menu-item {
   background: var(--accent-bg);
 }
 .team-row-waiting {
   color: var(--you);
 }
-@media (max-width: 640px) {
-  .roster-row {
-    padding: 10px 8px;
+@media (max-width: 640px), (pointer: coarse) {
+  .plan-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
-  .broadcast-row .primary,
-  .broadcast-row .cmd {
-    min-height: 48px;
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .roster-row {
+    padding: var(--space-2);
   }
 }

@@ -56,6 +56,12 @@ async function openWorkbench(page: Page) {
   await expect(page.getByTestId('column-todo')).toBeVisible();
 }
 
+/** 手機上區塊收合（任務板不顯示），只等工作台出來。 */
+async function openWorkbenchPhone(page: Page) {
+  await page.goto('/#/team/team-demo-auth');
+  await expect(page.getByTestId('team-workbench')).toBeVisible();
+}
+
 const task = (page: Page, title: string) => page.locator('.task', { hasText: title });
 
 test('畫布上的團隊標籤打開右側團隊面板；#/team 是清單，新建後進工作台', async ({ page }) => {
@@ -77,6 +83,8 @@ test('畫布上的團隊標籤打開右側團隊面板；#/team 是清單，新�
   await page.getByRole('button', { name: '建立團隊' }).click();
   await expect(page.getByRole('heading', { name: '資料搬遷' })).toBeVisible();
   await expect(page).toHaveURL(/#\/team\/.+/);
+  // 工作台的色塊收在「團隊顏色」按鈕裡。
+  await page.getByTestId('team-color-toggle').click();
   await expect(
     page.getByRole('group', { name: '團隊顏色' }).getByRole('button', { name: '靛' }),
   ).toHaveAttribute('aria-pressed', 'true');
@@ -481,8 +489,70 @@ test('團隊顏色有 8 種，每個色塊都有名稱；工作台可以換色',
   const resolved = () =>
     workbench.locator('h1 .swatch').evaluate((el) => getComputedStyle(el).backgroundColor);
   expect(await resolved()).toBe('rgb(168, 87, 143)');
+  // 工作台的色塊平常收起來（420px 面板放不下整排），按「團隊顏色」才展開，選完自己收起。
+  await expect(page.getByRole('group', { name: '團隊顏色' })).toHaveCount(0);
+  const toggle = page.getByTestId('team-color-toggle');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.click();
   await page.getByRole('group', { name: '團隊顏色' }).getByRole('button', { name: '堇' }).click();
   await expect.poll(resolved).toBe('rgb(125, 95, 199)');
+  await expect(page.getByRole('group', { name: '團隊顏色' })).toHaveCount(0);
+});
+
+test('刪除團隊收在「⋯」選單：按兩次（上膛實心紅），不和群發送出放在一起', async ({ page }) => {
+  await openWorkbench(page);
+  // 群發框旁邊不再有刪除鈕（報告 E5）。
+  await expect(
+    page.getByTestId('team-broadcast').getByRole('button', { name: /刪除/ }),
+  ).toHaveCount(0);
+  await page.getByTestId('team-more').click();
+  const del = page.getByTestId('team-delete');
+  await expect(del).toHaveText('刪除團隊');
+  await expect(del).toHaveAttribute('role', 'menuitem');
+  await del.click();
+  await expect(del).toHaveText('再按一次刪除（session 不受影響）');
+  await expect(del).toHaveAttribute('data-armed', 'true');
+  await page.waitForTimeout(400); // 350ms 內的連點不算確認
+  await del.click();
+  await expect(page).toHaveURL(/#\/team$/);
+  await expect(page.getByTestId('team-list')).toBeVisible();
+  await expect(page.getByTestId('team-list')).not.toContainText('登入重構');
+});
+
+test('團隊、Memory 兩個右側面板的標題列同一個長相：h1 18px、寬版與 ✕ 都是 32、寬版有按下外觀', async ({
+  page,
+}) => {
+  const check = async (panelId: string, wideId: string, closeId: string) => {
+    const panel = page.getByTestId(panelId);
+    const head = panel.locator('.panel-head').first();
+    await expect(head).toBeVisible();
+    const h1 = head.locator('h1');
+    expect(await h1.evaluate((el) => getComputedStyle(el).fontSize)).toBe('18px');
+    const headBox = (await head.boundingBox())!;
+    const panelBox = (await panel.boundingBox())!;
+    // 標題列貼齊面板左右（左內距 16）。
+    expect(Math.round(headBox.x - panelBox.x)).toBeLessThanOrEqual(1);
+    const h1Box = (await h1.boundingBox())!;
+    expect(Math.round(h1Box.x - headBox.x)).toBe(16);
+    const wide = panel.getByTestId(wideId);
+    const close = panel.getByTestId(closeId);
+    expect((await wide.boundingBox())!.height).toBe(32);
+    expect((await close.boundingBox())!.height).toBe(32);
+    expect(await close.textContent()).toBe('✕');
+    const bg = () => wide.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const before = await bg();
+    await wide.click();
+    await expect(wide).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(bg).not.toBe(before);
+    await expect
+      .poll(() => wide.evaluate((el) => getComputedStyle(el).borderTopColor))
+      .toBe('rgb(255, 255, 255)');
+    await wide.click();
+  };
+  await page.goto('/#/team/team-demo-auth');
+  await check('team-panel', 'team-wide', 'team-close');
+  await page.goto('/#/memory');
+  await check('memory-panel', 'memory-wide', 'memory-close');
 });
 
 test('任務板：未指派不可推進，指派後走完四欄', async ({ page }) => {
@@ -755,7 +825,11 @@ test('自動交接規則：開關、觸發條件、耗額度晶片；新規則�
     'aria-pressed',
     'false',
   );
+  // 刪除按兩次（第一下之後 350ms 內再按不算，防連點）。
   await added.getByRole('button', { name: '刪除' }).click();
+  await expect(added).toHaveCount(1);
+  await page.waitForTimeout(400);
+  await added.getByRole('button', { name: '再按一次刪除這條規則' }).click();
   await expect(added).toHaveCount(0);
 
   await page.goto('/#/canvas');
@@ -813,8 +887,12 @@ test('全隊暫停送 Esc 給工作中的、關規則；全隊停止要按兩次
   await stop.click();
   const armed = page.getByRole('button', { name: '再按一次，停止 2 個 session' });
   await expect(armed).toBeVisible();
+  // 上膛＝實心紅（data-armed，controls.css），不用讀字也知道再按就執行。
+  await expect(armed).toHaveAttribute('data-armed', 'true');
   await expect(page.getByTestId('member-s-tests').locator('.lamp')).not.toContainText('完成');
   await shot(page, 'team-stop-armed');
+  // 和流程頁同一個 useTwoStep：350ms 內的連點不算確認。
+  await page.waitForTimeout(400);
   await armed.click();
   await expect(msg).toContainText('已要求停止 2 個 session');
   await expect(page.getByTestId('member-s-tests').locator('.lamp')).toContainText('完成');
@@ -852,6 +930,111 @@ test('全隊停止第一次按完離開就解除，不會誤觸', async ({ page 
   await page.getByLabel('新任務').click();
   await expect(page.getByRole('button', { name: '全隊停止' })).toBeVisible();
   await expect(page.getByTestId('member-s-tests').locator('.lamp')).toContainText('工作中');
+});
+
+test('全隊暫停 → 全隊繼續：只打開當初關的規則與任務自動執行，手動打開過的不重複，全部暫停中要提示', async ({
+  page,
+}) => {
+  await openWorkbench(page);
+  await page.getByTestId('task-auto-toggle').check();
+  await expect(page.getByTestId('task-auto-msg')).toContainText('已開啟');
+  const msg = page.getByTestId('team-controls-msg');
+  const toggle = page.getByTestId('rule-rule-1').getByRole('button', { name: /自動交接/ });
+
+  await page.getByRole('button', { name: '全隊暫停' }).click();
+  await expect(msg).toContainText('關閉 1 條交接規則');
+  await expect(msg).toContainText('任務自動執行也關了');
+  // 暫停後：「全隊暫停」換成「全隊繼續」，「全隊停止」還在；說明會打開什麼。
+  await expect(page.getByRole('button', { name: '全隊暫停' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '全隊繼續' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '全隊停止' })).toBeVisible();
+  await expect(page.getByTestId('team-hold-note')).toContainText(
+    '繼續會打開當初關掉的 1 條交接規則與任務自動執行，不自動送字',
+  );
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('task-auto-toggle')).not.toBeChecked();
+  await shot(page, 'team-hold-pause');
+
+  // 第一次：照當初關掉的打開。
+  await page.getByRole('button', { name: '全隊繼續' }).click();
+  await expect(msg).toHaveText('已繼續：打開 1 條交接規則。沒有自動送字。 任務自動執行也打開了。');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('task-auto-toggle')).toBeChecked();
+  await expect(page.getByRole('button', { name: '全隊暫停' })).toBeVisible();
+  await expect(page.getByTestId('team-hold-note')).toHaveCount(0);
+
+  // 第二次：暫停後手動打開規則、全部暫停中。
+  await page.getByRole('button', { name: '全隊暫停' }).click();
+  await expect(page.getByRole('button', { name: '全隊繼續' })).toBeVisible();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await fake(page, `void backend.pauseBoard('finish_turn')`);
+  await page.getByRole('button', { name: '全隊繼續' }).click();
+  await expect(msg).toContainText('已繼續：打開 0 條交接規則');
+  await expect(msg).toContainText('1 條在暫停後已被手動打開，沒有重複開');
+  await expect(msg).toContainText('目前全部暫停中，自動送字仍會被擋');
+  await expect(page.getByRole('button', { name: '全隊暫停' })).toBeVisible();
+});
+
+test('全隊停止 → 全隊啟動：--resume 接回當初停掉的、打開規則；失聯的列出來，機器回來再按一次', async ({
+  page,
+}) => {
+  await openWorkbench(page);
+  const msg = page.getByTestId('team-controls-msg');
+  await page.getByRole('button', { name: '全隊停止' }).click();
+  await page.waitForTimeout(400); // 350ms 內的連點不算確認（useTwoStep）
+  await page.getByRole('button', { name: '再按一次，停止 2 個 session' }).click();
+  await expect(msg).toContainText('已要求停止 2 個 session');
+  // 停止後：只剩「全隊啟動」，按一次就好（接回不送字）。
+  const start = page.getByRole('button', { name: '全隊啟動' });
+  await expect(start).toBeVisible();
+  await expect(page.getByRole('button', { name: '全隊暫停' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '全隊停止' })).toHaveCount(0);
+  await expect(page.getByTestId('team-hold-note')).toContainText(
+    '啟動會用 --resume 接回 2 個 session 的原對話（不送字、不花額度），再打開當初關掉的 1 條交接規則',
+  );
+  await shot(page, 'team-hold-stop');
+
+  // 機器失聯：接不回，記錄留著。
+  await fake(page, `backend.setMachineOnline('m-studio', false)`);
+  await start.click();
+  await expect(msg).toContainText('已啟動：接回 0 個 session');
+  await expect(msg).toContainText('打開 1 條交接規則');
+  await expect(msg).toContainText('2 個機器失聯還沒接回：');
+  await expect(msg).toContainText('等機器回來再按一次「全隊啟動」');
+  await expect(start).toBeVisible();
+  await expect(
+    page.getByTestId('rule-rule-1').getByRole('button', { name: /自動交接/ }),
+  ).toHaveAttribute('aria-pressed', 'true');
+
+  // 機器回來：再按一次接回，規則不再碰。
+  await fake(page, `backend.setMachineOnline('m-studio', true)`);
+  await start.click();
+  await expect(msg).toHaveText(
+    '已啟動：接回 2 個 session（--resume，不送字），打開 0 條交接規則。',
+  );
+  await expect(page.getByTestId('member-s-tests').locator('.lamp')).not.toContainText('完成');
+  await expect(page.getByRole('button', { name: '全隊暫停' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '全隊停止' })).toBeVisible();
+});
+
+test('手機寬度：全隊暫停／繼續是會動到 session 的動作（.act 56px）、不超出畫面', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openWorkbenchPhone(page);
+  const pause = page.getByRole('button', { name: '全隊暫停' });
+  await pause.click();
+  const resume = page.getByRole('button', { name: '全隊繼續' });
+  await expect(resume).toBeVisible();
+  const box = (await resume.boundingBox())!;
+  expect(box.height).toBeGreaterThanOrEqual(56);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  const stop = (await page.getByRole('button', { name: '全隊停止' }).boundingBox())!;
+  expect(stop.height).toBeGreaterThanOrEqual(56);
+  await shot(page, 'team-hold-phone');
+  await resume.click();
+  await expect(page.getByTestId('team-controls-msg')).toContainText('已繼續');
 });
 
 test('雙向（來回）規則：一次建 A→B、B→A，各自的觸發條件，共用輪數上限', async ({ page }) => {
@@ -979,6 +1162,7 @@ test('學術研究團隊：依階段組隊、實驗 ⇄ 寫作雙向交接、TEA
   const archive = diff.locator('.phase-extra li', { hasText: '論文-WR' }).getByRole('button');
   await archive.click();
   await expect(archive).toHaveText('再按一次封存 論文-WR');
+  await page.waitForTimeout(400); // 350ms 內的連點不算確認（useTwoStep）
   await archive.click();
   await expect(diff.getByTestId('phase-extra-none')).toBeVisible();
   await diff.getByRole('button', { name: '切換到「實驗」' }).click();
@@ -1116,8 +1300,8 @@ test.describe('畫布接真資料', () => {
     const panel = page.getByTestId('handoff-panel');
     await expect(panel.locator('.chip.cost')).toHaveText('◈ 耗額度');
     await expect(panel).toContainText('標記完成');
-    await panel.getByRole('button', { name: '開啟自動交接' }).click();
-    await expect(panel.getByRole('button', { name: '關閉自動交接' })).toBeVisible();
+    await panel.getByRole('button', { name: '自動交接：關' }).click();
+    await expect(panel.getByRole('button', { name: '自動交接：開' })).toBeVisible();
     await shot(page, 'canvas-handoff-panel');
     await expect(
       page.locator('.edge-label', { hasText: '完成時交接' }).filter({ hasText: '未開啟' }),

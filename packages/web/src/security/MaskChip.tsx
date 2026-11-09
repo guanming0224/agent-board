@@ -10,7 +10,7 @@ export function MaskChip() {
   return (
     <button
       type="button"
-      className={masking ? 'mask-chip on' : 'mask-chip'}
+      className="mask-chip"
       aria-pressed={masking}
       title={t('security.mask.title')}
       data-testid="mask-chip"

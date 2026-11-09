@@ -52,6 +52,8 @@ export const AUDIT_ACTIONS = [
   'board.held',
   'board.held_cleared',
   'board.interrupt_skipped',
+  'team.hold',
+  'team.resume',
 ] as const;
 
 /** hub 一次最多回 1000 筆；畫面一次多載 100。 */

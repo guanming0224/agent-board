@@ -180,7 +180,8 @@ export function PauseMenu({ phone = false }: { phone?: boolean }) {
       <button
         ref={toggle}
         type="button"
-        className="pause-toggle"
+        // 桌面指令列＝精簡 32；手機收件匣頂部＝會動到 session 的動作 56（.act）。
+        className={phone ? 'pause-toggle act' : 'pause-toggle sm'}
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
         aria-pressed={paused !== null}
@@ -191,9 +192,10 @@ export function PauseMenu({ phone = false }: { phone?: boolean }) {
         <span aria-hidden="true">⏸</span> {label} <span aria-hidden="true">▾</span>
       </button>
       {open && (
-        <div className="pause-options" id={menuId} data-testid="pause-menu">
+        <div className="menu pause-options" id={menuId} data-testid="pause-menu">
           <button
             type="button"
+            className="menu-item"
             aria-pressed={paused?.mode === 'finish_turn'}
             disabled={busy}
             onClick={() => choose('finish_turn')}
@@ -205,7 +207,7 @@ export function PauseMenu({ phone = false }: { phone?: boolean }) {
           <button
             type="button"
             aria-pressed={paused?.mode === 'interrupt'}
-            className={arm.armed ? 'danger' : undefined}
+            className={arm.armed ? 'menu-item danger' : 'menu-item'}
             disabled={busy}
             onClick={() => choose('interrupt')}
             data-testid="pause-interrupt"
@@ -224,7 +226,14 @@ export function PauseMenu({ phone = false }: { phone?: boolean }) {
 }
 
 /** 「▶ 全部繼續」：沒暫停時停用；暫停中旁邊一直顯示「會放出：…」（按之前就知道會放出什麼，Q8 不自動送「繼續」）。 */
-export function ResumeButton({ showRelease = true }: { showRelease?: boolean }) {
+export function ResumeButton({
+  showRelease = true,
+  size,
+}: {
+  showRelease?: boolean;
+  /** 尺寸 class：指令列與桌面提示列 'sm'（32），手機 'act'（56）；沒給是標準 36。 */
+  size?: 'sm' | 'act';
+}) {
   const t = useT();
   const { paused, held } = usePauseState();
   const busy = usePauseUi((s) => s.busy);
@@ -234,7 +243,7 @@ export function ResumeButton({ showRelease = true }: { showRelease?: boolean }) 
     <>
       <button
         type="button"
-        className="resume-btn"
+        className={size ? `resume-btn ${size}` : 'resume-btn'}
         disabled={paused === null || busy}
         title={paused ? `${release}${t('views.pause.resumeHint')}` : t('views.pause.notPaused')}
         onClick={() => void resume()}
@@ -274,7 +283,14 @@ function PauseMsg() {
  * 暫停中一直看得到的提示列（規格 §3.3）：中性色，不用狀態色。
  * 「⏸ 已暫停（做完這輪就停）・排隊送字 2 則・14:02 起　［全部繼續］」，下面補 hub 重啟清掉的排隊數與沒送到的中斷。
  */
-export function PauseStrip({ withResume = true }: { withResume?: boolean }) {
+export function PauseStrip({
+  withResume = true,
+  phone = false,
+}: {
+  withResume?: boolean;
+  /** 手機全螢幕頁：「全部繼續」是會動到 session 的動作，用 56px（.act）。 */
+  phone?: boolean;
+}) {
   const t = useT();
   const clock = useClock();
   const { paused, held } = usePauseState();
@@ -310,7 +326,7 @@ export function PauseStrip({ withResume = true }: { withResume?: boolean }) {
         )}
         {withResume && (
           <span className="pause-act">
-            <ResumeButton showRelease={false} />
+            <ResumeButton showRelease={false} size={phone ? 'act' : 'sm'} />
           </span>
         )}
       </div>
@@ -342,7 +358,7 @@ function toggleTeams() {
 
 /**
  * 畫布底部置中的浮動指令列（桌面；手機沒有）：
- * `[＋ 新增 session] [群組] [Presets] [Memory] │ [⏸ 全部暫停 ▾] [▶ 全部繼續]`（docs/p3-spec.md §1.5）。
+ * `[+ 新增 session] [群組] [Presets] [Memory] │ [⏸ 全部暫停 ▾] [▶ 全部繼續]`（docs/p3-spec.md §1.5）。
  * Presets（P3 項目二）由畫布傳進來（`presets`，team 資料夾的元件；views 不反過來 import team）；Memory 是 P3 項目一。
  */
 export function CommandBar({ presets }: { presets?: ReactNode } = {}) {
@@ -350,6 +366,21 @@ export function CommandBar({ presets }: { presets?: ReactNode } = {}) {
   const teamOpen = useOverlay((s) => s.right?.kind === 'team' && s.right.teamId === null);
   const memoryOpen = useOverlay((s) => s.right?.kind === 'memory');
   const inset = useViewsUi((s) => s.rightInset);
+  // 指令列的實際高度（窄的時候會換行變高）：畫布下方的提示用它讓位（canvas.css .toast-stack）。
+  const dock = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = dock.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const root = document.documentElement;
+    const observer = new ResizeObserver(() =>
+      root.style.setProperty('--command-dock-h', `${el.offsetHeight}px`),
+    );
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty('--command-dock-h');
+    };
+  }, []);
   const openNew = (full: boolean) => {
     const open = useViewsUi.getState().openQuickCreate;
     if (open && !full) open();
@@ -357,11 +388,13 @@ export function CommandBar({ presets }: { presets?: ReactNode } = {}) {
   };
   return (
     <div
-      className="command-dock"
+      // 右側面板開著時指令列讓到面板左邊（has-inset）；用 class 不用 [style]：React 清掉 style 後會留下空的 style=""。
+      className={inset > 0 ? 'command-dock has-inset' : 'command-dock'}
       // 右側面板開著時置中在看得到的那一塊。
       style={inset > 0 ? { right: inset } : undefined}
     >
       <div
+        ref={dock}
         className="command-bar"
         role="toolbar"
         aria-label={t('views.command.aria')}
@@ -369,14 +402,16 @@ export function CommandBar({ presets }: { presets?: ReactNode } = {}) {
       >
         <button
           type="button"
+          className="sm"
           title={t('views.command.newHint')}
           onClick={(e) => openNew(e.shiftKey)}
           data-testid="command-new"
         >
-          <span aria-hidden="true">＋</span> {t('views.newSession')}
+          <span aria-hidden="true">+</span> {t('views.newSession')}
         </button>
         <button
           type="button"
+          className="sm"
           aria-pressed={teamOpen}
           title={t('views.command.teamsHint')}
           onClick={toggleTeams}
@@ -387,6 +422,7 @@ export function CommandBar({ presets }: { presets?: ReactNode } = {}) {
         {presets}
         <button
           type="button"
+          className="sm"
           aria-pressed={memoryOpen}
           title={t('views.command.memoryHint')}
           onClick={toggleMemory}
@@ -396,7 +432,7 @@ export function CommandBar({ presets }: { presets?: ReactNode } = {}) {
         </button>
         <span className="command-sep" aria-hidden="true" />
         <PauseMenu />
-        <ResumeButton />
+        <ResumeButton size="sm" />
       </div>
       <PauseMsg />
     </div>
@@ -406,6 +442,7 @@ export function CommandBar({ presets }: { presets?: ReactNode } = {}) {
 /** 手機收件匣頂部：暫停狀態列＋兩顆大按鈕（≥ 56px）。這是手機上唯一會影響全部 session 的按鈕，(b) 同樣按兩次。 */
 export function PhonePauseControls() {
   const t = useT();
+  const { paused } = usePauseState();
   return (
     <section
       className="phone-pause"
@@ -415,7 +452,8 @@ export function PhonePauseControls() {
       <PauseStrip withResume={false} />
       <div className="phone-pause-row">
         <PauseMenu phone />
-        <ResumeButton />
+        {/* 沒暫停時不放一顆停用的大按鈕佔掉拇指區：暫停鈕自己佔滿一排。 */}
+        {paused && <ResumeButton size="act" />}
       </div>
       <PauseMsg />
     </section>

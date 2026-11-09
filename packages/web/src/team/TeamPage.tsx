@@ -1,18 +1,12 @@
 // 團隊面板（P2 §1.2）：畫布右側 420px，和收件匣互斥。#/team：團隊清單；#/team/<id>：工作台（DISPATCH §5.3-4）。
 // 手機（≤ 640px）是全螢幕頁，內容相同。
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { waitingSessions } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import {
-  closeRight,
-  EmptyState,
-  ErrorState,
-  LoadingState,
-  useBoardLoad,
-  useViewsUi,
-} from '../views';
-import { CloseButton, SidePanel } from '../views/Overlays';
+import { Empty } from '../flows/common';
+import { closeRight, ErrorState, LoadingState, useBoardLoad, useViewsUi } from '../views';
+import { PanelHead, SidePanel } from '../views/Overlays';
 import { useCurrentZoneId, useZones } from '../zones';
 import { NewTeamForm } from './NewTeamForm';
 import { PresetEntry } from './PresetPicker';
@@ -26,7 +20,7 @@ export const TEAM_WIDE_WIDTH = 760;
 /**
  * 團隊清單模式（#/team）：列出目前工作區的團隊（名稱、成員數、等你數），可切「顯示全部工作區」（P2 §2.3）。
  */
-function TeamList({ missing }: { missing: boolean }) {
+function TeamList({ missing, inPanel }: { missing: boolean; inPanel: boolean }) {
   const t = useT();
   const teams = useTeams((s) => s.teams);
   const members = useTeams((s) => s.members);
@@ -40,7 +34,11 @@ function TeamList({ missing }: { missing: boolean }) {
   const zoneName = (id: string) => zones.find((z) => z.id === id)?.name ?? '';
   return (
     <div className="page team-page" data-testid="team-list">
-      <h1>{t('team.title')}</h1>
+      {inPanel ? (
+        <PanelHead title={t('team.title')} onClose={closeRight} closeTestId="team-close" />
+      ) : (
+        <h1>{t('team.title')}</h1>
+      )}
       {missing && (
         <p className="team-missing" role="status" data-testid="team-not-found">
           {t('team.notFound')}
@@ -49,7 +47,7 @@ function TeamList({ missing }: { missing: boolean }) {
       {/* 從 Preset 建立（P3 §2.4：手機的入口；桌面另有底部指令列的 Presets）。 */}
       <PresetEntry />
       <NewTeamForm />
-      <label className="row team-list-all">
+      <label className="check team-list-all">
         <input
           type="checkbox"
           checked={all}
@@ -59,7 +57,7 @@ function TeamList({ missing }: { missing: boolean }) {
         {t('team.list.allZones')}
       </label>
       {shown.length === 0 ? (
-        <EmptyState text={t('team.empty')} />
+        <Empty title={t('team.emptyTitle')} next={t('team.empty')} />
       ) : (
         <ul className="team-list">
           {shown.map((team) => {
@@ -101,9 +99,12 @@ function TeamList({ missing }: { missing: boolean }) {
 export function TeamContent({
   teamId,
   frameOnCanvas = true,
+  inPanel = false,
 }: {
   teamId: string | null;
   frameOnCanvas?: boolean;
+  /** 放在右側面板裡：標題列用 PanelHead（含 ✕）；手機全螢幕頁用一般 h1。 */
+  inPanel?: boolean;
 }) {
   const t = useT();
   const board = useBoardLoad();
@@ -147,18 +148,30 @@ export function TeamContent({
     useViewsUi.getState().focusTeam(memberIds.split('|'));
   }, [frameOnCanvas, team, memberIds]);
 
+  // 讀取中、錯誤時面板也要有標題列與 ✕（觸控沒有 Esc）。
+  const headed = (node: ReactNode) =>
+    inPanel ? (
+      <>
+        <PanelHead title={t('team.title')} onClose={closeRight} closeTestId="team-close" />
+        {node}
+      </>
+    ) : (
+      node
+    );
   if (board.status === 'error') {
-    return (
-      <ErrorState text={t('views.error.board', { detail: board.detail })} onRetry={board.retry} />
+    return headed(
+      <ErrorState text={t('views.error.board', { detail: board.detail })} onRetry={board.retry} />,
     );
   }
   if (status === 'error') {
-    return <ErrorState text={t('team.error.load', { detail: detail ?? '' })} onRetry={retry} />;
+    return headed(
+      <ErrorState text={t('team.error.load', { detail: detail ?? '' })} onRetry={retry} />,
+    );
   }
-  if (board.status === 'loading' || status === 'loading') return <LoadingState />;
-  if (!known && checkedId !== teamId) return <LoadingState />;
-  if (team) return <TeamWorkbench key={team.id} team={team} />;
-  return <TeamList missing={teamId !== null} />;
+  if (board.status === 'loading' || status === 'loading') return headed(<LoadingState />);
+  if (!known && checkedId !== teamId) return headed(<LoadingState />);
+  if (team) return <TeamWorkbench key={team.id} team={team} inPanel={inPanel} />;
+  return <TeamList missing={teamId !== null} inPanel={inPanel} />;
 }
 
 export function TeamDrawer({ teamId }: { teamId: string | null }) {
@@ -170,10 +183,7 @@ export function TeamDrawer({ teamId }: { teamId: string | null }) {
       width={wide && teamId !== null ? TEAM_WIDE_WIDTH : TEAM_WIDTH}
       testId="team-panel"
     >
-      <div className="panel-tools">
-        <CloseButton onClose={closeRight} testId="team-close" />
-      </div>
-      <TeamContent teamId={teamId} />
+      <TeamContent teamId={teamId} inPanel />
     </SidePanel>
   );
 }

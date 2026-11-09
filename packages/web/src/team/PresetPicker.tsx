@@ -9,6 +9,7 @@ import {
   type TeamPreset,
   type TeamPresetConfig,
 } from '@agent-board/protocol';
+import { Empty } from '../flows/common';
 import { isActive } from '../flows/sessionForm';
 import { errorCode } from '../shared/backend';
 import { useT } from '../shared/i18n';
@@ -101,9 +102,11 @@ function PresetList({ onPick }: { onPick: (preset: TeamPreset) => void }) {
   }
   if (presets.length === 0) {
     return (
-      <p className="sub preset-empty" data-testid="preset-empty">
-        {t('team.preset.empty')}
-      </p>
+      <Empty
+        title={t('team.preset.emptyTitle')}
+        next={t('team.preset.empty')}
+        testId="preset-empty"
+      />
     );
   }
   return (
@@ -380,7 +383,14 @@ function PresetPreview({
       data-testid="preset-preview"
     >
       <div className="preset-preview-head">
-        <button type="button" onClick={onBack} disabled={busy} data-testid="preset-back">
+        {/* 頁內返回：「← 文字」連結樣式（和團隊「← 返回清單」同一種，報告 B5）。 */}
+        <button
+          type="button"
+          className="link"
+          onClick={onBack}
+          disabled={busy}
+          data-testid="preset-back"
+        >
           ← {t('team.preset.back')}
         </button>
         <b id={titleId}>{preset.name}</b>
@@ -522,7 +532,7 @@ function PresetPreview({
       <div className="row preset-actions">
         {done ? (
           <a
-            className="open-team"
+            className="button primary open-team"
             href={teamHash(done.result.team.id)}
             onClick={onClose}
             data-testid="preset-open-team"
@@ -666,6 +676,8 @@ export function PresetsButton() {
       <button
         ref={toggle}
         type="button"
+        // 底部指令列的按鈕一律精簡 32（畫布區，views.css 不再替指令列裡的按鈕寫尺寸）。
+        className="sm"
         aria-expanded={open}
         title={t('team.preset.buttonHint')}
         onClick={() => setOpen((o) => !o)}

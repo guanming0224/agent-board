@@ -205,7 +205,7 @@ test('交接：沿用團隊規則，新規則先關著；沒有團隊時說明�
   const box = page.getByTestId('full-handoff');
   const existing = box.getByTestId('full-rule-rule-1');
   await expect(existing).toContainText('Write tests');
-  await expect(existing.getByRole('button', { name: '關閉自動交接' })).toHaveAttribute(
+  await expect(existing.getByRole('button', { name: '自動交接：開' })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
@@ -217,8 +217,8 @@ test('交接：沿用團隊規則，新規則先關著；沒有團隊時說明�
   await expect(box.getByRole('status')).toContainText('已新增');
   const added = box.locator('.xpand-rules li').filter({ hasText: 'Train model' });
   await expect(added).toContainText('失敗時交接');
-  await added.getByRole('button', { name: '開啟自動交接' }).click();
-  await expect(added.getByRole('button', { name: '關閉自動交接' })).toHaveAttribute(
+  await added.getByRole('button', { name: '自動交接：關' }).click();
+  await expect(added.getByRole('button', { name: '自動交接：開' })).toHaveAttribute(
     'aria-pressed',
     'true',
   );

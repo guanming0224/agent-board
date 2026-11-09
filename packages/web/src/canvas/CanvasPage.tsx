@@ -44,24 +44,27 @@ import {
   requestArchive,
   useArchiveUi,
 } from './archive';
-import { TIDY_FIT_MIN_ZOOM } from './arrange';
+import { EDGE_LABEL_BADGE_W, EDGE_LABEL_H, EDGE_LABEL_MARGIN, TIDY_FIT_MIN_ZOOM } from './arrange';
 import { HandoffEdge, type LinkEdgeType } from './HandoffEdge';
 import { useHandoffActivity, useHandoffEvents, useLinkFilters } from './handoffActivity';
 import { activityKey, type Channel } from './handoffActivityState';
 import { buildLinks, COUNT_MS, trafficHosts } from './interactions';
-import { placeLabels, textWidth } from './labelPlacement';
+import { placeLabels, textWidth, type LabelSpot } from './labelPlacement';
+import { anchor, routeEdge, type Route } from './edgeRoute';
 import { LinkPanel } from './LinkPanel';
 import { useLinkPick } from './linkPick';
 import { motion } from './motion';
 import {
   CARD_H,
   CARD_W,
+  COMPACT_ZOOM,
   fitCardZoom,
   layoutRows,
   loadLayouts,
   loadPreviousLayouts,
   reconcileRects,
   saveLayouts,
+  zoomPercent,
   type Rect,
 } from './layout';
 import { TidyPanel, TidyToast, useTidy, type TidyState } from './tidy';
@@ -79,15 +82,18 @@ const nodeTypes = { session: SessionNode };
 const edgeTypes = { handoff: HandoffEdge };
 
 /** 「全部顯示」不跨過 xterm 門檻，總覽一定是摘要條。 */
-const FIT_OPTIONS = { padding: 0.06, maxZoom: TERMINAL_ZOOM - 0.05, minZoom: 0.05 };
+/**
+ * 全部顯示：左右留 6%；上面讓開左上「線」與右上「整理畫布」那一列（top 8＋精簡鈕 32＋8），
+ * 下面讓開底部指令列（離底 16＋高 42＋6），卡片的標題列與輸入框才不會被浮動工具蓋住。
+ */
+const FIT_OPTIONS = {
+  padding: { x: 0.06, top: '56px', bottom: '64px' },
+  maxZoom: TERMINAL_ZOOM - 0.05,
+  minZoom: 0.05,
+} as const;
 const SAVE_DEBOUNCE_MS = 400;
 /** 平移、縮放停下來多久才把團隊框的模糊放回去（連續滾輪縮放時不反覆切換）。 */
 const MOVE_SETTLE_MS = 120;
-/** 拖線把手在卡片上緣往下 28px（canvas.css .ab-handle）：線從這裡出發。 */
-const HANDLE_Y = 28;
-/** 線上標籤的大概大小（螢幕 px）：規則線寫觸發條件（textWidth 估），其他線只有次數徽章。 */
-const LABEL_BADGE_W = 28;
-const LABEL_H = 22;
 const DELETE_KEYS = ['Backspace', 'Delete'];
 /** 快速建立小卡的寬度（flows.css .quick-create）＋邊距，用來把小卡留在畫面裡。 */
 const QUICK_W = 392;
@@ -142,6 +148,7 @@ function ZoomPanel() {
       aria-label={t('canvas.zoom.controls')}
     >
       <button
+        className="icon sm"
         aria-label={t('canvas.zoom.out')}
         title={t('canvas.zoom.out')}
         onClick={() => void zoomOut({ duration: 0 })}
@@ -149,22 +156,23 @@ function ZoomPanel() {
         −
       </button>
       <span className="num" data-testid="zoom-level">
-        {Math.round(zoom * 100)}%
+        {zoomPercent(zoom)}%
       </span>
       <button
+        className="icon sm"
         aria-label={t('canvas.zoom.in')}
         title={t('canvas.zoom.in')}
         onClick={() => void zoomIn({ duration: 0 })}
       >
         +
       </button>
-      <button onClick={() => void fitView({ ...FIT_OPTIONS, duration: motion() })}>
+      <button className="sm" onClick={() => void fitView({ ...FIT_OPTIONS, duration: motion() })}>
         {t('canvas.zoom.fit')}
       </button>
       {/* 縮小時要不要換成摘要條（GM 2026-11-06）；只記在這台瀏覽器。 */}
       <button
         type="button"
-        className="summary-toggle"
+        className="sm summary-toggle"
         aria-pressed={summary}
         title={t('canvas.summaryMode.hint')}
         onClick={() => setSummary(!summary)}
@@ -175,11 +183,15 @@ function ZoomPanel() {
   );
 }
 
-/** 外框、標籤要維持螢幕上的粗細與字級，CSS 用 --z 反向換算。 */
+/**
+ * 外框、標籤要維持螢幕上的粗細與字級，CSS 用 --z 反向換算。
+ * 同時標出「縮得很小」（data-compact）：只動 .canvas 一個屬性，不必讓每張卡重新 render。
+ */
 function ZoomVariable({ host }: { host: React.RefObject<HTMLDivElement | null> }) {
   const zoom = useStore((s) => s.transform[2]);
   useEffect(() => {
     host.current?.style.setProperty('--z', String(zoom));
+    host.current?.toggleAttribute('data-compact', zoom < COMPACT_ZOOM);
   }, [host, zoom]);
   return null;
 }
@@ -331,6 +343,10 @@ function Flow({
       }),
     [flow],
   );
+  const tidyView = useCallback(() => {
+    const box = host.current?.getBoundingClientRect();
+    return box && box.width > 0 && box.height > 0 ? { w: box.width, h: box.height } : null;
+  }, []);
   // 「一鍵整理」只整理目前工作區（P2 §2.3）。
   const tidy = useTidy({
     sessions: visibleSessions,
@@ -340,6 +356,7 @@ function Flow({
     saveNow,
     rectOf,
     fit: fitAfterTidy,
+    viewSize: tidyView,
   });
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -435,6 +452,15 @@ function Flow({
   // 標籤避開卡片要用螢幕上的大小換算；縮放取到 0.05，拖曳縮放時不每格重算。
   const zoom = useStore((s) => Math.round(s.transform[2] * 20) / 20);
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * 拖曳中的卡（null＝沒在拖）。拖曳時每一格都會改 nodes，全部線重算路線和標籤太慢（審查 tidy-edges #1）：
+   * 拖曳中只有連到被拖的卡的線畫簡單曲線，其他線沿用拖之前算好的路線與標籤；放開後整張重算。
+   */
+  const [draggingIds, setDraggingIds] = useState<ReadonlySet<string> | null>(null);
+  const routed = useRef<{
+    routes: ReadonlyMap<string, Route>;
+    spots: ReadonlyMap<string, LabelSpot>;
+  } | null>(null);
   // 派工的關係只看 dispatchedBy：其他欄位（狀態、最後幾行）變了不重算線。
   const dispatchSig = sessions.map((s) => `${s.id}<${s.dispatchedBy ?? ''}`).join('|');
   const edges = useMemo<Edge[]>(() => {
@@ -465,6 +491,47 @@ function Flow({
       traffic,
     });
     const hosts = trafficHosts(links);
+    const toEdge = (
+      link: (typeof links)[number],
+      route: Route | undefined,
+      label: LabelSpot | undefined,
+    ): LinkEdgeType => ({
+      id: link.id,
+      type: 'handoff',
+      source: link.source,
+      target: link.target,
+      selected: selectedEdges.has(link.id),
+      // 只有交接規則線能刪（刪的是規則）；其他線是算出來的。
+      deletable: link.kind === 'handoff',
+      data: {
+        kind: link.kind,
+        labelKeys: link.handoff?.triggers.map((trigger) => `canvas.handoff.${trigger}`) ?? [],
+        enabled: link.handoff?.enabled ?? true,
+        offset: link.offset,
+        host: hosts.get(activityKey(link.source, link.target)) === link.id,
+        label,
+        route,
+      },
+      // 隊長 → 成員是編制，不是流程：不畫箭頭。
+      markerEnd:
+        link.kind === 'team' ? undefined : { type: MarkerType.ArrowClosed, color: 'var(--muted)' },
+    });
+    const prev = routed.current;
+    if (draggingIds && prev) {
+      return links.map((link) =>
+        draggingIds.has(link.source) || draggingIds.has(link.target)
+          ? toEdge(link, undefined, undefined)
+          : toEdge(link, prev.routes.get(link.id), prev.spots.get(link.id)),
+      );
+    }
+    // 每條線走卡片之間的空隙，不從卡片底下穿過（GM 2026-11-09：整理後關係線被壓住看不到）。
+    const cards = [...rects.values()];
+    const routes = new Map<string, Route>();
+    for (const l of links) {
+      const from = rects.get(l.source);
+      const to = rects.get(l.target);
+      if (from && to) routes.set(l.id, routeEdge(from, to, cards, l.offset));
+    }
     // 標籤位置：規則線（一直有字）先放，再放有往來的線的次數徽章；都避開卡片與彼此。
     const z = zoom || 1;
     const labeled = links
@@ -481,48 +548,43 @@ function Flow({
         const to = rects.get(l.target);
         if (!from || !to) return [];
         const key = activityKey(l.source, l.target);
-        const badge = traffic.has(key) && hosts.get(key) === l.id ? LABEL_BADGE_W : 0;
+        const badge = traffic.has(key) && hosts.get(key) === l.id ? EDGE_LABEL_BADGE_W : 0;
         const rule = l.handoff
           ? textWidth(
               l.handoff.triggers.map((x) => t(`canvas.handoff.${x}`)).join('、') +
                 (l.handoff.enabled ? '' : t('canvas.handoff.off')),
             )
           : 0;
-        const wide = Math.max(rule + badge, LABEL_BADGE_W);
+        const wide = Math.max(rule + badge, EDGE_LABEL_BADGE_W);
         return [
           {
             id: l.id,
-            source: { x: from.x + from.w, y: from.y + HANDLE_Y + l.offset },
-            target: { x: to.x, y: to.y + HANDLE_Y + l.offset },
+            source: anchor(from, 'right', l.offset),
+            target: anchor(to, 'left', l.offset),
+            route: routes.get(l.id),
             w: wide / z,
-            h: LABEL_H / z,
+            h: EDGE_LABEL_H / z,
           },
         ];
       }),
-      [...rects.values()],
-      6 / z,
+      cards,
+      EDGE_LABEL_MARGIN / z,
     );
-    return links.map((link): LinkEdgeType => ({
-      id: link.id,
-      type: 'handoff',
-      source: link.source,
-      target: link.target,
-      selected: selectedEdges.has(link.id),
-      // 只有交接規則線能刪（刪的是規則）；其他線是算出來的。
-      deletable: link.kind === 'handoff',
-      data: {
-        kind: link.kind,
-        labelKeys: link.handoff?.triggers.map((trigger) => `canvas.handoff.${trigger}`) ?? [],
-        enabled: link.handoff?.enabled ?? true,
-        offset: link.offset,
-        host: hosts.get(activityKey(link.source, link.target)) === link.id,
-        label: spots.get(link.id),
-      },
-      // 隊長 → 成員是編制，不是流程：不畫箭頭。
-      markerEnd:
-        link.kind === 'team' ? undefined : { type: MarkerType.ArrowClosed, color: 'var(--muted)' },
-    }));
-  }, [handoffs, members, liveIds, selectedEdges, trafficSig, dispatchSig, filters, rects, zoom, t]);
+    routed.current = { routes, spots };
+    return links.map((link) => toEdge(link, routes.get(link.id), spots.get(link.id)));
+  }, [
+    handoffs,
+    members,
+    liveIds,
+    selectedEdges,
+    trafficSig,
+    dispatchSig,
+    filters,
+    rects,
+    zoom,
+    t,
+    draggingIds,
+  ]);
 
   // Esc 關掉點線打開的小視窗（取消選取線）。
   useEffect(() => {
@@ -807,7 +869,8 @@ function Flow({
         const r = rectOf(node);
         const fit = box ? fitCardZoom(r, Math.max(1, box.width - inset), box.height) : 0.5;
         // 放大不超過一張卡能完整看見的程度，已經比這更大就維持目前縮放。
-        const zoom = Math.max(flow.getZoom(), Math.min(0.5, fit));
+        // 至少到 COMPACT_ZOOM：卡片很大時放大後仍在 30% 以下，按鈕會被藏起來（Q4）。
+        const zoom = Math.max(flow.getZoom(), COMPACT_ZOOM, Math.min(0.5, fit));
         void flow.setCenter(r.x + r.w / 2 + inset / 2 / zoom, r.y + r.h / 2, {
           zoom,
           duration: motion(),
@@ -822,9 +885,10 @@ function Flow({
         const w = Math.max(...rects.map((r) => r.x + r.w)) - x;
         const h = Math.max(...rects.map((r) => r.y + r.h)) - y;
         const usable = Math.max(1, box.width - inset);
+        // 不低於 COMPACT_ZOOM：大團隊框不完整也沒關係，卡片上的按鈕要看得到（Q4，審查 canvas #8）。
         const zoom = Math.min(
           1,
-          Math.max(0.05, Math.min((usable * 0.85) / w, (box.height * 0.85) / h)),
+          Math.max(COMPACT_ZOOM, Math.min((usable * 0.85) / w, (box.height * 0.85) / h)),
         );
         void flow.setCenter(x + w / 2 + inset / 2 / zoom, y + h / 2, {
           zoom,
@@ -859,6 +923,10 @@ function Flow({
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
+        onNodeDragStart={(_, node, dragged) =>
+          setDraggingIds(new Set([node.id, ...dragged.map((n) => n.id)]))
+        }
+        onNodeDragStop={() => setDraggingIds(null)}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onConnectStart={(_, { nodeId }) => connectStart(nodeId)}
@@ -909,14 +977,18 @@ function Flow({
         <ZoomPanel />
         <LinkPanel />
         <TidyPanel tidy={tidy} empty={sessions.length === 0} />
-        <TidyToast tidy={tidy} />
+        {/* 畫面下方的提示疊在同一欄，讓開底部指令列與縮放列（canvas.css .toast-stack）。 */}
+        <Panel position="bottom-center" className="toast-stack">
+          <ArchiveToast />
+          <TidyToast tidy={tidy} />
+        </Panel>
         <ArchiveSelection ids={selectedIds} />
-        <ArchiveToast />
         {pickFrom && (
           <Panel position="top-center" className="pick-hint" data-testid="link-pick">
             <span role="status">{t('canvas.pick.hint')}</span>
             <button
               type="button"
+              className="close"
               aria-label={t('canvas.pick.cancel')}
               title={t('canvas.pick.cancel')}
               onClick={cancelPick}
@@ -928,10 +1000,12 @@ function Flow({
         {selectedHandoff && (
           <Panel position="top-center" className="edge-panel" data-testid="handoff-panel">
             <button
+              className="sm"
               aria-pressed={selectedHandoff.enabled}
               onClick={() => toggleHandoff(selectedHandoff.id)}
             >
-              {selectedHandoff.enabled ? t('canvas.handoff.turnOff') : t('canvas.handoff.turnOn')}
+              {/* 開關寫「狀態」，和團隊面板同一套（按下樣式＝開著）。 */}
+              {selectedHandoff.enabled ? t('team.rules.on') : t('team.rules.off')}
             </button>
             <CostChip />
             <span className="sub">{t('canvas.handoff.panelHint')}</span>

@@ -41,7 +41,7 @@ import { claudeConfigFor, findTranscriptFiles, inspectSession, purgeSession } fr
 import type { CreateStatusTracker } from './status/types';
 import { SessionStore, type PersistedSession } from './store';
 import { readTranscript } from './transcript';
-import { summarizeUsage } from './usage';
+import { scanUsage } from './usage';
 import {
   createWorktree,
   currentBranch,
@@ -1031,14 +1031,13 @@ export class Daemon {
     if (this.usageRunning || !this.hub.connected) return;
     this.usageRunning = true;
     try {
-      const to = new Date();
-      const from = new Date(to.getTime() - USAGE_WINDOW_MS);
-      const summary = await summarizeUsage(
+      // 總數與細項同一次掃描（GM 2026-11-09 用量詳情），不多讀一次檔。
+      const { summary, detail } = await scanUsage(
         [this.deps.config.claudeConfigDir, ...this.accountProfiles],
-        from,
-        to,
+        new Date(),
+        { windowMs: USAGE_WINDOW_MS },
       );
-      this.send({ type: 'usage', summary });
+      this.send({ type: 'usage', summary, detail });
     } catch (error) {
       log.warn(`用量統計失敗：${errorMessage(error)}`);
     } finally {

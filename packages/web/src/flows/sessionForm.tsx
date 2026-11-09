@@ -430,7 +430,7 @@ export function FolderBrowser({
           <button
             key={p}
             type="button"
-            className="mono"
+            className="sm mono"
             title={p}
             data-testid="recent-folder"
             onClick={() => jump(p)}
@@ -438,14 +438,14 @@ export function FolderBrowser({
             {folderName(p) || p}
           </button>
         ))}
-        <button type="button" onClick={() => jump(home)}>
+        <button type="button" className="sm" onClick={() => jump(home)}>
           {t('flows.new.browseHome')}
         </button>
-        <button type="button" onClick={() => jump(desktop)}>
+        <button type="button" className="sm" onClick={() => jump(desktop)}>
           {t('flows.new.browseDesktop')}
         </button>
         {last && trimSlash(last) !== trimSlash(customStart ?? '') && (
-          <button type="button" className="mono" title={last} onClick={() => jump(last)}>
+          <button type="button" className="sm mono" title={last} onClick={() => jump(last)}>
             {t('flows.new.browseLast', { name: folderName(last) || last })}
           </button>
         )}
@@ -462,6 +462,7 @@ export function FolderBrowser({
             )}
             <button
               type="button"
+              className="ghost sm"
               aria-current={i === crumbs.length - 1 ? 'location' : undefined}
               onClick={() => go(c.path)}
             >
@@ -472,7 +473,7 @@ export function FolderBrowser({
       </nav>
 
       <div className="browser-tools">
-        <button type="button" className="browser-up" disabled={!up} onClick={() => up && go(up)}>
+        <button type="button" className="sm browser-up" disabled={!up} onClick={() => up && go(up)}>
           {t('flows.new.browseUp')}
         </button>
         <input
@@ -520,7 +521,7 @@ export function FolderBrowser({
               <li key={entry.name} className={on ? 'on' : undefined}>
                 <button
                   type="button"
-                  className="pick"
+                  className="ghost sm pick"
                   aria-pressed={on}
                   onClick={() => select(full)}
                   onDoubleClick={() => go(full)}
@@ -531,7 +532,7 @@ export function FolderBrowser({
                 {entry.isGitRepo && <span className="chip">git</span>}
                 <button
                   type="button"
-                  className="enter"
+                  className="icon sm enter"
                   aria-label={t('flows.new.browseEnter', { name: entry.name })}
                   title={t('flows.new.browseEnter', { name: entry.name })}
                   onClick={() => go(full)}
@@ -555,6 +556,7 @@ export function FolderBrowser({
         {listing && trimSlash(listing.path) !== trimSlash(customStart ?? '') && (
           <button
             type="button"
+            className="sm"
             onClick={() => {
               saveStartFolder(machine.id, listing.path);
               setCustomStart(listing.path);
@@ -566,6 +568,7 @@ export function FolderBrowser({
         {customStart !== null && (
           <button
             type="button"
+            className="sm"
             onClick={() => {
               saveStartFolder(machine.id, null);
               setCustomStart(null);

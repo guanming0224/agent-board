@@ -56,25 +56,24 @@
   text-overflow: ellipsis;
   color: var(--fg-muted);
 }
-/* 每一對最近 10 分鐘的次數：按了打開紀錄 */
+/*
+ * 每一對最近 10 分鐘的次數：按了打開紀錄。線標籤反向縮放（螢幕上固定大小），所以用畫布小標籤那一級
+ * --ctl-h-xs 24／12px／600（畫布審查 H1）；手機與觸控 44（controls.css 的觸控下限，這裡權重比較高要自己寫）。
+ */
 .edge-label .edge-count {
   pointer-events: auto;
-  min-height: 18px;
-  min-width: 18px;
-  margin-left: 6px;
-  padding: 0 5px;
-  border-radius: 999px;
-  border: 1px solid var(--border-2);
-  background: var(--surface-2);
-  color: var(--fg);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 16px;
+  min-height: var(--ctl-h-xs);
+  min-width: var(--ctl-h-xs);
+  margin-left: var(--space-1h);
+  padding: 0 var(--space-1h);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-sm);
+  line-height: 1;
 }
-@media (pointer: coarse) {
+@media (max-width: 640px), (pointer: coarse) {
   .edge-label .edge-count {
-    min-height: 28px;
-    min-width: 28px;
+    min-height: var(--ctl-h-touch);
+    min-width: var(--ctl-h-touch);
   }
 }
 .edge-label.label-team:not([data-phase]),
@@ -97,12 +96,12 @@
   text-align: left;
   width: max-content;
   max-width: 360px;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
-  font-size: 12px;
+  box-shadow: var(--shadow-float);
+  font-size: var(--fs-sm);
   line-height: 1.45;
   color: var(--fg-muted);
   pointer-events: auto;
@@ -111,16 +110,12 @@
 .pair-pop-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   justify-content: space-between;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
   color: var(--fg);
 }
-.pair-pop .pair-pop-close {
-  min-height: 24px;
-  padding: 0 6px;
-  font-size: 12px;
-}
+/* 關閉是共用的 button.close（32×32、✕）。 */
 .pair-pop ol {
   list-style: none;
   margin: 0;
@@ -156,8 +151,8 @@
   overflow-wrap: anywhere;
 }
 .pair-pop .sub {
-  margin: 6px 0 0;
-  font-size: 11.5px;
+  margin: var(--space-1h) 0 0;
+  font-size: var(--fs-xs);
 }
 
 /* 左上的「線」：篩選開關＋圖例。xyflow 面板位置的 .top 和頁首的 .top（views.css）撞名，同 tidy-panel 改回來。 */
@@ -170,50 +165,42 @@
   background: none;
   backdrop-filter: none;
   width: fit-content;
-  margin: 8px 0 0 44px;
+  /* 和左邊的側欄開關（views.css .side-toggle，32＋左右 8）同一個 top，中線對齊（畫布審查 E1）。 */
+  margin: var(--space-2) 0 0 calc(var(--ctl-h-sm) + 2 * var(--space-2));
   display: grid;
-  gap: 6px;
+  gap: var(--space-1h);
   justify-items: start;
   max-width: calc(100% - 60px - 140px);
 }
 .link-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
   align-items: center;
 }
-.canvas .link-panel button {
-  min-height: 28px;
-  padding: 0 9px;
-  font-size: 12.5px;
-  background: var(--surface);
-}
+/* 按鈕都是 button.sm（32／13）；開著的開關用全站的「按下」樣式，關著的另外加刪除線當第二編碼。 */
 .link-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-}
-.canvas .link-filters .link-filter[aria-pressed='true'] {
-  background: var(--raise);
-  border-color: var(--fg-muted);
+  gap: var(--space-1);
 }
 .canvas .link-filters .link-filter[aria-pressed='false'] {
   color: var(--faint);
   text-decoration: line-through;
 }
 .link-filter span {
-  margin-right: 4px;
+  margin-right: var(--space-1);
 }
 .link-legend {
   list-style: none;
   margin: 0;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface);
   display: grid;
   gap: 2px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .link-legend li {
@@ -257,14 +244,17 @@
 }
 @media (max-width: 860px) {
   .canvas .react-flow__panel.link-panel {
-    margin: 8px 0 0 40px;
-    max-width: calc(100% - 56px);
+    max-width: calc(100% - var(--ctl-h-sm) - 3 * var(--space-2));
   }
-  /* 手機：收起時只留「線」按鈕 */
+  /* 窄螢幕：收起時只留「線」按鈕 */
   .link-panel:not(.open) .link-filters {
     display: none;
   }
-  .canvas .link-panel button {
-    min-height: 36px;
+}
+/* 手機：側欄開關是 44（controls.css），「線」跟著往右讓。 */
+@media (max-width: 640px), (pointer: coarse) {
+  .canvas .react-flow__panel.link-panel {
+    margin-left: calc(var(--ctl-h-touch) + 2 * var(--space-2));
+    max-width: calc(100% - var(--ctl-h-touch) - 3 * var(--space-2));
   }
 }

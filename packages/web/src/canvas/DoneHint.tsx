@@ -103,9 +103,14 @@ export function DoneHint({ session }: { session: Session }) {
         <>
           <p>{t('canvas.done.text')}</p>
           <div className="acts">
-            {state === 'ready' && <button onClick={sendClear}>{t('canvas.done.clear')}</button>}
+            {state === 'ready' && (
+              <button className="sm" onClick={sendClear}>
+                {t('canvas.done.clear')}
+              </button>
+            )}
             {state === 'ended' && canResume(session) && (
               <button
+                className="sm"
                 title={t('views.resume.hint')}
                 disabled={resumer.busy || !connected}
                 onClick={() => void resumer.resume(session)}
@@ -113,7 +118,7 @@ export function DoneHint({ session }: { session: Session }) {
                 {resumer.busy ? t('views.resume.busy') : t('views.resume')}
               </button>
             )}
-            <button disabled={busy || !connected} onClick={() => void archive()}>
+            <button className="sm" disabled={busy || !connected} onClick={() => void archive()}>
               {t('canvas.done.archive')}
             </button>
             <button className="link" onClick={() => dismiss(key)}>

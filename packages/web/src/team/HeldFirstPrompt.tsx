@@ -8,7 +8,14 @@ import { errorText } from '../views';
 import { useHeldPrompts } from './heldPrompts';
 import './presetMessages';
 
-export function HeldFirstPrompt({ sessionId }: { sessionId: string }) {
+export function HeldFirstPrompt({
+  sessionId,
+  cue = false,
+}: {
+  sessionId: string;
+  /** 不是聚焦那張卡：狀態代碼色框＋淡底（controls.css 的 button.cue），白色實心只給聚焦那張（GM Q2）。 */
+  cue?: boolean;
+}) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
   const connected = useBoard((s) => s.connected);
@@ -49,7 +56,7 @@ export function HeldFirstPrompt({ sessionId }: { sessionId: string }) {
         <>
           <button
             type="button"
-            className="primary"
+            className={cue ? 'cue' : 'primary'}
             disabled={busy || !connected || gone}
             title={held.text}
             onClick={() => void send()}

@@ -9,18 +9,82 @@ import './messages';
 const FOCUSABLE =
   'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])';
 
-export function CloseButton({ onClose, testId }: { onClose: () => void; testId?: string }) {
+export function CloseButton({
+  onClose,
+  testId,
+  label,
+}: {
+  onClose: () => void;
+  testId?: string;
+  /** 可存取名稱；框裡另有文字「關閉」鈕時傳不同的名字（例如「關閉對話框」），兩顆才分得出來。 */
+  label?: string;
+}) {
   const t = useT();
   return (
     <button
       type="button"
-      className="overlay-close"
-      aria-label={t('views.panel.close')}
+      className="close"
+      aria-label={label ?? t('views.panel.close')}
       title={t('views.panel.closeHint')}
       onClick={onClose}
       data-testid={testId}
     >
       <span aria-hidden="true">✕</span>
+    </button>
+  );
+}
+
+/**
+ * 右側面板的標題列（團隊、Memory、收件匣共用的長相，STYLE.md §5.1）：h1 18px、左右內距 16，
+ * 右邊依序「寬版」「✕」，兩顆都是精簡 32px。捲動時黏在面板頂端。
+ */
+export function PanelHead({
+  title,
+  onClose,
+  closeTestId,
+  children,
+}: {
+  title: ReactNode;
+  onClose: () => void;
+  closeTestId: string;
+  /** 放在 ✕ 前面的動作（通常是寬版切換）。 */
+  children?: ReactNode;
+}) {
+  return (
+    <header className="panel-head side-panel-head">
+      <h1>{title}</h1>
+      <div className="panel-acts">
+        {children}
+        <CloseButton onClose={onClose} testId={closeTestId} />
+      </div>
+    </header>
+  );
+}
+
+/** 寬版切換：按下（aria-pressed）用全站的「按下」外觀，不只換字。 */
+export function WideButton({
+  wide,
+  onToggle,
+  label,
+  hint,
+  testId,
+}: {
+  wide: boolean;
+  onToggle: () => void;
+  label: string;
+  hint: string;
+  testId: string;
+}) {
+  return (
+    <button
+      type="button"
+      className="sm"
+      aria-pressed={wide}
+      onClick={onToggle}
+      title={hint}
+      data-testid={testId}
+    >
+      {label}
     </button>
   );
 }
@@ -153,12 +217,12 @@ export function PhonePage({
     <div className="phone-page" data-testid={testId}>
       <div className="phone-top">
         <div className="phone-back">
-          <button type="button" onClick={onBack} data-testid="phone-back">
+          <button type="button" className="ghost" onClick={onBack} data-testid="phone-back">
             ← {t('views.panel.back')}
           </button>
         </div>
         {/* 暫停中每一頁都要看得到（規格 §3.3）：手機的團隊、設定、新增全螢幕頁也放一份，捲動時跟著頂端。 */}
-        <PauseStrip />
+        <PauseStrip phone />
       </div>
       {children}
     </div>

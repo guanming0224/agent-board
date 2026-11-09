@@ -11,8 +11,10 @@
     <script type="module">
       import { createElement, StrictMode } from 'react';
       import { createRoot } from 'react-dom/client';
-      import '/src/shared/styles/tokens.css';
       import { LoginPage } from '/src/flows/index.ts';
+      // 和 main.tsx 同一個順序：各區 CSS 先、tokens／controls 後（同權重時 controls 贏）。
+      import '/src/shared/styles/tokens.css';
+      import '/src/shared/styles/controls.css';
 
       window.__mount = () =>
         createRoot(document.getElementById('root')).render(

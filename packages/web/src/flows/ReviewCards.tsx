@@ -28,7 +28,7 @@ import {
   type Loaded,
   type Note,
 } from './common';
-import { terminalHash } from '../canvas/terminalRoute';
+import { DenyForm } from './DenyForm';
 import { summarizeTool } from './toolView';
 import { reviewGroupOf } from './triage';
 import { workItems, type WorkItem } from './workItems';
@@ -68,7 +68,10 @@ function RequiredField({
   );
 }
 
-/** 一般權限請求與危險指令的動作列。 */
+/**
+ * 一般權限請求與危險指令的動作列。拒絕和收件匣列、手機同一套（GM Q3）：灰色「拒絕」→ 原因框 →
+ * 紅框「拒絕」＋「取消」（DenyForm）；展開時「允許」那排收起，同一時間只有一顆「拒絕」。
+ */
 function PermissionActions({
   approval,
   disabled,
@@ -77,37 +80,31 @@ function PermissionActions({
 }: {
   approval: Approval;
   disabled: boolean;
-  /** false：這個使用者不能決定，連拒絕原因也不用填。 */
+  /** false：這個使用者不能決定，拒絕也展不開。 */
   canDecide: boolean;
   decide: ReturnType<typeof useDecide>;
 }) {
   const t = useT();
   const danger = approval.kind === 'danger';
   const twoStep = useTwoStep();
-  const [reason, setReason] = useState('');
-  const [invalid, setInvalid] = useState(false);
-  const reasonRef = useRef<HTMLTextAreaElement>(null);
+  const [denying, setDenying] = useState(false);
   const canRemember = approval.suggestions.length > 0;
   const view = summarizeTool(approval.toolName, approval.toolInput);
   const fullText = view.kind === 'command' || view.kind === 'raw' ? view.text : null;
   const mask = useMaskText();
 
-  const deny = () => {
-    const text = reason.trim();
-    if (!text) {
-      setInvalid(true);
-      decide.setNote({ text: t('flows.review.denyNeedsReason'), tone: 'err' });
-      reasonRef.current?.focus();
-      return;
-    }
-    twoStep.disarm();
-    void decide.decide({ behavior: 'deny', reason: text });
-  };
   const allowOnce = () => {
     if (!danger) return void decide.decide({ behavior: 'allow', remember: false });
     twoStep.press(() => void decide.decide({ behavior: 'allow', remember: false }));
   };
 
+  if (denying) {
+    return (
+      <div className="decision-bar">
+        <DenyForm disabled={disabled} decide={decide} onCancel={() => setDenying(false)} />
+      </div>
+    );
+  }
   return (
     <div className="decision-bar">
       <div className="acts">
@@ -129,6 +126,18 @@ function PermissionActions({
             {t('flows.review.allowRemember')}
           </button>
         )}
+        <button
+          type="button"
+          disabled={disabled || !canDecide}
+          aria-expanded={false}
+          onClick={() => {
+            twoStep.disarm();
+            decide.setNote(null);
+            setDenying(true);
+          }}
+        >
+          {t('flows.review.deny')}
+        </button>
         {!twoStep.armed && <Msg note={decide.note} />}
       </div>
       {twoStep.armed && (
@@ -138,23 +147,6 @@ function PermissionActions({
         </div>
       )}
       {!danger && !canRemember && <p className="hint">{t('flows.review.noSuggestions')}</p>}
-      <div className="deny-row">
-        {canDecide && (
-          <RequiredField
-            label={t('flows.review.denyReason')}
-            value={reason}
-            invalid={invalid}
-            inputRef={reasonRef}
-            onChange={(value) => {
-              setReason(value);
-              setInvalid(false);
-            }}
-          />
-        )}
-        <button type="button" disabled={disabled} onClick={deny}>
-          {t('flows.review.deny')}
-        </button>
-      </div>
     </div>
   );
 }
@@ -224,9 +216,17 @@ function QuestionActions({
   const t = useT();
   const mask = useMaskText();
   const [answer, setAnswer] = useState('');
+  /** 每題各記各的選擇（第幾題 → 選項）：選第二題不會蓋掉第一題，反白也各自保留。 */
+  const [picks, setPicks] = useState<Record<number, string>>({});
   const [invalid, setInvalid] = useState(false);
   const answerRef = useRef<HTMLTextAreaElement>(null);
   const questions = parseQuestions(approval);
+  const multi = questions.length > 1;
+  /** 一題：回答就是選項；多題：每行「題目：選項」，沒選的題目不寫。 */
+  const compose = (next: Record<number, string>) =>
+    multi
+      ? questions.flatMap((q, i) => (next[i] ? [`${q.question}：${next[i]}`] : [])).join('\n')
+      : (next[0] ?? '');
   const send = () => {
     const text = answer.trim();
     if (!text) {
@@ -239,19 +239,22 @@ function QuestionActions({
   };
   return (
     <div className="decision-bar">
-      {questions.map((q) => (
+      {questions.map((q, i) => (
         <div key={q.question} className="question">
           <p className="body-text">{mask(q.question)}</p>
           {q.options.length > 0 && (
-            <div className="acts">
+            // 先選（選中反白）再按「送出回答」（GM Q3）：選項只填進回答框，不直接送。
+            <div className="acts options" role="group" aria-label={mask(q.question)}>
               {q.options.map((option) => (
                 <button
                   type="button"
                   key={option}
-                  aria-pressed={answer === option}
+                  aria-pressed={picks[i] === option && (multi || answer === option)}
                   disabled={disabled}
                   onClick={() => {
-                    setAnswer(option);
+                    const next = { ...picks, [i]: option };
+                    setPicks(next);
+                    setAnswer(compose(next));
                     setInvalid(false);
                   }}
                 >
@@ -423,21 +426,26 @@ function ReviewCard({
           </div>
         </div>
       )}
-      <div className="sign">
-        {session ? (
-          <>
-            <Callsign text={callsign(session, context.machines, context.projects)} />
-            <ModeChip mode={session.permissionMode} />
-          </>
-        ) : (
-          <Callsign text={t('flows.review.unknownSession')} />
-        )}
-      </div>
-      <div className="head">
-        <Lamp status={item.status} />
-        {session && <h2 className="title">{session.name}</h2>}
-        <WaitAge since={item.since} now={context.now} />
-      </div>
+      {/* 收件匣展開（detail）：呼號、狀態、名稱、等待時間都在上面的列裡，卡片不再畫第二次。 */}
+      {!detail && (
+        <>
+          <div className="sign">
+            {session ? (
+              <>
+                <Callsign text={callsign(session, context.machines, context.projects)} />
+                <ModeChip mode={session.permissionMode} />
+              </>
+            ) : (
+              <Callsign text={t('flows.review.unknownSession')} />
+            )}
+          </div>
+          <div className="head">
+            <Lamp status={item.status} />
+            {session && <h2 className="title">{session.name}</h2>}
+            <WaitAge since={item.since} now={context.now} />
+          </div>
+        </>
+      )}
       {detail && <WhyLine item={item} />}
 
       {approval && approval.kind !== 'question' && approval.kind !== 'plan' && (
@@ -480,11 +488,6 @@ function ReviewCard({
           <summary>{t('flows.review.lastOutput')}</summary>
           <pre className="tail-lines">{mask(tail)}</pre>
         </details>
-      )}
-      {detail && session && (
-        <div className="detail-links">
-          <a href={terminalHash(session.id)}>{t('flows.triage.openTerminal')}</a>
-        </div>
       )}
     </section>
   );

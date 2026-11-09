@@ -36,7 +36,7 @@ import { DoneHint } from './DoneHint';
 import { useHandoffActivity } from './handoffActivity';
 import { isReceiving } from './handoffActivityState';
 import { useLinkPick } from './linkPick';
-import { fitCardZoom, STRIP_W } from './layout';
+import { COMPACT_ZOOM, fitCardZoom, STRIP_W } from './layout';
 import { motion } from './motion';
 import { terminalHash } from './terminalRoute';
 
@@ -64,6 +64,10 @@ function Actions({
   const backend = useBoard((s) => s.backend);
   const connected = useBoard((s) => s.connected);
   const danger = useBoard((s) => dangerApproval(s.approvals, session.id));
+  // GM Q2：白色實心主按鈕只給目前聚焦（「下一個等我的」框出）的那張卡；
+  // 其他等你的卡用狀態代碼色的框＋淡底（canvas.css 的 .cue），畫面上不會同時出現好幾塊白。
+  const focused = useViewsUi((s) => s.focusId === session.id);
+  const main = focused ? 'sm primary' : 'sm cue';
   const [msg, setMsg] = useState('');
   // 收件匣抽屜打開並展開這一項（畫布留在底下）。
   const openReview = () => (location.hash = inboxHash(session.id));
@@ -71,27 +75,33 @@ function Actions({
   let body = null;
   if (danger || session.status === 'waiting_permission') {
     body = (
-      <button className={danger ? 'danger' : 'primary'} onClick={openReview}>
+      <button className={danger ? 'sm danger' : main} onClick={openReview}>
         {t('canvas.act.decide')}
       </button>
     );
   } else if (session.status === 'plan_review') {
     body = (
-      <button className="primary" onClick={openReview}>
+      <button className={main} onClick={openReview}>
         {t('canvas.act.plan')}
       </button>
     );
   } else if (session.status === 'waiting_input') {
     body = (
-      <button className="primary" onClick={() => inputRef.current?.focus()}>
+      <button className={main} onClick={() => inputRef.current?.focus()}>
         {t('canvas.act.reply')}
       </button>
     );
   } else if (session.status === 'error' || session.status === 'stuck') {
+    // 「開啟終端機」是這張卡的主要動作（畫布審查 B4），「Esc 中斷」維持次要。
     body = (
       <>
-        {!isTerminal && <button onClick={onOpenTerminal}>{t('canvas.act.terminal')}</button>}
+        {!isTerminal && (
+          <button className={main} onClick={onOpenTerminal}>
+            {t('canvas.act.terminal')}
+          </button>
+        )}
         <button
+          className="sm"
           disabled={!connected}
           onClick={() => {
             backend.terminal.send({
@@ -135,12 +145,17 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
         {renaming ? (
           <RenameInput session={session} onDone={() => setRenaming(false)} />
         ) : (
-          <span className="title">{session.name}</span>
+          <span className="title" title={session.name}>
+            {session.name}
+          </span>
         )}
-        <Age session={session} />
-        {menu && (
-          <MenuButton session={session} open={menuOpen} onToggle={() => setMenuOpen((v) => !v)} />
-        )}
+        {/* 等待時間和 ⋯ 一起：空間不夠時一起換到下一行（canvas.css），名稱留在徽章旁邊不被擠掉。 */}
+        <span className="head-end">
+          <Age session={session} />
+          {menu && (
+            <MenuButton session={session} open={menuOpen} onToggle={() => setMenuOpen((v) => !v)} />
+          )}
+        </span>
       </div>
       {danger && <div className="danger-tag">{t('canvas.danger')}</div>}
       {menuOpen && (
@@ -239,7 +254,11 @@ export function SessionNode({
     toggleExpanded(session.id);
     if (flow.getZoom() >= READABLE_ZOOM) return;
     const { width, height } = store.getState();
-    const zoom = Math.min(TERMINAL_ZOOM - 0.05, fitCardZoom({ x, y, w, h }, width, height));
+    // 至少到 COMPACT_ZOOM：卡片很大時放大後仍在 30% 以下，按鈕會被藏起來（Q4）。
+    const zoom = Math.max(
+      COMPACT_ZOOM,
+      Math.min(TERMINAL_ZOOM - 0.05, fitCardZoom({ x, y, w, h }, width, height)),
+    );
     void flow.setCenter(x + w / 2, y + h / 2, { zoom, duration: motion() });
   };
   // 全尺寸頁會把畫布卸載（卡上的 xterm 也跟著退訂），記下鏡頭，回來時停在同一個地方。
@@ -254,7 +273,16 @@ export function SessionNode({
   return (
     <div
       className={`frame ${codeClass(statusCode(session))}${focused ? ' spot' : ''}`}
-      style={{ width: w, height: h }}
+      // --fill 放在外框上：摘要條的倍率（--strip-scale）由外框算，外框的圓角才跟得上（canvas.css）。
+      style={
+        {
+          width: w,
+          height: h,
+          '--fill': fill,
+          '--card-w': `${w}px`,
+          '--card-h': `${h}px`,
+        } as CSSProperties
+      }
       data-testid={`card-${session.id}`}
       data-mode={isTerminal ? 'terminal' : 'summary'}
       data-handoff={receiving ? 'in' : undefined}
@@ -279,19 +307,22 @@ export function SessionNode({
         <article className={cardClass('termcard', session)}>
           <header
             onDoubleClick={(e) => {
-              if (expanded && !fromControl(e.target)) toggleExpanded(session.id);
+              if (fromControl(e.target)) return;
+              if (expanded) toggleExpanded(session.id);
+              // 縮到 COMPACT_ZOOM 以下按鈕都藏起來了（摘要模式：關）：點兩下走和摘要條同一套放大（Q4）。
+              else if (flow.getZoom() < COMPACT_ZOOM) openTerminal();
             }}
           >
             <CardHead session={session} menu />
             <div className="term-acts">
               <Actions session={session} isTerminal onOpenTerminal={() => {}} inputRef={inputRef} />
               {/* 全部暫停中套用 Preset 時留下的隊長第一個指令（P3 §2.3，GM 按了才送）。 */}
-              <HeldFirstPrompt sessionId={session.id} />
-              <button className="nodrag" onClick={openFull} data-testid="open-full">
+              <HeldFirstPrompt sessionId={session.id} cue={!focused} />
+              <button className="sm nodrag" onClick={openFull} data-testid="open-full">
                 {t('canvas.act.full')}
               </button>
               {expanded && !zoomedIn && (
-                <button className="nodrag" onClick={() => toggleExpanded(session.id)}>
+                <button className="sm nodrag" onClick={() => toggleExpanded(session.id)}>
                   {t('canvas.act.summary')}
                 </button>
               )}
@@ -319,7 +350,6 @@ export function SessionNode({
       ) : (
         <article
           className={cardClass('strip', session)}
-          style={{ '--fill': fill, '--card-w': `${w}px`, '--card-h': `${h}px` } as CSSProperties}
           onDoubleClick={(e) => {
             if (session.status !== 'offline' && !fromControl(e.target)) openTerminal();
           }}
@@ -330,7 +360,7 @@ export function SessionNode({
             <ContextUsage tokens={session.contextTokens} window={session.contextWindow} />
           )}
           <DoneHint session={session} />
-          <HeldFirstPrompt sessionId={session.id} />
+          <HeldFirstPrompt sessionId={session.id} cue={!focused} />
           <Actions
             session={session}
             isTerminal={false}

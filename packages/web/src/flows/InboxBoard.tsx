@@ -7,7 +7,7 @@ import { terminalHash } from '../canvas/terminalRoute';
 import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
-import { statusCode } from '../shared/status';
+import { codeClass, statusCode } from '../shared/status';
 import { useViewsUi, type InboxSort } from '../views';
 import { ZoneChip } from '../zones';
 import { answerDecision, parseQuestions, useBlockedReason, useDecide } from './approvalParts';
@@ -32,7 +32,8 @@ import {
 } from './common';
 import { DecisionHistory } from './DecisionHistory';
 import { SessionReviewCards } from './ReviewCards';
-import { StatusBadge } from './StatusBadge';
+import { badgeCode, StatusBadge } from './StatusBadge';
+import { DenyForm } from './DenyForm';
 import { summarizeTool } from './toolView';
 import {
   contextLine,
@@ -50,6 +51,8 @@ export interface TeamOption {
   id: string;
   name: string;
   memberIds: readonly string[];
+  /** 團隊框色（CSS 值，例如 var(--team-teal)）；團隊晶片的框用它。 */
+  color: string;
 }
 
 const GROUP_TITLE: Record<TriageGroup, string> = {
@@ -78,7 +81,10 @@ export function showOnCanvas(id: string) {
   useViewsUi.getState().focusSession(id);
 }
 
-/** 必填的一段文字（拒絕原因、回覆）。空白不送，錯誤訊息緊貼按鈕。 */
+/**
+ * 必填的回覆。空白不送，錯誤訊息緊貼按鈕。提問選項先選（選中反白）再按主按鈕送出（GM Q3）。
+ * 拒絕原因用 DenyForm（三處共用）。
+ */
 function TextForm({
   label,
   submitLabel,
@@ -88,6 +94,7 @@ function TextForm({
   note,
   setNote,
   onSubmit,
+  onCancel,
 }: {
   label: string;
   submitLabel: string;
@@ -97,7 +104,9 @@ function TextForm({
   note: Note | null;
   setNote: (note: Note | null) => void;
   onSubmit: (text: string) => void;
+  onCancel?: () => void;
 }) {
+  const t = useT();
   const [text, setText] = useState('');
   const [invalid, setInvalid] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -115,7 +124,7 @@ function TextForm({
   return (
     <div className="row-panel">
       {options.length > 0 && (
-        <div className="acts options">
+        <div className="acts options" role="group" aria-label={t('flows.review.options')}>
           {options.map((option) => (
             <button
               type="button"
@@ -157,16 +166,22 @@ function TextForm({
         <button type="button" className="primary" disabled={disabled} onClick={send}>
           {submitLabel}
         </button>
+        {onCancel && (
+          <button type="button" className="ghost" onClick={onCancel}>
+            {t('flows.inbox.denyCancel')}
+          </button>
+        )}
         <Msg note={note} />
       </div>
     </div>
   );
 }
 
+/** 「開啟終端機」：和「在畫布上看」同一種低調精簡鈕，放在列尾（不和處理動作擠同一排）。 */
 function TerminalLink({ session }: { session: Session }) {
   const t = useT();
   return (
-    <a className="button ghost" href={terminalHash(session.id)}>
+    <a className="button ghost sm" href={terminalHash(session.id)}>
       {t('flows.triage.openTerminal')}
     </a>
   );
@@ -175,12 +190,13 @@ function TerminalLink({ session }: { session: Session }) {
 /** 允許一次／拒絕。危險指令照審核中心的規則：按兩次、第一次顯示全文；拒絕要原因。 */
 function PermissionActions({
   approval,
-  session,
   disabled,
+  lead,
 }: {
   approval: Approval;
-  session: Session;
   disabled: boolean;
+  /** 目前這一列（鍵盤所在、畫布框選）：處理鈕用白色主按鈕，其他列用代碼色框（GM Q2）。 */
+  lead: boolean;
 }) {
   const t = useT();
   const mask = useMaskText();
@@ -197,29 +213,31 @@ function PermissionActions({
   };
   return (
     <>
-      <div className="row-acts">
-        <button
-          type="button"
-          className={danger ? 'danger' : 'primary'}
-          disabled={off}
-          onClick={allow}
-        >
-          {twoStep.armed ? t('flows.review.confirmAgain') : t('flows.review.allowOnce')}
-        </button>
-        <button
-          type="button"
-          disabled={off}
-          aria-expanded={denying}
-          onClick={() => {
-            twoStep.disarm();
-            setDenying((open) => !open);
-          }}
-        >
-          {t('flows.review.deny')}
-        </button>
-        <TerminalLink session={session} />
-        {!denying && <Msg note={decide.note} />}
-      </div>
+      {/* 拒絕展開時「允許一次」收起：同一時間只有框裡那顆紅框「拒絕」（和手機、展開卡同一套）。 */}
+      {!denying && (
+        <div className="row-acts">
+          <button
+            type="button"
+            className={danger ? 'danger' : lead ? 'primary' : 'cue'}
+            disabled={off}
+            onClick={allow}
+          >
+            {twoStep.armed ? t('flows.review.confirmAgain') : t('flows.review.allowOnce')}
+          </button>
+          <button
+            type="button"
+            disabled={off}
+            aria-expanded={false}
+            onClick={() => {
+              twoStep.disarm();
+              setDenying(true);
+            }}
+          >
+            {t('flows.review.deny')}
+          </button>
+          <Msg note={decide.note} />
+        </div>
+      )}
       {twoStep.armed && (
         <div className="armed row-panel" role="status">
           <div>{t('flows.review.armedHint')}</div>
@@ -228,17 +246,7 @@ function PermissionActions({
           )}
         </div>
       )}
-      {denying && (
-        <TextForm
-          label={t('flows.review.denyReason')}
-          submitLabel={t('flows.inbox.sendDeny')}
-          requiredText={t('flows.review.denyNeedsReason')}
-          disabled={off}
-          note={decide.note}
-          setNote={decide.setNote}
-          onSubmit={(reason) => void decide.decide({ behavior: 'deny', reason })}
-        />
-      )}
+      {denying && <DenyForm disabled={off} decide={decide} onCancel={() => setDenying(false)} />}
     </>
   );
 }
@@ -248,10 +256,12 @@ function ReplyActions({
   session,
   approval,
   disabled,
+  lead,
 }: {
   session: Session;
   approval: Approval | null;
   disabled: boolean;
+  lead: boolean;
 }) {
   const t = useT();
   const { backend } = useBoard();
@@ -266,14 +276,13 @@ function ReplyActions({
       <div className="row-acts">
         <button
           type="button"
-          className="primary"
+          className={open ? undefined : lead ? 'primary' : 'cue'}
           disabled={disabled || decide.busy}
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
         >
           {t('flows.triage.reply')}
         </button>
-        <TerminalLink session={session} />
         {!open && <Msg note={shown} />}
       </div>
       {open && (
@@ -326,7 +335,6 @@ function TroubleActions({ session, disabled }: { session: Session; disabled: boo
           {t('flows.triage.markDone')}
         </button>
       )}
-      <TerminalLink session={session} />
       <Msg note={note} />
     </div>
   );
@@ -344,7 +352,7 @@ function ShowOnCanvas({ sessionId }: { sessionId: string }) {
   return (
     <button
       type="button"
-      className="ghost"
+      className="ghost sm"
       onClick={() => showOnCanvas(sessionId)}
       data-testid={`inbox-show-${sessionId}`}
     >
@@ -355,7 +363,7 @@ function ShowOnCanvas({ sessionId }: { sessionId: string }) {
 
 function TriageRow({
   item,
-  teamName,
+  team,
   active,
   expanded,
   highlighted,
@@ -367,7 +375,7 @@ function TriageRow({
   context: { projects, me, now },
 }: {
   item: TriageItem;
-  teamName: string | null;
+  team: TeamOption | null;
   active: boolean;
   expanded: boolean;
   /** 從網址（推播）指到的這一項：高亮 2 秒。 */
@@ -400,44 +408,44 @@ function TriageRow({
     if (highlighted) rowRef.current?.focus({ preventScroll: true });
   }, [highlighted, focused, scrollKey]);
 
+  // 白色主按鈕只給目前這一列（鍵盤所在＝預設第一列，或畫布框選的那張）；其他列用代碼色框＋淡底（GM Q2）。
+  const lead = active || focused;
   let actions;
   if (expanded) {
     actions = null;
   } else if (approval && (approval.kind === 'permission' || approval.kind === 'danger')) {
-    actions = <PermissionActions approval={approval} session={session} disabled={disabled} />;
+    actions = <PermissionActions approval={approval} disabled={disabled} lead={lead} />;
   } else if (kind === 'plan') {
     actions = (
       <div className="row-acts">
         <button
           type="button"
-          className="primary"
+          className={lead ? 'primary' : 'cue'}
           onClick={() => onToggle(session.id)}
           aria-expanded={false}
         >
           {t('flows.triage.reviewPlan')}
         </button>
-        <TerminalLink session={session} />
       </div>
     );
   } else if (kind === 'question' || kind === 'reply' || kind === 'idle') {
-    actions = <ReplyActions session={session} approval={approval} disabled={disabled} />;
+    actions = (
+      <ReplyActions session={session} approval={approval} disabled={disabled} lead={lead} />
+    );
   } else if (kind === 'error' || kind === 'stuck' || kind === 'rate_limited') {
     actions = <TroubleActions session={session} disabled={disabled} />;
   } else {
-    actions = (
-      <div className="row-acts">
-        <TerminalLink session={session} />
-      </div>
-    );
+    actions = null;
   }
 
   return (
     <li
       ref={rowRef}
-      className={`triage-row ${handsClass(session.permissionMode)}${kind === 'danger' ? ' is-danger' : ''}${gone ? ' gone' : ''}${expanded ? ' expanded' : ''}${highlighted ? ' targeted' : ''}${focused ? ' focused' : ''}`}
+      className={`triage-row list-row ${codeClass(badgeCode(kind))} ${handsClass(session.permissionMode)}${kind === 'danger' ? ' is-danger' : ''}${gone ? ' gone' : ''}${expanded ? ' expanded' : ''}${highlighted ? ' targeted' : ''}${focused ? ' focused' : ''}`}
       data-testid={`queue-${session.id}`}
       data-row-id={session.id}
       data-kind={kind}
+      aria-current={focused ? 'true' : undefined}
       tabIndex={active ? 0 : -1}
       onFocus={() => onFocusRow(session.id)}
       onKeyDown={(e) => {
@@ -458,6 +466,11 @@ function TriageRow({
       }}
     >
       <div className="row-main">
+        {/* 呼號在最上面（STYLE 邏輯 2，和手機收件匣、審核卡同一個順序）；狀態只在這裡畫一次。 */}
+        <div className="row-sign">
+          <Callsign text={callsign(session, machines, projects)} />
+          <ZoneChip session={session} />
+        </div>
         <div className="row-top">
           <StatusBadge kind={kind} />
           <button
@@ -470,16 +483,20 @@ function TriageRow({
             {session.name}
           </button>
           <WaitAge since={item.since} now={now} />
-          {teamName && <span className="chip team-chip">{teamName}</span>}
+          {team && (
+            <span className="chip team-chip" style={{ ['--team' as string]: team.color }}>
+              {team.name}
+            </span>
+          )}
           <ModeChip mode={session.permissionMode} />
         </div>
-        <div className="row-sign">
-          <Callsign text={callsign(session, machines, projects)} />
-          <ZoneChip session={session} />
-        </div>
-        {kind === 'danger' && approval?.matchedRule && (
-          <div className="row-rule">
-            {t('flows.review.dangerHit')} <Callsign text={approval.matchedRule} />
+        {/* 危險指令：和審核卡同一種警示列（精簡版）；展開後由審核卡畫，不重複。 */}
+        {kind === 'danger' && approval?.matchedRule && !expanded && (
+          <div className="alert row-rule">
+            <span aria-hidden="true">⛔</span>
+            <div className="alert-body">
+              {t('flows.review.dangerHit')} <Callsign text={approval.matchedRule} />
+            </div>
           </div>
         )}
         {context && !expanded && (
@@ -497,6 +514,7 @@ function TriageRow({
         <SessionReviewCards sessionId={session.id} includeSession detail settling={disabledAll} />
       )}
       <div className="row-foot">
+        <TerminalLink session={session} />
         <ShowOnCanvas sessionId={session.id} />
       </div>
     </li>
@@ -521,7 +539,7 @@ function TargetGone({ sessionId }: { sessionId: string }) {
 function SortSwitch({ sort, onSort }: { sort: InboxSort; onSort: (sort: InboxSort) => void }) {
   const t = useT();
   return (
-    <div className="seg" role="group" aria-label={t('flows.inbox.sort')}>
+    <div className="seg sm" role="group" aria-label={t('flows.inbox.sort')}>
       {(['urgency', 'group'] as const).map((value) => (
         <button
           key={value}
@@ -624,7 +642,7 @@ export function InboxBoard({
     if (kept !== expandedId) setExpandedId(kept);
   });
 
-  const teamOf = (id: string) => teams.find((x) => x.memberIds.includes(id))?.name ?? null;
+  const teamOf = (id: string) => teams.find((x) => x.memberIds.includes(id)) ?? null;
 
   const focusRow = (id: string | undefined) => {
     if (!id) return;
@@ -677,7 +695,7 @@ export function InboxBoard({
     <TriageRow
       key={item.session.id}
       item={item}
-      teamName={teamOf(item.session.id)}
+      team={teamOf(item.session.id)}
       active={item.session.id === current}
       expanded={item.session.id === expandedId}
       highlighted={item.session.id === lit}
@@ -692,10 +710,9 @@ export function InboxBoard({
 
   return (
     <div className={`flows triage inbox${connected ? '' : ' is-stale'}`} data-testid="triage">
-      <header className="triage-head">
+      <header className="triage-head panel-head">
         <h1>{t('flows.inbox.title')}</h1>
-        <span className="spacer" />
-        {tools}
+        {tools && <div className="panel-acts">{tools}</div>}
       </header>
       {!connected && (
         <div className="stale-line" role="alert" data-testid="inbox-stale">
@@ -709,6 +726,7 @@ export function InboxBoard({
             <label>
               <span>{t('flows.triage.filter.team')}</span>
               <select
+                className="sm"
                 value={teamId ?? ''}
                 onChange={(e) => setTeamId(e.target.value || null)}
                 data-testid="triage-filter-team"
@@ -726,6 +744,7 @@ export function InboxBoard({
             <label>
               <span>{t('flows.triage.filter.machine')}</span>
               <select
+                className="sm"
                 value={machineId ?? ''}
                 onChange={(e) => setMachineId(e.target.value || null)}
                 data-testid="triage-filter-machine"

@@ -38,10 +38,10 @@ import { reduceDeep, type DeepMachine, type DeepState } from './deep';
 import { useSearchPrefs, type SearchPrefs } from './prefs';
 import './messages';
 import './search.css';
+import { PHONE_QUERY } from '../shared/breakpoints';
 
 /** 每組先顯示幾筆（§3.3）。 */
 const FIRST_ROWS = 5;
-const PHONE_QUERY = '(max-width: 640px)';
 
 type Loaded =
   | { state: 'idle' }
@@ -183,7 +183,7 @@ function Row({
       id={id}
       role="option"
       aria-selected={selected}
-      className={selected ? 'search-row selected' : 'search-row'}
+      className={selected ? 'search-row list-row selected' : 'search-row list-row'}
       data-testid="search-row"
       data-kind={item.kind}
       data-session={item.sessionId}
@@ -279,7 +279,7 @@ function Group({
         })}
       </ul>
       {group.items.length > FIRST_ROWS && (
-        <button type="button" className="search-more" onClick={onToggle}>
+        <button type="button" className="link search-more" onClick={onToggle}>
           {expanded
             ? t('search.showLess')
             : t(group.capped ? 'search.showCapped' : 'search.showAll', { n: group.total })}
@@ -298,7 +298,7 @@ function Filters({ prefs }: { prefs: SearchPrefs & { set(patch: Partial<SearchPr
   const t = useT();
   return (
     <div className="search-filters">
-      <div className="seg" role="group" aria-label={t('search.scope')}>
+      <div className="seg sm" role="group" aria-label={t('search.scope')}>
         {(['zone', 'all'] as const).map((scope) => (
           <button
             key={scope}
@@ -312,7 +312,7 @@ function Filters({ prefs }: { prefs: SearchPrefs & { set(patch: Partial<SearchPr
         ))}
       </div>
       <div
-        className="seg"
+        className="seg sm"
         role="group"
         aria-label={t('search.since')}
         title={t('search.sinceHint')}
@@ -550,8 +550,13 @@ export function SearchPanel() {
   };
 
   let body: ReactNode;
+  // 空狀態、載入中、沒結果：和收件匣同一種虛線框 .empty（審視報告 #21）。
   if (terms.length === 0) {
-    body = <p className="search-hint">{t('search.tooShort')}</p>;
+    body = (
+      <div className="empty" data-testid="search-idle">
+        <span>{t('search.tooShort')}</span>
+      </div>
+    );
   } else if (loaded.state === 'error') {
     body = (
       <p className="search-hint err" role="alert">
@@ -560,15 +565,15 @@ export function SearchPanel() {
     );
   } else if (!results) {
     body = (
-      <p className="search-hint" role="status">
-        {t('search.loading')}
-      </p>
+      <div className="empty" role="status">
+        <span>{t('search.loading')}</span>
+      </div>
     );
   } else if (results.groups.length === 0) {
     body = (
-      <div className="search-empty" data-testid="search-empty">
-        <p>{t('search.empty')}</p>
-        <p className="search-hint">{t('search.emptyNext')}</p>
+      <div className="empty search-empty" data-testid="search-empty">
+        <strong>{t('search.empty')}</strong>
+        <span>{t('search.emptyNext')}</span>
       </div>
     );
   } else {
@@ -658,7 +663,7 @@ export function SearchPanel() {
           {deepGroup.items.length > FIRST_ROWS && (
             <button
               type="button"
-              className="search-more"
+              className="link search-more"
               onClick={() =>
                 setExpanded((prev) => {
                   const next = new Set(prev);

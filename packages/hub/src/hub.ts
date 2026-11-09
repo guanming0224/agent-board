@@ -40,7 +40,18 @@ import {
   type Settings,
   type Task,
   type Team,
+  type TeamHold,
+  type TeamHoldMode,
+  type TeamHoldResult,
+  type TeamResumeResult,
+  type TeamSessionRef,
   type TerminalSignal,
+  buildUsageReport,
+  StoredUsage,
+  usableDetail,
+  type LatestUsage,
+  type UsageDetail,
+  type UsageReport,
   type UsageSummary,
   type User,
   type Zone,
@@ -283,6 +294,9 @@ export interface HubDeps {
   vapid: VapidKeys;
 }
 
+/** 保留順序的聯集。 */
+const union = (a: readonly string[], b: readonly string[]): string[] => [...new Set([...a, ...b])];
+
 export class Hub {
   private readonly store: Store;
   private readonly log: HubLog;
@@ -293,7 +307,8 @@ export class Hub {
   private readonly pendingCreates = new Map<string, PendingCreate>();
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly deleting = new Map<string, DeleteLock>();
-  private readonly usage = new Map<string, UsageSummary>();
+  /** 每台機器最新一筆用量（總數＋細項）；也存在 settings 表，重啟後先用上次的（GM 2026-11-09）。 */
+  private readonly usage = new Map<string, LatestUsage>();
   private readonly pushes = new Set<Promise<void>>();
   private readonly relay: TerminalRelay<ClientConn>;
   private readonly prompts = new PromptWatcher();
@@ -346,6 +361,7 @@ export class Hub {
     this.timing = deps.timing;
     // 暫停狀態要在任何引擎還原（可能排進送字）之前讀出來。
     this.pause = this.loadPause();
+    this.loadUsage();
     this.relay = new TerminalRelay<ClientConn>({
       subscribeUpstream: (id) =>
         this.toSessionDaemon(id, { type: 'terminal.subscribe', sessionId: id }),
@@ -649,7 +665,7 @@ export class Hub {
         });
         return;
       case 'usage':
-        this.usage.set(conn.machineId, { ...msg.summary, machineId: conn.machineId });
+        this.recordUsage(conn.machineId, msg.summary, msg.detail ?? null);
         return;
       case 'fs.listResult':
       case 'session.inspectResult':
@@ -1744,6 +1760,203 @@ export class Hub {
     this.broadcast(team ? { type: 'team.updated', team } : { type: 'team.removed', teamId });
   }
 
+  // ── 全隊暫停／停止與恢復（CONTRACTS §17）──────────────
+  /** 團隊目前的成員 session（封存的不算，和畫面一致）。 */
+  private teamSessions(teamId: string): Session[] {
+    return this.store
+      .listTeamMembers(teamId)
+      .map((m) => this.store.getSession(m.sessionId))
+      .filter((s): s is Session => s !== null && !s.archived);
+  }
+
+  /**
+   * 全隊暫停（pause）／全隊停止（stop）。hub 一次做完，瀏覽器做到一半斷線也不會只關了一半：
+   * 1. 先關掉啟用中的交接規則與任務自動執行（不然中斷或結束本身又會觸發交接、送下一個任務），立刻記下關了哪些；
+   * 2. pause：對工作中、卡住的成員送 Esc（等你允許的不送：對權限對話框按 Esc 等於拒絕）；
+   *    stop：停掉活著的成員，記下停掉的（排隊中的只是取消，沒有對話可接回，不記）。
+   * 已有記錄時再按＝合併：規則、成員取聯集，任務自動執行只要有一次是被關的就算，停止優先於暫停。
+   */
+  holdTeam(teamId: string, mode: TeamHoldMode, user: User): TeamHoldResult {
+    const team = this.store.getTeam(teamId);
+    if (!team) throw notFound('Team');
+    const prev = team.hold ?? null;
+    const turnedOff = this.store.listRules(teamId).filter((r) => r.enabled);
+    for (const rule of turnedOff) {
+      const next = { ...rule, enabled: false };
+      this.store.upsertRule(next);
+      this.audit(user.id, next.fromSessionId, 'handoff_rule.update', JSON.stringify(next));
+    }
+    const taskAuto = team.taskAuto === true;
+    if (taskAuto) this.updateTeam(teamId, { taskAuto: false }, user);
+    let hold: TeamHold = {
+      mode: prev?.mode === 'stop' || mode === 'stop' ? 'stop' : 'pause',
+      since: prev?.since ?? this.nowIso(),
+      by: user.id,
+      byName: user.name,
+      ruleIds: union(
+        prev?.ruleIds ?? [],
+        turnedOff.map((r) => r.id),
+      ),
+      taskAuto: (prev?.taskAuto ?? false) || taskAuto,
+      stoppedSessionIds: prev?.stoppedSessionIds ?? [],
+    };
+    this.store.setTeamHold(teamId, hold);
+
+    const ref = (s: Session): TeamSessionRef => ({ sessionId: s.id, name: s.name });
+    const result: TeamHoldResult = {
+      team,
+      rules: turnedOff.length,
+      taskAuto,
+      interrupted: [],
+      offline: [],
+      stopped: [],
+      failed: [],
+    };
+    const members = this.teamSessions(teamId);
+    if (mode === 'pause') {
+      for (const s of members) {
+        if (s.endedAt !== null || (s.status !== 'running' && s.status !== 'stuck')) continue;
+        if (!this.daemonFor(s.machineId)) {
+          result.offline.push(ref(s));
+          continue;
+        }
+        this.signal(user.id, s, 'escape');
+        result.interrupted.push(ref(s));
+      }
+    } else {
+      const stoppedIds: string[] = [];
+      for (const s of members) {
+        if (s.endedAt !== null || s.status === 'done') continue;
+        try {
+          this.stopSession(s.id, user);
+          result.stopped.push(ref(s));
+          if (s.status !== 'queued') stoppedIds.push(s.id);
+        } catch (e) {
+          result.failed.push({ ...ref(s), code: e instanceof HttpError ? e.code : 'error' });
+        }
+      }
+      hold = { ...hold, stoppedSessionIds: union(hold.stoppedSessionIds, stoppedIds) };
+      this.store.setTeamHold(teamId, hold);
+    }
+    this.audit(
+      user.id,
+      null,
+      'team.hold',
+      JSON.stringify({
+        teamId,
+        mode,
+        rules: turnedOff.map((r) => r.id),
+        taskAuto,
+        interrupted: result.interrupted.map((x) => x.sessionId),
+        offline: result.offline.map((x) => x.sessionId),
+        stopped: result.stopped.map((x) => x.sessionId),
+        failed: result.failed,
+      }),
+    );
+    this.broadcastTeam(teamId);
+    return { ...result, team: this.store.getTeam(teamId) ?? team };
+  }
+
+  /**
+   * 全隊繼續（pause 的記錄）／全隊啟動（stop 的記錄）。不自動送字（和「全部繼續」一樣不自動花額度）：
+   * - stop：當初停掉、現在仍結束、機器在線的成員 `--resume` 接回原對話；失聯的留在記錄裡，機器回來再按一次；
+   * - 打開當初關掉、現在還關著的規則與任務自動執行；暫停後被刪掉的略過、已被手動打開的不重複開。
+   * 沒有失聯的就清掉記錄；有的話記錄只剩那些成員（規則與任務自動執行已經恢復過，不再碰）。
+   */
+  resumeTeam(teamId: string, user: User): TeamResumeResult {
+    const team = this.store.getTeam(teamId);
+    if (!team) throw notFound('Team');
+    const hold = team.hold ?? null;
+    const result: TeamResumeResult = {
+      team,
+      mode: hold?.mode ?? null,
+      rules: { enabled: 0, alreadyOn: 0, deleted: 0 },
+      taskAuto: 'none',
+      resumed: [],
+      offline: [],
+      alreadyRunning: [],
+      failed: [],
+      gone: 0,
+      boardPaused: this.pause !== null,
+    };
+    if (!hold) return result;
+
+    const ref = (s: Session): TeamSessionRef => ({ sessionId: s.id, name: s.name });
+    const memberIds = new Set(this.store.listTeamMembers(teamId).map((m) => m.sessionId));
+    for (const id of hold.stoppedSessionIds) {
+      const s = this.store.getSession(id);
+      if (!s || !memberIds.has(id)) {
+        result.gone += 1;
+      } else if (s.endedAt === null) {
+        result.alreadyRunning.push(ref(s));
+      } else if (!this.daemonFor(s.machineId)) {
+        result.offline.push(ref(s));
+      } else {
+        try {
+          this.resumeSession(id, user);
+          result.resumed.push(ref(s));
+        } catch (e) {
+          result.failed.push({ ...ref(s), code: e instanceof HttpError ? e.code : 'error' });
+        }
+      }
+    }
+
+    const enabled: string[] = [];
+    for (const id of hold.ruleIds) {
+      const rule = this.store.getRule(id);
+      if (!rule || rule.teamId !== teamId) {
+        result.rules.deleted += 1;
+      } else if (rule.enabled) {
+        result.rules.alreadyOn += 1;
+      } else {
+        const next = { ...rule, enabled: true };
+        this.store.upsertRule(next);
+        this.audit(user.id, next.fromSessionId, 'handoff_rule.update', JSON.stringify(next));
+        enabled.push(id);
+      }
+    }
+    result.rules.enabled = enabled.length;
+    if (hold.taskAuto) {
+      if (this.store.getTeam(teamId)?.taskAuto) {
+        result.taskAuto = 'already_on';
+      } else {
+        this.updateTeam(teamId, { taskAuto: true }, user);
+        result.taskAuto = 'enabled';
+      }
+    }
+
+    this.store.setTeamHold(
+      teamId,
+      result.offline.length > 0
+        ? {
+            ...hold,
+            ruleIds: [],
+            taskAuto: false,
+            stoppedSessionIds: result.offline.map((x) => x.sessionId),
+          }
+        : null,
+    );
+    this.audit(
+      user.id,
+      null,
+      'team.resume',
+      JSON.stringify({
+        teamId,
+        mode: hold.mode,
+        rules: { enabled, alreadyOn: result.rules.alreadyOn, deleted: result.rules.deleted },
+        taskAuto: result.taskAuto,
+        resumed: result.resumed.map((x) => x.sessionId),
+        offline: result.offline.map((x) => x.sessionId),
+        alreadyRunning: result.alreadyRunning.map((x) => x.sessionId),
+        failed: result.failed,
+        gone: result.gone,
+        boardPaused: result.boardPaused,
+      }),
+    );
+    this.broadcastTeam(teamId);
+    return { ...result, team: this.store.getTeam(teamId) ?? team };
+  }
+
   /**
    * 成員離開團隊（或團隊刪掉）：它自己的工作區欄位原本被忽略，改成團隊所在的工作區，
    * 卡片才不會跳到別的工作區（P2 §2.2）。回傳有沒有改。
@@ -1906,6 +2119,7 @@ export class Hub {
     }
     this.rejectRequests(id, new HttpError(502, 'daemon_disconnected', 'Machine removed'));
     this.usage.delete(id);
+    this.store.deleteUsage(id);
     // session 已刪，不能寫 session_events；audit 沒有外鍵，照記。
     for (const [approvalId, entry] of [...this.approvals]) {
       if (entry.machineId !== id) continue;
@@ -1939,7 +2153,54 @@ export class Hub {
   }
 
   latestUsage(machineId: string): UsageSummary | null {
-    return this.usage.get(machineId) ?? null;
+    return this.usage.get(machineId)?.summary ?? null;
+  }
+
+  /** 用量詳情（GET /api/usage）：各機器最新的細項合成一份，Claude session 對應到看板上的東西。 */
+  usageReport(): UsageReport {
+    const teams = this.store.listTeams();
+    return buildUsageReport({
+      now: this.deps.now(),
+      machines: this.store.listMachines(),
+      latest: this.usage,
+      sessions: this.store.listSessions(),
+      teams,
+      members: teams.flatMap((t) => this.store.listTeamMembers(t.id)),
+      zones: this.store.listZones(),
+      projects: this.store.listProjects(),
+    });
+  }
+
+  private recordUsage(
+    machineId: string,
+    summary: Omit<UsageSummary, 'machineId'>,
+    detail: UsageDetail | null,
+  ): void {
+    const stored: StoredUsage = {
+      summary: { ...summary, machineId },
+      // 看不懂的版本不存，畫面當這台沒有細項。
+      detail: usableDetail(detail),
+    };
+    this.usage.set(machineId, { ...stored, restored: false });
+    try {
+      this.store.saveUsage(machineId, stored);
+    } catch (error) {
+      // 存不下只影響重啟後那一段時間，記憶體裡照樣有。
+      this.log.warn({ err: error, machineId }, 'failed to persist usage');
+    }
+  }
+
+  /** 啟動時讀回上次存的用量；壞掉的、機器已刪的略過。 */
+  private loadUsage(): void {
+    const known = new Set(this.store.listMachines().map((m) => m.id));
+    for (const { machineId, value } of this.store.loadUsage()) {
+      const parsed = StoredUsage.safeParse(value);
+      if (!known.has(machineId) || !parsed.success) {
+        this.store.deleteUsage(machineId);
+        continue;
+      }
+      this.usage.set(machineId, { ...parsed.data, restored: true });
+    }
   }
 
   async browse(machineId: string, path: string): Promise<BrowseResult> {

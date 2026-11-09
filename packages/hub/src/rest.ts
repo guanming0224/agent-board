@@ -339,6 +339,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       if (!store.getMachine(id)) throw notFound('Machine');
       return hub.latestUsage(id);
     },
+    usageReport: () => hub.usageReport(),
 
     sessionsList: (ctx) => store.listSessions(ctx.query.archived),
     sessionsCreate: (ctx) => hub.createSession(ctx.body, ctx.user),
@@ -472,6 +473,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       hub.broadcastTeam(team.id);
       return ok;
     },
+    teamHold: (ctx) => hub.holdTeam(requireTeam(param(ctx)).id, ctx.body.mode, ctx.user),
+    teamResume: (ctx) => hub.resumeTeam(requireTeam(param(ctx)).id, ctx.user),
     teamMembersList: (ctx) => store.listTeamMembers(requireTeam(param(ctx)).id),
     teamMembersPut: (ctx) => {
       const teamId = requireTeam(param(ctx)).id;

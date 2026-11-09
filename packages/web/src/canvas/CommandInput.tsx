@@ -55,7 +55,7 @@ export function CommandInput({
     <div className={`cmd-row nodrag${block ? ' blocked' : ''}`}>
       <input
         ref={inputRef}
-        className="cmd"
+        className="cmd sm"
         value={text}
         disabled={!connected || block !== null}
         placeholder={t(block ? 'canvas.cmd.blocked' : 'canvas.cmd.placeholder')}

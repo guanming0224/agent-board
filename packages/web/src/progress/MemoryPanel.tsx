@@ -1,7 +1,7 @@
 // Memory 面板（P3 項目一，§1.5）：底部列「Memory」開的右側面板（和收件匣、團隊面板互斥，寬 420、可展開 760）。
 // 列出每張進度卡：名稱 → 下一步第一行 → 阻礙第一行（有才顯示）→ 更新時間與更新者 → ⚠ 久未更新。
 // 點一列：畫布聚焦該團隊並展開卡片（目標在別的工作區就先切過去），面板不關。手機是全螢幕頁（#/memory）。
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   firstLine,
   progressOwnerKey,
@@ -12,8 +12,9 @@ import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { useTeams, useTeamSync } from '../team/store';
-import { closeRight, EmptyState, useNow, useViewsUi } from '../views';
-import { CloseButton, SidePanel } from '../views/Overlays';
+import { Empty } from '../flows/common';
+import { closeRight, useNow, useViewsUi } from '../views';
+import { PanelHead, SidePanel, WideButton } from '../views/Overlays';
 import { useCurrentZoneId, useZones } from '../zones';
 import { memoryRows, type MemoryRow } from './model';
 import { ProgressAge, ProgressCardView } from './ProgressCard';
@@ -104,7 +105,14 @@ function Row({ row, phone }: { row: MemoryRow; phone: boolean }) {
   );
 }
 
-export function MemoryContent({ phone = false }: { phone?: boolean }) {
+export function MemoryContent({
+  phone = false,
+  head,
+}: {
+  phone?: boolean;
+  /** 右側面板的標題列（含寬版、✕）；沒給就用一般 h1（手機全螢幕頁）。 */
+  head?: ReactNode;
+}) {
   const t = useT();
   // 團隊名稱與成員（手機沒有畫布、團隊資料可能還沒讀過）。
   useTeamSync();
@@ -126,12 +134,14 @@ export function MemoryContent({ phone = false }: { phone?: boolean }) {
   });
   return (
     <div className="memory-page" data-testid="memory-page">
-      <h1>{t('memory.title')}</h1>
-      <div className="memory-scope" role="group" aria-label={t('memory.scope.aria')}>
+      {head ?? <h1>{t('memory.title')}</h1>}
+      {/* 分段切換：全站同一種 .seg（精簡 32），選中＝按下外觀。 */}
+      <div className="seg sm memory-scope" role="group" aria-label={t('memory.scope.aria')}>
         {(['current', 'all'] as const).map((value) => (
           <button
             key={value}
             type="button"
+            className="sm"
             aria-pressed={scope === value}
             onClick={() => setScope(value)}
             data-testid={`memory-scope-${value}`}
@@ -141,7 +151,7 @@ export function MemoryContent({ phone = false }: { phone?: boolean }) {
         ))}
       </div>
       {rows.length === 0 ? (
-        <EmptyState text={t('memory.empty')} />
+        <Empty title={t('memory.emptyTitle')} next={t('memory.empty')} testId="memory-empty" />
       ) : (
         <ul className="memory-list" data-testid="memory-list">
           {rows.map((row) => (
@@ -162,20 +172,19 @@ export function MemoryDrawer() {
       width={wide ? MEMORY_WIDE_WIDTH : MEMORY_WIDTH}
       testId="memory-panel"
     >
-      <div className="panel-tools">
-        <button
-          type="button"
-          aria-pressed={wide}
-          onClick={() => setWide(!wide)}
-          title={t('memory.wide.hint')}
-          style={{ margin: '8px 8px 0 0' }}
-          data-testid="memory-wide"
-        >
-          {wide ? t('memory.wide.off') : t('memory.wide.on')}
-        </button>
-        <CloseButton onClose={closeRight} testId="memory-close" />
-      </div>
-      <MemoryContent />
+      <MemoryContent
+        head={
+          <PanelHead title={t('memory.title')} onClose={closeRight} closeTestId="memory-close">
+            <WideButton
+              wide={wide}
+              onToggle={() => setWide(!wide)}
+              label={wide ? t('memory.wide.off') : t('memory.wide.on')}
+              hint={t('memory.wide.hint')}
+              testId="memory-wide"
+            />
+          </PanelHead>
+        }
+      />
     </SidePanel>
   );
 }

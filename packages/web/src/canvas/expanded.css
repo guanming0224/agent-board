@@ -116,26 +116,20 @@
 .xpand-panel .sub {
   margin: 8px 0 0;
 }
+/* 下拉用全域樣式＋.sm（controls.css），這裡只限制寬度。 */
 .xpand-panel select {
-  min-height: 32px;
   min-width: 0;
   max-width: 100%;
-  padding: 4px 8px;
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
 }
+/*
+ * 側欄面板的按鈕是精簡 32／13。交接面板自己的按鈕已經加 .sm；這條留給還沒換 class 的審核卡
+ * （收件匣區的 ReviewCards），整合後那邊換成 .sm 就可以刪。
+ * 「啟用」的開關以前是實心白，和主按鈕撞在一起；改用全站的「按下」樣式（GM Q2，controls.css）。
+ */
 .xpand-panel button {
-  min-height: 32px;
-  font-size: 13px;
-  padding: 0 10px;
-}
-.xpand-panel button[aria-pressed='true'] {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
+  min-height: var(--ctl-h-sm);
+  font-size: var(--fs-ctl-sm);
+  padding: 0 var(--ctl-px-sm);
 }
 .xpand-panel .msg.err {
   color: var(--fault);
@@ -164,11 +158,11 @@
 /* 任務完成提示：安靜、不上狀態色、可以關掉 */
 .done-hint {
   display: grid;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: var(--space-1h);
+  padding: var(--space-2) var(--space-3);
   border: 1px dashed var(--border-2);
   border-radius: var(--radius-control);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   cursor: auto;
 }
@@ -176,14 +170,9 @@
   margin: 0;
 }
 .done-hint .sub {
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
-.done-hint button.link {
-  border-color: transparent;
-  background: transparent;
-  color: var(--muted);
-  font-weight: 500;
-}
+/* 「不用了」是全域的 button.link（controls.css）。 */
 .xpand-card > .done-hint {
   flex-shrink: 0;
 }

@@ -40,7 +40,10 @@ import type {
   Settings,
   Task,
   Team,
+  TeamHold,
+  TeamHoldResult,
   TeamMember,
+  TeamResumeResult,
   TeamPreset,
   Template,
   TranscriptEntry,
@@ -63,6 +66,7 @@ import type { TerminalServerMessage, TerminalStream } from './terminal-contract'
 import { DECOMPOSE_PROMPT_START } from './decomposePrompt';
 import { fakeDeepSearch } from './fakeDeepSearch';
 import { fakeSearch } from './fakeSearch';
+import { demoUsageReport } from './fakeUsage';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -518,6 +522,8 @@ export interface FakeBackendControls {
   setSessionStatus(id: string, status: Session['status']): void;
   /** 模擬 hub 改了 session 的其他欄位（statusDetail、autoContinue…）。 */
   patchSession(id: string, patch: Partial<Session>): void;
+  /** 模擬機器上線／失聯（全隊啟動的「失聯的等機器回來」）。 */
+  setMachineOnline(id: string, online: boolean): void;
   /** 模擬 hub 的任務自動執行改了任務（最後一步、退回次數…）。假後端自己不送字、不移欄。 */
   patchTask(id: string, patch: Partial<Task>): void;
   addSessionEvent(sessionId: string, type: string, payload: Record<string, unknown>): void;
@@ -1329,6 +1335,11 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       Object.assign(find(id), patch);
       publish();
     },
+    setMachineOnline(id, online) {
+      const m = state.machines.find((x) => x.id === id);
+      if (m) m.online = online;
+      publish();
+    },
     addSessionEvent: addEvent,
     emitHandoff(fromSessionId, toSessionId, options = {}) {
       const rule = rules.find(
@@ -1421,6 +1432,15 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       publish();
     },
     machineUsage: async (machineId) => demoUsage(machineId),
+    usageReport: async () =>
+      demoUsageReport({
+        machines: state.machines,
+        sessions: state.sessions,
+        teams,
+        members,
+        zones,
+        projects,
+      }),
     getLayouts: async () => layouts,
     async saveLayouts(next) {
       layouts = next;
@@ -1455,7 +1475,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       return new Blob([`\uFEFF${[header, ...rows].join('\r\n')}\r\n`], { type: 'text/csv' });
     },
 
-    listTeams: async () => teams.map((x) => ({ ...x })),
+    listTeams: async () => teams.map((x) => structuredClone(x)),
     async createTeam(input) {
       const team = {
         ...input,
@@ -1492,6 +1512,143 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       removeFrom(members, (x) => x.teamId === id);
       removeFrom(tasks, (x) => x.teamId === id);
       removeFrom(rules, (x) => x.teamId === id);
+    },
+    // 全隊暫停／停止與恢復（CONTRACTS §17）：和 hub 的 holdTeam／resumeTeam 同一套規則。
+    async holdTeam(id, mode) {
+      const team = findIn(teams, id, 'team');
+      const prev = team.hold ?? null;
+      const turnedOff = rules.filter((r) => r.teamId === id && r.enabled);
+      for (const r of turnedOff) r.enabled = false;
+      const taskAuto = team.taskAuto === true;
+      team.taskAuto = false;
+      const ref = (x: Session) => ({ sessionId: x.id, name: x.name });
+      const result: TeamHoldResult = {
+        team,
+        rules: turnedOff.length,
+        taskAuto,
+        interrupted: [],
+        offline: [],
+        stopped: [],
+        failed: [],
+      };
+      const stoppedIds: string[] = [];
+      const mine = members
+        .filter((m) => m.teamId === id)
+        .map((m) => state.sessions.find((x) => x.id === m.sessionId))
+        .filter((x): x is Session => x !== undefined && !x.archived);
+      for (const x of mine) {
+        if (mode === 'pause') {
+          if (x.endedAt !== null || (x.status !== 'running' && x.status !== 'stuck')) continue;
+          if (!machineOnline(x)) {
+            result.offline.push(ref(x));
+            continue;
+          }
+          // hub 轉給 daemon 的 Esc：經過 terminal 物件，測試攔得到。
+          terminal.send({ type: 'terminal.signal', sessionId: x.id, signal: 'escape' });
+          result.interrupted.push(ref(x));
+        } else {
+          if (x.endedAt !== null || x.status === 'done') continue;
+          if (!machineOnline(x)) {
+            result.failed.push({ ...ref(x), code: 'machine_offline' });
+            continue;
+          }
+          if (x.status !== 'queued') stoppedIds.push(x.id);
+          x.status = 'done';
+          x.endedAt = new Date().toISOString();
+          x.statusSince = x.endedAt;
+          result.stopped.push(ref(x));
+        }
+      }
+      const hold: TeamHold = {
+        mode: prev?.mode === 'stop' || mode === 'stop' ? 'stop' : 'pause',
+        since: prev?.since ?? new Date().toISOString(),
+        by: demoUser.id,
+        byName: demoUser.name,
+        ruleIds: [...new Set([...(prev?.ruleIds ?? []), ...turnedOff.map((r) => r.id)])],
+        taskAuto: (prev?.taskAuto ?? false) || taskAuto,
+        stoppedSessionIds: [...new Set([...(prev?.stoppedSessionIds ?? []), ...stoppedIds])],
+      };
+      team.hold = hold;
+      audit.unshift({
+        id: crypto.randomUUID(),
+        userId: demoUser.id,
+        sessionId: null,
+        action: 'team.hold',
+        detail: JSON.stringify({ teamId: id, mode }),
+        at: new Date().toISOString(),
+      });
+      publish();
+      return structuredClone({ ...result, team });
+    },
+    async resumeTeam(id) {
+      const team = findIn(teams, id, 'team');
+      const hold = team.hold ?? null;
+      const result: TeamResumeResult = {
+        team,
+        mode: hold?.mode ?? null,
+        rules: { enabled: 0, alreadyOn: 0, deleted: 0 },
+        taskAuto: 'none',
+        resumed: [],
+        offline: [],
+        alreadyRunning: [],
+        failed: [],
+        gone: 0,
+        boardPaused: pause.paused !== null,
+      };
+      if (!hold) return structuredClone(result);
+      const ref = (x: Session) => ({ sessionId: x.id, name: x.name });
+      for (const sid of hold.stoppedSessionIds) {
+        const x = state.sessions.find((s) => s.id === sid);
+        if (!x || !members.some((m) => m.teamId === id && m.sessionId === sid)) {
+          result.gone += 1;
+        } else if (x.endedAt === null) {
+          result.alreadyRunning.push(ref(x));
+        } else if (!machineOnline(x)) {
+          result.offline.push(ref(x));
+        } else if (!x.claudeSessionId) {
+          result.failed.push({ ...ref(x), code: 'no_claude_session' });
+        } else {
+          x.archived = false;
+          x.archivedAt = null;
+          x.endedAt = null;
+          x.status = 'starting';
+          x.statusSince = new Date().toISOString();
+          result.resumed.push(ref(x));
+        }
+      }
+      for (const rid of hold.ruleIds) {
+        const r = rules.find((x) => x.id === rid && x.teamId === id);
+        if (!r) result.rules.deleted += 1;
+        else if (r.enabled) result.rules.alreadyOn += 1;
+        else {
+          r.enabled = true;
+          result.rules.enabled += 1;
+        }
+      }
+      if (hold.taskAuto) {
+        result.taskAuto = team.taskAuto ? 'already_on' : 'enabled';
+        team.taskAuto = true;
+      }
+      if (result.offline.length > 0) {
+        team.hold = {
+          ...hold,
+          ruleIds: [],
+          taskAuto: false,
+          stoppedSessionIds: result.offline.map((x) => x.sessionId),
+        };
+      } else {
+        delete team.hold;
+      }
+      audit.unshift({
+        id: crypto.randomUUID(),
+        userId: demoUser.id,
+        sessionId: null,
+        action: 'team.resume',
+        detail: JSON.stringify({ teamId: id, mode: hold.mode }),
+        at: new Date().toISOString(),
+      });
+      publish();
+      return structuredClone({ ...result, team });
     },
     listTeamMembers: async (teamId) => members.filter((x) => x.teamId === teamId),
     async putTeamMember(teamId, sessionId, role, kind) {

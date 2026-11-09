@@ -11,8 +11,9 @@ export type RightPanel =
 /**
  * search：全域搜尋（P3 §3）。桌面是置中次畫面，手機是全螢幕頁 `#/search`（網址可帶 `?q=`）。
  * transcript：某個 session 的對話紀錄 `#/transcript/<id>?at=<序號>`（搜尋結果按 ⌘Enter 開，P3 ③b）。
+ * usage：用量詳情 `#/usage`（GM 2026-11-09），從頁首的「近 30 天 N token」或側欄用量打開。
  */
-export type ModalKind = 'settings' | 'archive' | 'new' | 'search' | 'transcript';
+export type ModalKind = 'settings' | 'archive' | 'new' | 'search' | 'transcript' | 'usage';
 
 export type RouteView =
   /** 不疊在畫布上的整頁：全尺寸終端機、登入、首次引導（規格 §1.4 不變）。 */
@@ -64,6 +65,8 @@ export function parseHash(hash: string): RouteView {
       return { kind: 'board', right: 'keep', modal: 'new' };
     case 'search':
       return { kind: 'board', right: 'keep', modal: 'search' };
+    case 'usage':
+      return { kind: 'board', right: 'keep', modal: 'usage' };
     case 'transcript':
       return param
         ? { kind: 'board', right: 'keep', modal: 'transcript' }
@@ -77,6 +80,8 @@ export const inboxHash = (sessionId?: string | null) =>
   sessionId ? `#/inbox/${encodeURIComponent(sessionId)}` : '#/inbox';
 
 export const MEMORY_HASH = '#/memory';
+
+export const USAGE_HASH = '#/usage';
 
 /** 全域搜尋；q 有給就帶在網址上（手機可分享的深連結）。 */
 export const searchHash = (q?: string | null) =>
@@ -138,11 +143,21 @@ export function resolve(hash: string, previousRight: RightPanel | null): Resolve
  * 關掉一層要回到哪裡，以及能不能直接「上一頁」：上一筆歷史就是要回去的畫面時用 history.back()，
  * 「上一頁」才不會又打開剛關掉的面板；否則 replace，不會跳出 app（規格 §1.4）。
  */
+/** 這個網址是不是全域搜尋（`#/search`、`#/search?q=…`）。 */
+export function isSearchHash(hash: string | null): boolean {
+  if (hash === null) return false;
+  const view = parseHash(hash);
+  return view.kind === 'board' && view.modal === 'search';
+}
+
 export function closeStep(
   from: string | null,
   layer: 'modal' | 'right',
   right: RightPanel | null,
+  /** 正在關的次畫面。搜尋 ⌘Enter 開的對話紀錄，關掉回到搜尋（結果還在）。 */
+  current: ModalKind | null = null,
 ): { back: true } | { back: false; to: string } {
+  if (layer === 'modal' && current === 'transcript' && isSearchHash(from)) return { back: true };
   if (from !== null) {
     // '' 是沒有 hash 的網址：畫布。
     const previous = parseHash(from);

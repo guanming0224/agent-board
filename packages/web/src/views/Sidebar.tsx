@@ -18,6 +18,7 @@ import {
   formatTokensFull,
   windowDays,
 } from './usage';
+import { USAGE_HASH } from './overlay';
 import { useUsageStore } from './usageStore';
 
 /**
@@ -143,6 +144,10 @@ function UsageSection() {
       <p className="hint">
         {days === null ? t('views.side.quotaNone') : t('views.usage.note', { days })}
       </p>
+      {/* 用量詳情（GM 2026-11-09） */}
+      <a className="usage-open side" href={USAGE_HASH} data-testid="usage-side-open">
+        {t('usage.open')} →
+      </a>
     </section>
   );
 }
@@ -231,7 +236,7 @@ export function Sidebar() {
   return (
     <>
       <button
-        className={`side-toggle${sideOpen ? ' is-open' : ''}`}
+        className={`icon sm side-toggle${sideOpen ? ' is-open' : ''}`}
         aria-expanded={sideOpen}
         aria-label={t(sideOpen ? 'views.side.toggleClose' : 'views.side.toggleOpen')}
         title={t(sideOpen ? 'views.side.toggleClose' : 'views.side.toggleOpen')}

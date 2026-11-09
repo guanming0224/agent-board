@@ -32,8 +32,6 @@ registerMessages('zh-TW', {
   'canvas.handoff.on_marker': '回覆含標記時交接',
   'canvas.handoff.off': '・未開啟',
   'canvas.handoff.panelHint': '「完成」是在團隊頁按標記完成，或 session 正常結束。',
-  'canvas.handoff.turnOn': '開啟自動交接',
-  'canvas.handoff.turnOff': '關閉自動交接',
   'canvas.handoff.noTeam': '交接規則屬於團隊：先在「團隊」把其中一張卡加入團隊，再拖線。',
   'canvas.handoff.failed': '交接規則沒存到：{detail}',
   'canvas.handoff.drag': '拖線到另一張卡建立交接',
@@ -216,8 +214,6 @@ registerMessages('en', {
   'canvas.handoff.on_marker': 'Hand off when the reply has the marker',
   'canvas.handoff.off': ' · off',
   'canvas.handoff.panelHint': '"Done" means Mark done on the Teams page, or a normal exit.',
-  'canvas.handoff.turnOn': 'Turn on auto handoff',
-  'canvas.handoff.turnOff': 'Turn off auto handoff',
   'canvas.handoff.noTeam':
     'Handoff rules belong to a team: add one of these cards to a team under Teams, then drag again.',
   'canvas.handoff.failed': 'The handoff rule was not saved: {detail}',

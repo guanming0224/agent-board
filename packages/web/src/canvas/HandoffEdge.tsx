@@ -19,6 +19,7 @@ import {
   type Interaction,
   type LinkKind,
 } from './interactions';
+import type { Route } from './edgeRoute';
 import { edgeCurve, type LabelSpot } from './labelPlacement';
 
 export type LinkEdgeType = Edge<
@@ -33,6 +34,8 @@ export type LinkEdgeType = Edge<
     host: boolean;
     /** 標籤在線上的位置（CanvasPage 統一算，避開卡片與其他標籤）；沒有就放中點。 */
     label?: LabelSpot;
+    /** 線的走法（edgeRoute.ts，CanvasPage 統一算，走卡片之間的空隙）；沒有就用把手位置畫曲線。 */
+    route?: Pick<Route, 'd' | 'at'>;
   },
   'handoff'
 >;
@@ -116,7 +119,7 @@ function PairPopover({
         <b id={`${id}-title`}>{t('canvas.link.pop.title', { a: sourceName, b: targetName })}</b>
         <button
           type="button"
-          className="pair-pop-close"
+          className="close pair-pop-close"
           aria-label={t('canvas.link.pop.close')}
           onClick={onClose}
         >
@@ -170,10 +173,12 @@ export function HandoffEdge(props: EdgeProps<LinkEdgeType>) {
   const [hover, setHover] = useState(false);
   const [focused, setFocused] = useState(false);
   const offset = props.data?.offset ?? 0;
-  const curve = edgeCurve(
-    { x: props.sourceX, y: props.sourceY + offset },
-    { x: props.targetX, y: props.targetY + offset },
-  );
+  const curve =
+    props.data?.route ??
+    edgeCurve(
+      { x: props.sourceX, y: props.sourceY + offset },
+      { x: props.targetX, y: props.targetY + offset },
+    );
   const path = curve.d;
   const spot = props.data?.label ?? { t: 0.5, dx: 0, dy: 0 };
   const mid = curve.at(spot.t);

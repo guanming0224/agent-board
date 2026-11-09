@@ -29,6 +29,7 @@ import {
   UsageSummary,
 } from './models';
 import { AgentBoardTool, ProgressCard } from './progress';
+import { UsageDetail } from './usage';
 import {
   DeepSearchLimits,
   DeepSearchMachine,
@@ -204,7 +205,14 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     by: z.enum(['web', 'terminal', 'timeout']),
   }),
   z.object({ type: z.literal('resources'), sample: ResourceSample.omit({ machineId: true }) }),
-  z.object({ type: z.literal('usage'), summary: UsageSummary.omit({ machineId: true }) }),
+  z.object({
+    type: z.literal('usage'),
+    summary: UsageSummary.omit({ machineId: true }),
+    /**
+     * 細項（GM 2026-11-09）；舊 daemon 不送。壞掉或超過上限時當沒送（`catch`），總數照收。
+     */
+    detail: UsageDetail.optional().catch(undefined),
+  }),
   z.object({
     type: z.literal('fs.listResult'),
     requestId: Id,

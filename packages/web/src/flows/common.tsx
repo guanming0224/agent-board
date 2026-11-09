@@ -45,13 +45,8 @@ export function Callsign({ text }: { text: string }) {
   return <span className="callsign">{text}</span>;
 }
 
-export function ModeChip({ mode }: { mode: PermissionMode }) {
-  const t = useT();
-  if (mode === 'bypassPermissions') {
-    return <span className="chip bypass">{t('flows.mode.bypassName')}</span>;
-  }
-  return <span className="chip">{mode}</span>;
-}
+/** 模式晶片只有一份（views/session.tsx）：`.chip.mode`，略過權限加 `.bypass`（STYLE.md 規則二）。 */
+export { ModeChip } from '../views/session';
 
 /** 放手線的 class；元件本身要有 `position: relative`（`.card`、`.inbox-item` 已有）。 */
 export const handsClass = (mode: PermissionMode) => `hands-${HANDS_LINE[mode]}`;
@@ -160,11 +155,20 @@ export function Loading({ label }: { label?: string }) {
   );
 }
 
-export function Empty({ title, next }: { title: string; next: ReactNode }) {
+/** 空狀態（全站一種，controls.css 的 .empty）：虛線框＋粗標題＋下一步。 */
+export function Empty({
+  title,
+  next,
+  testId,
+}: {
+  title: string;
+  next?: ReactNode;
+  testId?: string;
+}) {
   return (
-    <div className="state" data-state="empty">
+    <div className="empty" data-state="empty" data-testid={testId}>
       <strong>{title}</strong>
-      <div className="state-next">{next}</div>
+      {next && <div className="empty-next">{next}</div>}
     </div>
   );
 }

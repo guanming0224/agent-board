@@ -550,6 +550,7 @@ export function createHubBackend() {
       await call('machinesDelete', { params: { id } });
     },
     machineUsage: (id) => call('machineUsage', { params: { id } }),
+    usageReport: () => call('usageReport'),
 
     getLayouts: (workspace) => call('layoutsGet', { query: { workspace } }),
     async saveLayouts(layouts) {
@@ -580,6 +581,8 @@ export function createHubBackend() {
     async deleteTeam(id) {
       await call('teamsDelete', { params: { id } });
     },
+    holdTeam: (id, mode) => call('teamHold', { params: { id }, body: { mode } }),
+    resumeTeam: (id) => call('teamResume', { params: { id } }),
     listTeamMembers: (id) => call('teamMembersList', { params: { id } }),
     putTeamMember: (id, sessionId, role, kind) =>
       call('teamMembersPut', {

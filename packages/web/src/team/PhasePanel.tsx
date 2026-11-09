@@ -96,6 +96,7 @@ export function PhasePanel({
                     <b>{session.name}</b>{' '}
                     <span className="sub">{kindLabel(t, memberKind(member))}</span>{' '}
                     <TwoClickButton
+                      className="sm"
                       label={t('team.phase.archive')}
                       armedLabel={t('team.phase.archiveArmed', { name: session.name })}
                       disabled={busy}

@@ -29,6 +29,7 @@ function MoveToZone({ session, onClose }: { session: Session; onClose: () => voi
       <button
         type="button"
         role="menuitem"
+        className="sm"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
@@ -43,6 +44,7 @@ function MoveToZone({ session, onClose }: { session: Session; onClose: () => voi
               key={z.id}
               type="button"
               role="menuitem"
+              className="sm"
               data-testid={`card-move-zone-${z.id}`}
               onClick={() =>
                 void moveSessionToZone(session.id, z.id).then(onClose, (e: unknown) =>
@@ -77,7 +79,7 @@ export function MenuButton({
   return (
     <button
       type="button"
-      className="menu-btn nodrag"
+      className="icon sm ghost menu-btn nodrag"
       aria-label={t('canvas.menu.aria', { name: session.name })}
       title={t('canvas.menu.aria', { name: session.name })}
       aria-haspopup="menu"
@@ -98,6 +100,7 @@ function ProgressItem({ session, onClose }: { session: Session; onClose: () => v
     <button
       type="button"
       role="menuitem"
+      className="sm"
       onClick={() => {
         onClose();
         useProgressUi.getState().setExpanded(`session:${session.id}`);
@@ -148,6 +151,7 @@ export function CardMenu({
       <button
         type="button"
         role="menuitem"
+        className="sm"
         onClick={() => {
           onClose();
           onRename();
@@ -159,6 +163,7 @@ export function CardMenu({
       <button
         type="button"
         role="menuitem"
+        className="sm"
         onClick={() => {
           onClose();
           useLinkPick.getState().start(session.id);
@@ -172,6 +177,7 @@ export function CardMenu({
         <button
           type="button"
           role="menuitem"
+          className="sm"
           title={t('views.resume.hint')}
           disabled={busy}
           // 失敗時選單留著，錯誤訊息才看得到。
@@ -183,6 +189,7 @@ export function CardMenu({
       <button
         type="button"
         role="menuitem"
+        className="sm"
         onClick={() => {
           onClose();
           requestArchive([session.id]);
@@ -226,7 +233,7 @@ export function RenameInput({ session, onDone }: { session: Session; onDone: () 
   return (
     <span className="rename nodrag nopan">
       <input
-        className="cmd"
+        className="cmd sm"
         aria-label={t('canvas.menu.renameAria')}
         value={value}
         autoFocus

@@ -22,39 +22,49 @@
   background: transparent;
 }
 .canvas .react-flow__node:focus-visible {
-  outline: calc(2px / var(--z)) solid var(--ring);
-  outline-offset: calc(2px / var(--z));
+  outline: calc(var(--focus-w) / var(--z)) solid var(--ring);
+  outline-offset: calc(var(--focus-offset) / var(--z));
 }
 
+/*
+ * 外框（.frame）的圓角＝卡片實際的圓角（畫布 px），焦點框、選取虛線、呼吸光圈才和卡片同心（畫布審查 A3）：
+ * 終端機卡 12；摘要條自己是 12，再整張乘上 --strip-scale。
+ */
 .frame {
   position: relative;
-  border-radius: 25px;
+  --card-r: var(--radius-card);
+  border-radius: var(--card-r);
 }
 .frame.spot {
-  outline: calc(2px / var(--z)) solid var(--accent);
+  outline: calc(var(--focus-w) / var(--z)) solid var(--accent);
   outline-offset: calc(4px / var(--z));
 }
 
 /*
- * 摘要條：邏輯寬 320，整張等比放大填滿外框（--fill = 外框寬 / 320）。
+ * 摘要條：邏輯寬 320，整張等比放大填滿外框（--fill = 外框寬 / 320，SessionNode 寫在 .frame 上）。
  * 只用 --fill 的話，畫布 70–89% 時字在螢幕上是規格的 1.5–1.9 倍（外框 680 是為了 xterm 的 80 欄）。
  * 所以螢幕上的倍率（--strip-scale × --z）封頂在 --strip-max：放大時摘要條改成變寬變高，
- * 多出來的空間給最後幾行，字維持接近規格的大小。約 54% 以下兩者相同，維持原本的樣子。
+ * 多出來的空間給最後幾行，字維持規格的大小。
+ * 上限是 1（以前 1.15）：摘要條上的按鈕在螢幕上最大就是 32／13，和 90% 起換成的終端機卡一樣大（畫布審查 D2）。
  */
-.strip {
-  --strip-max: 1.15;
+.frame[data-mode='summary'] {
+  --strip-max: 1;
   --strip-scale: min(var(--fill, 1), calc(var(--strip-max) / var(--z, 1)));
+  --card-r: calc(var(--radius-card) * var(--strip-scale));
+}
+/* 摘要條與終端機卡：同一組內距（12，有放手線的左側 16），標題列、按鈕、輸入框的大小也一樣，切換時不跳動。 */
+.strip {
   width: calc(var(--card-w, 320px) / var(--strip-scale));
   height: calc(var(--card-h, 640px) / var(--strip-scale));
   transform: scale(var(--strip-scale));
   transform-origin: 0 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  padding: 12px 12px 12px 16px;
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   overflow: hidden;
   cursor: grab;
 }
@@ -63,7 +73,7 @@
   margin: 0;
 }
 .strip .sign {
-  margin-top: -4px;
+  margin-top: calc(-1 * var(--space-1));
 }
 .gone {
   opacity: 0.45;
@@ -73,10 +83,10 @@
   flex: 1 1 76px;
   min-height: 0;
   margin: 0;
-  padding: 6px 8px;
+  padding: var(--space-1h) var(--space-2);
   background: var(--surface-2);
   border-radius: var(--radius-control);
-  font: 12px/1.45 var(--font-mono);
+  font: var(--fs-sm) / 1.45 var(--font-mono);
   color: var(--fg-muted);
   white-space: pre-wrap;
   overflow: hidden;
@@ -87,17 +97,17 @@
 }
 .acts {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1h);
   flex-wrap: wrap;
 }
-.acts button {
-  min-height: 30px;
-  font-size: 13px;
-  padding: 0 10px;
-}
+/*
+ * 卡片上的按鈕一律 button.sm（32／13）、指令輸入框 input.sm（32／13），長相全在 controls.css；這裡只管位置。
+ * 等你的卡的處理鈕（GM Q2）：目前聚焦（.spot）那張才是白色主按鈕（.primary），
+ * 其他等你的卡用狀態代碼色的框＋淡底（controls.css 的 button.cue），畫面上不會同時出現好幾塊白。
+ */
 .cmd-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   min-width: 0;
   cursor: auto;
@@ -106,20 +116,6 @@ input.cmd {
   flex: 1 1 auto;
   width: 100%;
   min-width: 0;
-  min-height: 32px;
-  padding: 4px 10px;
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
-  color: var(--fg);
-  font: 13px var(--font-sans);
-}
-input.cmd::placeholder {
-  color: var(--muted);
-}
-input.cmd:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 .cmd-row .msg {
   flex-shrink: 0;
@@ -132,12 +128,12 @@ input.cmd:disabled {
 .cmd-hint {
   flex: 1 0 100%;
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
   color: var(--you);
 }
 .danger-tag {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--fault);
 }
@@ -146,10 +142,10 @@ input.cmd:disabled {
 .termcard {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   height: 100%;
-  padding: 10px 10px 10px 14px;
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
@@ -161,23 +157,37 @@ input.cmd:disabled {
 }
 .term-acts {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1h);
   flex-wrap: wrap;
   align-items: center;
 }
 .term-acts:not(:empty) {
-  margin-top: 6px;
+  margin-top: var(--space-1h);
 }
-.term-acts > button {
-  min-height: 30px;
-  font-size: 13px;
-  padding: 0 10px;
+/*
+ * 終端機卡在畫布 90–100% 時，按鈕、⋯、輸入框補到螢幕上的 32／13（--tk 最多 1/0.9），
+ * 和 89% 的摘要條（螢幕倍率封頂 1）一樣大，換型態時不縮一截（畫布審查 D2）。100% 以上跟著畫布放大。
+ */
+.termcard {
+  --tk: clamp(1, calc(1 / var(--z, 1)), calc(1 / 0.9));
+}
+.termcard :is(.term-acts > button, .acts button, .menu-btn, input.cmd) {
+  min-height: calc(var(--ctl-h-sm) * var(--tk));
+  font-size: calc(var(--fs-ctl-sm) * var(--tk));
+}
+.termcard :is(.term-acts > button, .acts button) {
+  padding: 0 calc(var(--ctl-px-sm) * var(--tk));
+}
+.termcard .menu-btn {
+  width: calc(var(--ctl-h-sm) * var(--tk));
+  min-width: calc(var(--ctl-h-sm) * var(--tk));
+  font-size: calc(var(--fs-base) * var(--tk));
 }
 .term-slot {
   flex: 1 1 auto;
   min-height: 0;
   background: var(--term-bg);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   cursor: auto;
 }
@@ -205,7 +215,7 @@ input.cmd:disabled {
   pointer-events: none;
   transform-origin: 0 0;
   border: calc(1px / var(--z)) solid var(--team);
-  border-radius: calc(16px / var(--z));
+  border-radius: calc(var(--radius-team) / var(--z));
   /* 透明深色底（--surface 約 5%）＋背景模糊＝毛玻璃 */
   background: color-mix(in srgb, var(--surface) 5%, transparent);
   -webkit-backdrop-filter: blur(calc(10px / var(--z)));
@@ -225,13 +235,13 @@ input.cmd:disabled {
   transform-origin: 0 50%;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 2px 0 8px;
-  font-size: 12px;
+  gap: var(--space-1h);
+  padding: 0 2px 0 var(--space-2);
+  font-size: var(--fs-sm);
   font-weight: 600;
   white-space: nowrap;
   /* 玻璃膠囊：名稱標籤不只靠顏色辨認 */
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--surface) 72%, transparent);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
@@ -298,11 +308,11 @@ input.cmd:disabled {
 }
 .edge-label {
   position: absolute;
-  padding: 0 6px;
-  border-radius: 4px;
+  padding: 0 var(--space-1h);
+  border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
   pointer-events: none;
 }
@@ -379,10 +389,6 @@ input.cmd:disabled {
   pointer-events: auto;
   cursor: default;
 }
-.edge-label:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
 .edge-talk-at {
   margin-left: 6px;
   color: var(--agent);
@@ -411,12 +417,12 @@ input.cmd:disabled {
   z-index: 1;
   width: max-content;
   max-width: 360px;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border-2);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -452,14 +458,15 @@ input.cmd:disabled {
     opacity: 1;
   }
 }
+/* 畫布上的浮動小框（交接線面板、選目標提示）：內距 4／左 12，裡面是 button.sm（畫布審查 E3）。 */
 .edge-panel {
   display: flex;
   flex-wrap: wrap;
   width: fit-content;
   max-width: min(560px, calc(100vw - 48px));
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
-  padding: 6px 10px;
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface);
@@ -519,19 +526,15 @@ input.cmd:disabled {
 .canvas .pick-hint {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: min(560px, calc(100% - 32px));
-  padding: 6px 6px 6px 12px;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
-.canvas .pick-hint button {
-  min-width: 32px;
-  min-height: 32px;
-  padding: 0;
-}
+/* 取消是共用的 button.close（32×32、✕）。 */
 .canvas[data-picking] .react-flow__node {
   cursor: crosshair;
 }
@@ -543,9 +546,21 @@ input.cmd:disabled {
   outline-offset: calc(6px / var(--z));
 }
 
-/* 右下縮放與小地圖 */
+/*
+ * 右下縮放與小地圖。縮放列和底部指令列（views.css .command-bar）同一個高度 --dock-h、同樣離底 16，
+ * 小地圖在縮放列上方 8（畫布審查 E2）。按鈕是 button.sm／.icon.sm。手機沒有指令列，縮放鈕是 44。
+ */
+.canvas {
+  --dock-h: calc(var(--ctl-h-sm) + 2 * var(--space-1) + 2px);
+}
+/* 觸控平板（寬 > 640、粗指標）：按鈕已經是 44，指令列跟著變高，小地圖和提示的讓位也要跟著算。 */
+@media (pointer: coarse) {
+  .canvas {
+    --dock-h: calc(var(--ctl-h-touch) + 2 * var(--space-1) + 2px);
+  }
+}
 .canvas .minimap {
-  margin: 0 16px 60px 0;
+  margin: 0 var(--space-4) calc(var(--space-4) + var(--dock-h) + var(--space-2)) 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
@@ -554,23 +569,18 @@ input.cmd:disabled {
 .canvas .zoom {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 0 16px 16px 0;
-  padding: 4px;
+  gap: var(--space-1h);
+  margin: 0 var(--space-4) var(--space-4) 0;
+  padding: var(--space-1);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  font-size: 12.5px;
+  border-radius: var(--radius-card);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .canvas .zoom span {
   min-width: 40px;
   text-align: center;
-}
-.canvas .zoom button {
-  min-height: 28px;
-  padding: 0 8px;
-  font-size: 13px;
 }
 .canvas .save-error {
   max-width: min(480px, calc(100% - 32px));
@@ -613,6 +623,9 @@ input.cmd:disabled {
 }
 
 @media (max-width: 640px) {
+  .canvas {
+    --dock-h: calc(var(--ctl-h-touch) + 2 * var(--space-1) + 2px);
+  }
   .canvas .minimap {
     display: none;
   }
@@ -620,7 +633,7 @@ input.cmd:disabled {
     display: none;
   }
   .canvas .zoom {
-    margin: 0 8px 8px 0;
+    margin: 0 var(--space-2) var(--space-2) 0;
   }
 }
 
@@ -632,57 +645,47 @@ input.cmd:disabled {
 /* 尺寸由另一個畫面決定（CONTRACTS §6.1 第 6 點）。在 xterm 外框之外，不疊在終端機上 */
 .size-note {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
   color: var(--muted);
 }
 
-/* 卡片「⋯」選單：展開在標題列下方，不浮在 xterm 上（規則三之一） */
-.menu-btn {
-  min-height: 24px;
-  padding: 0 8px;
-  border-color: transparent;
-  background: transparent;
-  color: var(--muted);
-  font-size: 15px;
-  line-height: 1;
-}
+/*
+ * 卡片「⋯」：圖示鈕・精簡・低調（button.icon.sm.ghost，32×32）；打開時用全站的「按下」樣式。
+ * 選單展開在標題列下方，不浮在 xterm 上（規則三之一）。卡片空間有限，項目橫排換行（妥善利用空間），
+ * 每一項都是 button.sm（32／13），和卡片上其他按鈕同一級。
+ */
 .menu-btn[aria-expanded='true'] {
-  border-color: var(--border-2);
-  background: var(--surface-2);
+  border-color: var(--accent);
+  background: var(--accent-bg);
   color: var(--fg);
 }
 .card-menu {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1h);
   margin-top: -2px;
   cursor: auto;
-}
-.card-menu button {
-  min-height: 28px;
-  padding: 0 10px;
-  font-size: 13px;
 }
 .card-submenu {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1h);
   flex-basis: 100%;
-  padding-left: 12px;
+  padding-left: var(--space-3);
   border-left: 2px solid var(--border-2);
 }
 .rename {
   display: inline-flex;
   flex: 1 1 140px;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   cursor: auto;
 }
 .rename .msg {
   color: var(--fault);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 /* 選取的卡片（點一下或 Shift＋拖曳框選）：白色虛線，和「框出」的實線分開 */
 .canvas .react-flow__node.selected .frame {
@@ -697,30 +700,37 @@ input.cmd:disabled {
   border: 1px dashed var(--ring);
   background: var(--accent-bg);
 }
-/* 封存後的「復原」提示。桌面讓開底部的浮動指令列（views.css .command-dock）。 */
-.canvas .archive-toast {
+/*
+ * 畫面下方的提示（封存後的「復原」、整理後的「復原」、封存失敗）：全部疊在同一欄（.toast-stack），
+ * 自己排好、不用寫死的數字互相讓位；整欄讓開底部指令列（實際高度 --command-dock-h，views/pause.tsx 量的）
+ * 與右下的縮放列（畫布審查 E4）。浮動小框內距 8／12，按鈕是 button.sm。
+ */
+.canvas .toast-stack {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: min(520px, calc(100% - 32px));
-  margin-bottom: 76px;
+  margin-bottom: calc(var(--space-4) + var(--command-dock-h, var(--dock-h)) + var(--space-2));
 }
-.canvas .archive-toast .toast-row {
+.canvas .toast-stack .archive-toast {
+  display: grid;
+  gap: var(--space-2);
+}
+.canvas .toast-stack .toast-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: var(--space-2) var(--space-3);
   align-items: center;
-  padding: 8px 10px 8px 14px;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
-  font-size: 13.5px;
+  box-shadow: var(--shadow-float);
+  font-size: var(--fs-ctl-sm);
 }
-.canvas .archive-toast .toast-row button {
-  min-height: 30px;
+.canvas .toast-stack .alert {
+  box-shadow: var(--shadow-float);
 }
-.canvas .archive-toast .alert button {
-  min-height: 28px;
+.canvas .toast-stack .alert button {
   margin-left: auto;
 }
 
@@ -734,18 +744,21 @@ input.cmd:disabled {
   color: var(--fg);
   text-decoration: underline;
 }
+/*
+ * 整理團隊：團隊框標籤裡的小膠囊（反向縮放，螢幕上固定大小）。畫布小標籤那一級 --ctl-h-xs 24／12px／600
+ * （和線上的往來次數一樣，畫布審查 H1）；手機與觸控 44。
+ */
 .team .team-tidy {
   pointer-events: auto;
-  min-height: 22px;
+  min-height: var(--ctl-h-xs);
   margin: 2px 0;
-  padding: 0 8px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 500;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-sm);
 }
-@media (pointer: coarse) {
+@media (max-width: 640px), (pointer: coarse) {
   .team .team-tidy {
-    min-height: 32px;
+    min-height: var(--ctl-h-touch);
   }
 }
 /* 頁首的 .top（views.css）和 xyflow 面板位置的 .top 撞名：這裡把面板的定位與底色改回來。 */
@@ -761,40 +774,20 @@ input.cmd:disabled {
   width: fit-content;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--space-1h);
   max-width: calc(100% - 32px);
-  margin: 16px 16px 0 0;
+  /* 和左上的側欄開關、「線」同一個 top（--space-2），按鈕都是 button.sm，中線對齊（畫布審查 E1）。 */
+  margin: var(--space-2) var(--space-4) 0 0;
 }
-.canvas .tidy-panel button {
-  min-height: 32px;
-  padding: 0 10px;
-  font-size: 13px;
-  background: var(--surface);
-}
-.canvas .tidy-toast.raised {
-  margin-bottom: 132px;
-}
-.canvas .zoom .summary-toggle[aria-pressed='false'] {
-  border-color: var(--accent, currentColor);
-}
+/* 「摘要模式」開著＝按下（全站同一種樣式，controls.css）；以前是關著才加框，反過來了（畫布審查 B1）。 */
 @media (max-width: 640px) {
   .canvas .tidy-panel {
-    margin: 8px 8px 0 0;
+    margin: var(--space-2) var(--space-2) 0 0;
     max-width: calc(100% - 16px);
   }
-  .canvas .tidy-panel button {
-    min-height: 36px;
-  }
-  /* 手機沒有指令列，回到原本的位置。 */
-  .canvas .archive-toast {
-    margin-bottom: 16px;
-  }
-  /* 讓開右下角的縮放列。 */
-  .canvas .tidy-toast {
-    margin-bottom: 56px;
-  }
-  .canvas .tidy-toast.raised {
-    margin-bottom: 112px;
+  /* 手機沒有指令列：提示只讓開右下角的縮放列。 */
+  .canvas .toast-stack {
+    margin-bottom: calc(var(--space-2) + var(--dock-h) + var(--space-2));
   }
 }
 
@@ -822,27 +815,50 @@ input.cmd:disabled {
   border-top: 4px solid var(--st, var(--border-2));
   background: var(--st-tint, transparent);
 }
-.strip > .head {
-  margin: -12px -12px 0 -16px;
-  padding: 6px 10px 6px 16px;
-}
+/* 兩種卡的標題列同一組內距（卡片內距 12／左 16 往外推回邊上）。 */
+.strip > .head,
 .termcard > header > .head {
-  margin: -10px -10px 0 -14px;
-  padding: 5px 10px 5px 14px;
+  margin: calc(-1 * var(--space-3)) calc(-1 * var(--space-3)) 0 calc(-1 * var(--space-4));
+  padding: var(--space-1h) var(--space-2) var(--space-1h) var(--space-4);
 }
-/* 縮小時（螢幕上的倍率 = --z × --strip-scale 小於 1）狀態徽章與名稱跟著放大，維持看得清楚；有上限，不撐破卡片。 */
+/*
+ * 縮小時（螢幕上的倍率小於 1）狀態徽章、名稱、等待時間跟著放大，維持看得清楚；有上限，不撐破卡片。
+ * 摘要條的螢幕倍率＝--z × --strip-scale；終端機卡（「摘要模式：關」時任何縮放都是它）＝--z，
+ * 以前終端機卡完全沒有補償，50% 時徽章只剩 6px（畫布審查 D3）。等待時間的上限和徽章一樣，20% 時螢幕上仍有約 11px（D1）。
+ */
 .strip > .head {
   --head-k: max(1, calc(0.95 / (var(--z, 1) * var(--strip-scale, 1))));
 }
-.strip > .head .lamp {
-  font-size: calc(12px * min(var(--head-k), 3.4));
+.termcard > header > .head {
+  --head-k: max(var(--tk, 1), calc(0.95 / var(--z, 1)));
 }
-.strip > .head .title {
-  font-size: calc(15px * min(var(--head-k), 2.6));
+:is(.strip > .head, .termcard > header > .head) .lamp {
+  font-size: calc(var(--fs-sm) * min(var(--head-k), 3.4));
+}
+:is(.strip > .head, .termcard > header > .head) .title {
+  font-size: calc(var(--fs-base) * min(var(--head-k), 2.6));
   line-height: 1.2;
 }
-.strip > .head .age {
-  font-size: calc(12px * min(var(--head-k), 1.8));
+/*
+ * 標題列：徽章＋名稱在前，等待時間＋⋯（.head-end）靠右。縮小時徽章、名稱、等待時間都放大了，
+ * 一行放不下時 .head-end 整組換到下一行，名稱留在徽章旁邊；名稱本身太長才省略（完整名稱在 title）。
+ */
+:is(.strip > .head, .termcard > header > .head) .title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.head-end {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+:is(.strip > .head, .termcard > header > .head) .age {
+  font-size: calc(var(--fs-sm) * min(var(--head-k), 3.4));
 }
 .strip.waits > .head .age,
 .termcard.waits .head .age {
@@ -854,7 +870,8 @@ input.cmd:disabled {
   position: absolute;
   inset: calc(-5px / var(--z, 1));
   border: calc(3px / var(--z, 1)) solid var(--sc, var(--border-2));
-  border-radius: calc(var(--radius-card) + 5px / var(--z, 1));
+  /* 和卡片同心：卡片實際圓角（.frame 的 --card-r）＋外擴的距離。 */
+  border-radius: calc(var(--card-r, var(--radius-card)) + 5px / var(--z, 1));
   opacity: 0;
   pointer-events: none;
 }
@@ -875,4 +892,58 @@ input.cmd:disabled {
     animation: none;
     opacity: 0.5;
   }
+}
+
+/* 卡片裡的焦點框跟著畫布與摘要條的縮放反向換算，任何縮放下螢幕上都是 2px（畫布審查 D5）。 */
+.canvas .react-flow__node .frame :focus-visible {
+  outline-width: calc(var(--focus-w) / (var(--z, 1) * var(--strip-scale, 1)));
+  outline-offset: calc(var(--focus-offset) / (var(--z, 1) * var(--strip-scale, 1)));
+}
+
+/*
+ * 縮得很小（畫布 < 30%，CanvasPage 在 .canvas 設 data-compact，GM 2026-11-09 Q4）：
+ * 卡片只留標題列（狀態徽章、名稱、等待時間）與危險指令警示，按鈕、輸入框、⋯ 都藏起來——字小到讀不出來，按了容易誤按。
+ * 要處理就點兩下卡片（放大到看得清楚）或按頁首「下一個等我的」（會放大到那張卡）。
+ * 終端機卡（「摘要模式：關」）保留 xterm 本身，只藏控制項。
+ */
+.canvas[data-compact]
+  .frame
+  :is(.menu-btn, .card-menu, .acts, .term-acts, .cmd-row, .done-hint, .held-first),
+.canvas[data-compact] .strip > :not(.head, .danger-tag) {
+  display: none;
+}
+/*
+ * 縮很小時卡片在螢幕上只有約 130px 寬，徽章、等待時間、名稱排不下一行：徽章和等待時間在第一行，
+ * 名稱自己一行（下面的內容都藏起來了，高度夠），名稱才不會被省略到看不見。
+ */
+.canvas[data-compact] :is(.strip > .head, .termcard > header > .head) {
+  flex-wrap: wrap;
+}
+.canvas[data-compact] :is(.strip > .head, .termcard > header > .head) .title {
+  order: 1;
+  flex: 1 0 100%;
+}
+
+/*
+ * 浮在畫布上的工具（左上「線」、右上「整理畫布」、右下縮放列、選目標提示）：「按下」的 10% 白底
+ * 疊在 --surface-2 上變成不透明，底下的卡片、線、團隊標籤不會透出來。顏色和全站的按下樣式一樣。
+ */
+.canvas .react-flow__panel button[aria-pressed='true'],
+.canvas .react-flow__panel button[aria-pressed='true']:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 10%, var(--surface-2));
+}
+
+/*
+ * 卡片上的「送出第一個指令」（team/HeldFirstPrompt，全部暫停中套用 Preset 時留下的）：和處理鈕同一級，
+ * 精簡 32／13；不是聚焦那張卡時 SessionNode 傳 cue（controls.css 的 button.cue），白色實心只給聚焦那張（GM Q2）。
+ * 團隊面板裡的同一個元件不受影響。
+ */
+.frame .held-first button {
+  min-height: var(--ctl-h-sm);
+  padding: 0 var(--ctl-px-sm);
+  font-size: var(--fs-ctl-sm);
+}
+.frame .held-first button.link {
+  min-height: var(--ctl-h-xs);
+  padding: 0 var(--space-1);
 }

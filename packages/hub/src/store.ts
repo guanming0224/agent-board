@@ -29,6 +29,7 @@ import {
   type SessionStatus,
   type Task,
   type Team,
+  TeamHold,
   type TeamMember,
   type Template,
   type User,
@@ -38,12 +39,17 @@ import { z } from 'zod';
 import type { Db } from './db';
 import type { PushSubscriptionRecord, VapidKeys } from './push';
 
+/** settings 表裡存每台機器用量的鍵前綴（不是設定，getSettings 不讀）。 */
+const USAGE_KEY_PREFIX = 'usage:';
+
 /** 存在 settings 表 `boardPause` 鍵的暫停狀態；heldInMemory 是記憶體佇列裡被擋下的則數（重啟時拿來交代）。 */
 export const StoredBoardPause = BoardPause.extend({
   heldInMemory: z.number().int().nonnegative().default(0),
 });
 export type StoredBoardPause = z.infer<typeof StoredBoardPause>;
 const BOARD_PAUSE_KEY = 'boardPause';
+/** 全隊暫停／停止的記錄（CONTRACTS §17）：settings 表 `teamHold:<teamId>`，不升 schema。 */
+const TEAM_HOLD_PREFIX = 'teamHold:';
 
 const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   listenAddress,
@@ -238,6 +244,18 @@ const toTeam = (r: TeamRow): Team => ({
   taskAuto: r.task_auto === 1,
   zoneId: r.zone_id,
 });
+
+const withHold = (team: Team, hold: TeamHold | undefined): Team =>
+  hold ? { ...team, hold } : team;
+
+function parseTeamHold(text: string): TeamHold | null {
+  try {
+    const parsed = TeamHold.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
 
 /** auto 是 hub 自己寫的 JSON；讀不懂（理論上不會）就當沒有，不能讓整個任務板讀不出來。 */
 function parseTaskAuto(text: string | null): TaskAuto | null {
@@ -1076,13 +1094,45 @@ export class Store {
   }
 
   // ── 團隊（交接引擎是 Phase 3，這裡只有 CRUD）────────
+  /** 有全隊暫停／停止記錄的團隊附上 hold（CONTRACTS §17）。 */
   listTeams(): Team[] {
-    return (this.db.prepare('SELECT * FROM teams ORDER BY name').all() as TeamRow[]).map(toTeam);
+    const holds = this.teamHolds();
+    return (this.db.prepare('SELECT * FROM teams ORDER BY name').all() as TeamRow[]).map((r) =>
+      withHold(toTeam(r), holds.get(r.id)),
+    );
   }
 
   getTeam(id: string): Team | null {
     const row = this.db.prepare('SELECT * FROM teams WHERE id = ?').get(id) as TeamRow | undefined;
-    return row ? toTeam(row) : null;
+    return row ? withHold(toTeam(row), this.getTeamHold(id) ?? undefined) : null;
+  }
+
+  /** 讀不懂的記錄（理論上不會）當沒有：按鈕回到「全隊暫停／停止」，不能讓團隊讀不出來。 */
+  getTeamHold(teamId: string): TeamHold | null {
+    const row = this.db
+      .prepare('SELECT value FROM settings WHERE key = ?')
+      .get(`${TEAM_HOLD_PREFIX}${teamId}`) as { value: string } | undefined;
+    return row ? parseTeamHold(row.value) : null;
+  }
+
+  setTeamHold(teamId: string, hold: TeamHold | null): void {
+    if (hold === null) {
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${TEAM_HOLD_PREFIX}${teamId}`);
+      return;
+    }
+    this.setRaw(`${TEAM_HOLD_PREFIX}${teamId}`, hold);
+  }
+
+  private teamHolds(): Map<string, TeamHold> {
+    const rows = this.db
+      .prepare("SELECT key, value FROM settings WHERE key LIKE 'teamHold:%'")
+      .all() as { key: string; value: string }[];
+    const holds = new Map<string, TeamHold>();
+    for (const r of rows) {
+      const hold = parseTeamHold(r.value);
+      if (hold) holds.set(r.key.slice(TEAM_HOLD_PREFIX.length), hold);
+    }
+    return holds;
   }
 
   upsertTeam(t: Team): void {
@@ -1095,10 +1145,21 @@ export class Store {
            color = @color, context_md = @contextMd, phase = @phase, task_auto = @taskAuto,
            zone_id = @zoneId`,
       )
-      .run({ ...t, phase: t.phase ?? null, taskAuto: t.taskAuto ? 1 : 0 });
+      .run({
+        id: t.id,
+        name: t.name,
+        goal: t.goal,
+        doneCriteria: t.doneCriteria,
+        color: t.color,
+        contextMd: t.contextMd,
+        phase: t.phase ?? null,
+        taskAuto: t.taskAuto ? 1 : 0,
+        zoneId: t.zoneId,
+      });
   }
 
   deleteTeam(id: string): boolean {
+    this.setTeamHold(id, null);
     return this.db.prepare('DELETE FROM teams WHERE id = ?').run(id).changes === 1;
   }
 
@@ -1401,7 +1462,10 @@ export class Store {
 
   // ── 設定與 VAPID ──────────────────────────────────────
   getSettings(): Settings {
-    const rows = this.db.prepare('SELECT key, value FROM settings').all() as {
+    // 用量細項（`usage:<機器>`）很大又不是設定，不讀。
+    const rows = this.db
+      .prepare(`SELECT key, value FROM settings WHERE key NOT LIKE '${USAGE_KEY_PREFIX}%'`)
+      .all() as {
       key: string;
       value: string;
     }[];
@@ -1453,6 +1517,36 @@ export class Store {
       return;
     }
     this.setRaw(BOARD_PAUSE_KEY, pause);
+  }
+
+  /**
+   * 每台機器最新一次的用量（總數＋細項，GM 2026-11-09）。存在 settings 表的 `usage:<機器 id>` 鍵，
+   * 不升 schema：hub 重啟後、下一次掃描前也能顯示上次的。內容由呼叫端驗證，這裡只存取字串。
+   */
+  saveUsage(machineId: string, value: unknown): void {
+    this.setRaw(`${USAGE_KEY_PREFIX}${machineId}`, value);
+  }
+
+  loadUsage(): { machineId: string; value: unknown }[] {
+    const rows = this.db
+      .prepare(`SELECT key, value FROM settings WHERE key LIKE '${USAGE_KEY_PREFIX}%'`)
+      .all() as { key: string; value: string }[];
+    const out: { machineId: string; value: unknown }[] = [];
+    for (const row of rows) {
+      try {
+        out.push({
+          machineId: row.key.slice(USAGE_KEY_PREFIX.length),
+          value: JSON.parse(row.value),
+        });
+      } catch {
+        // 壞掉的就當沒存過。
+      }
+    }
+    return out;
+  }
+
+  deleteUsage(machineId: string): void {
+    this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${USAGE_KEY_PREFIX}${machineId}`);
   }
 
   /** 首次啟動才產生，之後沿用（換金鑰會讓所有訂閱失效）。 */

@@ -19,6 +19,7 @@ import { useT } from './shared/i18n';
 import { isDemo, useBoard } from './shared/store';
 import { isSearchShortcut, SearchPanel } from './search';
 import { TeamContent, TeamDrawer } from './team';
+import { UsagePage } from './usage';
 import {
   cameFrom,
   closeModal,
@@ -34,9 +35,8 @@ import {
   type RightPanel,
 } from './views';
 import { ModalLayer, PhonePage } from './views/Overlays';
+import { PHONE_QUERY, PHONE_WIDTH } from './shared/breakpoints';
 
-const PHONE_WIDTH = 640;
-const PHONE_QUERY = `(max-width: ${PHONE_WIDTH}px)`;
 const PUBLIC_PAGES = new Set(['login', 'onboarding']);
 
 function hashOf(url: string): string {
@@ -101,6 +101,7 @@ function ModalContent({ kind }: { kind: ModalKind }) {
   if (kind === 'archive') return <ArchivePage />;
   if (kind === 'search') return <SearchPanel />;
   if (kind === 'transcript') return <TranscriptPage />;
+  if (kind === 'usage') return <UsagePage />;
   return <NewSessionPage />;
 }
 
@@ -110,6 +111,7 @@ const MODAL_LABEL: Record<ModalKind, string> = {
   new: 'flows.new.title',
   search: 'search.title',
   transcript: 'flows.archive.transcript',
+  usage: 'usage.title',
 };
 
 /** 手機：上一筆歷史就是 app 裡的畫面就上一頁，否則回收件匣（手機的首頁）。 */

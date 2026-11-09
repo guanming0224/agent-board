@@ -1,15 +1,19 @@
-/* 工作區分頁（P2 §2.3）：頁首原分頁列的位置。選中＝白色 2px 底線（STYLE：強調色白）；等你數用 --you。 */
+/*
+ * 工作區分頁（P2 §2.3）：頁首原分頁列的位置。分頁用共用的 .tab（controls.css：選中＝白色 2px 底線），
+ * 「+」是圖示鈕・精簡、右鍵選單是浮層選單 .menu／.menu-item、關閉是 button.close；這裡只管位置。
+ * 等你數用 --you。
+ */
 .zone-bar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px 12px;
-  padding: 0 16px;
+  gap: var(--space-1) var(--space-3);
+  padding: 0 var(--space-4);
   min-width: 0;
 }
 .zone-tabs {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   flex-wrap: wrap;
   gap: 2px;
   min-width: 0;
@@ -18,20 +22,23 @@
   position: relative;
   display: inline-flex;
 }
+/*
+ * 分頁：.tab 的預設值權重是 0，全域 button（tokens.css）會蓋掉它，所以這裡用 class 權重補回分頁的長相，
+ * 數值仍是 token（標準高 36、內距 --ctl-px）。hover 只換字色：全域 button:hover 的 --raise 底不要。
+ */
 .zone-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 6px 12px;
+  gap: var(--space-1h);
+  min-height: var(--ctl-h);
+  padding: 0 var(--ctl-px);
   border: 0;
   border-bottom: 2px solid transparent;
-  border-radius: var(--radius-control) var(--radius-control) 0 0;
+  border-radius: 0;
   background: transparent;
-  color: var(--fg-muted);
+  color: var(--muted);
   max-width: 16em;
 }
-.zone-tab:hover {
+.zone-tab:hover:not(:disabled) {
+  background: transparent;
   color: var(--fg);
 }
 .zone-tab[aria-selected='true'] {
@@ -56,62 +63,38 @@
   outline: 2px solid var(--accent);
   background: var(--accent-bg);
 }
-.zone-add {
-  min-height: 30px;
-  min-width: 30px;
-  padding: 0 8px;
-  margin-bottom: 2px;
-}
 .zone-name-input {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding-bottom: 2px;
+  gap: var(--space-1h);
 }
+/* 輸入框用全域樣式（controls.css，高 36＝分頁高），這裡只給寬度。 */
 .zone-name-input input {
   width: 12em;
 }
+/* 右鍵選單、「更多」清單：.menu（底、框、陰影、內距）；這裡只管位置與寬度。 */
 .zone-menu {
   position: absolute;
   top: 100%;
   left: 0;
   z-index: 40;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   min-width: 14em;
   max-width: 22em;
-  padding: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-}
-.zone-menu button {
-  justify-content: flex-start;
-  text-align: left;
-  display: flex;
-  gap: 8px;
 }
 .zone-menu .sub {
-  margin: 2px 4px;
-  font-size: 12.5px;
+  margin: 2px var(--space-1);
+  font-size: var(--fs-sm);
 }
-/* 「更多」清單裡的一項：整列可點、可放團隊；右鍵選單開在右邊。 */
+/* 「更多」清單裡的一項：整列可點、可放團隊；右鍵選單開在右邊。目前這一個＝「按下」樣式（controls.css）。 */
 .zone-tab-wrap.is-item {
   display: flex;
 }
-.zone-item {
+/* 名稱和等你數排在同一行（button.menu-item 預設是直排 grid，這裡要用兩個 class 的權重蓋過去）。 */
+.zone-menu .zone-item {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 8px;
-  justify-content: flex-start;
-  text-align: left;
-}
-.zone-item[aria-current='true'] {
-  color: var(--fg);
-  font-weight: 600;
+  gap: var(--space-2);
 }
 .zone-item.is-drop {
   outline: 1px dashed var(--border-2);
@@ -125,30 +108,30 @@
   top: 0;
   left: 100%;
 }
+/* 移動失敗不是狀態，用 --fault（STYLE §1「狀態色只用在狀態」，畫布審查 F3）。 */
 .zone-notice.is-error {
-  color: var(--c-err);
+  color: var(--fault);
 }
 .zone-notice {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 .zone-select {
   display: none;
 }
-/* 手機：分頁改成單一下拉。 */
+/* 手機：分頁改成單一下拉（高度 44、字 16 由 controls.css 的手機規則給）。 */
 @media (max-width: 640px) {
   .zone-tabs {
     display: none;
   }
   .zone-select {
     display: inline-flex;
-    padding-bottom: 6px;
+    padding-bottom: var(--space-2);
   }
   .zone-select select {
-    min-height: 40px;
     max-width: 70vw;
   }
 }

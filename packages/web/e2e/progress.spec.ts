@@ -52,12 +52,12 @@ async function writeCard(page: Page, fields: { status?: string; next?: string; g
   await input('status').press('ControlOrMeta+Enter');
 }
 
-test('團隊框旁「＋ 進度卡」：寫四欄存檔 → 收合顯示「下一步」第一行與「剛剛・<GM 名稱>」；底部列有 Memory', async ({
+test('團隊框旁「+ 進度卡」：寫四欄存檔 → 收合顯示「下一步」第一行與「剛剛・<GM 名稱>」；底部列有 Memory', async ({
   page,
 }) => {
   await page.goto('/#/canvas');
   await expect(page.getByTestId('command-memory')).toHaveText('Memory');
-  await expect(anchor(page).getByTestId(`progress-${KEY}-add`)).toHaveText('＋ 進度卡');
+  await expect(anchor(page).getByTestId(`progress-${KEY}-add`)).toHaveText('+ 進度卡');
   // 卡片在團隊框右側外面（不疊在框上）。
   const frame = await page.locator('.team').first().boundingBox();
   const box = await anchor(page).boundingBox();
@@ -279,7 +279,8 @@ test('手機（390×844）：團隊面板最上方有進度卡、可編輯；收
   const edit = page.getByTestId('team-progress-input-blockers');
   await edit.fill('等 GM 決定手續費');
   const save = page.getByTestId('team-progress-save');
-  expect((await save.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+  // 手機可點元素至少 44（GM 2026-11-09 Q1；56 只給會動到 session 的動作）。
+  expect((await save.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await save.click();
   await expect(card.getByTestId('progress-field-blockers')).toContainText('等 GM 決定手續費');
 });

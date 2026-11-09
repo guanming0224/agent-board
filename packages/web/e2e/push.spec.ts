@@ -91,6 +91,9 @@ test('設定頁開啟推播：用 hub 的公鑰訂閱並送給 hub；關閉時�
   await page.goto(`${HUB}/#/settings`);
   const section = page.locator('#s-push');
   await expect(section.getByTestId('push-state')).toHaveText('這台裝置目前不收推播。');
+  // 狀態晶片（審視報告 inbox #26）：關著是灰框，開著是白框。
+  await expect(section.getByTestId('push-chip')).toHaveText('推播：關');
+  await expect(section.getByTestId('push-chip')).not.toHaveClass(/\bon\b/);
 
   const posted = page.waitForRequest(
     (r) => r.url() === `${HUB}/api/push/subscriptions` && r.method() === 'POST',
@@ -103,6 +106,8 @@ test('設定頁開啟推播：用 hub 的公鑰訂閱並送給 hub；關閉時�
   });
   expect((await post.response())!.status()).toBe(200);
   await expect(section.getByTestId('push-state')).toHaveText('這台裝置會收到推播。');
+  await expect(section.getByTestId('push-chip')).toHaveText('推播：開');
+  await expect(section.getByTestId('push-chip')).toHaveCSS('border-color', 'rgb(255, 255, 255)');
   await expect(section.getByRole('status')).toContainText('已開啟');
 
   const { publicKey } = await (await context.request.get(`${HUB}/api/push/vapid-key`)).json();

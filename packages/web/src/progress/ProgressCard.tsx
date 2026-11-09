@@ -159,7 +159,8 @@ export function ProgressCardView(props: ProgressCardProps) {
       return (
         <button
           type="button"
-          className={`progress-card progress-add ${variant === 'canvas' ? 'on-canvas' : 'in-panel'}`}
+          // 畫布縮很小（tiny）時和「進度」小標籤一樣只佔字的寬度，不撐成 280 寬蓋到旁邊的卡。
+          className={`progress-card progress-add${tiny ? ' progress-tiny' : ''} ${variant === 'canvas' ? 'on-canvas' : 'in-panel'}`}
           aria-label={t('progress.addAria', { name })}
           onClick={() => {
             onExpandedChange(true);
@@ -245,7 +246,7 @@ export function ProgressCardView(props: ProgressCardProps) {
           card={card}
           onDone={(saved) => {
             setEditing(false);
-            // 新卡按取消：收回成「＋ 進度卡」。
+            // 新卡按取消：收回成「+ 進度卡」。
             if (!saved && !exists(card)) onExpandedChange(false);
           }}
           testId={testId}
@@ -325,10 +326,11 @@ function ProgressBody({
       </div>
       <Facts card={{ ...card, facts }} />
       <div className="progress-actions row">
-        <button type="button" onClick={onEdit} data-testid={`${testId}-edit`}>
+        <button className="sm" type="button" onClick={onEdit} data-testid={`${testId}-edit`}>
           {t('progress.action.edit')}
         </button>
         <button
+          className="sm"
           type="button"
           aria-expanded={deliverOpen}
           disabled={blank}
@@ -340,6 +342,7 @@ function ProgressBody({
         </button>
         {team !== null && <AskUpdate teamId={team} run={run} testId={testId} />}
         <button
+          className="sm"
           type="button"
           aria-pressed={history}
           onClick={() => setHistory((open) => !open)}
@@ -348,6 +351,7 @@ function ProgressBody({
           {t('progress.action.history')}
         </button>
         <button
+          className="sm"
           type="button"
           aria-pressed={card.locked}
           title={t('progress.lockHint')}
@@ -473,6 +477,7 @@ function AskUpdate({
   return (
     <span className="progress-ask">
       <button
+        className="sm"
         type="button"
         disabled={!hasLead}
         title={hasLead ? t('progress.askHint') : t('progress.askNoLead')}
@@ -526,6 +531,7 @@ function DeliverMenu({
     <div className="progress-deliver" role="menu" aria-label={t('progress.deliver.aria')}>
       {teamMembers.map(({ session, lead }) => (
         <button
+          className="sm"
           key={session.id}
           type="button"
           role="menuitem"
@@ -555,6 +561,7 @@ function DeliverMenu({
         </select>
       ) : (
         <button
+          className="sm"
           type="button"
           role="menuitem"
           onClick={() => setOther(true)}
@@ -752,14 +759,14 @@ function ProgressEditor({
                   </pre>
                 </div>
               </div>
-              <div className="row" role="radiogroup" aria-label={t(`progress.field.${field}`)}>
+              <div className="seg sm" role="group" aria-label={t(`progress.field.${field}`)}>
                 {(['mine', 'theirs', 'both'] as const).map((choice) => (
                   <button
                     key={choice}
                     type="button"
-                    role="radio"
-                    aria-checked={choices[field] === choice}
-                    className={choices[field] === choice ? 'primary' : undefined}
+                    // 三選一用分段切換：選中＝全站的「按下」樣式（controls.css），
+                    // 白色主按鈕只留給下面的「存檔」（GM Q2、Q3「先選再送出」）。
+                    aria-pressed={choices[field] === choice}
                     onClick={() => setChoices((c) => ({ ...c, [field]: choice }))}
                     data-testid={`${testId}-conflict-${field}-${choice}`}
                   >
@@ -811,7 +818,7 @@ function ProgressEditor({
       <div className="row progress-edit-actions">
         <button
           type="button"
-          className="primary"
+          className="sm primary"
           disabled={busy || over.length > 0 || unresolved}
           title={t('progress.edit.saveHint')}
           onClick={() => void save()}
@@ -819,7 +826,12 @@ function ProgressEditor({
         >
           {t('progress.edit.save')}
         </button>
-        <button type="button" onClick={() => onDone(false)} data-testid={`${testId}-cancel`}>
+        <button
+          className="sm"
+          type="button"
+          onClick={() => onDone(false)}
+          data-testid={`${testId}-cancel`}
+        >
           {t('progress.edit.cancel')}
         </button>
         <span className="faint">{t('progress.edit.saveHint')}</span>
@@ -912,6 +924,7 @@ function History({
                 <span className="spacer" />
                 {row.revision !== card.revision && (
                   <button
+                    className="sm"
                     type="button"
                     onClick={() =>
                       void backend

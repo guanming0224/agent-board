@@ -2,6 +2,7 @@
 // 跟著團隊框移動；單獨 session 的卡貼在 session 卡右側。不是 React Flow 節點（同 TeamFrames 不當節點），
 // 不參與「一鍵整理」的排列，但整理時預留它的寬度與高度（canvas/arrange.ts 的 PROGRESS_RESERVE、progressH）。
 // 縮放 < 90% 只畫收合樣式、< 40% 只畫「進度」小標籤與 ⚠；點開（或從 Memory、收件匣展開）時反向縮放回螢幕大小。
+// 收合樣式在 40–89% 也反向縮放（字在螢幕上維持約 0.9 倍），但寬度換算回畫布上原本的寬，佔的位置不變。
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '@xyflow/react';
 import { progressOwnerKey, type ProgressOwner } from '@agent-board/protocol';
@@ -17,6 +18,16 @@ import { useProgressUi } from './uiStore';
 /** 摘要模式（只畫收合）與小標籤的門檻（同畫布卡片的語意縮放）。 */
 const SUMMARY_ZOOM = 0.9;
 const TINY_ZOOM = 0.4;
+/**
+ * 收合的卡在螢幕上至少是原尺寸的幾倍（字 13px × 0.9 ≈ 11.7px）。以前收合卡跟著畫布縮，50% 時字只剩 6.5px，
+ * 40% 以下換成反向縮放的小標籤反而比較大（畫布審查 D4）。
+ */
+const COLLAPSED_SCREEN = 0.9;
+/**
+ * 收合的卡反向放大的最大倍數（縮到 TINY_ZOOM 前一刻）。整理畫布用這個倍數量卡片高度（canvas/tidy.tsx）：
+ * 結果不取決於按下整理時的縮放，整理後不論縮到哪裡（小標籤以上）預留的高度都夠。
+ */
+export const PROGRESS_K_MAX = COLLAPSED_SCREEN / TINY_ZOOM;
 /** 展開的卡底部和底部指令列之間至少留多少（螢幕 px）；卡片頂端離指令列太近時，至少給這麼高再捲動。 */
 const BAR_GAP = 8;
 const MIN_OPEN_HEIGHT = 160;
@@ -72,7 +83,7 @@ export function CanvasProgress({ rects }: { rects: ReadonlyMap<string, Rect> }) 
         y: rect.y,
       });
     }
-    // 單獨 session：只畫寫過的卡（每張卡旁都放「＋ 進度卡」太吵；新卡從卡片選單、Memory 或 agent 建立）。
+    // 單獨 session：只畫寫過的卡（每張卡旁都放「+ 進度卡」太吵；新卡從卡片選單、Memory 或 agent 建立）。
     const inTeam = new Set(members.map((m) => m.sessionId));
     for (const card of cards ?? []) {
       if (card.sessionId === null || inTeam.has(card.sessionId) || card.revision === 0) continue;
@@ -106,6 +117,17 @@ export function CanvasProgress({ rects }: { rects: ReadonlyMap<string, Rect> }) 
     return out;
   }, [teams, members, sessions, cards, rects, zoneId, gap, expanded]);
 
+  // 寫過的卡（收合時有內容要讀）；還沒寫過的只是「+ 進度卡」佔位鈕。
+  const written = useMemo(
+    () =>
+      new Set(
+        (cards ?? [])
+          .filter((c) => c.revision > 0 || c.id !== null)
+          .map((c) => (c.teamId !== null ? `team:${c.teamId}` : `session:${c.sessionId}`)),
+      ),
+    [cards],
+  );
+
   return (
     // 自己的一層（跟著畫布的平移與縮放）：ViewportPortal 在節點底下，卡片會被 session 卡蓋住、點不到。
     <div className="progress-layer" ref={layer}>
@@ -116,8 +138,16 @@ export function CanvasProgress({ rects }: { rects: ReadonlyMap<string, Rect> }) 
         {anchors.map((a) => {
           const open = expanded === a.key;
           const tiny = !open && zoom < TINY_ZOOM;
-          // 展開或小標籤：反向縮放成螢幕上的大小；收合：畫布 px（寬 280，跟著縮放）。
-          const scale = open ? Math.max(1, 1 / zoom) : tiny ? 1 / zoom : 1;
+          // 展開或小標籤：反向縮放成螢幕上的大小。收合（寫過的）：放大到螢幕上至少 COLLAPSED_SCREEN 倍，
+          // 寬度除以同一個倍數（--progress-k，progress.css），畫布上佔的寬度仍是 280。
+          // 還沒寫過的「+ 進度卡」只是佔位，維持畫布 px：放大會往下長、蓋到旁邊沒整理過的卡。
+          const scale = open
+            ? Math.max(1, 1 / zoom)
+            : tiny
+              ? 1 / zoom
+              : written.has(a.key)
+                ? Math.max(1, COLLAPSED_SCREEN / zoom)
+                : 1;
           // 展開時：卡片底部不超過指令列頂端（沒有指令列就是這一層的底部）。換算回卡片自己的 px（螢幕 px ÷ 縮放倍數）。
           const room = (barTop ?? height) - BAR_GAP - (ty + a.y * zoom);
           const maxHeight = open ? Math.max(room, MIN_OPEN_HEIGHT) / (scale * zoom) : undefined;
@@ -126,10 +156,14 @@ export function CanvasProgress({ rects }: { rects: ReadonlyMap<string, Rect> }) 
               key={a.key}
               className={`progress-anchor nopan nodrag nowheel${open ? ' expanded' : ''}`}
               style={{
-                transform: `translate(${a.x}px, ${a.y}px) scale(${scale})`,
+                // 小標籤（含「+ 進度卡」）放在框頂線的上面：螢幕上固定 36px 高，畫布縮很小時往下長
+                // 會蓋到從團隊框拉到右邊那張卡的線與卡片標題列。
+                transform: `translate(${a.x}px, ${a.y}px) scale(${scale})${tiny ? ' translateY(-100%)' : ''}`,
+                ['--progress-k' as string]: open || tiny ? 1 : scale,
                 ...(maxHeight !== undefined ? { maxHeight, overflowY: 'auto' } : {}),
               }}
               data-testid={`progress-anchor-${a.key}`}
+              data-grows={written.has(a.key) ? 'true' : undefined}
               data-summary={zoom < SUMMARY_ZOOM ? 'true' : undefined}
             >
               <ProgressCardView

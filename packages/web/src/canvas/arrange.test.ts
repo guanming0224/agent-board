@@ -3,7 +3,7 @@ import type { ResearchKind, TeamMember } from '@agent-board/protocol';
 import {
   arrangeCanvas,
   arrangeTeam,
-  MAX_ROW_W,
+  DEFAULT_VIEW,
   restoreLayout,
   PROGRESS_CARD_W,
   PROGRESS_DEFAULT_H,
@@ -12,6 +12,7 @@ import {
   TEAM_BLOCK_GAP,
   TEAM_CLEAR,
   TEAM_GAP_SCREEN,
+  TEAM_ROW_GAP,
   teamRows,
   TIDY_FIT_MIN_ZOOM,
   tidyFitZoom,
@@ -34,6 +35,8 @@ import { canvasTeams, TEAM_PADDING, teamRect } from './teams';
 
 const STEP_X = CARD_W + GAP_X;
 const STEP_Y = CARD_H + GAP_Y;
+/** 團隊裡上下兩列的距離（TEAM_ROW_GAP 比 GAP_Y 寬，留給關係線和線上的字）。 */
+const TEAM_STEP_Y = CARD_H + TEAM_ROW_GAP;
 
 const card = (x: number, y: number): Rect => ({ x, y, w: CARD_W, h: CARD_H });
 const session = (id: string, extra: Partial<ArrangeSession> = {}): ArrangeSession => ({
@@ -58,6 +61,17 @@ function input(
 ): ArrangeInput {
   const teams = [...new Set(members.map((m) => m.teamId))].map((id) => ({ id }));
   return { rects: new Map(Object.entries(rects)), sessions, teams, members };
+}
+
+function boundsOf(rects: readonly Rect[]): Rect {
+  const x = Math.min(...rects.map((r) => r.x));
+  const y = Math.min(...rects.map((r) => r.y));
+  return {
+    x,
+    y,
+    w: Math.max(...rects.map((r) => r.x + r.w)) - x,
+    h: Math.max(...rects.map((r) => r.y + r.h)) - y,
+  };
 }
 
 function overlapping(rects: ReadonlyMap<string, Rect>): string[] {
@@ -202,6 +216,29 @@ describe('teamRows：隊長一列，其餘依分工、名稱', () => {
     ]);
     expect(teamRows('t', data)).toEqual([['a', 'b', 'c'], ['d']]);
   });
+
+  it('同分工裡照交接順序由左到右（交接線只跨相鄰的空隙）；分工順序不變；有環也排得完', () => {
+    const ids = ['lead', 'a', 'b', 'c', 'd', 'rv'];
+    const data: ArrangeInput = {
+      ...input(Object.fromEntries(ids.map((id) => [id, card(0, 0)])), [
+        member('t', 'lead', 'lead'),
+        member('t', 'a', 'worker'),
+        member('t', 'b', 'worker'),
+        member('t', 'c', 'worker'),
+        member('t', 'd', 'worker'),
+        member('t', 'rv', 'reviewer'),
+      ]),
+      // c → a → d，b 單獨；rv → lead 跨分工不影響；d → c 造成環也不會卡住。
+      links: [
+        { source: 'c', target: 'a' },
+        { source: 'a', target: 'd' },
+        { source: 'rv', target: 'lead' },
+      ],
+    };
+    expect(teamRows('t', data)).toEqual([['lead'], ['b', 'c', 'a'], ['d', 'rv']]);
+    const cyclic = { ...data, links: [...data.links!, { source: 'd', target: 'c' }] };
+    expect(teamRows('t', cyclic).flat().sort()).toEqual([...ids].sort());
+  });
 });
 
 describe('arrangeTeam', () => {
@@ -224,9 +261,9 @@ describe('arrangeTeam', () => {
     const x0 = STEP_X;
     const y0 = STEP_Y;
     expect(out.get('lead')).toEqual(card(x0 + STEP_X, y0));
-    expect(out.get('a')).toEqual(card(x0, y0 + STEP_Y));
-    expect(out.get('b')).toEqual(card(x0 + STEP_X, y0 + STEP_Y));
-    expect(out.get('c')).toEqual(card(x0 + 2 * STEP_X, y0 + STEP_Y));
+    expect(out.get('a')).toEqual(card(x0, y0 + TEAM_STEP_Y));
+    expect(out.get('b')).toEqual(card(x0 + STEP_X, y0 + TEAM_STEP_Y));
+    expect(out.get('c')).toEqual(card(x0 + 2 * STEP_X, y0 + TEAM_STEP_Y));
   });
 
   it('壓到新區塊的非成員搬到最近的空位，其他卡不動', () => {
@@ -243,7 +280,7 @@ describe('arrangeTeam', () => {
     );
     const out = arrangeTeam('t', data);
     expect(out.get('lead')).toEqual(card(0, 0));
-    expect(out.get('a')).toEqual(card(0, STEP_Y));
+    expect(out.get('a')).toEqual(card(0, TEAM_STEP_Y));
     expect(out.get('far')).toEqual(data.rects.get('far'));
     const moved = out.get('intruder')!;
     expect(moved).not.toEqual(data.rects.get('intruder'));
@@ -271,7 +308,7 @@ describe('arrangeTeam', () => {
       ],
     );
     const out = arrangeTeam('t', data);
-    expect(out.get('shared')).toEqual(card(0, STEP_Y));
+    expect(out.get('shared')).toEqual(card(0, TEAM_STEP_Y));
     // uWorker 原本在 (0, STEP_Y)，被 shared 的新位置壓到 → 搬走
     expect(overlaps(out.get('uWorker')!, out.get('shared')!)).toBe(false);
     expect(out.get('uLead')).toEqual(data.rects.get('uLead'));
@@ -357,11 +394,14 @@ describe('arrangeCanvas', () => {
     const pad = 32;
     // 團隊在最前面：隊長在成員上方
     expect(out.get('lead')).toEqual(card(pad, pad));
-    expect(out.get('w')).toEqual(card(pad, pad + STEP_Y));
-    // 依序：專案 → 資料夾（/elsewhere 在 /work 前）→ 已結束
-    const order = ['lead', 'p1', 'd1', 'z', 'old'].map((id) => out.get(id)!.x);
-    expect(order).toEqual([...order].sort((a, b) => a - b));
-    expect(out.get('old')!.y).toBe(0);
+    expect(out.get('w')).toEqual(card(pad, pad + TEAM_STEP_Y));
+    // 依序（由左到右、一列排完換下一列）：專案 → 資料夾（/elsewhere 在 /work 前）→ 已結束
+    const order = ['lead', 'p1', 'd1', 'z', 'old'].map((id) => out.get(id)!);
+    for (let i = 1; i < order.length; i += 1) {
+      const [a, b] = [order[i - 1]!, order[i]!];
+      const sameRow = b.y < a.y + a.h && a.y < b.y + b.h;
+      expect(sameRow ? b.x > a.x : b.y >= a.y + a.h, `第 ${i} 塊`).toBe(true);
+    }
   });
 
   it('同專案的卡排在一起，每列最多 3 張、依名稱', () => {
@@ -380,16 +420,26 @@ describe('arrangeCanvas', () => {
     expect(out.get('e')).toEqual(card(STEP_X / 2 + STEP_X, STEP_Y));
   });
 
-  it('超過最大列寬就換列', () => {
+  it('依畫面比例換列：一排卡片在 16:10 的畫面排成接近 16:10，直式手機排成直的（GM 2026-11-09）', () => {
     const rects: Record<string, Rect> = {};
     const sessions: ArrangeSession[] = [];
     for (let i = 0; i < 10; i += 1) {
       rects[`s${i}`] = card(i * STEP_X, 0);
       sessions.push(session(`s${i}`, { cwd: `/p${i}` }));
     }
-    const out = arrangeCanvas(input(rects, [], sessions));
-    for (const r of out.values()) expect(r.x + r.w).toBeLessThanOrEqual(MAX_ROW_W);
-    expect(new Set([...out.values()].map((r) => r.y)).size).toBeGreaterThan(1);
+    const aspect = (out: ReadonlyMap<string, Rect>) => {
+      const b = boundsOf([...out.values()]);
+      return b.w / b.h;
+    };
+    const wide = arrangeCanvas({ ...input(rects, [], sessions), view: DEFAULT_VIEW });
+    expect(overlapping(wide)).toEqual([]);
+    expect(aspect(wide)).toBeGreaterThan(1.2);
+    expect(aspect(wide)).toBeLessThan(2.2);
+    const phone = arrangeCanvas({ ...input(rects, [], sessions), view: { w: 390, h: 844 } });
+    expect(aspect(phone)).toBeLessThan(1);
+    // 指定列寬（測試用）時照列寬換列。
+    const fixed = arrangeCanvas(input(rects, [], sessions), 3 * STEP_X);
+    for (const r of fixed.values()) expect(r.x + r.w).toBeLessThanOrEqual(3 * STEP_X);
   });
 
   it('團隊框之間（與後面沒有團隊的卡）至少隔 TEAM_BLOCK_GAP（P2 §4.2）', () => {
@@ -516,8 +566,8 @@ describe('arrangeCanvas', () => {
     expect(overlaps(note, out.get('z')!)).toBe(false);
   });
 
-  it('整理後全部顯示：手機與桌面寬度下，團隊之間在畫面上至少 48px（P2 §4.2）', () => {
-    expect(TEAM_GAP_SCREEN).toBe(48);
+  it('整理後全部顯示：手機與桌面寬度下，團隊之間在畫面上至少 TEAM_GAP_SCREEN（36px，GM 2026-11-09 從 48 放寬；P2 §4.2）', () => {
+    expect(TEAM_GAP_SCREEN).toBe(36);
     expect(TEAM_BLOCK_GAP * TIDY_FIT_MIN_ZOOM).toBeGreaterThanOrEqual(TEAM_GAP_SCREEN);
     const gap = (a: Rect, b: Rect) =>
       Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w), b.y - (a.y + a.h), a.y - (b.y + b.h));

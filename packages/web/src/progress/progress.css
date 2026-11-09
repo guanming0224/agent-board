@@ -5,10 +5,10 @@
 .progress-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   min-width: 0;
-  padding: 10px 12px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   background: var(--surface);
@@ -18,41 +18,33 @@
   white-space: normal;
 }
 .progress-card.on-canvas {
-  width: 280px;
+  /* 收合時會反向縮放（CanvasProgress 的 --progress-k），寬度除回去，畫布上佔的寬度固定 280。 */
+  width: calc(280px / var(--progress-k, 1));
 }
-.progress-card .row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
+/* .row 用全域的（controls.css：flex＋換行＋gap 8）。 */
 .progress-card .spacer {
   flex: 1 1 auto;
 }
 .progress-card .faint {
   color: var(--faint);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .progress-card .mono,
 .progress-card code,
 .progress-card pre {
   font-family: var(--font-mono);
 }
-.progress-card button.link {
-  min-height: 0;
-  padding: 0 4px;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  text-decoration: underline;
-}
+/* 文字連結是全域的 button.link（controls.css）。 */
 
-/* 收合：一行「下一步」＋相對時間 */
+/* 收合：一行「下一步」＋相對時間。整張卡是一顆標準高度（36）的按鈕。 */
 button.progress-collapsed,
-button.progress-tiny {
+button.progress-tiny,
+button.progress-add {
   flex-direction: row;
   align-items: center;
-  min-height: 40px;
+  min-height: var(--ctl-h);
+  /* 上下不加內距，整張卡就是標準高 36（和其他按鈕同一級）。 */
+  padding-block: 0;
   cursor: pointer;
 }
 .progress-collapsed .progress-line {
@@ -61,35 +53,37 @@ button.progress-tiny {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 .progress-tag {
   flex: none;
-  padding: 0 6px;
+  padding: 0 var(--space-1h);
   border: 1px solid var(--border-2);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 .progress-age {
   flex: none;
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .progress-age.stale {
   color: var(--fg-muted);
   font-weight: 600;
 }
-button.progress-tiny {
+button.progress-tiny,
+.progress-card.on-canvas.progress-tiny {
   width: auto;
-  gap: 6px;
+  white-space: nowrap;
+  gap: var(--space-1h);
 }
 button.progress-add {
   align-items: center;
   justify-content: center;
-  min-height: 40px;
+  min-height: var(--ctl-h);
   border-style: dashed;
   background: transparent;
   color: var(--muted);
@@ -100,15 +94,16 @@ button.progress-add {
 .progress-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
+/* 標題列整條是「收合」鈕：精簡高度 32，手機 44（controls.css 的觸控下限，這裡權重比較高要自己寫）。 */
 .progress-head .progress-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 32px;
+  min-height: var(--ctl-h-sm);
   padding: 0;
   border: 0;
   background: none;
@@ -121,11 +116,11 @@ button.progress-add {
 .progress-locked,
 .progress-notice {
   margin: 0;
-  padding: 6px 8px;
+  padding: var(--space-1h) var(--space-2);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface-2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .progress-fields {
   display: grid;
@@ -137,7 +132,7 @@ button.progress-add {
 .progress-conflict h4 {
   margin: 0 0 2px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 .progress-field.f-gmNotes {
@@ -146,8 +141,8 @@ button.progress-add {
 }
 .progress-card .md p,
 .progress-card .md ul {
-  margin: 0 0 4px;
-  font-size: 13px;
+  margin: 0 0 var(--space-1);
+  font-size: var(--fs-ctl-sm);
   overflow-wrap: anywhere;
 }
 .progress-card .md ul {
@@ -155,9 +150,9 @@ button.progress-add {
 }
 .progress-card .md code {
   padding: 0 3px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .progress-facts ul {
   display: grid;
@@ -166,7 +161,7 @@ button.progress-add {
   padding: 0;
   list-style: none;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
 .progress-members {
@@ -174,28 +169,20 @@ button.progress-add {
   flex-wrap: wrap;
   gap: 4px 10px;
 }
-.progress-actions button,
-.progress-edit-actions button,
-.progress-deliver button,
-.progress-conflict button {
-  min-height: 32px;
-  padding: 0 10px;
-  font-size: 12.5px;
-}
+/*
+ * 進度卡裡的按鈕一律 button.sm（32／13，元件自己加 class）；「歷史」「鎖定」開著、衝突的三選一（.seg.sm）
+ * 選中，都是全站的「按下」樣式（controls.css）。
+ */
 .progress-ask {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
-.progress-card .chip.cost {
-  border-color: var(--quota);
-  color: var(--quota);
-}
 .progress-deliver {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px;
+  gap: var(--space-1h);
+  padding: var(--space-2);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-control);
   background: var(--surface-2);
@@ -209,11 +196,11 @@ button.progress-add {
   padding: 0;
   list-style: none;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .progress-card .msg {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .progress-card .msg.err,
 .progress-count.err {
@@ -223,7 +210,7 @@ button.progress-add {
 /* 編輯 */
 .progress-editor {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .progress-input {
   display: grid;
@@ -231,18 +218,13 @@ button.progress-add {
 }
 .progress-input label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
+/* 底、框、字級用全域輸入框（controls.css：--surface-2 底、14px，手機 16px 免得 iOS 放大整頁）；這裡只給寬度與最小高。 */
 .progress-input textarea {
   width: 100%;
   min-height: 52px;
-  padding: 6px 8px;
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-control);
-  background: var(--bg);
-  color: var(--fg);
-  font: 13px/1.45 var(--font-sans);
   resize: vertical;
 }
 .progress-input textarea[aria-invalid='true'] {
@@ -251,18 +233,18 @@ button.progress-add {
 .progress-count {
   justify-self: end;
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .progress-conflict {
   display: grid;
-  gap: 8px;
-  padding: 8px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border: 1px solid var(--you);
   border-radius: var(--radius-control);
 }
 .progress-conflict p {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .progress-sides {
   display: grid;
@@ -272,17 +254,17 @@ button.progress-add {
 .progress-sides h5 {
   margin: 0;
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .progress-sides pre {
   margin: 0;
-  padding: 6px;
+  padding: var(--space-1h);
   max-height: 160px;
   overflow: auto;
   border: 1px solid var(--border-2);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -297,7 +279,7 @@ button.progress-add {
 }
 .progress-diff dt {
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
 }
 .progress-diff dd {
   margin: 0;
@@ -316,7 +298,7 @@ button.progress-add {
   padding: 0;
   overflow: auto;
   list-style: none;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 /* 畫布上的一層：蓋在節點上面（卡片要點得到），本身不吃滑鼠，拖畫布照樣穿過去。 */
@@ -351,73 +333,79 @@ button.progress-add {
   width: 360px;
   max-height: 80vh;
   overflow: auto;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+  box-shadow: var(--shadow-float);
 }
 
-/* 手機：按鈕至少 56px、衝突比對上下排列（§1.6） */
+/*
+ * 手機：衝突比對上下排列（§1.6）。按鈕、下拉、文字連結至少 44（controls.css 的觸控下限，GM Q1）；
+ * 進度卡的動作（編輯、存檔、歷史…）不會動到 session，所以不是 56。標題列整條是按鈕，這裡權重比較高要自己寫。
+ */
+@media (max-width: 640px), (pointer: coarse) {
+  .progress-head .progress-title,
+  button.progress-collapsed,
+  button.progress-tiny,
+  button.progress-add {
+    min-height: var(--ctl-h-touch);
+  }
+}
 @media (max-width: 640px) {
-  .progress-card button,
-  .progress-card select {
-    min-height: 56px;
-  }
-  .progress-card button.link {
-    min-height: 44px;
-  }
   .progress-sides {
     grid-template-columns: 1fr;
   }
 }
 
-/* Memory 面板 */
+/* Memory 面板：標題列是共用的 PanelHead（.panel-head），內距和團隊面板一樣（上 12、左右 16）。 */
 .memory-page {
   display: grid;
-  gap: 12px;
-  padding: 16px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-8);
 }
-.memory-page h1 {
+.memory-page > h1 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--fs-h1);
+}
+.memory-page > .panel-head {
+  margin: calc(-1 * var(--space-3)) calc(-1 * var(--space-4)) 0;
 }
 .memory-scope {
-  display: inline-flex;
-  gap: 0;
-}
-.memory-scope button[aria-pressed='true'] {
-  background: var(--accent-bg);
-  border-color: var(--accent);
+  justify-self: start;
 }
 .memory-list {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
 }
+/* 可點的清單列（和團隊清單、Preset 清單同一種：--surface 底、1px 框、圓角 8、內距 8 12）。 */
 .memory-row {
   display: grid;
   gap: 2px;
   width: 100%;
   min-height: 56px;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-control);
   background: var(--surface);
   text-align: left;
   font-weight: 400;
   white-space: normal;
 }
+.memory-row:hover:not(:disabled) {
+  background: var(--surface-2);
+}
 .memory-row b {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
 }
 .memory-row .line {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-ctl-sm);
 }
 .memory-row .sub {
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* 收件匣：呼號下一行淡色「下一步：…」 */

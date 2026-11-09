@@ -27,6 +27,14 @@ const STATUS_OF: Partial<Record<BadgeKind, SessionStatus>> = {
   rate_limited: 'rate_limited',
 };
 
+/** 這一項的狀態代碼（徽章、列與卡片外框的代碼色都用它，三處才不會不一樣）。 */
+export function badgeCode(kind: BadgeKind): StatusCode {
+  return (
+    SPECIAL[kind]?.code ??
+    statusCode({ status: STATUS_OF[kind] ?? 'waiting_input', statusDetail: null })
+  );
+}
+
 export function StatusBadge({ kind }: { kind: BadgeKind }) {
   const t = useT();
   const special = SPECIAL[kind];

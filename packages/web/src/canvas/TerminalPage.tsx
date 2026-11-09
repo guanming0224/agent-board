@@ -137,8 +137,13 @@ function HandoffBox({ session }: { session: Session }) {
                 <span className="sub">{t(`canvas.handoff.${rule.trigger}`)}</span>
               </div>
               <div className="xpand-row">
-                <button aria-pressed={rule.enabled} disabled={busy} onClick={() => toggle(rule)}>
-                  {rule.enabled ? t('canvas.handoff.turnOff') : t('canvas.handoff.turnOn')}
+                <button
+                  className="sm"
+                  aria-pressed={rule.enabled}
+                  disabled={busy}
+                  onClick={() => toggle(rule)}
+                >
+                  {rule.enabled ? t('team.rules.on') : t('team.rules.off')}
                 </button>
                 <CostChip />
               </div>
@@ -147,7 +152,12 @@ function HandoffBox({ session }: { session: Session }) {
         </ul>
       )}
       <div className="xpand-row">
-        <select aria-label={t('team.rules.to')} value={to} onChange={(e) => setTo(e.target.value)}>
+        <select
+          className="sm"
+          aria-label={t('team.rules.to')}
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+        >
           <option value="">{t('team.rules.to')}</option>
           {targets.map((s) => (
             <option key={s.id} value={s.id}>
@@ -156,6 +166,7 @@ function HandoffBox({ session }: { session: Session }) {
           ))}
         </select>
         <select
+          className="sm"
           aria-label={t('team.rules.trigger')}
           value={trigger}
           onChange={(e) => setTrigger(e.target.value as HandoffRule['trigger'])}
@@ -169,7 +180,7 @@ function HandoffBox({ session }: { session: Session }) {
               </option>
             ))}
         </select>
-        <button disabled={busy || to === ''} onClick={add}>
+        <button className="sm" disabled={busy || to === ''} onClick={add}>
           {t('canvas.full.handoffAdd')}
         </button>
       </div>
@@ -188,6 +199,7 @@ function EscButton({ session }: { session: Session }) {
   return (
     <>
       <button
+        className="sm"
         disabled={!connected || NO_INPUT.includes(session.status)}
         onClick={() => {
           backend.terminal.send({

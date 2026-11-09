@@ -158,8 +158,9 @@ export function ArchiveToast() {
   }, [toast]);
 
   if (!toast && !error) return null;
+  // 和整理後的提示疊在同一欄（CanvasPage 的 .toast-stack）。
   return (
-    <Panel position="bottom-center" className="archive-toast" data-testid="archive-toast">
+    <div className="archive-toast" data-testid="archive-toast">
       {toast && (
         <div className="toast-row" role="status">
           <span>
@@ -169,7 +170,7 @@ export function ArchiveToast() {
             {toast.rulesPaused > 0 &&
               ` ${t('canvas.archive.donePaused', { n: toast.rulesPaused })}`}
           </span>
-          <button type="button" onClick={() => void undo(toast.ids)}>
+          <button type="button" className="sm" onClick={() => void undo(toast.ids)}>
             {t('canvas.archive.undo')}
           </button>
         </div>
@@ -187,7 +188,7 @@ export function ArchiveToast() {
           </button>
         </div>
       )}
-    </Panel>
+    </div>
   );
 }
 
@@ -197,7 +198,7 @@ export function ArchiveSelection({ ids }: { ids: string[] }) {
   if (ids.length < 2) return null;
   return (
     <Panel position="top-left" className="edge-panel select-panel" data-testid="archive-selection">
-      <button type="button" onClick={() => requestArchive(ids)}>
+      <button type="button" className="sm" onClick={() => requestArchive(ids)}>
         {t('canvas.archive.selected', { n: ids.length })}
       </button>
     </Panel>

@@ -79,7 +79,7 @@ export function LoginPage() {
         </span>
       </header>
       <form
-        className="form-card"
+        className="form-card login-form"
         aria-label={t('flows.login.title')}
         onSubmit={(e) => {
           e.preventDefault();

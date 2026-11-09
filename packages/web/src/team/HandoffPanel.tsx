@@ -5,7 +5,7 @@ import type { HandoffRule, Session, SessionEvent, Team } from '@agent-board/prot
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { errorText, useClock } from '../views';
-import { ActionMessage, CostChip, useAction } from './common';
+import { ActionMessage, CostChip, TwoClickButton, useAction } from './common';
 import {
   choiceProblem,
   createRules,
@@ -206,7 +206,9 @@ function RuleRow({ rule, members }: { rule: HandoffRule; members: Session[] }) {
           allowOneWay
           onChange={(n) => void update({ action: patchAction(rule.action, { maxRounds: n }) })}
         />
+        {/* 開關：按下＝全站的「按下」外觀（淡底＋白框），不是實心白的主按鈕（GM Q2）。 */}
         <button
+          className="sm"
           aria-pressed={rule.enabled}
           disabled={busy}
           onClick={() => void update({ enabled: !rule.enabled })}
@@ -214,18 +216,19 @@ function RuleRow({ rule, members }: { rule: HandoffRule; members: Session[] }) {
           {rule.enabled ? t('team.rules.on') : t('team.rules.off')}
         </button>
         <CostChip />
-        <button
-          className="link"
+        {/* 放在開關旁邊，誤觸機率高：按兩次才刪（審查 panels #3）。 */}
+        <TwoClickButton
+          className="sm"
+          label={t('team.rules.delete')}
+          armedLabel={t('team.rules.deleteArmed')}
           disabled={busy}
-          onClick={() =>
+          onConfirm={() =>
             void run(async () => {
               await backend.deleteHandoffRule(rule.id);
               await refreshTeams(backend);
             })
           }
-        >
-          {t('team.rules.delete')}
-        </button>
+        />
       </div>
       <p className="sub rule-limit">
         {t(TRIGGER_NOTE[rule.trigger])}
@@ -352,7 +355,7 @@ function NewRule({ team, members }: { team: Team; members: Session[] }) {
         </>
       )}
       <div className="row">
-        <button disabled={busy || invalid} onClick={add}>
+        <button className="primary" disabled={busy || invalid} onClick={add}>
           {two ? t('team.rules.addTwoWay') : t('team.rules.add')}
         </button>
         <ActionMessage message={message} testId="new-rule-msg" />

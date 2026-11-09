@@ -56,7 +56,7 @@ export function LinkPanel() {
       <div className="link-row">
         <button
           type="button"
-          className="link-panel-toggle"
+          className="sm link-panel-toggle"
           aria-expanded={open}
           aria-controls="link-legend"
           title={t('canvas.link.legend')}
@@ -70,7 +70,7 @@ export function LinkPanel() {
             <button
               key={key}
               type="button"
-              className="link-filter"
+              className="sm link-filter"
               aria-pressed={filters[key]}
               data-testid={`link-filter-${key}`}
               title={t(`canvas.link.filter.${key}.hint`)}

@@ -261,6 +261,8 @@ test('拒絕要填原因，原因真的回到 claude', async ({ page }) => {
   await expectStatus(page.request, session.id, 'waiting_permission');
   // 展開那一列的審核卡（原審核中心）
   await inbox.getByTestId(`inbox-toggle-${session.id}`).click();
+  // 灰色「拒絕」先展開原因框（GM Q3）
+  await inbox.getByRole('button', { name: '拒絕' }).first().click();
   const reason = inbox.getByPlaceholder(/拒絕原因/).first();
   await reason.fill('integration-deny-reason');
   await inbox.getByRole('button', { name: '拒絕' }).first().click();

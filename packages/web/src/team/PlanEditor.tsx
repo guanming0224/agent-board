@@ -284,6 +284,7 @@ export function PlanRowsEditor({
               <span className="sub where">{where(row)}</span>
               <button
                 type="button"
+                className="sm"
                 aria-label={t('team.new.rowRemove', { n })}
                 onClick={() =>
                   setRows((list) =>
@@ -295,7 +296,7 @@ export function PlanRowsEditor({
                   )
                 }
               >
-                ×
+                {t('team.plan.remove')}
               </button>
               {step && (
                 <span
