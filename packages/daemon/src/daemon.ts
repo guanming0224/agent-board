@@ -428,10 +428,13 @@ export class Daemon {
     const outcome = await this.connectSessionHost();
     if (outcome.kind === 'host') {
       await this.reattachHostSessions(outcome.sessions);
-      // 密鑰檔只留還活著的 session 的（MCP server 還拿著它們）。
-      const live = new Set([...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.id));
-      for (const id of this.blocked.keys()) live.add(id);
-      clearMcpDir(dataDir, live);
+      // 接回途中 host 斷了：恢復流程正在重新接回，那些 session 不在 this.sessions 裡，不能清它們的密鑰檔（N5）。
+      if (this.host !== null && !this.recoveringHost) {
+        // 密鑰檔只留還活著的 session 的（MCP server 還拿著它們）。
+        const live = new Set([...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.id));
+        for (const id of this.blocked.keys()) live.add(id);
+        clearMcpDir(dataDir, live);
+      }
     } else if (outcome.kind === 'absent') {
       // 確定沒有 host：上次留下的派工設定與密鑰都作廢（agent 已經不在），每個 PTY 會拿到新的。
       clearMcpDir(dataDir, this.idsWithLiveAgent());
@@ -709,9 +712,21 @@ export class Daemon {
   }
 
   /** 使用者在網頁上停止一個被擋住的 session：只把它從清單移除（agent 若還在別處跑，這裡管不到）。 */
-  private endBlocked(sessionId: string): void {
+  private async endBlocked(sessionId: string): Promise<void> {
     const blocked = this.blocked.get(sessionId);
     if (!blocked) return;
+    // 上一輪的 agent（快照記的 pid＋啟動時間）還在：先收掉，確定沒了才移除。不然之後按「接續」會開出第二個（N1）。
+    const snapshot = readSnapshot(this.deps.config.dataDir, sessionId);
+    if (snapshot && agentStillRunning(snapshot.agentPid, snapshot.agentStartedAt)) {
+      const gone = await this.killOldAgent(sessionId, snapshot.agentPid!, snapshot.agentStartedAt);
+      if (!gone) {
+        const reason = `舊的 agent（pid ${snapshot.agentPid}）收不掉，沒有移除這個 session。請手動結束那個程序，或重新啟動 daemon。`;
+        this.blocked.set(sessionId, { entry: blocked.entry, reason });
+        this.send({ type: 'session.runtime', session: this.blockedRuntime(blocked.entry, reason) });
+        return;
+      }
+    }
+    if (!this.blocked.has(sessionId)) return;
     this.blocked.delete(sessionId);
     this.store.remove(sessionId);
     removeSnapshot(this.deps.config.dataDir, sessionId);
@@ -719,6 +734,36 @@ export class Daemon {
       ...this.blockedRuntime(blocked.entry, blocked.reason),
       endedAt: new Date().toISOString(),
     });
+  }
+
+  /**
+   * 收掉上一輪還在跑的 agent：host 連著而且認得這個 session 就請 host 送 SIGKILL；否則直接對它的程序群組
+   * 送 SIGKILL（PTY 子程序是 session leader，pid 即 process group）。回傳確定收掉了沒有。
+   */
+  private async killOldAgent(
+    sessionId: string,
+    pid: number,
+    startedAt: string | null,
+  ): Promise<boolean> {
+    const host = this.host;
+    if (host?.connected) {
+      const info = (await host.list().catch(() => [])).find((s) => s.id === sessionId && s.alive);
+      if (info && (await this.killHostSession(host, info))) return true;
+    }
+    for (const target of [-pid, pid]) {
+      try {
+        process.kill(target, 'SIGKILL');
+        break;
+      } catch {
+        // 群組送不了（例如 Windows）就試程序本身
+      }
+    }
+    const deadline = Date.now() + ORPHAN_KILL_WAIT_MS;
+    while (Date.now() < deadline) {
+      if (!agentStillRunning(pid, startedAt)) return true;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return !agentStillRunning(pid, startedAt);
   }
 
   /**
@@ -904,7 +949,7 @@ export class Daemon {
         return;
       case 'session.stop':
         if (this.blocked.has(message.sessionId)) {
-          this.endBlocked(message.sessionId);
+          void this.endBlocked(message.sessionId);
           return;
         }
         this.withSession(message.sessionId, message.type, (s) => s.terminate());
@@ -1169,6 +1214,13 @@ export class Daemon {
     let worktree: WorktreeInfo | null = null;
     try {
       if (this.stopping) throw new Error('daemon 正在關閉');
+      // 上一輪的 agent（快照記的 pid＋啟動時間）還在跑：再開一個就是同一個對話兩個 agent（N1）。
+      const previous = readSnapshot(this.deps.config.dataDir, sessionId);
+      if (previous && agentStillRunning(previous.agentPid, previous.agentStartedAt)) {
+        throw new Error(
+          `這個 session 上一輪的 agent（pid ${previous.agentPid}）還在跑，不能再開一個。請先在畫布上停止它（會結束那個程序），或重新啟動 daemon 讓它接回。`,
+        );
+      }
       const realCwd = await realDir(spec.cwd);
       // 同步區段：查清理中的資料夾、登記自己（與 purgeOnce 對稱）。
       if (this.purging.has(sessionId) || this.inPurgingDir(realCwd)) {

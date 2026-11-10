@@ -1,12 +1,12 @@
 // 審查後補的安全性（S1、S2、W2、W6、W7）：同一個對話不能有兩個 agent、接不回時不殺、重入、崩潰後的審批、重畫。
 // 真的 session host（同一個程序裡）、真的 node-pty、假 claude、假 hub。
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DaemonToHub, SessionRuntime } from '@agent-board/protocol';
 import { hostEndpoint, SessionHostClient } from '@agent-board/session-host';
 import { SessionHostServer } from '@agent-board/session-host/server';
-import type { Daemon } from './daemon';
+import { Daemon } from './daemon';
 import { agentStillRunning, processStartTime } from './processCheck';
 import { readSnapshot, stateDir } from './sessionState';
 import { HookClient, Harness, waitUntil } from './test-support/harness';
@@ -325,5 +325,67 @@ describe('W7：接回後微調尺寸讓 TUI 重畫', () => {
     expect((await hostSessions())[0]).toMatchObject({ cols: 120, rows: 32 });
     input('s1', 'size');
     await h.waitForOutput('s1', 'SIZE 120x32');
+  });
+});
+
+describe('N1：被擋住的 session 停止與接續', () => {
+  it('停止：舊 agent 還在（host 不能用）就先收掉它的程序群組，確定沒了才移除；之後接續只會有一個 agent', async () => {
+    await h.start();
+    await h.createAndSubscribe('s1');
+    await stopDaemons();
+    const pid = readSnapshot(h.dataDir, 's1')!.agentPid!;
+    writeFileSync(hostEndpoint(h.dataDir).tokenPath, 'sk-ant-demo-wrong-token\n');
+    await h.startDaemon({ sessionHostLaunchWaitMs: 200 });
+    expect(helloSession('s1')).toMatchObject({ status: 'error' });
+    expect(agentStillRunning(pid, readSnapshot(h.dataDir, 's1')!.agentStartedAt)).toBe(true);
+
+    h.hub.send({ type: 'session.stop', sessionId: 's1' });
+    await waitUntil(() => runtimes('s1').some((r) => r.endedAt !== null), '停止後算結束');
+    expect(agentStillRunning(pid, null)).toBe(false);
+    expect(readSnapshot(h.dataDir, 's1')).toBeNull();
+
+    // 接續：舊的已經收掉，開一個新的。
+    h.hub.send({ type: 'session.create', requestId: 'resume-s1', sessionId: 's1', spec: h.spec() });
+    await h.hub.waitFor('session.created', (m) => m.requestId === 'resume-s1');
+    await waitUntil(() => h.runs().length === 2, '新的 agent 開起來');
+  });
+
+  it('接續前檢查：快照記的舊 agent 還在跑就拒絕，回清楚的錯誤，不開第二個', async () => {
+    await h.start();
+    await h.createAndSubscribe('s1');
+    await stopDaemons();
+    const pid = readSnapshot(h.dataDir, 's1')!.agentPid!;
+    orphans.push(pid);
+    // host 被殺但 agent 沒跟著走（孤兒）：daemon 判斷沒有 host、但 pid 還在 → 擋住。
+    await host!.close({ killSessions: false });
+    host = null;
+    await h.startDaemon();
+    h.hub.send({ type: 'session.create', requestId: 'again', sessionId: 's1', spec: h.spec() });
+    const failed = await h.hub.waitFor('session.createFailed', (m) => m.requestId === 'again');
+    expect(failed.error).toMatch(new RegExp(`pid ${pid}.*還在跑`));
+    expect(h.runs()).toHaveLength(1);
+  });
+});
+
+describe('N5：啟動接回途中 host 斷線', () => {
+  it('恢復流程進行中：不清 MCP 密鑰檔（那些 session 還沒接回）', async () => {
+    const mcp = join(h.dataDir, 'mcp');
+    mkdirSync(mcp, { recursive: true });
+    writeFileSync(join(mcp, 'ghost.key'), 'sk-ant-demo-secret\n');
+    writeFileSync(join(mcp, 'ghost.json'), '{}');
+    const proto = Daemon.prototype as unknown as Record<string, unknown>;
+    const original = proto.reattachHostSessions;
+    proto.reattachHostSessions = async function (this: Record<string, unknown>) {
+      this.host = null;
+      this.recoveringHost = true;
+    };
+    try {
+      await h.start();
+    } finally {
+      proto.reattachHostSessions = original;
+    }
+    expect(existsSync(join(mcp, 'ghost.key'))).toBe(true);
+    expect(existsSync(join(mcp, 'ghost.json'))).toBe(true);
+    h.daemons[0]!['recoveringHost'] = false;
   });
 });
