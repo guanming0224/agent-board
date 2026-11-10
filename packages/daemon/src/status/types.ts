@@ -20,6 +20,15 @@ export interface StatusTrackerOptions {
   onChange: (change: StatusChange) => void;
 }
 
+/** daemon 重啟、從 session host 接回時載入的狀態（CONTRACTS §20.3）。 */
+export interface TrackerRestoreState {
+  status: SessionStatus;
+  detail: string | null;
+  /** 進入這個狀態的時間（statusSince）。 */
+  at: Date;
+  claudeSessionId: string | null;
+}
+
 export interface StatusTracker {
   readonly status: SessionStatus;
   /** claude 回報的 id；`/clear` 之類的動作會讓它改變。 */
@@ -39,6 +48,16 @@ export interface StatusTracker {
   onExit(exitCode: number): void;
   setStuckMinutes(minutes: number): void;
   dispose(): void;
+  /**
+   * 接回時載入上一個 daemon 存下的狀態。不觸發 onChange（狀態沒有變，只是換了一個 daemon 看著）。
+   * 舊的測試替身可以沒有；沒有就從 starting 開始。
+   */
+  restore?(state: TrackerRestoreState): void;
+  /**
+   * 接回後用畫面補正狀態（停機期間漏掉的 hook）。和一般轉換一樣觸發 onChange；同狀態不動。
+   * reason 用 `screen:*`。
+   */
+  correct?(to: SessionStatus, reason: string, detail: string | null): void;
 }
 
 export type CreateStatusTracker = (options: StatusTrackerOptions) => StatusTracker;

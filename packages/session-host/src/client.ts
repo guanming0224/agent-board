@@ -204,6 +204,10 @@ export class SessionHostClient {
       case 'error':
         if (message.id) this.handlers.get(message.id)?.onError?.(message.error);
         return;
+      case 'shutdown':
+        // host 要收掉所有 agent：之後的結束都不是 session 自己結束的，當成連線中斷處理（daemon 會改用 --resume）。
+        this.close();
+        return;
       case 'hello.ok':
       case 'hello.error':
         return;

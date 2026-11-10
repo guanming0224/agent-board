@@ -1,10 +1,11 @@
 // 本機 hook socket：unix socket 或 Windows named pipe，NDJSON（CONTRACTS §4.2）。
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { connect, createServer, type Server, type Socket } from 'node:net';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { tmpdir, userInfo } from 'node:os';
+import { join, resolve } from 'node:path';
 import { HookReply, HookRequest, McpReply, McpRequest } from '@agent-board/protocol';
+import { stableShortDir } from '@agent-board/session-host';
 import { errorMessage, log } from './log';
 
 /** macOS 的 sun_path 上限 104 bytes，保守一點。 */
@@ -24,17 +25,37 @@ interface SocketLocation {
 }
 
 function resolveSocketLocation(dataDir: string): SocketLocation {
+  // session host 模式下 agent 比 daemon 活得久，它環境變數裡的 socket 位置在 daemon 重啟後要還是同一個：
+  // 一律由資料夾決定，不隨機（CONTRACTS §20.3）。
   if (process.platform === 'win32') {
-    return { path: `\\\\.\\pipe\\agent-board-${randomUUID()}`, tempDir: null };
+    const key = createHash('sha256')
+      .update(`${userInfo().username}\0${resolve(dataDir)}`)
+      .digest('hex')
+      .slice(0, 16);
+    return { path: `\\\\.\\pipe\\agent-board-${key}`, tempDir: null };
   }
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const preferred = join(dataDir, 'hook.sock');
   if (Buffer.byteLength(preferred) <= MAX_UNIX_SOCKET_BYTES) {
     return { path: preferred, tempDir: null };
   }
-  // mkdtemp 建立的資料夾權限 0700、名稱隨機，其他使用者碰不到裡面的 socket。
-  const tempDir = mkdtempSync(join(tmpdir(), 'ab-'));
-  return { path: join(tempDir, 'hook.sock'), tempDir };
+  // 路徑太長：放在 tmpdir 底下固定名稱、只有自己能進的資料夾（不刪，daemon 重啟後還要用同一個）。
+  try {
+    return { path: join(stableShortDir(dataDir, 'ab-hook'), 'hook.sock'), tempDir: null };
+  } catch (error) {
+    // 固定資料夾被別人占了：退回隨機的暫存資料夾（session host 模式下 daemon 重啟後 hook 會接不回來）。
+    log.warn(`${errorMessage(error)}；hook socket 改用隨機暫存資料夾`);
+    const tempDir = mkdtempSync(join(tmpdir(), 'ab-'));
+    return { path: join(tempDir, 'hook.sock'), tempDir };
+  }
+}
+
+/**
+ * daemon 在 session host 模式下停止時留的記號：hook CLI 連不上時看它決定要不要重試（剛停 → 重啟中，重試；
+ * 停很久 → daemon 沒在跑，不重試、不拖慢 agent）。Windows 的 named pipe 旁邊不能放檔案，沒有記號。
+ */
+export function downMarkerPath(socketPath: string): string | null {
+  return socketPath.startsWith('\\\\.\\pipe\\') ? null : `${socketPath}.down`;
 }
 
 function isSocketAlive(path: string): Promise<boolean> {

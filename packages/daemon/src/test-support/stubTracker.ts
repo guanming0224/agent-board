@@ -1,6 +1,11 @@
 // 測試用狀態機：Agent B 的實作（src/status/）由 Lead 整合時接上。
 import type { HookEventName, HookPayload, SessionStatus } from '@agent-board/protocol';
-import type { CreateStatusTracker, StatusTracker, StatusTrackerOptions } from '../status/types';
+import type {
+  CreateStatusTracker,
+  StatusTracker,
+  StatusTrackerOptions,
+  TrackerRestoreState,
+} from '../status/types';
 
 export class StubTracker implements StatusTracker {
   status: SessionStatus = 'starting';
@@ -53,6 +58,18 @@ export class StubTracker implements StatusTracker {
 
   dispose(): void {
     this.disposed = true;
+  }
+
+  restored: TrackerRestoreState | null = null;
+
+  restore(state: TrackerRestoreState): void {
+    this.restored = state;
+    this.status = state.status;
+    if (state.claudeSessionId) this.claudeSessionId = state.claudeSessionId;
+  }
+
+  correct(to: SessionStatus, reason: string): void {
+    if (to !== this.status) this.change(to, reason);
   }
 }
 

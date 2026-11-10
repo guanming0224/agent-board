@@ -6,7 +6,7 @@ import {
   type SessionStatus,
 } from '@agent-board/protocol';
 import { createLineSplitter, matchesUsageLimit } from './rate-limit';
-import type { CreateStatusTracker, StatusChange } from './types';
+import type { CreateStatusTracker, StatusChange, TrackerRestoreState } from './types';
 
 const MS_PER_MINUTE = 60_000;
 /** 限流訊息裡的重置時間（格式見 hub/src/rateLimitReset.ts）。 */
@@ -371,6 +371,31 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     clearStuckTimer();
   }
 
+  function restore(state: TrackerRestoreState): void {
+    if (closed) return;
+    status = state.status;
+    statusDetail = state.detail;
+    statusAt = state.at;
+    if (state.claudeSessionId !== null) claudeSessionId = state.claudeSessionId;
+    // 接回的 session 已經在工作過：之後畫面上新出現的限流訊息要算數（重播時看過的舊訊息已記在 seenLimitLines）。
+    hasWorked = status !== 'starting';
+    // 等人決定的請求細節不在快照裡：留一筆不限工具的，之後任何一筆工具事件都能結算它。
+    pendingPermissions =
+      status === 'waiting_permission' || status === 'plan_review'
+        ? [{ agentId: null, toolName: null, toolInput: null }]
+        : [];
+    lastActivityAt = now().getTime();
+    armStuckTimer();
+  }
+
+  function correct(to: SessionStatus, reason: string, detail: string | null): void {
+    if (closed) return;
+    if ((to === 'waiting_permission' || to === 'plan_review') && pendingPermissions.length === 0) {
+      pendingPermissions = [{ agentId: null, toolName: null, toolInput: null }];
+    }
+    transition(to, reason, detail);
+  }
+
   return {
     get status() {
       return status;
@@ -386,5 +411,7 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
     onExit,
     setStuckMinutes,
     dispose,
+    restore,
+    correct,
   };
 };

@@ -199,6 +199,9 @@ importers:
       '@agent-board/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@agent-board/session-host':
+        specifier: workspace:*
+        version: link:../session-host
       '@xterm/addon-serialize':
         specifier: ^0.14.0
         version: 0.14.0

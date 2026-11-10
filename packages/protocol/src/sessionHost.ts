@@ -90,5 +90,10 @@ export const HostToDaemon = z.discriminatedUnion('type', [
   }),
   /** 指令對不到 session（attach、write 之類沒有 reqId 的）或格式錯。 */
   z.object({ type: z.literal('error'), id: SessionKey.nullable(), error: z.string() }),
+  /**
+   * host 要關閉（換版、使用者停服務）：接下來的 agent 結束是 host 收掉的，不是 session 自己結束。
+   * daemon 收到就把這些 session 當成「要重開」（--resume），不回報結束。
+   */
+  z.object({ type: z.literal('shutdown') }),
 ]);
 export type HostToDaemon = z.infer<typeof HostToDaemon>;

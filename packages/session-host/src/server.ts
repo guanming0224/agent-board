@@ -148,10 +148,19 @@ export class SessionHostServer {
   async close({ killSessions = true }: { killSessions?: boolean } = {}): Promise<void> {
     const server = this.server;
     this.server = null;
-    if (killSessions) await this.killAll();
+    // 先停止接受新連線（daemon 不會在 agent 收掉途中又接回來），再通知已連上的 daemon。
+    const closed = server
+      ? new Promise<void>((resolve) => server.close(() => resolve()))
+      : Promise.resolve();
+    if (killSessions) {
+      for (const connection of this.connections) {
+        if (connection.authed) this.send(connection, { type: 'shutdown' });
+      }
+      await this.killAll();
+    }
     for (const connection of this.connections) connection.socket.destroy();
     this.connections.clear();
-    if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closed;
   }
 
   private async killAll(): Promise<void> {

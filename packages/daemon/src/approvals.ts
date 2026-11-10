@@ -186,6 +186,17 @@ export class ApprovalManager {
     }
   }
 
+  /**
+   * daemon 要重啟、agent 留在 session host 繼續跑（CONTRACTS §20.3）：等待中的審批都交回終端機。
+   * hook 拿到放棄的答案（PermissionRequest 交回原生對話框；危險指令 deny），hub 記成 terminal，
+   * 畫布上那筆就變成「請在終端機回答」的現有退路。session 的狀態（等你允許）不動。
+   */
+  handOffToTerminal(): void {
+    for (const pending of [...this.pendingById.values()]) {
+      this.finish(pending, pending.giveUp('Agent Board 正在重新啟動，請在終端機回答'), 'terminal');
+    }
+  }
+
   dispose(): void {
     for (const pending of [...this.pendingById.values()]) {
       pending.cleanup();

@@ -20,6 +20,16 @@ export interface DaemonConfig {
    * 環境變數 AGENT_BOARD_MCP_SERVER 優先；入口程式會補上隨附的那支。
    */
   mcpServer?: string | null;
+  /**
+   * session host（CONTRACTS §20）：`auto`（預設）＝連得上就用，daemon 重啟時 agent 不中斷；連不上或協定不相容
+   * 就退回 daemon 自己開 PTY 的舊模式。`off`＝一律舊模式（AGENT_BOARD_SESSION_HOST=off）。
+   */
+  sessionHost?: 'auto' | 'off';
+  /**
+   * 連不上 session host 時用來把它拉起來的服務名稱（AGENT_BOARD_SESSION_HOST_SERVICE，安裝程式設定）：
+   * macOS launchd label、Linux systemd user unit、Windows 工作排程器的工作名稱。沒有就不拉。
+   */
+  sessionHostService?: string | null;
 }
 
 /** 接受 http(s) 或 ws(s)；沒寫路徑就補上 /ws/daemon。 */
@@ -69,5 +79,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     machineName: env.AGENT_BOARD_MACHINE_NAME || hostname(),
     claudeConfigDir: env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
     mcpServer: env.AGENT_BOARD_MCP_SERVER || null,
+    sessionHost: env.AGENT_BOARD_SESSION_HOST === 'off' ? 'off' : 'auto',
+    sessionHostService: env.AGENT_BOARD_SESSION_HOST_SERVICE || null,
   };
 }

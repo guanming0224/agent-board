@@ -15,7 +15,8 @@ import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serializ
 import type { Terminal as TerminalType } from '@xterm/headless';
 import { readLastTurn, resolveContextWindow } from './contextWindow';
 import { errorMessage, log } from './log';
-import { localPtyBackend, type PtyBackend, type PtyProcess } from './pty';
+import { localPtyBackend, type PtyAttachInfo, type PtyBackend, type PtyProcess } from './pty';
+import type { SessionSnapshot } from './sessionState';
 import type { CreateStatusTracker, StatusChange, StatusTracker } from './status/types';
 
 // 這兩個套件是 CJS，在 ESM 下沒有具名匯出。
@@ -145,6 +146,57 @@ const RULE_LINE = /^[\s─╌━-]+(?:\S+[\s─╌━-]+)?$/;
 const INPUT_BOX_TAIL = 8;
 /** 選單的選項（權限對話框、額度選單）：`❯ 1. Yes`。 */
 const MENU_OPTION = /^\s*❯\s+\d+\./;
+/** claude 工作中畫面上的提示（使用者設了 statusLine 時會被收起；只在 claude 2.1.x 看過，其他版本未驗證）。 */
+const BUSY_HINT = /esc to interrupt/i;
+/** 接回時看畫面最下面幾行判斷狀態。 */
+const CORRECTION_TAIL = 15;
+
+const KEEP_ON_DIALOG: readonly SessionStatus[] = [
+  'waiting_permission',
+  'plan_review',
+  'rate_limited',
+  'error',
+];
+const BUSY_FROM: readonly SessionStatus[] = [
+  'waiting_input',
+  'waiting_permission',
+  'plan_review',
+  'starting',
+  'stuck',
+];
+const IDLE_FROM: readonly SessionStatus[] = [
+  'running',
+  'stuck',
+  'waiting_permission',
+  'plan_review',
+  'starting',
+];
+
+/**
+ * daemon 停機期間漏掉的 hook：接回後看畫面補正狀態（docs/session-host-spec.md §3.3-3、CONTRACTS §20.3）。
+ * 對話框（`❯ 1. …`）＝等你允許；工作中提示＝跑；平常的輸入框＝等你回覆。只認 Claude Code 的畫面，
+ * 認不出來回 null（維持快照的狀態，不誤報）。限流、錯誤遇到對話框不動（額度選單也是 `❯ 1.`）。
+ */
+export function screenCorrection(
+  lines: readonly string[],
+  status: SessionStatus,
+): { to: SessionStatus; reason: string } | null {
+  let end = lines.length;
+  while (end > 0 && !lines[end - 1]) end -= 1;
+  const tail = lines.slice(Math.max(0, end - CORRECTION_TAIL), end);
+  if (tail.some((line) => MENU_OPTION.test(line))) {
+    return KEEP_ON_DIALOG.includes(status)
+      ? null
+      : { to: 'waiting_permission', reason: 'screen:dialog' };
+  }
+  if (tail.some((line) => BUSY_HINT.test(line))) {
+    return BUSY_FROM.includes(status) ? { to: 'running', reason: 'screen:busy' } : null;
+  }
+  if (inputBoxVisible(lines)) {
+    return IDLE_FROM.includes(status) ? { to: 'waiting_input', reason: 'screen:input-box' } : null;
+  }
+  return null;
+}
 
 /**
  * 畫面最下面是不是 claude 平常的輸入框（橫線下一行 `❯`）。對話框（權限、額度選單）出現時輸入框會被換掉，
@@ -203,6 +255,11 @@ export interface ManagedSessionOptions {
   idleResizeMs?: number;
   /** 開 agent 用哪個 PTY 後端；不給＝daemon 自己開（舊模式）。 */
   backend?: PtyBackend;
+  /**
+   * 從 session host 接回還在跑的 session（CONTRACTS §20.3）：不開新程序，從緩衝開頭重播輸出重建畫面，
+   * 再載入快照、用畫面補正。cols／rows 是 host 那邊 PTY 目前的尺寸。
+   */
+  reattach?: { snapshot: SessionSnapshot | null; cols: number; rows: number };
   onRuntime: (runtime: SessionRuntime) => void;
   onStatusChange: (change: StatusChange) => void;
   onTerminal: (message: TerminalMessage) => void;
@@ -213,6 +270,8 @@ export interface ManagedSessionOptions {
 
 export class ManagedSession {
   readonly id: string;
+  /** 開起來（或接回、重播完）了才 resolve；開不起來 reject。 */
+  readonly ready: Promise<void>;
   private readonly pty: PtyProcess;
   private readonly term: TerminalType;
   private readonly serializer: SerializeAddonType;
@@ -227,6 +286,10 @@ export class ManagedSession {
   private held: Extract<TerminalMessage, { type: 'terminal.output' }>[] = [];
 
   private alive = true;
+  /** 接回時正在重播舊輸出：只餵 headless 與限流偵測，不轉送、不算進度。 */
+  private replaying = false;
+  /** 重播中就收到結束（session 在 daemon 停機時結束了）：等快照載入後再處理。 */
+  private pendingExit: { exitCode: number; signal: number } | null = null;
   private stopRequested = false;
   private detached = false;
   private termDisposed = false;
@@ -266,9 +329,10 @@ export class ManagedSession {
       this.resolveExited = resolve;
     });
 
+    const reattach = options.reattach ?? null;
     this.term = new Terminal({
-      cols: DEFAULT_COLS,
-      rows: DEFAULT_ROWS,
+      cols: reattach ? Math.min(reattach.cols, MAX_COLS) : DEFAULT_COLS,
+      rows: reattach ? Math.min(reattach.rows, MAX_ROWS) : DEFAULT_ROWS,
       scrollback: SCROLLBACK_LINES,
       allowProposedApi: true,
     });
@@ -282,17 +346,32 @@ export class ManagedSession {
       onChange: (change) => this.handleStatusChange(change),
     });
     this.status = this.tracker.status;
+    const snapshot = reattach?.snapshot ?? null;
+    if (snapshot) {
+      this.contextTokens = snapshot.contextTokens;
+      this.hookModel = snapshot.hookModel;
+      this.transcriptModel = snapshot.transcriptModel;
+      this.lastOutputAt = snapshot.lastOutputAt;
+      this.claudeSessionId ??= snapshot.claudeSessionId;
+    }
 
+    const backend = options.backend ?? localPtyBackend;
     try {
-      this.pty = (options.backend ?? localPtyBackend).spawn({
-        id: options.id,
-        bin: options.bin,
-        args: options.args,
-        env: options.env,
-        cwd: options.cwd,
-        cols: DEFAULT_COLS,
-        rows: DEFAULT_ROWS,
-      });
+      if (reattach) {
+        if (!backend.attach) throw new Error('這個 PTY 後端不能接回 session');
+        this.replaying = true;
+        this.pty = backend.attach(options.id);
+      } else {
+        this.pty = backend.spawn({
+          id: options.id,
+          bin: options.bin,
+          args: options.args,
+          env: options.env,
+          cwd: options.cwd,
+          cols: DEFAULT_COLS,
+          rows: DEFAULT_ROWS,
+        });
+      }
     } catch (error) {
       this.tracker.dispose();
       this.disposeTerm();
@@ -300,6 +379,21 @@ export class ManagedSession {
     }
     this.pty.onData((data) => this.handleData(data));
     this.pty.onExit(({ exitCode, signal }) => this.handleExit(exitCode, signal));
+    if (reattach) {
+      const pty = this.pty;
+      this.ready = new Promise<void>((resolve, reject) => {
+        pty.ready.catch(reject);
+        pty.onReplayDone?.((info) => this.finishReplay(info, snapshot, resolve));
+      });
+    } else {
+      this.ready = this.pty.ready;
+    }
+    this.ready.catch(() => {});
+  }
+
+  /** 從 session host 開的（daemon 停掉時可以留著 agent）。 */
+  get detachable(): boolean {
+    return this.pty.detach !== undefined;
   }
 
   get agent(): AgentKind {
@@ -452,6 +546,38 @@ export class ManagedSession {
     this.disposeTerm();
   }
 
+  /**
+   * daemon 關閉、agent 留在 session host 繼續跑（CONTRACTS §20.3）：不殺、不回報、不動本機清單；
+   * 狀態快照由 daemon 先存好，下一個 daemon 接回。只有 detachable 的 session 能這樣做。
+   */
+  detach(): void {
+    this.detached = true;
+    if (this.runtimeTimer) clearTimeout(this.runtimeTimer);
+    this.runtimeTimer = null;
+    if (this.killTimer) clearTimeout(this.killTimer);
+    this.killTimer = null;
+    this.disposeTracker();
+    this.pty.detach?.();
+    this.disposeTerm();
+  }
+
+  /** 存檔用的狀態（不含審批，daemon 補上）。 */
+  stateSnapshot(): Omit<SessionSnapshot, 'pendingApprovalIds'> {
+    return {
+      version: 1,
+      sessionId: this.id,
+      savedAt: this.now().toISOString(),
+      status: this.status,
+      statusDetail: this.statusDetail,
+      statusSince: this.statusSince,
+      claudeSessionId: this.claudeSessionId,
+      contextTokens: this.contextTokens,
+      hookModel: this.hookModel,
+      transcriptModel: this.transcriptModel,
+      lastOutputAt: this.lastOutputAt,
+    };
+  }
+
   setStuckMinutes(minutes: number): void {
     if (this.alive) this.tracker.setStuckMinutes(minutes);
   }
@@ -513,6 +639,13 @@ export class ManagedSession {
 
   private handleData(data: string): void {
     if (this.detached) return;
+    if (this.replaying) {
+      // 重播的舊輸出：重建畫面；限流偵測要看過（記下舊訊息，之後重畫時不會當成新的）。
+      this.seq += 1;
+      this.safeTermWrite(data);
+      this.guardTracker(() => this.tracker.onOutput(data));
+      return;
+    }
     this.seq += 1;
     this.lastOutputAt = this.now().toISOString();
     this.safeTermWrite(data);
@@ -539,7 +672,64 @@ export class ManagedSession {
     }
   }
 
+  /** 重播完：等 headless 吃完，載入快照、看畫面補正，再處理重播途中收到的結束。 */
+  private finishReplay(
+    info: PtyAttachInfo,
+    snapshot: SessionSnapshot | null,
+    done: () => void,
+  ): void {
+    this.safeTermWrite('', () => {
+      this.replaying = false;
+      if (this.detached || this.termDisposed) {
+        done();
+        return;
+      }
+      if (snapshot) this.restoreSnapshot(snapshot);
+      if (info.alive && this.pendingExit === null) this.correctFromScreen();
+      this.refreshLastLines();
+      this.fingerprint = screenFingerprint(readScreen(this.term));
+      done();
+      const exit = this.pendingExit;
+      this.pendingExit = null;
+      if (exit) this.handleExit(exit.exitCode, exit.signal);
+      else this.options.onRuntime(this.runtime());
+    });
+  }
+
+  private restoreSnapshot(snapshot: SessionSnapshot): void {
+    if (!this.tracker.restore) return;
+    this.guardTracker(() =>
+      this.tracker.restore!({
+        status: snapshot.status,
+        detail: snapshot.statusDetail,
+        at: new Date(snapshot.statusSince),
+        claudeSessionId: snapshot.claudeSessionId,
+      }),
+    );
+    this.status = this.tracker.status;
+    this.statusDetail = snapshot.statusDetail;
+    this.statusSince = snapshot.statusSince;
+  }
+
+  /** 只認 Claude Code 的畫面；Codex 維持快照的狀態（它的畫面沒有實測過）。 */
+  private correctFromScreen(): void {
+    if (this.agent !== 'claude' || !this.tracker.correct) return;
+    const screen = readScreen(this.term);
+    if (screen.some((line) => TRUST_PROMPT.test(line))) {
+      this.guardTracker(() => this.tracker.onTrustPrompt());
+      return;
+    }
+    const correction = screenCorrection(screen, this.tracker.status);
+    if (correction) {
+      this.guardTracker(() => this.tracker.correct!(correction.to, correction.reason, null));
+    }
+  }
+
   private handleExit(exitCode: number, signal: number): void {
+    if (this.replaying) {
+      this.pendingExit = { exitCode, signal };
+      return;
+    }
     this.alive = false;
     this.cancelIdleResize();
     this.cancelReadyTimer();

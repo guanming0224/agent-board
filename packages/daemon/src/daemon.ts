@@ -1,6 +1,6 @@
 // 把 PTY、hub 連線、hook socket、approval、資源與用量接在一起。狀態機與 hook 安裝由外部注入。
 import { randomUUID } from 'node:crypto';
-import { accessSync, constants, statSync } from 'node:fs';
+import { accessSync, constants, rmSync, statSync, writeFileSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, extname, resolve, sep } from 'node:path';
@@ -16,12 +16,14 @@ import {
   type AgentKind,
   type DaemonToHub,
   type HookRequest,
+  type HostSessionInfo,
   type HubToDaemon,
   type McpRequest,
   type MachineCapabilities,
   type SessionRuntime,
   type SessionSpec,
 } from '@agent-board/protocol';
+import { HostConnectError, hostEndpoint, SessionHostClient } from '@agent-board/session-host';
 import pkg from '../package.json' with { type: 'json' };
 import { ApprovalManager } from './approvals';
 import {
@@ -35,19 +37,30 @@ import type { DaemonConfig } from './config';
 import { DeepSearcher } from './deepSearch';
 import { listDirectory, makeDirectory } from './fsList';
 import { hookSettingsLockKey, withFileLock } from './fileLock';
-import { HookServer, type HookOutput } from './hookServer';
+import { downMarkerPath, HookServer, type HookOutput } from './hookServer';
+import { HostPtyBackend } from './hostPty';
 import { HubClient } from './hubClient';
 import { errorMessage, log } from './log';
 import {
   clearMcpDir,
   enabledTools,
+  readMcpSecret,
   removeMcpFiles,
   toolFullName,
   secretMatches,
   writeMcpFiles,
 } from './mcpFiles';
 import { probeCapabilities, ResourceMonitor, type ResourceMonitorOptions } from './resources';
+import { localPtyBackend, type PtyBackend } from './pty';
 import { buildClaudeArgs, ManagedSession } from './session';
+import { launchSessionHost } from './sessionHostLauncher';
+import {
+  pruneSnapshots,
+  readSnapshot,
+  removeSnapshot,
+  writeSnapshot,
+  type SessionSnapshot,
+} from './sessionState';
 import { claudeConfigFor, findTranscriptFiles, inspectSession, purgeSession } from './sessionFiles';
 import type { CreateStatusTracker } from './status/types';
 import { SessionStore, type PersistedSession } from './store';
@@ -106,7 +119,15 @@ export interface DaemonDeps {
   dispatchReplyTimeoutMs?: number;
   authRetryMs?: number;
   revokedGraceMs?: number;
+  /** 叫服務管理程式拉起 session host 之後，等它能連的上限（毫秒）。 */
+  sessionHostLaunchWaitMs?: number;
 }
+
+/** 拉起 session host 之後等它能連的時間。 */
+const SESSION_HOST_LAUNCH_WAIT_MS = 5_000;
+const SESSION_HOST_RETRY_MS = 250;
+/** 接不回的 session：等 host 收掉舊 agent 的上限。 */
+const ORPHAN_KILL_WAIT_MS = 3_000;
 
 /**
  * token 被拒多久後停掉本機 session。機器在離線時被移除，hub 沒機會送 session.stop，
@@ -242,6 +263,15 @@ export class Daemon {
     string,
     { resolve: (reply: { ok: boolean; text: string }) => void; timer: NodeJS.Timeout }
   >();
+  /**
+   * 開 agent 用的 PTY 後端（CONTRACTS §20）：連得上 session host 就交給它養（daemon 重啟時 agent 不中斷），
+   * 否則 daemon 自己開（舊模式）。
+   */
+  private backend: PtyBackend = localPtyBackend;
+  private host: SessionHostClient | null = null;
+  private recoveringHost = false;
+  /** 啟動時接回 session host 裡的 session 完成前，hook 先等著（重試中的 hook 才找得到 session）。 */
+  private sessionsReady: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: DaemonDeps) {
     const { config } = deps;
@@ -310,9 +340,15 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
-    // 上次留下的派工設定與密鑰都作廢：記憶體裡的密鑰已經不在，每個 PTY 會拿到新的。
-    clearMcpDir(this.deps.config.dataDir);
+    // 另一個 daemon 正在用同一份資料夾時在這裡就失敗，不會去搶 session host 的連線。
     await this.hookServer.start();
+    let markReady: () => void = () => {};
+    this.sessionsReady = new Promise((resolve) => (markReady = resolve));
+    try {
+      await this.attachToSessionHost();
+    } finally {
+      markReady();
+    }
     this.capabilities =
       this.deps.capabilities ??
       (await probeCapabilities(
@@ -327,7 +363,10 @@ export class Daemon {
     this.usageTimer.unref();
   }
 
-  /** 關閉 daemon：PTY 一起結束，但本機清單保留，下次啟動用 --resume 接回。 */
+  /**
+   * 關閉 daemon。session host 模式：agent 留在 host 繼續跑，狀態快照落地，下次啟動接回（CONTRACTS §20.3）。
+   * 舊模式：PTY 一起結束，但本機清單保留，下次啟動用 --resume 接回（§3.2）。
+   */
   async stop(): Promise<void> {
     this.stopping = true;
     if (this.usageTimer) clearInterval(this.usageTimer);
@@ -335,15 +374,229 @@ export class Daemon {
     this.clearRevokedTimer();
     this.resources.stop();
     await Promise.allSettled(this.creating.values());
-    this.approvals.dispose();
-    await Promise.all([...this.sessions.values()].map((s) => s.detachAndKill()));
+    const sessions = [...this.sessions.values()];
+    if (this.host?.connected) {
+      // 快照（含等待中的審批 id）先落地，再把審批交回終端機（hook 連線馬上就會斷）。
+      for (const session of sessions) this.saveSnapshot(session.id);
+      this.approvals.handOffToTerminal();
+      await Promise.all(sessions.map((s) => (s.detachable ? s.detach() : s.detachAndKill())));
+      this.writeDownMarker();
+    } else {
+      this.approvals.dispose();
+      await Promise.all(sessions.map((s) => s.detachAndKill()));
+      clearMcpDir(this.deps.config.dataDir);
+    }
     this.sessions.clear();
     this.mcpSecrets.clear();
     this.settleDispatchRequests('hub_unreachable: Agent Board daemon is shutting down.');
-    clearMcpDir(this.deps.config.dataDir);
     this.deepSearch.cancelAll();
     this.hub.stop();
     await this.hookServer.close();
+    this.host?.close();
+    this.host = null;
+  }
+
+  // ── session host（CONTRACTS §20）──────────────────────────
+
+  /** 啟動時：連 session host、接回它養著的 session；連不上就退回舊模式。 */
+  private async attachToSessionHost(): Promise<void> {
+    const { dataDir } = this.deps.config;
+    const hostSessions = await this.connectSessionHost();
+    if (hostSessions === null) {
+      // 舊模式：上次留下的派工設定與密鑰都作廢（agent 已隨上一個 daemon 結束），每個 PTY 會拿到新的。
+      clearMcpDir(dataDir);
+    } else {
+      await this.reattachHostSessions(hostSessions);
+      // 密鑰檔只留還活著的 session 的（MCP server 還拿著它們）。
+      const live = new Set([...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.id));
+      clearMcpDir(dataDir, live);
+    }
+    pruneSnapshots(dataDir, new Set(this.store.sessions.map((s) => s.sessionId)));
+    this.clearDownMarker();
+  }
+
+  private async tryConnectHost(): Promise<SessionHostClient | Error> {
+    try {
+      return await SessionHostClient.connect(hostEndpoint(this.deps.config.dataDir));
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  /** 連上就把後端換成 session host，回傳它養著的 session；連不上回 null（舊模式，記 warn）。 */
+  private async connectSessionHost(): Promise<HostSessionInfo[] | null> {
+    const { config } = this.deps;
+    if (config.sessionHost === 'off') return null;
+    let result = await this.tryConnectHost();
+    const launchable =
+      result instanceof HostConnectError &&
+      ['unreachable', 'no_token', 'timeout', 'unauthorized'].includes(result.reason);
+    if (result instanceof Error && launchable && config.sessionHostService) {
+      // host 沒在跑：叫服務管理程式拉起來（macOS launchctl kickstart），等它能連。
+      if (await launchSessionHost(config.sessionHostService)) {
+        const deadline =
+          Date.now() + (this.deps.sessionHostLaunchWaitMs ?? SESSION_HOST_LAUNCH_WAIT_MS);
+        while (result instanceof Error && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, SESSION_HOST_RETRY_MS));
+          result = await this.tryConnectHost();
+        }
+      }
+    }
+    if (result instanceof Error) {
+      log.warn(
+        `連不上 session host（${result.message}），退回舊模式：daemon 自己開 PTY，daemon 重啟時 agent 會結束、改用 --resume 接回。`,
+      );
+      return null;
+    }
+    const client = result;
+    this.host = client;
+    this.backend = new HostPtyBackend(client);
+    client.onClose(() => this.handleHostLost(client));
+    log.info(
+      `已連上 session host ${client.hostVersion}（養著 ${client.sessions.length} 個 session）`,
+    );
+    return client.sessions;
+  }
+
+  /** host 裡還在（活著或剛結束、還沒 release）的 session：重播輸出、載入快照接回。 */
+  private async reattachHostSessions(list: readonly HostSessionInfo[]): Promise<void> {
+    const host = this.host;
+    if (!host) return;
+    for (const info of list) {
+      if (this.sessions.get(info.id)?.isAlive) continue;
+      const entry = this.store.sessions.find((s) => s.sessionId === info.id);
+      if (!entry) {
+        // 不在本機清單上（例如已刪除）：沒人管的 agent 不留著。
+        if (info.alive) log.warn(`session host 裡的 session ${info.id} 不在本機清單上，結束它`);
+        await this.killHostSession(host, info);
+        continue;
+      }
+      try {
+        await this.attachSession(entry, info);
+      } catch (error) {
+        log.error(`接不回 session ${info.id}（${errorMessage(error)}），改用 --resume 重新開`);
+        const session = this.sessions.get(info.id);
+        session?.detach();
+        this.sessions.delete(info.id);
+        this.sessionDirs.delete(info.id);
+        this.mcpSecrets.delete(info.id);
+        // 舊的 agent 還在跑就收掉：同一個對話不能有兩個 claude。
+        await this.killHostSession(host, info);
+      }
+    }
+  }
+
+  /** 強制結束 host 裡的某個 session 並丟掉它的緩衝。先 attach 到最新位置才收得到結束通知。 */
+  private killHostSession(host: SessionHostClient, info: HostSessionInfo): Promise<void> {
+    if (!info.alive) {
+      host.release(info.id);
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        host.unregister(info.id);
+        host.release(info.id);
+        resolve();
+      };
+      const timer = setTimeout(done, ORPHAN_KILL_WAIT_MS);
+      host.register(info.id, { onOutput: () => {}, onExit: done, onError: done });
+      host.attach(info.id, info.seqEnd);
+      host.kill(info.id, 'SIGKILL');
+    });
+  }
+
+  private async attachSession(entry: PersistedSession, info: HostSessionInfo): Promise<void> {
+    const { spec, sessionId } = entry;
+    if (spec.accountProfile) this.accountProfiles.add(spec.accountProfile);
+    const snapshot = readSnapshot(this.deps.config.dataDir, sessionId);
+    const repo = await repoInfo(entry.cwd);
+    const session = this.newManagedSession(entry, [], repo, {
+      snapshot,
+      cols: info.cols,
+      rows: info.rows,
+    });
+    this.sessions.set(sessionId, session);
+    this.sessionDirs.set(sessionId, await realDir(entry.cwd));
+    // MCP server 還拿著上一個 daemon 寫的密鑰檔：讀回來，派工工具才繼續能用。
+    const secret = readMcpSecret(this.deps.config.dataDir, sessionId);
+    if (secret) this.mcpSecrets.set(sessionId, secret);
+    await session.ready;
+    log.info(`已接回 session ${sessionId}（${info.alive ? '執行中' : '停機期間已結束'}）`);
+  }
+
+  /**
+   * 和 session host 的連線斷了（host 崩潰或被停掉）：它養的 agent 多半也結束了。這些 session 不算結束、
+   * 留在本機清單，重新連（拉起）host 後接回還活著的，其他的用 --resume 重開；連不上就用舊模式開。
+   */
+  private handleHostLost(client: SessionHostClient): void {
+    if (this.stopping || this.host !== client) return;
+    log.error('session host 連線中斷，重新連線並接回 session');
+    this.host = null;
+    this.backend = localPtyBackend;
+    for (const session of [...this.sessions.values()]) {
+      if (!session.detachable || !session.isAlive) continue;
+      session.detach();
+      this.sessions.delete(session.id);
+      this.sessionDirs.delete(session.id);
+    }
+    void this.recoverFromHostLoss();
+  }
+
+  private async recoverFromHostLoss(): Promise<void> {
+    if (this.recoveringHost) return;
+    this.recoveringHost = true;
+    try {
+      const hostSessions = await this.connectSessionHost();
+      if (this.stopping) return;
+      if (hostSessions) await this.reattachHostSessions(hostSessions);
+      await this.resumePersistedSessions();
+      for (const session of this.sessions.values()) {
+        if (session.isAlive) this.send({ type: 'session.runtime', session: session.runtime() });
+      }
+    } catch (error) {
+      log.error(`session host 中斷後的接回失敗：${errorMessage(error)}`);
+    } finally {
+      this.recoveringHost = false;
+    }
+  }
+
+  /** 狀態快照落地（只有 session host 模式需要：舊模式 daemon 一停 agent 就結束了）。 */
+  private saveSnapshot(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session?.detachable || !session.isAlive) return;
+    const snapshot: SessionSnapshot = {
+      ...session.stateSnapshot(),
+      pendingApprovalIds: this.approvals
+        .pending()
+        .filter((approval) => approval.sessionId === sessionId)
+        .map((approval) => approval.id),
+    };
+    writeSnapshot(this.deps.config.dataDir, snapshot);
+  }
+
+  private downMarker(): string | null {
+    try {
+      return downMarkerPath(this.hookServer.path);
+    } catch {
+      return null;
+    }
+  }
+
+  /** hook CLI 看這個記號決定連不上時要不要重試（剛停＝重啟中）。 */
+  private writeDownMarker(): void {
+    const marker = this.downMarker();
+    if (!marker) return;
+    try {
+      writeFileSync(marker, `${new Date().toISOString()}\n`, { mode: 0o600 });
+    } catch (error) {
+      log.warn(`無法寫入 daemon 停止記號：${errorMessage(error)}`);
+    }
+  }
+
+  private clearDownMarker(): void {
+    const marker = this.downMarker();
+    if (marker) rmSync(marker, { force: true });
   }
 
   // ── hub ──────────────────────────────────────────────────
@@ -634,6 +887,7 @@ export class Daemon {
     this.sessions.delete(sessionId);
     this.sessionDirs.delete(sessionId);
     this.dropMcp(sessionId);
+    removeSnapshot(this.deps.config.dataDir, sessionId);
     this.approvals.cancelSession(sessionId);
     if (this.store.sessions.some((s) => s.sessionId === sessionId)) this.store.remove(sessionId);
     this.store.removeEnded(sessionId);
@@ -782,6 +1036,8 @@ export class Daemon {
 
   private async resumeEach(): Promise<void> {
     for (const entry of [...this.store.sessions]) {
+      // 已經從 session host 接回的不用再開。
+      if (this.sessions.has(entry.sessionId)) continue;
       try {
         this.assertCanLaunch(agentOf(entry.spec));
       } catch (error) {
@@ -908,6 +1164,15 @@ export class Daemon {
     this.sessions.set(sessionId, session);
     // 實際的工作資料夾（worktree session 是 worktree 裡的 cwd）；daemon 重啟接回的也在這裡登記。
     this.sessionDirs.set(sessionId, await realDir(entry.cwd));
+    try {
+      // session host 模式：host 回報開起來了才算（本機模式 spawn 失敗已經在上面丟例外）。
+      await session.ready;
+    } catch (error) {
+      session.dispose();
+      if (this.sessions.get(sessionId) === session) this.sessions.delete(sessionId);
+      this.dropMcp(sessionId);
+      throw error;
+    }
     return session;
   }
 
@@ -915,6 +1180,7 @@ export class Daemon {
     entry: PersistedSession,
     args: string[],
     repo: Awaited<ReturnType<typeof repoInfo>>,
+    reattach?: { snapshot: SessionSnapshot | null; cols: number; rows: number },
   ): ManagedSession {
     const { spec, sessionId } = entry;
     return new ManagedSession({
@@ -922,7 +1188,10 @@ export class Daemon {
       agent: agentOf(spec),
       bin: this.agentBin(agentOf(spec)),
       args,
-      env: this.sessionEnv(sessionId, spec),
+      // 接回的 agent 早就開好了，不需要（也不能再給）環境變數。
+      env: reattach ? {} : this.sessionEnv(sessionId, spec),
+      backend: this.backend,
+      reattach,
       cwd: entry.cwd,
       branch: entry.branch,
       worktreePath: entry.worktreePath,
@@ -939,14 +1208,17 @@ export class Daemon {
         if (session.endedAt !== null) this.recordEnded(session);
         else this.send({ type: 'session.runtime', session });
       },
-      onStatusChange: (change) =>
+      onStatusChange: (change) => {
         this.emitEvent(sessionId, 'status', {
           from: change.from,
           fromDetail: change.fromDetail ?? null,
           to: change.to,
           reason: change.reason,
           detail: change.detail,
-        }),
+        });
+        // daemon 崩潰（沒跑到 stop）時，下一個 daemon 也有最近的狀態可以接。
+        this.saveSnapshot(sessionId);
+      },
       onTerminal: (message) => this.send(message),
       onClaudeSessionId: (claudeSessionId) => this.store.patch(sessionId, { claudeSessionId }),
       onFirstPromptSent: () => this.store.patch(sessionId, { pendingFirstPrompt: null }),
@@ -958,6 +1230,9 @@ export class Daemon {
     this.approvals.cancelSession(sessionId);
     // 結束的 session 的派工密鑰立刻作廢（CONTRACTS §11）。
     this.dropMcp(sessionId);
+    removeSnapshot(this.deps.config.dataDir, sessionId);
+    // session host 丟掉它的緩衝與結束紀錄（不是 host 開的也無妨，host 不認得的 id 不理）。
+    if (this.host?.connected) this.host.release(sessionId);
     // 先記結果再移出接回清單，中間崩潰也不會兩邊都沒有。
     const session = this.sessions.get(sessionId);
     if (session) this.recordEnded(session.runtime());
@@ -1027,6 +1302,7 @@ export class Daemon {
 
   /** MCP server 轉來的工具呼叫：比對密鑰（只認這次 PTY 的、session 還活著），再交給 hub 判斷。 */
   private async handleMcp(request: McpRequest): Promise<{ ok: boolean; text: string }> {
+    await this.sessionsReady;
     const expected = this.mcpSecrets.get(request.sessionId);
     const alive = this.sessions.get(request.sessionId)?.isAlive === true;
     if (!expected || !alive || !secretMatches(expected, request.secret)) {
@@ -1115,6 +1391,8 @@ export class Daemon {
   }
 
   private async handleHook(request: HookRequest, signal: AbortSignal): Promise<HookOutput> {
+    // 啟動時還在接回 session host 的 session：等接完，否則這個 hook 會被當成不認得的 session 丟掉。
+    await this.sessionsReady;
     const { event, sessionId, payload } = request;
     const session = this.sessions.get(sessionId);
     if (session) {

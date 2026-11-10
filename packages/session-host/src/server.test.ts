@@ -309,16 +309,23 @@ describe('session host', () => {
     client.register('a', a.handlers);
     client.register('b', b.handlers);
     await spawnEcho(client, 'a');
-    await spawnEcho(client, 'b');
+    const pidB = await spawnEcho(client, 'b');
     await waitUntil(() => a.text.includes('READY') && b.text.includes('READY'), 'READY');
     client.kill('a', 'SIGKILL');
     await waitUntil(() => a.exit, 'a exit');
+    client.kill('b', 'SIGTERM');
+    await waitUntil(() => b.exit, 'b exit');
+    expect(() => process.kill(pidB, 0)).toThrow();
     const c = recorder();
     client.register('c', c.handlers);
     const pid = await spawnEcho(client, 'c');
     await waitUntil(() => c.text.includes('READY'), 'c READY');
+    let closed = false;
+    client.onClose(() => (closed = true));
     await server.close();
-    await waitUntil(() => b.exit, 'b exit');
+    // 先收到 shutdown（客戶端當成連線中斷，之後的結束不轉給 daemon），agent 已被收掉。
+    expect(closed).toBe(true);
+    expect(c.exit).toBeNull();
     expect(() => process.kill(pid, 0)).toThrow();
     // afterEach 會再關一次，要能重複呼叫。
   });

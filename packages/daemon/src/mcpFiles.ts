@@ -2,7 +2,15 @@
 // 密鑰只在 0600 的檔案裡（資料夾 0700）：不在 argv（ps 看得到）、不在 claude 的環境變數（Bash 工具讀得到）、
 // 不在 MCP 設定檔本身（/mcp 畫面可能顯示 env）。MCP server 從 AGENT_BOARD_MCP_SECRET_FILE 讀。
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { chmodSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import {
   DISPATCH_MCP_SERVER,
@@ -93,8 +101,12 @@ export function removeMcpFiles(dataDir: string, sessionId: string): void {
   }
 }
 
-/** daemon 啟動時：上次留下的設定與密鑰都作廢（記憶體裡的密鑰已經不在）。 */
-export function clearMcpDir(dataDir: string): void {
+/**
+ * 清掉上次留下的設定與密鑰。舊模式（daemon 自己開 PTY）：啟動與關閉時全清，agent 已經跟著 daemon 結束。
+ * session host 模式：daemon 停掉時不清（agent 還在跑、MCP server 還拿著密鑰檔）；接回後只清 keep 以外的
+ * （session 真的結束才刪，CONTRACTS §20.3）。
+ */
+export function clearMcpDir(dataDir: string, keep: ReadonlySet<string> = new Set()): void {
   const dir = mcpDir(dataDir);
   let names: string[];
   try {
@@ -103,7 +115,19 @@ export function clearMcpDir(dataDir: string): void {
     return;
   }
   for (const name of names) {
-    if (/\.(json|key|tmp)$/.test(name)) rmSync(join(dir, name), { force: true });
+    if (name.endsWith('.tmp')) rmSync(join(dir, name), { force: true });
+    const match = /^(.+)\.(json|key)$/.exec(name);
+    if (match && !keep.has(match[1]!)) rmSync(join(dir, name), { force: true });
+  }
+}
+
+/** 接回時從檔案拿回這次 PTY 的密鑰（記憶體裡的已隨上一個 daemon 消失）。沒有回 null。 */
+export function readMcpSecret(dataDir: string, sessionId: string): string | null {
+  try {
+    const secret = readFileSync(join(mcpDir(dataDir), `${sessionId}.key`), 'utf8').trim();
+    return secret || null;
+  } catch {
+    return null;
   }
 }
 
