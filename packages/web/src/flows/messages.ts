@@ -221,7 +221,7 @@ export const zhTW: Record<string, string> = {
   'flows.new.err.codex': '{machine} 沒有 Codex CLI，換一台或改選 Claude Code',
   'flows.new.codexMode': 'Codex：{args}',
   'flows.new.codexModeNote':
-    'Codex 沒有同名的權限模式，換算成沙盒與核准設定，不會比選的模式寬。除了 bypassPermissions，一律用唯讀沙盒：改檔、連網、跑沙盒外的指令都要你允許，所以 acceptEdits、auto 在 Codex 裡比 Claude 嚴（改檔也會問）。唯讀的指令不問就跑，而且讀得到工作資料夾外的檔案（Codex 0.167.0 沒有更嚴的選項）。dontAsk 唯讀、不問、做不到的直接失敗。危險指令清單照樣攔。',
+    'Codex 沒有同名的權限模式，換算成沙盒與核准設定。plan、default 用唯讀沙盒：改檔、連網、跑沙盒外的指令都要你允許；唯讀的指令不問就跑，而且讀得到工作資料夾外的檔案（Codex 0.167.0 沒有更嚴的選項）。acceptEdits、auto 用可寫工作區：工作資料夾內改檔、跑指令都不問，連網和寫到外面才問——這比 Claude 的 acceptEdits 寬（Claude 跑指令仍會問）。dontAsk 唯讀、不問、做不到的直接失敗。危險指令清單照樣攔。',
   'flows.new.codexHooksNote':
     '中控台這次用 -c 帶入自己的 hook：你在 ~/.codex/config.toml 自訂的同名 hook 這次不會執行，hooks.json 的照常。資料夾裡有專案自己的 .codex 設定時不會開（中控台會略過 hook 信任確認）。權限請求等網頁 {seconds} 秒，沒決定才在終端機顯示 Codex 的確認。',
   'flows.new.modelHintCodex': '留空用 Codex 的預設模型；要指定就填完整的模型名稱。',
@@ -973,7 +973,7 @@ export const en: Record<string, string> = {
   'flows.new.err.codex': '{machine} has no Codex CLI. Choose another machine or Claude Code.',
   'flows.new.codexMode': 'Codex: {args}',
   'flows.new.codexModeNote':
-    'Codex has no modes with these names, so each is mapped to sandbox and approval settings that are never looser than the mode you pick. Every mode except bypassPermissions uses a read-only sandbox: editing files, using the network and running commands outside the sandbox all ask you first, so acceptEdits and auto are stricter in Codex than in Claude (edits ask too). Read-only commands run without asking and can read files outside the working folder (Codex 0.167.0 has no stricter option). dontAsk is read-only, never asks, and fails what it cannot do. The dangerous command list still applies.',
+    'Codex has no modes with these names, so each is mapped to sandbox and approval settings. plan and default use a read-only sandbox: editing files, using the network and running commands outside the sandbox ask you first; read-only commands run without asking and can read files outside the working folder (Codex 0.167.0 has no stricter option). acceptEdits and auto use a writable workspace: edits and commands inside the working folder run without asking, and only network use or writing outside asks — looser than Claude acceptEdits (Claude still asks before commands). dontAsk is read-only, never asks, and fails what it cannot do. The dangerous command list still applies.',
   'flows.new.codexHooksNote':
     'Agent Board passes its own hooks with -c for this launch: hooks with the same event names in your ~/.codex/config.toml will not run this time; hooks.json still runs. Folders with their own project .codex settings are refused, because Agent Board skips the hook trust check. Permission requests wait {seconds} seconds for the web before Codex shows its own prompt in the terminal.',
   'flows.new.modelHintCodex': "Leave empty for Codex's default model, or enter a full model name.",

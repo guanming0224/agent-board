@@ -180,8 +180,9 @@ test('新增頁選 Codex：預覽是 codex 的參數；建立後卡片標 Codex�
   await expect(page.getByTestId('command-preview')).toContainText(
     'codex -s read-only -a on-request --dangerously-bypass-hook-trust',
   );
+  // GM 2026-11-10：acceptEdits、auto 用可寫工作區。
   await expect(page.getByTestId('codex-mode-acceptEdits')).toContainText(
-    '-s read-only -a on-request',
+    '-s workspace-write -a on-request',
   );
   await expect(page.getByTestId('codex-hooks-note')).toContainText('config.toml');
   await page.getByRole('button', { name: '建立 session' }).click();

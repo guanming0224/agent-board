@@ -612,14 +612,14 @@ codex [resume <thread id>] <權限參數> [-m <model>] --dangerously-bypass-hook
 - **daemon 重啟接回**：知道 thread id、而且 `CODEX_HOME`（沒設就是 `$HOME/.codex`）的 `sessions/**/rollout-*-<id>.jsonl` 存在 → `codex resume <id>`；否則重新開始（沒送出的第一句照常帶）。daemon 重啟時只列出 `~/.codex/sessions` 的檔名一次（深度 4，`codexThreadIds`），所有 Codex session 共用；不讀檔案內容。
 - **thread id 格式**：`Session.claudeSessionId` 是 `ClaudeSessionId`（UUID）。hook 回報的 id 不是 UUID 就忽略並記 warn（`ManagedSession.syncClaudeSessionId`），不寫進本機清單、不送 hub，否則整則 hello／runtime 驗證失敗、同一台的 Claude session 也會同步不了。這種 session 重啟時不能 resume，只能重新開始。
 
-**權限換算**（`codexPermission`／`codexPermissionArgs`，新增頁的預覽與說明用同一份；原則：寬鬆程度相當、**不比選的更寬**）。codex-cli 0.167.0 的 `-a` 只收 `on-request`、`never`（`codex --help`；設定檔寫 `approval_policy="untrusted"` 會被拒絕：「is no longer supported」），沒有「改檔自動、指令要問」的選項；`workspace-write -a on-request` 會讓沙盒內**任何指令**不問就跑，比 Claude 的 acceptEdits／auto 寬，所以不用：
+**權限換算**（`codexPermission`／`codexPermissionArgs`，新增頁的預覽與說明用同一份）。codex-cli 0.167.0 的 `-a` 只收 `on-request`、`never`（設定檔寫 `approval_policy="untrusted"` 會被拒絕：「is no longer supported」），沒有「改檔自動、指令要問」的選項。原則是寬鬆程度相當；acceptEdits、auto 的取捨由 GM 2026-11-10 決定：用可寫工作區（比 Claude 寬，知情接受）：
 
 | Claude 模式                | Codex 參數                                                | 說明                                                                                                                   |
 | -------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | plan                       | `-s read-only -a on-request`                              | 唯讀沙盒；要寫檔、連網、跑沙盒外的指令都要你允許。Codex 沒有「先交計畫」的審核，PLAN 狀態不會出現                      |
 | default                    | `-s read-only -a on-request`                              | 同上。**已知差距**：唯讀的指令不問就跑、讀得到工作區外的檔案（例如 `~/.ssh`）；Claude default 每個 Bash 都會問，見待決 |
-| acceptEdits                | `-s read-only -a on-request`                              | 同 default：**比 Claude 窄**（改檔也要問）                                                                             |
-| auto                       | `-s read-only -a on-request`                              | 同 default（比 Claude 窄）。沒有用 `--approve-for-me`（由 Codex 的自動審查模型決定核准，可能核准沙盒外的動作）         |
+| acceptEdits                | `-s workspace-write -a on-request`                        | 工作區內改檔、跑指令都不問；連網、寫工作區外要問。**比 Claude 寬**（Claude 的 Bash 仍會問），GM 2026-11-10 決定        |
+| auto                       | `-s workspace-write -a on-request`                        | 同 acceptEdits。沒有用 `--approve-for-me`（由 Codex 的自動審查模型決定核准，可能核准沙盒外的動作）                     |
 | dontAsk                    | `-s read-only -a never`                                   | 唯讀、從不問，做不到的直接失敗回給模型（唯讀指令一樣讀得到工作區外）                                                   |
 | bypassPermissions          | `--dangerously-bypass-approvals-and-sandbox`              | 沿用 bypass 的警示（新增頁紅框、卡片紅粗線）                                                                           |
 | 唯讀 session（`readOnly`） | 沙盒一律 `read-only`；bypass 改成 `-s read-only -a never` |                                                                                                                        |

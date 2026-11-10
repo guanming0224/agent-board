@@ -28,10 +28,10 @@ describe('commandPreview', () => {
     ]);
   });
 
-  it('Codex：acceptEdits、auto 也是唯讀沙盒（0.167.0 沒有「改檔自動、指令要問」）', () => {
+  it('Codex：acceptEdits、auto 用可寫工作區（GM 2026-11-10）', () => {
     for (const permissionMode of ['acceptEdits', 'auto'] as const) {
       expect(commandPreview({ ...base, agent: 'codex', permissionMode })[1]).toBe(
-        'codex -s read-only -a on-request --dangerously-bypass-hook-trust -c <hooks>',
+        'codex -s workspace-write -a on-request --dangerously-bypass-hook-trust -c <hooks>',
       );
     }
   });

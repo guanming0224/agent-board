@@ -53,7 +53,14 @@ describe('buildCodexArgs', () => {
       firstPrompt: '不該出現',
     });
     expect(args.slice(0, 2)).toEqual(['resume', THREAD]);
-    expect(args.slice(2, 8)).toEqual(['-s', 'read-only', '-a', 'on-request', '-m', 'gpt-test']);
+    expect(args.slice(2, 8)).toEqual([
+      '-s',
+      'workspace-write',
+      '-a',
+      'on-request',
+      '-m',
+      'gpt-test',
+    ]);
     expect(args).not.toContain('不該出現');
   });
 
@@ -75,12 +82,12 @@ describe('buildCodexArgs', () => {
     expect(readOnly).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
-  it('權限對應表（不比 Claude 的模式寬：0.167.0 沒有 untrusted，沙盒內指令不問就跑的 workspace-write 不用）', () => {
+  it('權限對應表（GM 2026-11-10：acceptEdits、auto 用可寫工作區；其他唯讀；唯讀 session 一律唯讀）', () => {
     const table: Record<PermissionMode, string[]> = {
       plan: ['-s', 'read-only', '-a', 'on-request'],
       default: ['-s', 'read-only', '-a', 'on-request'],
-      acceptEdits: ['-s', 'read-only', '-a', 'on-request'],
-      auto: ['-s', 'read-only', '-a', 'on-request'],
+      acceptEdits: ['-s', 'workspace-write', '-a', 'on-request'],
+      auto: ['-s', 'workspace-write', '-a', 'on-request'],
       dontAsk: ['-s', 'read-only', '-a', 'never'],
       bypassPermissions: ['--dangerously-bypass-approvals-and-sandbox'],
     };
@@ -93,7 +100,8 @@ describe('buildCodexArgs', () => {
       const args = build({ permissionMode: mode, model: null });
       const approval = args[args.indexOf('-a') + 1];
       if (args.includes('-a')) expect(['on-request', 'never']).toContain(approval);
-      expect(args).not.toContain('workspace-write');
+      // 只有 acceptEdits、auto 會用可寫工作區。
+      if (mode !== 'acceptEdits' && mode !== 'auto') expect(args).not.toContain('workspace-write');
     }
     // 唯讀 session：一律 read-only 沙盒。
     expect(
@@ -277,7 +285,7 @@ describe('daemon 開 Codex', () => {
     const run = h.runs().at(-1);
     expect(run?.argv.slice(0, 7)).toEqual([
       '-s',
-      'read-only',
+      'workspace-write',
       '-a',
       'on-request',
       '-m',

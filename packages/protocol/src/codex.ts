@@ -102,11 +102,11 @@ export interface CodexPermission {
 }
 
 /**
- * 對應表（GM 決策 3：寬鬆程度相當、不比選的更寬）。理由見 CONTRACTS §19.2。
- * workspace-write＋on-request 會讓沙盒內的任何指令不問就跑，比 Claude 的 acceptEdits／auto（指令要問或要分類器放行）寬，
- * 而 0.167.0 沒有「改檔自動、指令要問」的 `untrusted`，所以除了 bypass 之外一律唯讀沙盒：
- * - plan、default、acceptEdits、auto：唯讀沙盒、需要時問你（寫檔、連網、跑沙盒外的指令都要你允許）。
- *   acceptEdits、auto 因此比 Claude 窄（改檔也要問）。唯讀沙盒裡的指令仍不問就跑、讀得到工作區外的檔案（已知差距，見 §19.2）。
+ * 對應表（GM 決策 3，2026-11-10 補充）。理由見 CONTRACTS §19.2。0.167.0 沒有「改檔自動、指令要問」的 `untrusted`：
+ * - plan、default：唯讀沙盒、需要時問你（寫檔、連網、跑沙盒外的指令都要你允許）。唯讀沙盒裡的指令仍不問就跑、
+ *   讀得到工作區外的檔案（已知差距，見 §19.2）。
+ * - acceptEdits、auto：**GM 2026-11-10 決定用可寫工作區**（workspace-write＋on-request）：工作區內改檔與跑指令都不問，
+ *   連網、寫工作區外要問。這比 Claude 的 acceptEdits 寬（Claude 的 Bash 仍會問），GM 知情接受；新增頁照實寫出。
  * - dontAsk：唯讀沙盒、從不問（做不到的直接失敗回給模型，和 Claude 的 dontAsk 一樣不問就拒）。
  * - bypassPermissions：`--dangerously-bypass-approvals-and-sandbox`（沿用 bypass 的警示）。
  * 唯讀 session：bypass 也改成 read-only＋never，不開沙盒外的權限。
@@ -117,8 +117,14 @@ export function codexPermission(mode: PermissionMode, readOnly = false): CodexPe
       ? { sandbox: 'read-only', approval: 'never', bypass: false }
       : { sandbox: null, approval: null, bypass: true };
   }
+  if (readOnly)
+    return {
+      sandbox: 'read-only',
+      approval: mode === 'dontAsk' ? 'never' : 'on-request',
+      bypass: false,
+    };
   return {
-    sandbox: 'read-only',
+    sandbox: mode === 'acceptEdits' || mode === 'auto' ? 'workspace-write' : 'read-only',
     approval: mode === 'dontAsk' ? 'never' : 'on-request',
     bypass: false,
   };
