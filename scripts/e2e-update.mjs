@@ -46,7 +46,10 @@ installFakeLaunchctl(stubs, launchd);
 
 const v = (patch) => BASE.replace(/\d+$/, (n) => String(Number(n) + patch));
 const GOOD = v(1);
-const BAD = v(2);
+const HUB_DOWN = v(2);
+const BAD = v(3);
+/** hub 停掉的時間：比健康檢查時限長，舊版的更新程式會誤判回滾（S3b）。 */
+const HUB_DOWN_MS = HEALTH_MS + 10_000;
 
 // ── 假 Release ────────────────────────────────────────────
 const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
@@ -161,10 +164,10 @@ async function api(method, path, body) {
   }
 }
 
-async function main() {
-  const port = await freePort();
-  hubUrl = `http://127.0.0.1:${port}`;
-  let hubLog = '';
+let hubPort = 0;
+/** hub（原始碼）：測試中會停掉再開（S3b），同一個資料夾與埠。 */
+async function startHub(port = hubPort) {
+  hubPort = port;
   hubProc = spawn(join(repo, 'node_modules/.bin/tsx'), [join(repo, 'packages/hub/src/main.ts')], {
     env: {
       PATH: process.env.PATH,
@@ -178,10 +181,24 @@ async function main() {
       // 權杖環境變數不能傳給 gh（hub 會拿掉）。
       GH_TOKEN: 'sk-ant-demo-should-not-reach-gh',
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'ignore', 'ignore'],
   });
-  hubProc.stdout.on('data', (chunk) => (hubLog += chunk));
-  hubProc.stderr.on('data', (chunk) => (hubLog += chunk));
+  await poll('hub 起來', async () => (await fetch(`${hubUrl}/api/health`).catch(() => null))?.ok);
+}
+
+async function stopHub() {
+  const proc = hubProc;
+  hubProc = null;
+  await new Promise((done) => {
+    proc.once('exit', done);
+    proc.kill('SIGTERM');
+  });
+}
+
+async function main() {
+  const port = await freePort();
+  hubUrl = `http://127.0.0.1:${port}`;
+  await startHub(port);
   await poll('hub 起來', async () => (await fetch(`${hubUrl}/api/health`).catch(() => null))?.ok);
   await api('POST', '/api/auth/setup', {
     name: 'owner',
@@ -206,6 +223,7 @@ async function main() {
     TMPDIR: tmpdir(),
     LANG: 'zh_TW.UTF-8',
     AGENT_BOARD_UPDATE_HEALTH_MS: String(HEALTH_MS),
+    AGENT_BOARD_UPDATE_CONNECT_MS: String(HUB_DOWN_MS + 60_000),
   };
   const install = spawnSync(
     'sh',
@@ -283,6 +301,38 @@ async function main() {
     `canary 機器自動更新到 ${GOOD}：向 hub 下載、detached 更新程式換 current、健康檢查通過（${Math.round((Date.now() - started) / 1000)} 秒），session host 沒重啟`,
   );
 
+  // ── hub 在更新途中停掉（S3b）：新 daemon 起來了但連不上 hub，不該被當成壞版回滾 ─────────
+  publish(HUB_DOWN);
+  assert.equal((await api('POST', '/api/releases/check')).body.canary, HUB_DOWN);
+  await poll(
+    '更新程式開始安裝',
+    () => {
+      try {
+        const s = JSON.parse(readFileSync(join(data, 'update-state.json'), 'utf8'));
+        return s.toVersion === HUB_DOWN && ['installing', 'checking'].includes(s.phase);
+      } catch {
+        return false;
+      }
+    },
+    60_000,
+  );
+  await stopHub();
+  await new Promise((done) => setTimeout(done, HUB_DOWN_MS));
+  await startHub();
+  const survived = await poll(
+    'hub 停過之後更新照樣成功',
+    async () => {
+      const m = (await api('GET', '/api/releases')).body.machines[0];
+      return m.online && m.version === HUB_DOWN && m.update?.phase === 'succeeded' ? m : null;
+    },
+    120_000,
+  );
+  assert.equal(survived.previousVersion, GOOD);
+  assert.equal(basename(realpathSync(join(root, 'current'))), HUB_DOWN);
+  step(
+    `更新途中 hub 停了 ${HUB_DOWN_MS / 1000} 秒（超過 ${HEALTH_MS / 1000} 秒健康檢查）：新 daemon 活著就等它連上，更新到 ${HUB_DOWN} 成功、沒有誤判回滾`,
+  );
+
   // ── 壞版：新 daemon 起不來 ────────────────────────────────────
   publish(BAD, { broken: true });
   const badStarted = Date.now();
@@ -296,23 +346,22 @@ async function main() {
     HEALTH_MS + 60_000,
   );
   const elapsed = Date.now() - badStarted;
-  assert.equal(failed.version, GOOD);
+  assert.equal(failed.version, HUB_DOWN);
   assert.equal(failed.update.reason, 'health_timeout');
   assert.equal(failed.update.toVersion, BAD);
-  assert.equal(basename(realpathSync(join(root, 'current'))), GOOD);
+  assert.equal(basename(realpathSync(join(root, 'current'))), HUB_DOWN);
   const failures = await api('GET', '/api/audit?action=release.update_failed');
   assert.match(JSON.stringify(failures.body), /rolled_back/);
   step(
-    `壞版 ${BAD}（新 daemon 起不來）：${HEALTH_MS / 1000} 秒健康檢查沒過，自動回滾到 ${GOOD}，hub 面板標失敗並記 audit（共 ${Math.round(elapsed / 1000)} 秒）`,
+    `壞版 ${BAD}（新 daemon 起不來）：${HEALTH_MS / 1000} 秒健康檢查沒過，自動回滾到 ${HUB_DOWN}，hub 面板標失敗並記 audit（共 ${Math.round(elapsed / 1000)} 秒）`,
   );
 
   // 同一個壞版不會自動重試。
   await new Promise((done) => setTimeout(done, 3_000));
   const still = (await api('GET', '/api/releases')).body.machines[0];
   assert.equal(still.update.phase, 'rolled_back');
-  assert.equal(still.version, GOOD);
+  assert.equal(still.version, HUB_DOWN);
   step('回滾後不會自動再試同一個壞版（要按「立即更新」）');
-  void hubLog;
 }
 
 let failed = false;

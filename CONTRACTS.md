@@ -779,7 +779,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 ### 21.1 版本與成品
 
 - 版本號＝根目錄 `package.json` 的 `version`（從 0.1.0 起），tag `v<版本>`；`BUILD_ID`（內容雜湊）保留。hub 與 daemon 在執行期讀 `<發布檔>/package.json` 與 `BUILD_ID`（`hub|daemon/src/version.ts`；開發模式是 repo 的版本、buildId `dev`），hello 與 `GET /api/health`（public，`HealthInfo { ok, version, buildId, protocolVersion }`）回報。`agent-board-hub schema-version` 印出這版 hub 的 schema 版本。
-- `corepack pnpm build:release` → `release/agent-board-<版本>-<平台>.tar.gz`（Windows `.zip`，`tar -a`）與 `SHA256SUMS`（sha256sum 格式）。平台＝建置那台（`platformKey`：`darwin-arm64`、`win-x64`）。發布檔**附這個平台的 `node_modules`**（`npm ci --omit=dev`，含 node-pty／better-sqlite3／argon2 原生檔），`.node-modules-platform` 記平台與 Node ABI；安裝時平台相同而且原生模組載得起來就直接用，否則退回 `npm ci`（Node 主版本不同時 better-sqlite3 會載不起來）。BUILD_ID 在裝依賴前算，兩個平台同一個值。
+- `corepack pnpm build:release` → `release/agent-board-<版本>-<平台>.tar.gz`（Windows `.zip`，`tar -a`）與 `SHA256SUMS`（sha256sum 格式）。平台＝建置那台（`platformKey`：`darwin-arm64`、`win-x64`）。發布檔**附這個平台的 `node_modules`**（`npm ci --omit=dev`，含 node-pty／better-sqlite3／argon2 原生檔），`.node-modules-platform` 記平台與 Node ABI；安裝時平台相同而且原生模組載得起來就直接用；手動安裝（`install.sh --from`）載不起來時退回 `npm ci`，**自動更新中不跑 `npm ci`**（直接失敗；hub 本來就不發 ABI 不合的目標，§21.8）。workflow 的 Node 版本用 repo 變數 `RELEASE_NODE_VERSION`（預設 24），要和各機的 Node 主版本一致。BUILD_ID 在裝依賴前算，兩個平台同一個值。
 - `.github/workflows/release.yml`：`push: tags: ['v*']`；`macos-14`、`windows-latest` 各跑 install → typecheck → 單元測試（Windows 只跑 protocol、web；其他套件的測試未在 Windows 驗證）→ `build:release`，並檢查 tag 和 `package.json` 版本一致；`publish` job 合併兩份 `SHA256SUMS`、`sha256sum -c`，用 `GITHUB_TOKEN` `gh release create/upload`。ubuntu CI 不變。
 
 ### 21.2 安裝配置
@@ -823,7 +823,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 
 **更新程式**（`scripts/updater.mjs`，只用 node 內建模組＋current 的 better-sqlite3）：
 
-1. `update.lock`（pid；pid 不在了算過期）。有 hub 的機器（`install.json` roles）先用 better-sqlite3 線上備份 `hub.db` 到 `hub.db.pre-update-<舊版>-<時間>`（600），記下 schema 版本；失敗 → `failed/backup_failed`，什麼都不改。
+1. `update.lock`（原子取得，見 §21.8 W1；拿不到 → `failed/busy`）。有 hub 的機器用舊版的 better-sqlite3 先讀 schema 版本，並帶 `--backup-db` 給安裝程式：安裝程式在**停 hub 前一刻**線上備份 `hub.db` 到 `hub.db.pre-update-<舊版>-<時間>`（600，只留最近 5 份）；備份失敗 → 中止（hub 沒重啟、資料庫沒變）。
 2. 跑新版的 `installer.mjs install <hub 或 daemon> --source …`（`AGENT_BOARD_UPDATER=1`）：裝到 `releases/<版本>`、換 current（隨即寫 install.json）、重啟 hub／daemon；session host 只在協定變了才換（§20.5，有工作中的 session 就中止、什麼都不改）。安裝程式失敗而 current 沒換 → `failed/install_failed`。
 3. `checking`：時限（預設 60 秒，`--health-timeout-ms`；daemon 帶的是 `AGENT_BOARD_UPDATE_HEALTH_MS`，只給測試）內每秒看：`daemon-status.json` 的版本是新版、連上時間在更新開始之後、pid 活著；有 hub 的機器另外 `/api/health`（install.json 的 host／port）回 200 而且是新版。過了 → `succeeded`，刪 `.incoming`。
 4. 沒過（或安裝程式換了 current 才失敗）→ `rolling_back`：`hub.db` 的 schema 和備份時不同就帶 `--restore-db <備份>`，用新版的 `installer.mjs switch --to <舊版>`（新版的安裝程式壞了就用舊版裡的）；再用同樣的時限檢查舊版 → `rolled_back`（reason `health_timeout` 或 `install_failed`），回不去 → `rollback_failed`。回滾窗口只有健康檢查的時間，還原備份損失極小。
@@ -851,4 +851,24 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
 
 - 單元：`protocol/src/release.test.ts`（版本比較、通道、延後條件、協定相容、SHA256SUMS）、`hub/src/test/release.test.ts`（假 gh：沒 repo、gh 不存在／沒登入、下載驗證、SHA 不符、權杖環境變數不給 gh、通道與目標、下載端點驗證、升 stable 的 24 小時、協定拒絕、失敗推播只推一次、回滾）、`daemon/src/selfUpdate.test.ts`、`scripts/updater.test.mjs`（`test:install`：遷移、保留 3 版、同版不同內容、更新成功、壞版回滾＋schema 還原、安裝程式失敗、鎖、手動回滾與 schema_changed、detached 存活）。
 - e2e：`corepack pnpm e2e:update`（先 `build:release`；只在 Apple Silicon Mac）：真的成品改版本號當假 Release、假 gh、假 launchctl（照 plist 真的跑），hub 從原始碼跑。canary 自動更新成功；壞版（新 daemon 起不來）在健康檢查時限後自動回滾、面板標失敗。
-- **未驗證**：真的 GitHub Actions（workflow 只做過 YAML 解析）、Windows 成品的建置與安裝（junction、zip、工作排程器停服務時 detached 更新程式會不會被收掉）、真的 launchd 停 daemon 時更新程式存活（用假 launchctl 模擬 process group 訊號）、Linux（沒有成品，daemon 回報 linux-x64 不會有目標）、真的 gh（只測假的）。
+- **未驗證**：真的 GitHub Actions（workflow 只做過 YAML 解析）、Windows 成品的建置與安裝（junction、zip、工作排程器停服務時 detached 更新程式會不會被收掉；實機驗證前 hub 不發 win-x64 目標）、真的 launchd 停 daemon 時更新程式存活（用假 launchctl 模擬 process group 訊號）、真的 gh（只測假的）。
+- **Linux／systemd 的限制**：沒有 Linux 成品（daemon 回報 `linux-x64` 不會有目標，只能 `install.sh --from` 手動更新）。systemd 的 user unit 預設 `KillMode=control-group`：停 daemon 時會殺掉整個 cgroup，**detached（setsid）擋不住**，所以就算之後有 Linux 成品，自動更新程式也要改用 `systemd-run --user --scope` 之類的方式啟動才能活過 daemon 重啟（未實作）。
+
+### 21.8 審查後的修正（2026-11-11）
+
+- **進行中的狀態會過期（S1）**：`UpdateState` 多了 `pid`、`startedAt`。`downloading` 只有 daemon 下載時寫，daemon 不在下載（重啟過）就是中斷；其他進行中的階段：開始超過 `UPDATE_STALE_MS`（15 分鐘），或 `update.lock` 的持有者不在（寫完 installing 一分鐘後還沒有）→ 過期。daemon 連上 hub、收到目標、輪詢時都會檢查，過期就寫 `failed/interrupted`（中斷的可以自動重試，「立即更新」也會清掉過期狀態；真的還在進行的 force 也不重複啟動）。輪詢沒有時間上限。hub 只把「最近 15 分鐘內的進行中狀態」期間的斷線當成預期的（canary 統計）。
+- **spawn（S2）**：啟動更新程式等 `spawn` 事件，`error` → `failed/spawn_failed`；紀錄檔的 fd 交給子程序後關掉。
+- **先升 hub（S3a）**：hub 那台（hello `hostsHub`）的通道目標也是這一版、但它還沒升上去時，其他機器的目標是 null（`targetNote: hub_first`）；hub 那台換了版本（hello 版本變了）再送目標給其他機器。不同版本（例如 canary 比 hub 的 stable 新）不用等。
+- **健康檢查分辨「連不上 hub」（S3b）**：daemon 一啟動就寫 `daemon-status.json`（`startedAt`、`connectedAt: null`），連上 hub 再寫一次。新 daemon 程序活著、本機 hub（有的話）也正常、只是還沒連上 hub：等到 `--connect-timeout-ms`（預設 5 分鐘）；daemon 起不來、崩潰（pid 不在）就照健康檢查時限（60 秒）回滾。
+- **鎖（W1）**：先寫 `update.lock.<pid>`，再 `link` 成 `update.lock`（已存在就失敗，原子）；已有的鎖內容是空的或 10 秒內建立的一律當作有人拿著；pid 不在了才清掉重試；結束時只刪自己的鎖。
+- **解壓（W2）**：解到 `.incoming/<版本>.partial`，檢查內容（名稱、版本、BUILD_ID、updater.mjs）後寫 `.extracted` 標記再改名成 `.incoming/<版本>`；沒有標記的一律重下載。
+- **成品檢查（B2–B4）**：daemon 只接受 `asset === releaseAssetName(version, platform)`；hub 的下載端點同樣比對檔名。解壓前 `tar -tf`／`tar -tvf` 檢查：每一項都要在 `agent-board/` 底下、沒有絕對路徑或 `..`，symlink／hard link 的目標也不能指出 `agent-board/`。
+- **原生模組 ABI（B5）**：hub 驗證成品時讀 `.node-modules-platform` 的 `modules`（Node ABI）記在 `verified.json`；daemon hello 帶 `nodeAbi`（`process.versions.modules`）。不合 → 不發目標（`targetNote: abi_mismatch`），面板請人手動安裝。
+- **win-x64（W8）**：`UNVERIFIED_PLATFORMS`（目前 `win-x64`）：hub 照樣下載、驗證成品，但不發目標（`targetNote: platform_unverified`）；實機驗證後從清單拿掉（測試用 `AGENT_BOARD_ALLOW_UNVERIFIED_PLATFORMS=1`）。workflow 照樣建 win-x64 成品。
+- **延後（W5、W6）**：安裝程式因為 session 忙碌（要換 session host）中止時以 **75** 結束（什麼都沒改）；更新程式寫 `deferred/host_busy`（不算失敗、不推播），daemon 5 分鐘後再試。手動回滾套用同樣的延後條件（上一版的 session host 協定不同就看 RUN／PERM／PLAN／starting）。上一版是 `0.0.0-legacy` 或比 `FIRST_UPDATER_VERSION`（0.1.0）舊：hub 回 409 `previous_unsupported`，面板不給按並說明（要用 `install.sh --from` 重裝）。
+- **schema 判斷（W3）**：回滾時用舊版的 better-sqlite3 讀現在的 schema；和更新前不同（或讀更新前時讀不到、改用舊版 hub 的 `schema-version` 比對 `user_version >` 它）就帶 `--restore-db`。
+- **保留舊版（W4）**：清舊版失敗（例如 Windows 檔案被鎖）吞掉、下次再清。agent 的 PATH 與 MCP 設定檔指 `current`／`app`，不直接參照 `releases/<版本>`，所以留 current＋上一版就不影響還活著的 agent（沒有另外用 session host 快照的 agentPid 判斷）。
+- **app 連結（W7）**：每次 install，`app` 不存在而 `current` 存在就補建 `app → current`（新安裝也有）。
+- **下載退避（W9）**：同一版從 GitHub 下載失敗，自動檢查照 10、20、40…分鐘（上限 6 小時）退避，記在 settings `release.fetchFailure`；手動「檢查新版」不受限，成功後清掉。重新讀 cache 時刪掉 `.download-*` 暫存。
+- **workflow（W10）**：最上層 `permissions: contents: read`，只有 publish job `contents: write`；checkout `persist-credentials: false`；actions 釘 commit SHA；先 `gh release create --draft` 上傳完再 `gh release edit --draft=false`（hub 只看非草稿）。
+- **沒做**：成品簽章／attestation（B1）與審查清單上的 B6、B7。
