@@ -8,6 +8,7 @@ export {
 } from './client';
 export {
   ensurePrivateDir,
+  installId,
   hostEndpoint,
   readToken,
   stableShortDir,

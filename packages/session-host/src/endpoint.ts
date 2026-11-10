@@ -3,7 +3,7 @@
 // Windows：named pipe `\\.\pipe\agent-board-session-host-<使用者>`（未在 Windows 實測）。
 import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir, userInfo } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   SESSION_HOST_PIPE_PREFIX,
@@ -47,18 +47,38 @@ export function stableShortDir(dataDir: string, prefix: string): string {
   return dir;
 }
 
+/** 每份安裝（每個資料夾）一個隨機亂數，存在 `<dataDir>/install-id`（600）。Windows 的 pipe 名稱用它。 */
+export const INSTALL_ID_FILE = 'install-id';
+
+export function installId(dataDir: string): string {
+  const file = join(dataDir, INSTALL_ID_FILE);
+  try {
+    const existing = readFileSync(file, 'utf8').trim();
+    if (/^[0-9a-f]{16,64}$/.test(existing)) return existing;
+  } catch {
+    // 還沒有：下面建一個
+  }
+  ensurePrivateDir(dataDir);
+  const id = randomBytes(16).toString('hex');
+  try {
+    // wx：另一個程序剛好同時建立時，用先寫好的那份。
+    writeFileSync(file, `${id}\n`, { mode: 0o600, flag: 'wx' });
+    return id;
+  } catch {
+    return readFileSync(file, 'utf8').trim();
+  }
+}
+
 export function hostEndpoint(
   dataDir: string,
   platform: NodeJS.Platform = process.platform,
 ): HostEndpoint {
   const tokenPath = join(dataDir, SESSION_HOST_TOKEN_FILE);
   if (platform === 'win32') {
-    // 預設資料夾就用使用者名稱；自訂資料夾（測試、多份安裝）再加一段雜湊，彼此才不會撞名。
-    const isDefault = resolve(dataDir) === resolve(join(homedir(), '.agent-board'));
-    const suffix = isDefault ? '' : `-${shortHash(resolve(dataDir))}`;
+    // 名稱裡有每份安裝的隨機亂數（installId）：別的使用者猜不到名稱，搶不到先開同名 pipe（W5）。
     return {
       kind: 'pipe',
-      path: `\\\\.\\pipe\\${SESSION_HOST_PIPE_PREFIX}${safeName(userInfo().username)}${suffix}`,
+      path: `\\\\.\\pipe\\${SESSION_HOST_PIPE_PREFIX}${safeName(userInfo().username)}-${installId(dataDir)}`,
       tokenPath,
     };
   }

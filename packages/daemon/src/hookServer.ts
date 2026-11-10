@@ -1,11 +1,10 @@
 // 本機 hook socket：unix socket 或 Windows named pipe，NDJSON（CONTRACTS §4.2）。
-import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { connect, createServer, type Server, type Socket } from 'node:net';
-import { tmpdir, userInfo } from 'node:os';
-import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { HookReply, HookRequest, McpReply, McpRequest } from '@agent-board/protocol';
-import { stableShortDir } from '@agent-board/session-host';
+import { installId, stableShortDir } from '@agent-board/session-host';
 import { errorMessage, log } from './log';
 
 /** macOS 的 sun_path 上限 104 bytes，保守一點。 */
@@ -28,11 +27,8 @@ function resolveSocketLocation(dataDir: string): SocketLocation {
   // session host 模式下 agent 比 daemon 活得久，它環境變數裡的 socket 位置在 daemon 重啟後要還是同一個：
   // 一律由資料夾決定，不隨機（CONTRACTS §20.3）。
   if (process.platform === 'win32') {
-    const key = createHash('sha256')
-      .update(`${userInfo().username}\0${resolve(dataDir)}`)
-      .digest('hex')
-      .slice(0, 16);
-    return { path: `\\\\.\\pipe\\agent-board-${key}`, tempDir: null };
+    // 每份安裝的隨機亂數（`<dataDir>/install-id`，600）：別的使用者猜不到名稱，搶不到先開同名 pipe。
+    return { path: `\\\\.\\pipe\\agent-board-hook-${installId(dataDir)}`, tempDir: null };
   }
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const preferred = join(dataDir, 'hook.sock');
