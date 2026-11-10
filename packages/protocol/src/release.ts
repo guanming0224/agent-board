@@ -158,7 +158,7 @@ export const UPDATE_FAILED: readonly UpdatePhase[] = ['failed', 'rolled_back', '
  * 原因代碼（畫面、推播用代碼翻成文字；`detail` 是程式自己的錯誤訊息，不含 Claude 寫的內容）。
  * waiting_permission：有 session 在等你允許；host_busy：這次要換 session host，但有 session 在工作；
  * not_installed：不是用安裝程式裝的（開發模式），不能自動更新；schema_changed：手動回滾跨過 hub.db 升級（會丟資料，
- * 不自動做）；其他是失敗原因。
+ * 不自動做）；interrupted：進行中的更新中斷（可重試）；其他是失敗原因。
  */
 export const UpdateReason = z.enum([
   'waiting_permission',
@@ -175,6 +175,10 @@ export const UpdateReason = z.enum([
   'no_previous',
   'schema_changed',
   'busy',
+  /** 進行中的更新中斷了（daemon 重啟時還在下載、更新程式已經不在或超過 15 分鐘沒結束）。可以重試。 */
+  'interrupted',
+  /** 啟動不了更新程式（spawn 失敗）。 */
+  'spawn_failed',
   'unknown',
 ]);
 export type UpdateReason = z.infer<typeof UpdateReason>;
@@ -187,8 +191,35 @@ export const UpdateState = z.object({
   /** 程式產生的說明（錯誤訊息），最多 500 字。 */
   detail: z.string().max(500).nullable(),
   at: IsoTime,
+  /** 寫這個狀態的程序（downloading＝daemon，其他進行中的階段＝更新程式）。舊版沒有。 */
+  pid: z.number().int().positive().optional(),
+  /** 這次更新開始的時間（判斷進行中的狀態是否過期）。舊版沒有。 */
+  startedAt: IsoTime.optional(),
 });
 export type UpdateState = z.infer<typeof UpdateState>;
+
+/** 進行中的狀態最久多久算正常（更新程式：下載後安裝、60 秒健康檢查、最多 5 分鐘等連上 hub、回滾）。 */
+export const UPDATE_STALE_MS = 15 * 60 * 1000;
+
+/** 第一個有自動更新（scripts/updater.mjs、installer switch、daemon-status.json）的版本：更早的不能自動回滾過去。 */
+export const FIRST_UPDATER_VERSION = '0.1.0';
+
+/** 能不能從面板回滾到這一版：0.0.0-legacy 或比 FIRST_UPDATER_VERSION 舊的不行（健康檢查等不到舊 daemon）。 */
+export function rollbackSupported(previousVersion: string | null): boolean {
+  return (
+    previousVersion !== null &&
+    isVersion(previousVersion) &&
+    compareVersions(previousVersion, FIRST_UPDATER_VERSION) >= 0
+  );
+}
+
+/** 沒有發目標的原因（面板顯示）：hub_first＝等 hub 那台先升到這版；platform_unverified＝這個平台還沒實機驗證
+ *（win-x64）；abi_mismatch＝成品附的原生模組和這台的 Node 版本不合。 */
+export const TargetNote = z.enum(['hub_first', 'platform_unverified', 'abi_mismatch']);
+export type TargetNote = z.infer<typeof TargetNote>;
+
+/** 還沒在實機驗證過安裝與更新的平台：hub 照樣下載成品，但不發給這些平台的機器（W8）。 */
+export const UNVERIFIED_PLATFORMS: readonly string[] = ['win-x64'];
 
 /** 延後條件（規格 §5 第 2 點）：有 PERM 就延後；這次要換 session host 而有 RUN／PERM／PLAN／starting 也延後。 */
 export function updateDeferReason(
@@ -226,6 +257,10 @@ export const MachineRelease = z.object({
   /** 這台有 hub（hub 自己的更新也走這台的 daemon）。 */
   hasHub: z.boolean(),
   update: UpdateState.nullable(),
+  /** targetVersion 是 null 的原因（有的話）。 */
+  targetNote: TargetNote.nullable(),
+  /** 能不能按「回滾到上一版」（rollbackSupported(previousVersion)）。 */
+  canRollback: z.boolean(),
 });
 export type MachineRelease = z.infer<typeof MachineRelease>;
 

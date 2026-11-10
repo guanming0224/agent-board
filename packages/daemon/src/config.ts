@@ -39,6 +39,8 @@ export interface DaemonConfig {
   installRoot?: string | null;
   /** 更新程式健康檢查的上限（AGENT_BOARD_UPDATE_HEALTH_MS，只給測試縮短；預設 60 秒）。 */
   updateHealthMs?: number;
+  /** 新 daemon 起來了但連不上 hub 時更新程式最多等多久（AGENT_BOARD_UPDATE_CONNECT_MS，只給測試；預設 5 分鐘）。 */
+  updateConnectMs?: number;
   /** 只給測試（AGENT_BOARD_PROTOCOL_VERSION_OVERRIDE）：hello 假裝成別的 hub 協定版本。 */
   protocolVersionOverride?: number;
 }
@@ -95,6 +97,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     installRoot: env.AGENT_BOARD_INSTALL_ROOT || null,
     ...(Number(env.AGENT_BOARD_UPDATE_HEALTH_MS) > 0
       ? { updateHealthMs: Number(env.AGENT_BOARD_UPDATE_HEALTH_MS) }
+      : {}),
+    ...(Number(env.AGENT_BOARD_UPDATE_CONNECT_MS) > 0
+      ? { updateConnectMs: Number(env.AGENT_BOARD_UPDATE_CONNECT_MS) }
       : {}),
     ...(Number(env.AGENT_BOARD_PROTOCOL_VERSION_OVERRIDE) > 0
       ? { protocolVersionOverride: Number(env.AGENT_BOARD_PROTOCOL_VERSION_OVERRIDE) }

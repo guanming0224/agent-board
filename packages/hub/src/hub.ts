@@ -7,6 +7,7 @@ import { APP_VERSION, type AppVersion } from './version';
 import {
   agentOf,
   PROTOCOL_VERSION,
+  rollbackSupported,
   type UpdateState,
   ClientToHub,
   DAEMON_FEATURES,
@@ -898,6 +899,14 @@ export class Hub {
     if (!conn) throw new HttpError(409, 'machine_offline', 'Machine is offline');
     const previous = this.release.record(machineId).previousVersion;
     if (!previous) throw new HttpError(409, 'no_previous', 'No previous version on this machine');
+    // 0.0.0-legacy 或比第一個有更新程式的版本舊：舊 daemon 不寫健康狀態檔，自動回滾一定失敗（W6）。
+    if (!rollbackSupported(previous)) {
+      throw new HttpError(
+        409,
+        'previous_unsupported',
+        `Version ${previous} predates automatic updates; reinstall it with install.sh --from instead`,
+      );
+    }
     this.audit(user.id, null, 'release.rollback', JSON.stringify({ machineId, to: previous }));
     this.send(conn.ws, { type: 'release.rollback' });
   }

@@ -25,7 +25,11 @@ import {
   RELEASE_PLATFORMS,
   ReleaseChannel,
   releaseAssetName,
+  rollbackSupported,
+  UNVERIFIED_PLATFORMS,
   UPDATE_FAILED,
+  UPDATE_STALE_MS,
+  type TargetNote,
   UPDATE_IN_PROGRESS,
   UpdateState,
   versionFromTag,
@@ -53,6 +57,7 @@ const KEY = {
   repo: 'release.repo',
   stats: 'release.canaryStats',
   lastCheck: 'release.lastCheck',
+  fetchFailure: 'release.fetchFailure',
   channel: (id: string) => `machineChannel:${id}`,
   machine: (id: string) => `machineRelease:${id}`,
 };
@@ -110,6 +115,8 @@ const MachineRecord = z.object({
   protocolVersion: z.number().int().nullable().catch(null),
   previousVersion: z.string().nullable().catch(null),
   hostsHub: z.boolean().catch(false),
+  /** daemon 的 Node 原生模組 ABI（`process.versions.modules`）；舊 daemon 不送。 */
+  nodeAbi: z.string().nullable().catch(null),
   update: UpdateState.nullable().catch(null),
   /** 已經推播過的失敗（update.at）：同一次失敗只通知一次。 */
   notifiedAt: z.string().nullable().catch(null),
@@ -122,6 +129,7 @@ const EMPTY_RECORD: MachineRecord = {
   protocolVersion: null,
   previousVersion: null,
   hostsHub: false,
+  nodeAbi: null,
   update: null,
   notifiedAt: null,
 };
@@ -138,10 +146,25 @@ const Verified = z.object({
   verifiedAt: z.string(),
   assets: z.record(
     z.string(),
-    z.object({ asset: z.string(), sha256: z.string(), size: z.number().int().nonnegative() }),
+    z.object({
+      asset: z.string(),
+      sha256: z.string(),
+      size: z.number().int().nonnegative(),
+      /** 成品附的 node_modules 是哪個 Node ABI 建的（`.node-modules-platform`）；讀不到為 null（不擋）。 */
+      abi: z.string().nullable().optional(),
+    }),
   ),
 });
 type Verified = z.infer<typeof Verified>;
+
+/** 同一版下載失敗的退避（W9）：10 分鐘起、每次加倍、上限 6 小時；手動「檢查新版」不受限。 */
+const FetchFailure = z.object({
+  version: z.string(),
+  count: z.number().int().positive(),
+  nextAt: z.string(),
+});
+const FETCH_BACKOFF_BASE_MS = 10 * 60 * 1000;
+const FETCH_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
 
 export interface HelloRelease {
   version: string;
@@ -150,6 +173,7 @@ export interface HelloRelease {
   platform?: string | undefined;
   previousVersion?: string | null | undefined;
   hostsHub?: boolean | undefined;
+  nodeAbi?: string | undefined;
   update?: UpdateState | null | undefined;
 }
 
@@ -256,10 +280,15 @@ export class ReleaseManager {
       platform: hello.platform ?? null,
       previousVersion: hello.previousVersion ?? null,
       hostsHub: hello.hostsHub ?? false,
+      nodeAbi: hello.nodeAbi ?? null,
       update: hello.update === undefined ? prev.update : hello.update,
     };
     this.saveRecord(machineId, record);
     this.afterUpdateState(machineId, record);
+    // hub 那台換了版本：其他機器在等它先升級（hub_first），換完再把目標送出去（等 welcome 送完）。
+    if (record.hostsHub && prev.version !== record.version) {
+      queueMicrotask(() => this.deps.onTargetsChanged());
+    }
     return protocolCompat(PROTOCOL_VERSION, record.protocolVersion ?? LEGACY_PROTOCOL_VERSION);
   }
 
@@ -290,11 +319,16 @@ export class ReleaseManager {
     this.deps.notifyUpdateFailed(machineId, machine?.name ?? machineId, state);
   }
 
-  /** daemon 斷線：更新中的斷線是預期的（換版重啟），其他的算 canary 的崩潰／重啟。 */
+  /**
+   * daemon 斷線：更新進行中（而且狀態是最近 15 分鐘內的）的斷線是預期的（換版重啟），其他的算 canary 的崩潰／重啟。
+   * 狀態停在進行中太久不算（S1：卡住的狀態不能讓之後的崩潰都被當成預期的）。
+   */
   onDisconnect(machineId: string): void {
     if (this.channelOf(machineId) !== 'canary') return;
-    const phase = this.record(machineId).update?.phase;
-    if (phase && UPDATE_IN_PROGRESS.includes(phase)) return;
+    const update = this.record(machineId).update;
+    const recent =
+      update !== null && this.deps.now().getTime() - Date.parse(update.at) < UPDATE_STALE_MS;
+    if (update && UPDATE_IN_PROGRESS.includes(update.phase) && recent) return;
     this.bumpStat('disconnects');
   }
 
@@ -327,17 +361,61 @@ export class ReleaseManager {
 
   // ── 目標 ─────────────────────────────────────────────
 
-  /** 這台機器現在的更新目標；平台沒有成品、版本不在 cache 裡就是 null。 */
+  /** 這台機器現在的更新目標；沒有就是 null。 */
   targetFor(machineId: string): ReleaseTarget | null {
+    return this.resolveTarget(machineId).target;
+  }
+
+  private channelVersion(machineId: string): string | null {
+    return channelTarget(this.channelOf(machineId), { canary: this.canary, stable: this.stable });
+  }
+
+  /**
+   * 目標與沒有目標的原因：
+   * - 平台沒有成品、版本不在 cache 裡：null（沒有說明）。
+   * - 還沒實機驗證的平台（win-x64，W8）：platform_unverified。hub 照樣下載成品，只是不發。
+   * - 成品附的原生模組 ABI 和這台 daemon 的 Node 不合（B5）：abi_mismatch（不在更新中跑 npm ci）。
+   * - hub 那台也要升到同一版但還沒升（S3a）：hub_first。先升 hub，其他機器才不會在 hub 重啟時健康檢查失敗。
+   */
+  resolveTarget(machineId: string): { target: ReleaseTarget | null; note: TargetNote | null } {
+    const none = { target: null, note: null };
     const record = this.record(machineId);
-    const version = channelTarget(this.channelOf(machineId), {
-      canary: this.canary,
-      stable: this.stable,
-    });
-    if (!version || !record.platform) return null;
-    const asset = this.cacheIndex.get(version)?.assets[record.platform];
-    if (!asset) return null;
-    return { version, platform: record.platform, ...asset };
+    const version = this.channelVersion(machineId);
+    if (!version || !record.platform) return none;
+    if (
+      UNVERIFIED_PLATFORMS.includes(record.platform) &&
+      process.env.AGENT_BOARD_ALLOW_UNVERIFIED_PLATFORMS !== '1'
+    ) {
+      return { target: null, note: 'platform_unverified' };
+    }
+    const entry = this.cacheIndex.get(version)?.assets[record.platform];
+    if (!entry || entry.asset !== releaseAssetName(version, record.platform)) return none;
+    if (entry.abi && record.nodeAbi && entry.abi !== record.nodeAbi) {
+      return { target: null, note: 'abi_mismatch' };
+    }
+    if (!record.hostsHub) {
+      for (const machine of this.deps.store.listMachines()) {
+        if (machine.id === machineId) continue;
+        const hub = this.record(machine.id);
+        if (
+          hub.hostsHub &&
+          hub.version !== version &&
+          this.channelVersion(machine.id) === version
+        ) {
+          return { target: null, note: 'hub_first' };
+        }
+      }
+    }
+    return {
+      target: {
+        version,
+        platform: record.platform,
+        asset: entry.asset,
+        sha256: entry.sha256,
+        size: entry.size,
+      },
+      note: null,
+    };
   }
 
   // ── 檢查與下載 ────────────────────────────────────────
@@ -359,6 +437,11 @@ export class ReleaseManager {
         names = [];
       }
       for (const name of names) {
+        // 上次 hub 下載到一半就結束留下的暫存（W9）。
+        if (name.startsWith('.download-')) {
+          await rm(join(dir, name), { recursive: true, force: true }).catch(() => undefined);
+          continue;
+        }
         if (!isVersion(name)) continue;
         try {
           const verified = Verified.parse(
@@ -465,12 +548,26 @@ export class ReleaseManager {
       return;
     }
     if (!this.cacheIndex.has(latest)) {
+      // 同一版一直下載失敗：自動檢查照退避時間跳過（手動「檢查新版」不受限）。
+      const failure = FetchFailure.safeParse(this.deps.store.getRawJson(KEY.fetchFailure));
+      const previous = failure.success && failure.data.version === latest ? failure.data : null;
+      if (previous && userId === null && Date.parse(previous.nextAt) > this.deps.now().getTime()) {
+        return;
+      }
       const error = await this.download(repo, latest, cacheDir);
       if (error) {
+        const count = (previous?.count ?? 0) + 1;
+        const wait = Math.min(FETCH_BACKOFF_BASE_MS * 2 ** (count - 1), FETCH_BACKOFF_MAX_MS);
+        this.deps.store.setRawJson(KEY.fetchFailure, {
+          version: latest,
+          count,
+          nextAt: new Date(this.deps.now().getTime() + wait).toISOString(),
+        });
         this.setLastCheck(error);
         this.deps.audit(userId, 'release.fetch_failed', JSON.stringify({ version: latest, error }));
         return;
       }
+      this.deps.store.setRawJson(KEY.fetchFailure, null);
     }
     this.deps.store.setRawJson(KEY.canary, latest);
     this.deps.store.setRawJson(KEY.stats, {
@@ -532,7 +629,7 @@ export class ReleaseManager {
         if (!expected) return `${asset} not listed in SHA256SUMS`;
         const actual = await sha256File(path);
         if (actual !== expected) return `${asset} SHA-256 mismatch`;
-        assets[platform] = { asset, sha256: actual, size };
+        assets[platform] = { asset, sha256: actual, size, abi: await bundledAbi(path) };
       }
       if (Object.keys(assets).length === 0) return 'no release assets';
       const verified: Verified = { version, verifiedAt: this.nowIso(), assets };
@@ -570,7 +667,8 @@ export class ReleaseManager {
     const dir = this.cacheDir;
     if (!dir || !isVersion(version) || !isReleasePlatform(platform)) return null;
     const asset = this.cacheIndex.get(version)?.assets[platform];
-    if (!asset) return null;
+    // 檔名一定是這個版本與平台的成品名稱（B3）：verified.json 被改過也只會給到 cache 資料夾裡的那一個檔。
+    if (!asset || asset.asset !== releaseAssetName(version, platform)) return null;
     return { path: join(dir, version, asset.asset), sha256: asset.sha256, size: asset.size };
   }
 
@@ -599,6 +697,7 @@ export class ReleaseManager {
     const last = this.lastCheck();
     const machines: MachineRelease[] = this.deps.store.listMachines().map((machine) => {
       const record = this.record(machine.id);
+      const resolved = this.resolveTarget(machine.id);
       return {
         machineId: machine.id,
         name: machine.name,
@@ -611,7 +710,9 @@ export class ReleaseManager {
         protocolVersion: record.protocolVersion,
         previousVersion: record.previousVersion,
         channel: this.channelOf(machine.id),
-        targetVersion: this.targetFor(machine.id)?.version ?? null,
+        targetVersion: resolved.target?.version ?? null,
+        targetNote: resolved.note,
+        canRollback: rollbackSupported(record.previousVersion),
         compat:
           record.protocolVersion === null
             ? 'ok'
@@ -636,6 +737,26 @@ export class ReleaseManager {
       machines,
     };
   }
+}
+
+/** 成品裡 `.node-modules-platform` 記的 Node ABI（用系統 tar 讀，tar.gz 與 zip 都行）；讀不到回 null。 */
+function bundledAbi(archive: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'tar',
+      ['-xOf', archive, 'agent-board/.node-modules-platform'],
+      { encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true },
+      (error, stdout) => {
+        if (error) return resolve(null);
+        try {
+          const modules = (JSON.parse(stdout) as { modules?: unknown }).modules;
+          resolve(typeof modules === 'string' ? modules : null);
+        } catch {
+          resolve(null);
+        }
+      },
+    );
+  });
 }
 
 function firstLine(text: string): string {

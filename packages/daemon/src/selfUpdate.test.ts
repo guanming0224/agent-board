@@ -6,10 +6,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ReleaseTarget, UpdateState } from '@agent-board/protocol';
+import { execFileSync } from 'node:child_process';
+import { existsSync, symlinkSync } from 'node:fs';
 import {
+  checkArchive,
+  EXTRACTED_MARKER,
   hubHttpBase,
+  insideRelease,
   readUpdateState,
   SelfUpdater,
+  spawnDetached,
   writeUpdateState,
   type SelfUpdaterDeps,
   type SpawnRequest,
@@ -47,6 +53,8 @@ function harness(over: Partial<SelfUpdaterDeps> & { hostProtocol?: number } = {}
   const spawned: SpawnRequest[] = [];
   const fetches: { url: string; auth: string | null }[] = [];
   let statuses: string[] = [];
+  let held = false;
+  let nowMs = Date.now();
   const updater = new SelfUpdater({
     dataDir: data,
     installRoot: root,
@@ -56,7 +64,12 @@ function harness(over: Partial<SelfUpdaterDeps> & { hostProtocol?: number } = {}
     token: 'machine-token',
     sessionStatuses: () => statuses,
     report: (state) => reports.push(state),
-    spawnUpdater: (request) => spawned.push(request),
+    spawnUpdater: async (request) => {
+      spawned.push(request);
+    },
+    inspectArchive: async () => {},
+    lockHeld: () => held,
+    now: () => new Date(nowMs),
     fetch: (async (url: string, init: RequestInit) => {
       fetches.push({ url, auth: new Headers(init.headers).get('authorization') });
       return new Response(ARCHIVE);
@@ -86,9 +99,22 @@ function harness(over: Partial<SelfUpdaterDeps> & { hostProtocol?: number } = {}
     spawned,
     fetches,
     setStatuses: (next: string[]) => (statuses = next),
+    setHeld: (next: boolean) => (held = next),
+    advance: (ms: number) => (nowMs += ms),
     phases: () => reports.map((r) => r.phase),
   };
 }
+
+const inProgress = (over: Partial<UpdateState>): UpdateState => ({
+  phase: 'checking',
+  fromVersion: '0.1.0',
+  toVersion: '0.2.0',
+  reason: null,
+  detail: null,
+  at: new Date().toISOString(),
+  startedAt: new Date().toISOString(),
+  ...over,
+});
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -125,9 +151,13 @@ describe('SelfUpdater', () => {
       data,
       '--root',
       root,
+      '--started-at',
+      expect.any(String),
       '--health-timeout-ms',
       '5000',
     ]);
+    // 解好的新版有完成標記（W2）；更新程式啟動後開始輪詢狀態檔。
+    expect(existsSync(join(root, 'releases', '.incoming', '0.2.0', EXTRACTED_MARKER))).toBe(true);
     expect(readUpdateState(data)?.phase).toBe('installing');
     h.updater.dispose();
   });
@@ -191,12 +221,18 @@ describe('SelfUpdater', () => {
   it('同版、降級、別的平台、目標 null：什麼都不做（降級要 force）', async () => {
     const h = harness();
     h.updater.onTarget(target({ version: '0.1.0' }), false);
-    h.updater.onTarget(target({ version: '0.0.5' }), false);
+    h.updater.onTarget(
+      target({ version: '0.0.5', asset: 'agent-board-0.0.5-darwin-arm64.tar.gz' }),
+      false,
+    );
     h.updater.onTarget(target({ platform: 'win-x64' }), false);
     h.updater.onTarget(null, false);
     await settle();
     expect(h.reports).toEqual([]);
-    h.updater.onTarget(target({ version: '0.0.5' }), true);
+    h.updater.onTarget(
+      target({ version: '0.0.5', asset: 'agent-board-0.0.5-darwin-arm64.tar.gz' }),
+      true,
+    );
     await settle();
     expect(h.fetches).toHaveLength(1);
   });
@@ -281,6 +317,207 @@ describe('SelfUpdater', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 2_500));
     expect(h.phases()).toEqual(['succeeded']);
+    h.updater.dispose();
+  });
+});
+
+describe('SelfUpdater：卡住的狀態（S1）', () => {
+  it('daemon 重啟時狀態還是 downloading：連上 hub 就標 failed/interrupted，之後可以自動重試', async () => {
+    await writeUpdateState(data, inProgress({ phase: 'downloading', pid: 1 }));
+    const h = harness();
+    h.updater.onConnected();
+    await settle();
+    expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.spawned).toHaveLength(1);
+    h.updater.dispose();
+  });
+
+  it('installing 但更新程式的鎖沒人拿著（超過一分鐘）：過期，非 force 也重試', async () => {
+    await writeUpdateState(
+      data,
+      inProgress({ phase: 'installing', at: new Date(Date.now() - 2 * 60_000).toISOString() }),
+    );
+    const h = harness();
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
+    expect(h.spawned).toHaveLength(1);
+    h.updater.dispose();
+  });
+
+  it('checking 超過 15 分鐘（鎖還在也算）：「立即更新」清掉過期狀態再做', async () => {
+    const old = new Date(Date.now() - 20 * 60_000).toISOString();
+    await writeUpdateState(data, inProgress({ phase: 'checking', startedAt: old, at: old }));
+    const h = harness();
+    h.setHeld(true);
+    h.updater.onTarget(target(), true);
+    await settle();
+    expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
+    expect(h.spawned).toHaveLength(1);
+    h.updater.dispose();
+  });
+
+  it('真的還在進行（鎖有人拿著、沒過期）：force 也不重複啟動', async () => {
+    await writeUpdateState(data, inProgress({ phase: 'checking' }));
+    const h = harness();
+    h.setHeld(true);
+    h.updater.onTarget(target(), true);
+    await settle();
+    expect(h.reports).toEqual([]);
+    expect(h.spawned).toEqual([]);
+  });
+
+  it('輪詢沒有時間上限；更新程式不在了、狀態過期就標中斷並停止輪詢', async () => {
+    await writeUpdateState(data, inProgress({ phase: 'checking' }));
+    const h = harness();
+    h.setHeld(true);
+    h.updater.onConnected();
+    h.advance(11 * 60_000); // 舊版 10 分鐘就停止輪詢
+    await new Promise((resolve) => setTimeout(resolve, 2_300));
+    expect(h.reports).toEqual([]);
+    h.setHeld(false);
+    await new Promise((resolve) => setTimeout(resolve, 2_300));
+    expect(h.reports.at(-1)).toMatchObject({ phase: 'failed', reason: 'interrupted' });
+    h.updater.dispose();
+  });
+});
+
+describe('SelfUpdater：啟動更新程式（S2）', () => {
+  it('啟動不了更新程式：記成 failed/spawn_failed', async () => {
+    const h = harness({
+      spawnUpdater: async () => {
+        throw new Error('spawn ENOENT');
+      },
+    });
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.reports.at(-1)).toMatchObject({
+      phase: 'failed',
+      reason: 'spawn_failed',
+      detail: 'spawn ENOENT',
+    });
+  });
+
+  it('spawnDetached：工作目錄不存在時 reject（不是丟出未處理的 error 事件）；成功時回 pid', async () => {
+    const logFile = join(base, 'logs', 'updater.log');
+    await expect(
+      spawnDetached({ script: '-e', args: [''], cwd: join(base, 'missing'), logFile }),
+    ).rejects.toThrow();
+    const pid = await spawnDetached({ script: '-e', args: ['0'], cwd: base, logFile });
+    expect(pid).toBeGreaterThan(0);
+  });
+});
+
+describe('SelfUpdater：解壓與成品檢查', () => {
+  it('解到一半的新版（沒有完成標記）：整個重新下載（W2）', async () => {
+    const half = join(root, 'releases', '.incoming', '0.2.0', 'agent-board');
+    mkdirSync(join(half, 'scripts'), { recursive: true });
+    writeFileSync(
+      join(half, 'package.json'),
+      JSON.stringify({ name: 'agent-board-release', version: '0.2.0' }),
+    );
+    writeFileSync(join(half, 'BUILD_ID'), 'x');
+    writeFileSync(join(half, 'scripts', 'updater.mjs'), '');
+    const h = harness();
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.fetches).toHaveLength(1);
+    expect(h.spawned).toHaveLength(1);
+    expect(existsSync(join(root, 'releases', '.incoming', '0.2.0.partial'))).toBe(false);
+    h.updater.dispose();
+  });
+
+  it('解壓失敗：不留 .partial、不啟動', async () => {
+    const h = harness({
+      extract: async () => {
+        throw new Error('tar exit 1');
+      },
+    });
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.reports.at(-1)).toMatchObject({ phase: 'failed', reason: 'extract_failed' });
+    expect(existsSync(join(root, 'releases', '.incoming'))).toBe(false);
+  });
+
+  it('hub 給的成品名稱和版本、平台對不上：不更新（B2）', async () => {
+    const h = harness();
+    h.updater.onTarget(target({ asset: '../../evil.tar.gz' }), true);
+    await settle();
+    expect(h.fetches).toEqual([]);
+  });
+
+  it('成品內容清單檢查（B4）：路徑要在 agent-board/ 底下，連結不能指出去', async () => {
+    expect(insideRelease('agent-board/hub/dist/main.mjs')).toBe(true);
+    expect(insideRelease('agent-board/../x')).toBe(false);
+    expect(insideRelease('/etc/passwd')).toBe(false);
+    expect(insideRelease('C:/x')).toBe(false);
+    expect(insideRelease('other/x')).toBe(false);
+    expect(insideRelease('agent-board/node_modules/.bin/x', '../pkg/bin.js')).toBe(true);
+    expect(insideRelease('agent-board/a', '../../etc')).toBe(false);
+    expect(insideRelease('agent-board/a', '/etc/passwd')).toBe(false);
+
+    const make = (name: string, link?: [string, string]) => {
+      const dir = join(base, name);
+      mkdirSync(join(dir, 'agent-board', 'node_modules', 'pkg'), { recursive: true });
+      writeFileSync(join(dir, 'agent-board', 'node_modules', 'pkg', 'bin.js'), '');
+      mkdirSync(join(dir, 'agent-board', 'node_modules', '.bin'), { recursive: true });
+      symlinkSync('../pkg/bin.js', join(dir, 'agent-board', 'node_modules', '.bin', 'tool'));
+      if (link) symlinkSync(link[1], join(dir, 'agent-board', link[0]));
+      const archive = join(base, `${name}.tar.gz`);
+      execFileSync('tar', ['-czf', archive, '-C', dir, 'agent-board']);
+      return archive;
+    };
+    await expect(checkArchive(make('good'))).resolves.toBeUndefined();
+    await expect(checkArchive(make('abs', ['escape', '/etc']))).rejects.toThrow(/連結/);
+    await expect(checkArchive(make('up', ['escape', '../../outside']))).rejects.toThrow(/連結/);
+  });
+});
+
+describe('SelfUpdater：延後', () => {
+  it('更新程式因 session 忙碌寫成 deferred/host_busy：照延後規則再試（W5）', async () => {
+    const h = harness({ deferRetryMs: 200 });
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.spawned).toHaveLength(1);
+    // 更新程式（假的）把狀態寫成延後。
+    await writeUpdateState(
+      data,
+      inProgress({ phase: 'deferred', reason: 'host_busy', startedAt: undefined }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2_700));
+    expect(h.reports.some((r) => r.phase === 'deferred' && r.reason === 'host_busy')).toBe(true);
+    expect(h.spawned).toHaveLength(2);
+    h.updater.dispose();
+  });
+
+  it('手動回滾也看延後條件：有 PERM 延後；上一版要換 session host 而有 RUN 也延後（W6）', async () => {
+    writeFileSync(
+      join(root, 'install.json'),
+      JSON.stringify({
+        roles: ['daemon'],
+        previousVersion: '0.1.0',
+        previousRelease: '0.1.0',
+        sessionHostProtocol: 1,
+      }),
+    );
+    mkdirSync(join(root, 'releases', '0.1.0', 'session-host', 'dist'), { recursive: true });
+    writeFileSync(
+      join(root, 'releases', '0.1.0', 'session-host', 'dist', 'meta.json'),
+      JSON.stringify({ protocol: 2 }),
+    );
+    const h = harness();
+    h.setStatuses(['waiting_permission']);
+    await h.updater.rollback();
+    expect(h.reports.at(-1)).toMatchObject({ phase: 'deferred', reason: 'waiting_permission' });
+    h.setStatuses(['running']);
+    await h.updater.rollback();
+    expect(h.reports.at(-1)).toMatchObject({ phase: 'deferred', reason: 'host_busy' });
+    expect(h.spawned).toEqual([]);
+    h.setStatuses(['waiting_input']);
+    await h.updater.rollback();
+    expect(h.spawned).toHaveLength(1);
     h.updater.dispose();
   });
 });

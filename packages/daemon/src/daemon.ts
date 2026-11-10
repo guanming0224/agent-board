@@ -321,6 +321,7 @@ export class Daemon {
         [...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.runtime().status),
       report: (state) => this.send({ type: 'update.status', state }),
       ...(config.updateHealthMs ? { healthTimeoutMs: config.updateHealthMs } : {}),
+      ...(config.updateConnectMs ? { connectTimeoutMs: config.updateConnectMs } : {}),
     });
     this.hub = new HubClient({
       url: config.hubUrl,
@@ -382,6 +383,10 @@ export class Daemon {
   async start(): Promise<void> {
     // 另一個 daemon 正在用同一份資料夾時在這裡就失敗，不會去搶 session host 的連線。
     await this.hookServer.start();
+    // 更新程式的健康檢查（§21.3，S3b）：程序起來了、還沒連上 hub。
+    await writeDaemonStatus(this.deps.config.dataDir, { ...APP_VERSION, connected: false }).catch(
+      (error: unknown) => log.warn(`寫不進 daemon 狀態檔：${errorMessage(error)}`),
+    );
     let markReady: () => void = () => {};
     this.sessionsReady = new Promise((resolve) => (markReady = resolve));
     try {
@@ -920,6 +925,7 @@ export class Daemon {
       platform: platformKey(process.platform, process.arch),
       previousVersion: this.updater.previousVersion,
       hostsHub: this.updater.hostsHub,
+      nodeAbi: process.versions.modules,
       update: this.updater.state,
     };
   }
@@ -965,8 +971,8 @@ export class Daemon {
         for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
         this.settleStaleApprovals();
         // 自動更新（§21.3）：健康檢查看 daemon-status.json；目標交給 SelfUpdater 判斷。
-        writeDaemonStatus(this.deps.config.dataDir, APP_VERSION).catch((error: unknown) =>
-          log.warn(`寫不進 daemon 狀態檔：${errorMessage(error)}`),
+        writeDaemonStatus(this.deps.config.dataDir, { ...APP_VERSION, connected: true }).catch(
+          (error: unknown) => log.warn(`寫不進 daemon 狀態檔：${errorMessage(error)}`),
         );
         this.updater.onConnected();
         if (message.release !== undefined) this.updater.onTarget(message.release, false);

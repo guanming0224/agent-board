@@ -1,7 +1,16 @@
 // 發版與自動更新的 hub 端（CONTRACTS §21）：gh 查／下載／驗證、通道與目標、面板 API、協定相容、下載端點。
 // gh 一律是假的（GhRunner 或 PATH 上的假腳本），不打 GitHub。
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -19,7 +28,7 @@ const sha = (data: string | Buffer) => createHash('sha256').update(data).digest(
 
 interface FakeRelease {
   version: string;
-  files: Record<string, string>;
+  files: Record<string, string | Buffer>;
   sums?: string;
 }
 
@@ -373,6 +382,212 @@ describe('通道、目標與 daemon', () => {
     const offline = await hub.api('POST', `/api/machines/${machineId}/rollback`, { cookie });
     expect(offline.body.code).toBe('machine_offline');
   });
+});
+
+describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
+  /** 真的 tar.gz，帶 .node-modules-platform（hub 讀出成品的 Node ABI）。 */
+  function archiveWithAbi(abi: string): Buffer {
+    const dir = mkdtempSync(join(tmpdir(), 'ab-abi-'));
+    mkdirSync(join(dir, 'agent-board'));
+    writeFileSync(
+      join(dir, 'agent-board', '.node-modules-platform'),
+      JSON.stringify({ platform: 'darwin-arm64', node: '24.0.0', modules: abi }),
+    );
+    const out = join(dir, 'a.tar.gz');
+    execFileSync('tar', ['-czf', out, '-C', dir, 'agent-board']);
+    const bytes = readFileSync(out);
+    rmSync(dir, { recursive: true, force: true });
+    return bytes;
+  }
+
+  async function ready(releases: FakeRelease[]) {
+    const gh = fakeGh({ releases });
+    const ctx = await setup(gh);
+    await ctx.hub.api('PATCH', '/api/releases/config', {
+      cookie: ctx.cookie,
+      body: { repo: 'acme/agent-board' },
+    });
+    return { ...ctx, gh };
+  }
+
+  it('win-x64 還沒實機驗證：hub 照樣下載，但不發目標，面板說明原因', async () => {
+    const { hub, cookie } = await ready([release('0.2.0')]);
+    await hub.api('POST', '/api/releases/check', { cookie });
+    const { daemon, machineId } = await hub.onlineDaemon(
+      cookie,
+      macHello({ os: 'win32', platform: 'win-x64' }) as never,
+    );
+    await hub.api('PUT', `/api/machines/${machineId}/channel`, {
+      cookie,
+      body: { channel: 'canary' },
+    });
+    expect((await daemon.next('release.target')).target).toBeNull();
+    const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
+    expect(overview.body.cached[0]!.platforms).toContain('win-x64');
+    expect(overview.body.machines[0]).toMatchObject({
+      targetVersion: null,
+      targetNote: 'platform_unverified',
+    });
+  });
+
+  it('成品的原生模組 ABI 和 daemon 的 Node 不合：不發目標（abi_mismatch）；合就發', async () => {
+    const r = release('0.2.0');
+    r.files[releaseAssetName('0.2.0', 'darwin-arm64')] = archiveWithAbi('137');
+    const { hub, cookie } = await ready([r]);
+    await hub.api('POST', '/api/releases/check', { cookie });
+    await hub.api('POST', '/api/releases/promote', {
+      cookie,
+      body: { version: '0.2.0', confirm: true },
+    });
+    const odd = await hub.onlineDaemon(cookie, macHello({ nodeAbi: '127' }) as never);
+    expect(
+      (await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie })).body.machines.find(
+        (m) => m.machineId === odd.machineId,
+      ),
+    ).toMatchObject({ targetVersion: null, targetNote: 'abi_mismatch' });
+    const same = await hub.pair(cookie, 'same-abi');
+    const daemon = await hub.daemon(same.token);
+    daemon.send(macHello({ nodeAbi: '137' }));
+    expect(releaseOf(await daemon.next('hub.welcome'))).toBe('0.2.0');
+  });
+
+  it('先升 hub：hub 那台還沒到同一版時，其他機器的目標是 null（hub_first），hub 升完才送出', async () => {
+    const { hub, cookie } = await ready([release('0.2.0')]);
+    await hub.api('POST', '/api/releases/check', { cookie });
+    await hub.api('POST', '/api/releases/promote', {
+      cookie,
+      body: { version: '0.2.0', confirm: true },
+    });
+    const hubMachine = await hub.pair(cookie, 'mac mini');
+    const hubDaemon = await hub.daemon(hubMachine.token);
+    hubDaemon.send(macHello({ hostsHub: true }));
+    expect(releaseOf(await hubDaemon.next('hub.welcome'))).toBe('0.2.0');
+    const other = await hub.pair(cookie, 'laptop');
+    const daemon = await hub.daemon(other.token);
+    daemon.send(macHello());
+    expect((await daemon.next('hub.welcome')).release).toBeNull();
+    const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
+    expect(overview.body.machines.find((m) => m.machineId === other.machineId)).toMatchObject({
+      targetNote: 'hub_first',
+    });
+    // hub 那台升到 0.2.0（重連帶新版本）：其他機器拿到目標。
+    hubDaemon.close();
+    const again = await hub.daemon(hubMachine.token);
+    again.send(macHello({ hostsHub: true, version: '0.2.0' }));
+    await again.next('hub.welcome');
+    const next = await daemon.next('release.target', (m) => m.target !== null);
+    expect((next.target as { version: string }).version).toBe('0.2.0');
+  });
+
+  it('canary 版本和 hub 那台（stable）不同：不用等 hub', async () => {
+    const { hub, cookie } = await ready([release('0.2.0')]);
+    await hub.api('POST', '/api/releases/check', { cookie });
+    await hub.onlineDaemon(cookie, macHello({ hostsHub: true }) as never);
+    const other = await hub.pair(cookie, 'laptop');
+    await hub.api('PUT', `/api/machines/${other.machineId}/channel`, {
+      cookie,
+      body: { channel: 'canary' },
+    });
+    const daemon = await hub.daemon(other.token);
+    daemon.send(macHello());
+    expect(releaseOf(await daemon.next('hub.welcome'))).toBe('0.2.0');
+  });
+
+  it('同一版下載失敗：自動檢查照退避跳過，手動檢查不受限；成功後清掉', async () => {
+    let now = new Date('2026-11-11T00:00:00Z');
+    const bad = release('0.2.0');
+    bad.sums = 'nothing useful';
+    const gh = fakeGh({ releases: [bad] });
+    const { hub, cookie } = await setup(gh, () => now);
+    await hub.api('PATCH', '/api/releases/config', { cookie, body: { repo: 'acme/agent-board' } });
+    const downloads = () => gh.calls.filter((c) => c[1] === 'download').length;
+    await hub.running.hub.release.check(); // 自動：第一次照下載
+    expect(downloads()).toBe(1);
+    await hub.running.hub.release.check(); // 自動：10 分鐘內跳過
+    expect(downloads()).toBe(1);
+    now = new Date(now.getTime() + 11 * 60_000);
+    await hub.running.hub.release.check(); // 自動：10 分鐘後再試，失敗 → 下次等 20 分鐘
+    expect(downloads()).toBe(2);
+    now = new Date(now.getTime() + 15 * 60_000);
+    await hub.running.hub.release.check();
+    expect(downloads()).toBe(2);
+    await hub.api('POST', '/api/releases/check', { cookie }); // 手動不受限
+    expect(downloads()).toBe(3);
+    bad.sums = undefined;
+    await hub.api('POST', '/api/releases/check', { cookie });
+    expect((await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie })).body.canary).toBe(
+      '0.2.0',
+    );
+    expect(hub.running.store.getRawJson('release.fetchFailure')).toBeNull();
+  });
+
+  it('release-cache 裡下載到一半的暫存在重新讀 cache 時清掉', async () => {
+    const gh = fakeGh({ releases: [] });
+    const dir = mkdtempSync(join(tmpdir(), 'ab-cache-'));
+    try {
+      mkdirSync(join(dir, 'release-cache', '.download-0.2.0-abcd'), { recursive: true });
+      hub = await startHub({ gh: gh.runner, releaseCheckIntervalMs: null, releaseDataDir: dir });
+      await hub.running.hub.release.loadCache();
+      expect(existsSync(join(dir, 'release-cache', '.download-0.2.0-abcd'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('上一版是 0.0.0-legacy：不能從面板回滾（previous_unsupported），面板 canRollback false', async () => {
+    const { hub, cookie } = await ready([]);
+    const { machineId } = await hub.onlineDaemon(
+      cookie,
+      macHello({ previousVersion: '0.0.0-legacy' }) as never,
+    );
+    const res = await hub.api('POST', `/api/machines/${machineId}/rollback`, { cookie });
+    expect(res.body.code).toBe('previous_unsupported');
+    const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
+    expect(overview.body.machines[0]!.canRollback).toBe(false);
+  });
+
+  it('卡在進行中太久的狀態不能讓之後的斷線都被當成預期的（S1）', async () => {
+    let now = new Date('2026-11-11T00:00:00Z');
+    const gh = fakeGh({ releases: [release('0.2.0')] });
+    const { hub, cookie } = await setup(gh, () => now);
+    await hub.api('PATCH', '/api/releases/config', { cookie, body: { repo: 'acme/agent-board' } });
+    await hub.api('POST', '/api/releases/check', { cookie });
+    const { daemon, machineId, token } = await hub.onlineDaemon(cookie, macHello() as never);
+    await hub.api('PUT', `/api/machines/${machineId}/channel`, {
+      cookie,
+      body: { channel: 'canary' },
+    });
+    daemon.send({
+      type: 'update.status',
+      state: { ...inProgressState(now), phase: 'checking' },
+    });
+    await until(() => hub.running.hub.release.record(machineId).update?.phase === 'checking');
+    daemon.close();
+    await until(() => !hub.running.store.getMachine(machineId)!.online);
+    let stats = (await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie })).body
+      .canaryStats;
+    expect(stats.disconnects).toBe(0); // 更新中的斷線：預期的
+    now = new Date(now.getTime() + 20 * 60_000);
+    const again = await hub.daemon(token);
+    again.send(macHello({ update: undefined }));
+    await again.next('hub.welcome');
+    again.close();
+    await until(() => !hub.running.store.getMachine(machineId)!.online);
+    stats = (await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie })).body.canaryStats;
+    expect(stats.disconnects).toBe(1);
+  });
+});
+
+const releaseOf = (welcome: Record<string, unknown>) =>
+  (welcome.release as { version?: string } | null)?.version;
+
+const inProgressState = (now: Date): UpdateState => ({
+  phase: 'checking',
+  fromVersion: '0.1.0',
+  toVersion: '0.2.0',
+  reason: null,
+  detail: null,
+  at: now.toISOString(),
 });
 
 describe('健康檢查', () => {
