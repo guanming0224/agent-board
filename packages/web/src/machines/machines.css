@@ -1,0 +1,167 @@
+/*
+ * 機器面板（發版與自動更新，docs/release-update-spec.md §7）。只用在這個次畫面，不改共用樣式。
+ * 控制項用 controls.css 的共用元件（STYLE.md §5.1）：標題列 .panel-head（✕ 由次畫面外框給，手機是「← 返回」）、
+ * 通道切換 .seg.sm、動作 button.sm（手機自動 ≥ 44px）、確認升版 .danger、一列控制項 .row、空狀態 .empty。
+ * 顏色：失敗用 --fault、延後／要處理用 --you（球在你手上），其他不上色；「最新」不用綠色（綠只給 DONE 與 diff）。
+ */
+.page.machines-page {
+  max-width: 960px;
+  padding: 0 var(--space-6) var(--space-8);
+}
+.modal-body .page.machines-page {
+  padding-top: 0;
+}
+/* 標題列貼齊次畫面左右兩邊，右邊讓出外框的 ✕（精簡 32＋右距 8＋間距 8）。 */
+.machines-page > .machines-page-head {
+  margin: 0 calc(-1 * var(--space-6)) var(--space-3);
+  padding-right: calc(var(--ctl-h-sm) + var(--space-2) * 2);
+}
+.machines-page .alert {
+  margin-top: var(--space-3);
+}
+.machines-page .msg.err {
+  color: var(--fault);
+}
+.machines-page .alert.rel-warn {
+  border-color: color-mix(in srgb, var(--you) 55%, transparent);
+  background: color-mix(in srgb, var(--you) 10%, transparent);
+}
+.machines-page .alert.rel-warn > span[aria-hidden] {
+  color: var(--you);
+}
+.rel-confirm p {
+  margin: 0 0 var(--space-2);
+}
+
+.rel-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.rel-versions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-8);
+  margin: 0;
+}
+.rel-versions dt {
+  font-size: var(--fs-ctl-sm);
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.rel-versions dd {
+  margin: 2px 0 0;
+  font-size: var(--fs-h2);
+  font-weight: 650;
+}
+.rel-build {
+  font: var(--fs-sm) var(--font-mono);
+  color: var(--muted);
+  font-weight: 400;
+}
+.rel-gh.hint {
+  margin: 0;
+}
+.rel-line {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+.rel-label {
+  font-size: var(--fs-ctl-sm);
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.rel-repo input {
+  width: min(280px, 100%);
+}
+.rel-promote {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.rel-rows {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+.rel-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(140px, 1fr) auto;
+  gap: var(--space-1h) var(--space-4);
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.rel-row.off .rel-name strong {
+  color: var(--muted);
+}
+.rel-name,
+.rel-ver {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--space-2);
+  align-items: baseline;
+  min-width: 0;
+}
+.rel-name strong {
+  overflow-wrap: anywhere;
+}
+.rel-ver .num {
+  font-weight: 650;
+}
+.rel-channel {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-self: end;
+}
+.rel-status,
+.rel-detail,
+.rel-row > .sub,
+.rel-acts {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.rel-status {
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+.rel-detail.hint {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.rel-act {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  align-items: center;
+}
+.rel-why {
+  font-size: var(--fs-sm);
+}
+
+/* 手機：一欄，通道切換靠左。 */
+@media (max-width: 640px) {
+  .page.machines-page {
+    padding: 0 var(--space-4) var(--space-8);
+  }
+  .machines-page > .machines-page-head {
+    margin: 0 calc(-1 * var(--space-4)) var(--space-3);
+  }
+  .rel-row {
+    grid-template-columns: 1fr;
+  }
+  .rel-channel {
+    justify-self: start;
+  }
+}

@@ -68,6 +68,7 @@ import type { TerminalServerMessage, TerminalStream } from './terminal-contract'
 import { DECOMPOSE_PROMPT_START } from './decomposePrompt';
 import { fakeDeepSearch } from './fakeDeepSearch';
 import { fakeSearch } from './fakeSearch';
+import { createFakeReleases } from './fakeRelease';
 import { demoUsageReport } from './fakeUsage';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
@@ -1476,6 +1477,12 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         zones,
         projects,
       }),
+    // 機器面板（發版與自動更新）：假資料與規則在 fakeRelease.ts。
+    ...createFakeReleases(
+      () => state.machines,
+      (machineId) =>
+        state.sessions.filter((s) => s.machineId === machineId && !s.archived).map((s) => s.status),
+    ),
     getLayouts: async () => layouts,
     async saveLayouts(next) {
       layouts = next;

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { closeStep, isSearchHash, parseHash, resolve, rightHash } from './overlay';
+import { closeStep, isSearchHash, MACHINES_HASH, parseHash, resolve, rightHash } from './overlay';
 
 describe('網址規則（P2 §1.4）', () => {
   it('畫布、收件匣、團隊、設定、新增、封存細節', () => {
@@ -36,6 +36,15 @@ describe('網址規則（P2 §1.4）', () => {
     expect(parseHash('#/archive/s1')).toEqual({ kind: 'board', right: 'keep', modal: 'archive' });
     // 用量詳情（GM 2026-11-09）：置中次畫面，疊在右側面板上。
     expect(parseHash('#/usage')).toEqual({ kind: 'board', right: 'keep', modal: 'usage' });
+    // 機器面板（發版與自動更新）：同樣是置中次畫面，疊在右側面板上。
+    expect(parseHash('#/machines')).toEqual({ kind: 'board', right: 'keep', modal: 'machines' });
+    expect(parseHash(MACHINES_HASH)).toEqual({ kind: 'board', right: 'keep', modal: 'machines' });
+    const inbox = { kind: 'inbox', target: null } as const;
+    expect(resolve('#/machines', inbox).right).toEqual(inbox);
+    // 從收件匣開機器面板、關掉：上一筆就是收件匣，直接上一頁
+    expect(closeStep('#/inbox', 'modal', inbox, 'machines')).toEqual({ back: true });
+    // 推播直接開 #/machines（沒有上一筆）：關掉回畫布、不跳出 app
+    expect(closeStep(null, 'modal', null, 'machines')).toEqual({ back: false, to: '#/canvas' });
   });
 
   it('終端機、登入、首次引導照舊是整頁', () => {

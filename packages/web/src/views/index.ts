@@ -39,6 +39,7 @@ export {
 export {
   inboxHash,
   isSearchHash,
+  MACHINES_HASH,
   MEMORY_HASH,
   parseHash,
   resolve,

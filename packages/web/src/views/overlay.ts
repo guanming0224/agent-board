@@ -12,8 +12,10 @@ export type RightPanel =
  * search：全域搜尋（P3 §3）。桌面是置中次畫面，手機是全螢幕頁 `#/search`（網址可帶 `?q=`）。
  * transcript：某個 session 的對話紀錄 `#/transcript/<id>?at=<序號>`（搜尋結果按 ⌘Enter 開，P3 ③b）。
  * usage：用量詳情 `#/usage`（GM 2026-11-09），從頁首的「近 30 天 N token」或側欄用量打開。
+ * machines：機器面板（發版與自動更新）`#/machines`，從設定的機器區或側欄的機器區打開；推播「更新失敗」也開這裡。
  */
-export type ModalKind = 'settings' | 'archive' | 'new' | 'search' | 'transcript' | 'usage';
+export type ModalKind =
+  'settings' | 'archive' | 'new' | 'search' | 'transcript' | 'usage' | 'machines';
 
 export type RouteView =
   /** 不疊在畫布上的整頁：全尺寸終端機、登入、首次引導（規格 §1.4 不變）。 */
@@ -67,6 +69,8 @@ export function parseHash(hash: string): RouteView {
       return { kind: 'board', right: 'keep', modal: 'search' };
     case 'usage':
       return { kind: 'board', right: 'keep', modal: 'usage' };
+    case 'machines':
+      return { kind: 'board', right: 'keep', modal: 'machines' };
     case 'transcript':
       return param
         ? { kind: 'board', right: 'keep', modal: 'transcript' }
@@ -82,6 +86,9 @@ export const inboxHash = (sessionId?: string | null) =>
 export const MEMORY_HASH = '#/memory';
 
 export const USAGE_HASH = '#/usage';
+
+/** 機器面板（版本與更新）。 */
+export const MACHINES_HASH = '#/machines';
 
 /** 全域搜尋；q 有給就帶在網址上（手機可分享的深連結）。 */
 export const searchHash = (q?: string | null) =>

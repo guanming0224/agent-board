@@ -371,6 +371,8 @@ export class ReleaseManager {
       }
     }
     this.cacheIndex = index;
+    // hub 剛開機時 daemon 可能比 cache 先連上（welcome 的目標是 null）：讀完補送一次。
+    if (index.size > 0) this.deps.onTargetsChanged();
   }
 
   isChecking(): boolean {

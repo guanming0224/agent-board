@@ -18,7 +18,8 @@ import {
   formatTokensFull,
   windowDays,
 } from './usage';
-import { USAGE_HASH } from './overlay';
+import { MACHINES_HASH, USAGE_HASH } from './overlay';
+import '../machines/messages';
 import { useUsageStore } from './usageStore';
 
 /**
@@ -211,6 +212,17 @@ function SidebarBody() {
         {machines.map((m) => (
           <Rig key={m.id} machine={m} sample={samples[m.id]} />
         ))}
+        {/* 機器面板（發版與自動更新）：不搶眼的文字連結，和「看用量詳情」同一種長相。 */}
+        {machines.length > 0 && (
+          <a
+            className="usage-open side"
+            href={MACHINES_HASH}
+            title={t('machines.openHint')}
+            data-testid="machines-side-open"
+          >
+            {t('machines.open')} →
+          </a>
+        )}
       </section>
       <UsageSection />
       <section>

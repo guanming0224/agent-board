@@ -2,7 +2,9 @@
 // 成員只看得到機器清單（hub 的 machinesList 是 user 權限），配對、移除與使用者區只有 owner。
 import { useCallback, useState } from 'react';
 import type { Machine, User } from '@agent-board/protocol';
+import '../machines/messages';
 import { useLocale, useT } from '../shared/i18n';
+import { MACHINES_HASH } from '../views/overlay';
 import { useBoard } from '../shared/store';
 import { Empty, ErrorBox, errorText, Msg, useLoad, useTwoStep, type Note } from './common';
 import { PairingPanel } from './PairingPanel';
@@ -71,6 +73,13 @@ export function MachinesSection({ canManage }: { canManage: boolean }) {
   const { machines } = useBoard();
   return (
     <Section id="machines" title={t('flows.settings.machines')}>
+      {/* 機器面板（發版與自動更新）：各機版本、通道、更新與回滾。成員也能看（只能看）。 */}
+      <p className="hint machines-versions-link">
+        <a className="button sm" href={MACHINES_HASH} data-testid="settings-machines-versions">
+          {t('machines.open')} →
+        </a>{' '}
+        {t('machines.openHint')}
+      </p>
       {machines.length === 0 ? (
         <Empty
           title={t('flows.machine.none')}

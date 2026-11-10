@@ -360,3 +360,63 @@ describe('sw.js team activity (lead auto-staffing)', () => {
     expect(worker.shown[0]!.options.body).toBe('BD1 needs approval, LD added LD-QA');
   });
 });
+
+describe('sw.js update failed (release auto-update)', () => {
+  const failed = (over: Record<string, unknown> = {}) => ({
+    kind: 'update_failed',
+    machineId: 'm-laptop',
+    machine: 'MacBook',
+    version: '0.1.1',
+    phase: 'rolled_back',
+    reason: 'health_timeout',
+    at: '2026-11-11T01:00:00.000Z',
+    ...over,
+  });
+
+  it('rolled back: machine, version and the translated reason; opens the machines panel', async () => {
+    const zh = loadWorker('zh-TW');
+    await zh.dispatch('push', pushEvent(failed()));
+    expect(zh.shown[0]).toMatchObject({
+      title: 'Agent Board 更新失敗',
+      options: {
+        body: 'MacBook：0.1.1 已回滾（60 秒內健康檢查沒過）',
+        tag: 'agent-board-update',
+        renotify: true,
+        timestamp: Date.parse('2026-11-11T01:00:00.000Z'),
+        data: { url: `${ORIGIN}/#/machines` },
+      },
+    });
+    const en = loadWorker('en');
+    await en.dispatch('push', pushEvent(failed()));
+    expect(en.shown[0]).toMatchObject({
+      title: 'Agent Board update failed',
+      options: { body: 'MacBook: 0.1.1 was rolled back (health check didn’t pass within 60s)' },
+    });
+  });
+
+  it('failed and rollback_failed phases; no reason, unknown reason, missing names', async () => {
+    const zh = loadWorker('zh-TW');
+    await zh.dispatch('push', pushEvent(failed({ phase: 'failed', reason: 'download_failed' })));
+    await zh.dispatch('push', pushEvent(failed({ phase: 'rollback_failed', reason: null })));
+    await zh.dispatch('push', pushEvent(failed({ reason: 'something_new' })));
+    await zh.dispatch('push', pushEvent(failed({ machine: '', version: null, phase: 'odd' })));
+    expect(zh.shown.map((n) => n.options.body)).toEqual([
+      'MacBook：更新到 0.1.1 失敗（下載失敗）',
+      'MacBook：0.1.1 回滾也失敗，需要處理',
+      'MacBook：0.1.1 已回滾（原因不明）',
+      '?：更新到 ? 失敗（60 秒內健康檢查沒過）',
+    ]);
+    expect(new Set(zh.shown.map((n) => n.options.tag))).toEqual(new Set(['agent-board-update']));
+  });
+
+  it('clicking it goes to the machines panel', async () => {
+    const board = client(`${ORIGIN}/#/canvas`);
+    const worker = loadWorker('en', [board]);
+    await worker.dispatch('push', pushEvent(failed()));
+    const url = (worker.shown[0]!.options.data as { url: string }).url;
+    await worker.dispatch('notificationclick', {
+      notification: { data: { url }, close: () => undefined },
+    });
+    expect(board.messages).toEqual([{ type: 'agent-board.open', url: `${ORIGIN}/#/machines` }]);
+  });
+});

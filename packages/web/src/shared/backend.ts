@@ -21,6 +21,8 @@ import type {
   Project,
   PurgeOptions,
   PurgeResult,
+  ReleaseChannel,
+  ReleaseOverview,
   RepoInfo,
   ResourceSample,
   SearchQuery,
@@ -226,6 +228,24 @@ export interface BoardBackend {
   machineUsage(machineId: string): Promise<UsageSummary | null>;
   /** 用量詳情（GM 2026-11-09）：跨機器彙整的細項。 */
   usageReport(): Promise<UsageReport>;
+
+  /**
+   * 機器面板（發版與自動更新，docs/release-update-spec.md §7、CONTRACTS §21）。全部回最新的總覽。
+   * 讀取是 user 權限；其餘是 owner（hub 也會擋）。錯誤碼 409：canary_too_new（升 stable 沒帶 confirm）、
+   * not_cached、machine_offline、no_previous。
+   */
+  releases(): Promise<ReleaseOverview>;
+  /** 「檢查新版」：hub 用已登入的 gh 查 Release、下載並驗 SHA-256。 */
+  checkReleases(): Promise<ReleaseOverview>;
+  /** 「升為 stable」；canary 跑不到 24 小時要第二次帶 confirm=true。 */
+  promoteRelease(version: string, confirm: boolean): Promise<ReleaseOverview>;
+  /** Release 所在的 GitHub repo（`owner/name`）；null 清掉。 */
+  setReleaseRepo(repo: string | null): Promise<ReleaseOverview>;
+  setMachineChannel(machineId: string, channel: ReleaseChannel): Promise<ReleaseOverview>;
+  /** 「立即更新」：照目前目標版本更新。 */
+  updateMachine(machineId: string): Promise<ReleaseOverview>;
+  /** 「回滾到上一版」。 */
+  rollbackMachine(machineId: string): Promise<ReleaseOverview>;
 
   getLayouts(workspace: string): Promise<Layout[]>;
   saveLayouts(layouts: Layout[]): Promise<void>;

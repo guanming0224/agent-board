@@ -560,6 +560,14 @@ export function createHubBackend() {
     },
     machineUsage: (id) => call('machineUsage', { params: { id } }),
     usageReport: () => call('usageReport'),
+    releases: () => call('releasesOverview'),
+    checkReleases: () => call('releasesCheck'),
+    promoteRelease: (version, confirm) => call('releasesPromote', { body: { version, confirm } }),
+    setReleaseRepo: (repo) => call('releasesConfig', { body: { repo } }),
+    setMachineChannel: (id, channel) =>
+      call('machineChannel', { params: { id }, body: { channel } }),
+    updateMachine: (id) => call('machineUpdate', { params: { id } }),
+    rollbackMachine: (id) => call('machineRollback', { params: { id } }),
 
     getLayouts: (workspace) => call('layoutsGet', { query: { workspace } }),
     async saveLayouts(layouts) {

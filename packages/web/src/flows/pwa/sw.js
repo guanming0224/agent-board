@@ -99,6 +99,56 @@ const SUMMARY_TEXT = {
   },
 };
 
+/**
+ * 更新失敗（發版與自動更新，hub 送 { kind: 'update_failed', machineId, machine, version, phase, reason, at }）。
+ * machine 是機器名稱；phase 是 failed／rolled_back／rollback_failed；reason 是 UpdateReason 代碼或 null。
+ * 原因文字和 machines/messages.ts 的 machines.reason.* 保持一致。
+ */
+const UPDATE_TEXT = {
+  'zh-TW': {
+    title: 'Agent Board 更新失敗',
+    failed: '{machine}：更新到 {version} 失敗{reason}',
+    rolled_back: '{machine}：{version} 已回滾{reason}',
+    rollback_failed: '{machine}：{version} 回滾也失敗，需要處理{reason}',
+    reasonWrap: '（{reason}）',
+    reason: {
+      download_failed: '下載失敗',
+      checksum_mismatch: 'SHA-256 不符',
+      extract_failed: '解壓失敗',
+      backup_failed: '資料庫備份失敗',
+      install_failed: '安裝失敗',
+      health_timeout: '60 秒內健康檢查沒過',
+      unsupported_platform: '這個平台沒有成品',
+      not_installed: '不是用安裝程式裝的',
+      no_previous: '沒有上一版',
+      schema_changed: 'hub 資料庫升級過，不能自動回滾',
+      busy: '另一個更新還在進行',
+      unknown: '原因不明',
+    },
+  },
+  en: {
+    title: 'Agent Board update failed',
+    failed: '{machine}: update to {version} failed{reason}',
+    rolled_back: '{machine}: {version} was rolled back{reason}',
+    rollback_failed: '{machine}: {version} rollback failed too, needs attention{reason}',
+    reasonWrap: ' ({reason})',
+    reason: {
+      download_failed: 'download failed',
+      checksum_mismatch: 'SHA-256 mismatch',
+      extract_failed: 'extract failed',
+      backup_failed: 'database backup failed',
+      install_failed: 'install failed',
+      health_timeout: 'health check didn’t pass within 60s',
+      unsupported_platform: 'no build for this platform',
+      not_installed: 'not installed by the installer',
+      no_previous: 'no previous version',
+      schema_changed: 'hub database was upgraded, can’t roll back automatically',
+      busy: 'another update is running',
+      unknown: 'unknown reason',
+    },
+  },
+};
+
 const fill = (template, values) =>
   template.replace(/\{(\w+)\}/g, (_, key) => (key in values ? String(values[key]) : ''));
 
@@ -198,9 +248,31 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+/** 更新失敗的標題、內文。只用機器名稱、版本與代碼。 */
+function updateFailedNotification(data, lang) {
+  const text = UPDATE_TEXT[lang];
+  const template = text[data.phase] || text.failed;
+  const reason =
+    typeof data.reason === 'string' && data.reason
+      ? fill(text.reasonWrap, { reason: text.reason[data.reason] || text.reason.unknown })
+      : '';
+  return {
+    title: text.title,
+    body: fill(template, {
+      machine: textOf(data.machine),
+      version: textOf(data.version),
+      reason,
+    }),
+  };
+}
+
+const machinesUrl = () => new URL('/#/machines', self.location.origin).href;
+
 /** 新的一則總表取代舊的（同一個 tag），還是會響（renotify）。 */
 const SUMMARY_TAG = 'agent-board-summary';
 const OVERLOAD_TAG = 'agent-board-overload';
+/** 更新失敗：新的一則取代舊的（多台一起失敗只留最新一則，點了在機器面板看全部）。 */
+const UPDATE_TAG = 'agent-board-update';
 
 function show(title, body, tag, url, at) {
   return self.registration.showNotification(title, {
@@ -220,6 +292,11 @@ self.addEventListener('push', (event) => {
   if (data && data.kind === 'summary') {
     const n = summaryNotification(data, lang);
     event.waitUntil(show(n.title, n.body, SUMMARY_TAG, n.url, data.at));
+    return;
+  }
+  if (data && data.kind === 'update_failed') {
+    const n = updateFailedNotification(data, lang);
+    event.waitUntil(show(n.title, n.body, UPDATE_TAG, machinesUrl(), data.at));
     return;
   }
   if (data && data.kind === 'overload') {
