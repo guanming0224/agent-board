@@ -61,7 +61,12 @@ corepack pnpm notices         # 依賴有變時更新 THIRD_PARTY_NOTICES.md
 corepack pnpm screenshots     # 畫面有變時更新 docs/screenshots/（demo 假資料）
 ```
 
-把 `release/` 裡這四個檔案上傳到 GitHub Release：`agent-board.tar.gz`、`agent-board.tar.gz.sha256`、`install.sh`、`install.ps1`。
+正式發版改成打 tag（CONTRACTS §21）：`package.json` 的 `version` 改好、commit、`git tag v<版本>`、push tag，
+`.github/workflows/release.yml` 會在 macos-14 與 windows-latest 各建 `agent-board-<版本>-<平台>` 成品、合併 `SHA256SUMS` 放到 Release；
+hub 每 10 分鐘用已登入的 `gh` 查到後設為 canary，各機 daemon 經 hub 自動更新。本機 `build:release` 只產生這台平台的成品，
+給第一次安裝與緊急修復（`install.sh --from`）用。
+
+`corepack pnpm e2e:update`（先 `build:release`）用本機成品當假 Release，走一次 canary 自動更新與壞版回滾。
 
 **第一次發布前：** 把 `README.md`、`README.zh-TW.md`、`scripts/install.sh`、`scripts/install.ps1` 裡的 `OWNER` 換成實際的 GitHub 帳號或組織。還是 `OWNER` 時，安裝腳本會要求用 `--from`，不會去下載。
 

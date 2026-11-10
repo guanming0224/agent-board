@@ -1,4 +1,4 @@
-// 發布檔冒煙測試：release/agent-board.tar.gz 裝到臨時 HOME（路徑含空格與中文），
+// 發布檔冒煙測試：release/agent-board-<版本>-<這台平台>.tar.gz 裝到臨時 HOME（路徑含空格與中文），
 // 用服務設定檔裡「只有」的環境變數啟動 hub 與 daemon（重現 launchd 的乾淨環境），
 // 再走配對、開 session、真 hook、危險指令攔截、重裝、解除安裝。claude 是假的，不花額度。
 //
@@ -25,7 +25,9 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 const repo = join(import.meta.dirname, '..');
-const tarball = join(repo, 'release', 'agent-board.tar.gz');
+const { version } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+const platformKey = `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`;
+const tarball = join(repo, 'release', `agent-board-${version}-${platformKey}.tar.gz`);
 if (!existsSync(tarball)) throw new Error('先執行 corepack pnpm build:release');
 
 const WebSocket = createRequire(join(repo, 'packages/hub/package.json'))('ws');
@@ -145,7 +147,9 @@ async function main() {
   // ── 安裝 hub ──
   const first = mustInstall(['hub', ...from, '--port', String(port), '--no-start']);
   assert.match(first, /--no-start/);
-  const app = join(home, '.local/share/agent-board/app');
+  // 新配置：releases/<版本>，current 指向它（CONTRACTS §21.2）。
+  const app = join(home, '.local/share/agent-board/current');
+  assert.equal(readlinkSync(app), `releases/${version}`);
   assert.ok(existsSync(join(app, 'node_modules/node-pty')));
   assert.ok(!existsSync(join(app, 'node_modules/typescript')), '不該裝到開發依賴');
   assert.ok(
@@ -265,7 +269,15 @@ async function main() {
     daemonProc.plist.EnvironmentVariables.AGENT_BOARD_SESSION_HOST_SERVICE,
     'com.agent-board.session-host',
   );
-  assert.ok(!('AGENT_BOARD_HOOK_BIN' in daemonProc.plist.EnvironmentVariables));
+  // hook 與 MCP server 指 current 底下那支（不是 ~/.local/bin 的捷徑，也不是 releases/<版本> 的實際路徑：
+  // 舊版被清掉後還活著的 agent 也找得到，CONTRACTS §21.2）。
+  const daemonEnv = daemonProc.plist.EnvironmentVariables;
+  assert.equal(
+    daemonEnv.AGENT_BOARD_HOOK_BIN,
+    join(app, 'daemon/node_modules/.bin/agent-board-hook'),
+  );
+  assert.equal(daemonEnv.AGENT_BOARD_MCP_SERVER, join(app, 'daemon/dist/agent-board-mcp.mjs'));
+  assert.equal(daemonEnv.AGENT_BOARD_INSTALL_ROOT, dirname(app));
   const machine = await poll('機器上線', async () => {
     const machines = await api('GET', '/api/machines');
     return machines.find((m) => m.online);

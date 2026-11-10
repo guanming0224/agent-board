@@ -771,3 +771,84 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 - 快照與實際狀態可能不一致：狀態在快照寫入後、daemon 停止前改變且 hook 重試也失敗（daemon 停超過 10 秒），只能靠畫面補正；畫面也認不出來（例如 Codex、使用者自訂 statusLine）就停在快照的狀態，直到下一個 hook。
 - daemon 停機期間使用者在終端機回答了權限對話框、或 agent 在這段時間結束一輪：hook 重試送得到就正確；送不到時靠畫面補正。
 - session host 本身崩潰：agent 收到 SIGHUP 跟著結束（PTY 主端關閉），daemon 收到連線中斷 → `--resume` 重開；崩潰前的緩衝與停機期間的輸出都會遺失。
+
+## 21. 發版與自動更新（GM 2026-11-11）
+
+規格與 GM 決定見 `docs/release-update-spec.md`。型別在 `protocol/src/release.ts`。**只從 tag 的 Release 更新正式版**；`install.sh --from` 留給第一次安裝與緊急修復；不從畫布裡的 session 部署自己。
+
+### 21.1 版本與成品
+
+- 版本號＝根目錄 `package.json` 的 `version`（從 0.1.0 起），tag `v<版本>`；`BUILD_ID`（內容雜湊）保留。hub 與 daemon 在執行期讀 `<發布檔>/package.json` 與 `BUILD_ID`（`hub|daemon/src/version.ts`；開發模式是 repo 的版本、buildId `dev`），hello 與 `GET /api/health`（public，`HealthInfo { ok, version, buildId, protocolVersion }`）回報。`agent-board-hub schema-version` 印出這版 hub 的 schema 版本。
+- `corepack pnpm build:release` → `release/agent-board-<版本>-<平台>.tar.gz`（Windows `.zip`，`tar -a`）與 `SHA256SUMS`（sha256sum 格式）。平台＝建置那台（`platformKey`：`darwin-arm64`、`win-x64`）。發布檔**附這個平台的 `node_modules`**（`npm ci --omit=dev`，含 node-pty／better-sqlite3／argon2 原生檔），`.node-modules-platform` 記平台與 Node ABI；安裝時平台相同而且原生模組載得起來就直接用，否則退回 `npm ci`（Node 主版本不同時 better-sqlite3 會載不起來）。BUILD_ID 在裝依賴前算，兩個平台同一個值。
+- `.github/workflows/release.yml`：`push: tags: ['v*']`；`macos-14`、`windows-latest` 各跑 install → typecheck → 單元測試（Windows 只跑 protocol、web；其他套件的測試未在 Windows 驗證）→ `build:release`，並檢查 tag 和 `package.json` 版本一致；`publish` job 合併兩份 `SHA256SUMS`、`sha256sum -c`，用 `GITHUB_TOKEN` `gh release create/upload`。ubuntu CI 不變。
+
+### 21.2 安裝配置
+
+```
+~/.local/share/agent-board/            （Windows %LOCALAPPDATA%\agent-board\）
+  releases/<版本>/        每版一個資料夾（.installed＝依賴與原生模組檢查都過了）；同版本不同內容裝到 <版本>+<BUILD_ID 前 8 碼>
+  releases/.incoming/     daemon 下載解壓的新版（更新程式結束刪掉）
+  current -> releases/<版本>   Mac／Linux 相對 symlink（暫存連結 rename 蓋過，原子）；Windows junction（先刪再建，未實測）
+  app -> current          只有從舊配置遷移過來的才有（舊 session 的 PATH、MCP 設定檔寫的是 app/…）
+  session-host/           不變（§20.5）
+  install.json            多了 currentRelease、currentVersion、previousRelease、previousVersion；通道不放這裡
+  update.lock             更新程式執行中（pid）
+```
+
+- launchd plist、systemd unit、Windows 工作排程器、`~/.local/bin` 捷徑一律指 `current/…`，換版只換 `current`（服務設定不變）再重啟 hub／daemon。daemon 服務多帶 `AGENT_BOARD_INSTALL_ROOT`（自動更新用）、`AGENT_BOARD_HOOK_BIN`、`AGENT_BOARD_MCP_SERVER`（指 `current/…`：node 會把入口的 symlink 解開，不指定的話 agent 的 PATH 與 MCP 設定檔會寫 `releases/<版本>/…`，舊版清掉後還活著的 agent 就找不到）。
+- 保留最近 3 版（依 `.installed` 時間），`current` 與上一版一定留。
+- **第一次（從單一 `app/`）**：安裝程式把 `app/` 搬成 `releases/<app 的版本；0.0.0 或沒有記成 0.0.0-legacy>/`、建 `current`、`app` 留成指向 `current` 的連結，再照常裝新版。正在跑的程式不受影響（檔案沒變只是換名字），換 current 後重啟 hub／daemon；session host 照 §20.5 的規則（協定沒變就不重啟），agent 不中斷。
+- `installer.mjs switch --to <releases 底下的資料夾> [--restore-db <備份>] [--no-start]`：current 指回已裝好的某一版、重寫服務設定、重啟 hub／daemon；`--restore-db` 先停 hub、用備份蓋回 `hub.db`（刪 -wal／-shm）；目標版的 session host 協定和現在跑的不同時連 host 一起換回（會結束 agent，之後 `--resume`）。
+
+### 21.3 更新流程
+
+**hub**（`hub/src/release.ts` 的 `ReleaseManager`）：
+
+- settings 表鍵（不升 schema，`getSettings` 濾掉）：`release.repo`（`owner/name`，面板設定；沒有時用環境變數 `AGENT_BOARD_RELEASE_REPO`）、`release.canary`、`release.stable`、`release.canaryStats`（`since`、斷線、更新失敗次數；換 canary 時重設）、`release.lastCheck`、`machineChannel:<機器 id>`（`canary`／`stable`，預設 stable）、`machineRelease:<機器 id>`（hello 回報的 platform、version、buildId、protocolVersion、previousVersion、hostsHub、最後的 `UpdateState`、已推播過的失敗時間）。刪機器時一起刪。
+- 每 10 分鐘（開機 30 秒後第一次；`AGENT_BOARD_DISABLE_RELEASE_CHECK=1` 關）或面板「檢查新版」：`gh auth status` → `gh release list --repo <repo> --exclude-drafts --json tagName,isDraft,publishedAt` → 最大的 `v<semver>` 比 canary 新，就 `gh release download v<版本> --pattern SHA256SUMS --pattern agent-board-<版本>-<平台>.*` 到 `<dataDir>/release-cache/.download-*`、對 `SHA256SUMS` 驗每個成品，全部對才寫 `verified.json`、改名成 `release-cache/<版本>/`、設為 canary、audit `release.canary`。不符或下載失敗：不改 canary，`lastCheckError` 記原因，audit `release.fetch_failed`。cache 留 5 版（canary、stable 一定留）。
+- **gh**：`AGENT_BOARD_GH_BIN` 或 PATH 上的 `gh`；子程序環境拿掉 `GH_TOKEN`、`GITHUB_TOKEN`、`GH_ENTERPRISE_TOKEN`、`GITHUB_ENTERPRISE_TOKEN`，加 `GH_PROMPT_DISABLED=1`。hub 不讀任何權杖檔。找不到 gh → `gh.state: missing`；沒登入 → `not_logged_in`（帶 gh 的第一行訊息）；沒設 repo → `no_repo`。都只影響這個功能。
+- 目標：`channelTarget`（canary 跟 canary 與 stable 較新的那個，stable 只跟 stable），而且這台回報的平台在 cache 裡有成品才有（`ReleaseTarget { version, platform, asset, sha256, size }`），放在 `hub.welcome.release`；canary／stable／通道變了送 `release.target { target, force: false }` 給每台連著的 daemon。
+- `GET /api/releases/:version/:platform`：**機器 token**（`Authorization: Bearer`），只回 cache 裡驗過的檔（`x-agent-board-sha256`），audit `release.download`。瀏覽器 cookie 不行。
+- REST（`protocol/src/rest.ts`）：`GET /api/releases`（user，`ReleaseOverview`）；以下 owner：`POST /api/releases/check`、`POST /api/releases/promote { version, confirm }`（canary 不到 24 小時 `CANARY_SOAK_MS` 而沒 `confirm` → 409 `canary_too_new`；不在 cache → 409 `not_cached`）、`PATCH /api/releases/config { repo }`、`PUT /api/machines/:id/channel { channel }`、`POST /api/machines/:id/update`（送 `release.target { force: true }`；離線 409 `machine_offline`、沒目標 409 `no_target`）、`POST /api/machines/:id/rollback`（送 `release.rollback`；不知道上一版 409 `no_previous`）。audit：`release.repo`、`release.channel`、`release.promote`（`early` 標不到 24 小時）、`release.update_now`、`release.rollback`、`release.update_failed`。
+- 「升為 stable」旁的統計（`CanaryStats`）：canary 開始時間、期間 canary 機器 session 進入 error 的狀態事件數、daemon 非預期斷線數（更新中的斷線不算）、更新失敗數。
+- 更新失敗（`UPDATE_FAILED`：failed、rolled_back、rollback_failed；同一次只算一次）：audit、canary 統計、推播 `{ kind: 'update_failed', machineId, machine, version, phase, reason, at }`（只有機器名稱、版本、原因代碼，**不帶 `detail`、不帶任何 Claude 寫的內容**；遵守通知開關與勿擾時段）。
+
+**daemon**（`daemon/src/selfUpdate.ts`）：
+
+1. 收到目標（welcome、`release.target`、`daemon.rejected.release`）：平台不同、同版、比目前舊（沒 force）、上次在這版失敗過（沒 force）、更新程式還在跑 → 不動。沒有 `AGENT_BOARD_INSTALL_ROOT`（開發模式、dev 實例）→ 只回報 `phase: idle, reason: not_installed`。
+2. 延後（`updateDeferReason`）：有 PERM 就延後；下載解壓後看新版 `session-host/dist/meta.json` 的協定和 `install.json` 的 `sessionHostProtocol` 不同（要換 host）而有 RUN／PERM／PLAN／starting 也延後。`phase: deferred, reason`，每 5 分鐘再看（解好的新版留著不重下載）。
+3. 下載：`GET <hub>/api/releases/<版本>/<平台>`（機器 token），邊下載邊算 SHA-256，和目標的 `sha256` 不同 → `failed/checksum_mismatch`；系統 `tar -xf` 解到 `releases/.incoming/<版本>/`，確認 `package.json` 名稱與版本、`BUILD_ID`、`scripts/updater.mjs` 都在。
+4. 寫 `phase: installing`，用 daemon 的 node 以 **detached**（`setsid`，新的 session 與 process group）、stdio 接 `<dataDir>/logs/updater.log`、`unref` 啟動**新版裡的** `scripts/updater.mjs update --source … --to … --from … --data … --root …`。launchd 停 daemon 只對 daemon 的 process group 送訊號，收不到它（`scripts/updater.test.mjs` 用「停服務時殺整個 process group」的假 launchctl 驗證；**未用真的 launchd 驗證**）。
+5. 每次連上 hub 寫 `<dataDir>/daemon-status.json`（pid、version、buildId、connectedAt；600）；`update-state.json` 放進 hello 的 `update`，還在進行中時每 2 秒讀一次、變了送 `update.status`（最多 10 分鐘）。
+
+**更新程式**（`scripts/updater.mjs`，只用 node 內建模組＋current 的 better-sqlite3）：
+
+1. `update.lock`（pid；pid 不在了算過期）。有 hub 的機器（`install.json` roles）先用 better-sqlite3 線上備份 `hub.db` 到 `hub.db.pre-update-<舊版>-<時間>`（600），記下 schema 版本；失敗 → `failed/backup_failed`，什麼都不改。
+2. 跑新版的 `installer.mjs install <hub 或 daemon> --source …`（`AGENT_BOARD_UPDATER=1`）：裝到 `releases/<版本>`、換 current（隨即寫 install.json）、重啟 hub／daemon；session host 只在協定變了才換（§20.5，有工作中的 session 就中止、什麼都不改）。安裝程式失敗而 current 沒換 → `failed/install_failed`。
+3. `checking`：時限（預設 60 秒，`--health-timeout-ms`；daemon 帶的是 `AGENT_BOARD_UPDATE_HEALTH_MS`，只給測試）內每秒看：`daemon-status.json` 的版本是新版、連上時間在更新開始之後、pid 活著；有 hub 的機器另外 `/api/health`（install.json 的 host／port）回 200 而且是新版。過了 → `succeeded`，刪 `.incoming`。
+4. 沒過（或安裝程式換了 current 才失敗）→ `rolling_back`：`hub.db` 的 schema 和備份時不同就帶 `--restore-db <備份>`，用新版的 `installer.mjs switch --to <舊版>`（新版的安裝程式壞了就用舊版裡的）；再用同樣的時限檢查舊版 → `rolled_back`（reason `health_timeout` 或 `install_failed`），回不去 → `rollback_failed`。回滾窗口只有健康檢查的時間，還原備份損失極小。
+5. `rollback`（面板「回滾到上一版」，從 current 裡的更新程式跑）：current 指回 `previousRelease`；上一版 hub 的 `schema-version` 比現在的資料庫舊 → `failed/schema_changed`（還原備份會丟掉之後的資料，交給人處理）；上一版沒通過健康檢查就切回原本的版本、回 `failed`。成功是 `succeeded`＋`reason: rollback_requested`（不推播）。
+
+hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles 有 hub）。hub 重啟期間 daemon 斷線重連，session host 讓 agent 不中斷。
+
+### 21.4 協定版本相容
+
+- `PROTOCOL_VERSION = 1`（hello 與 welcome 都帶 `protocolVersion`）；舊 daemon 不送＝1。`protocolCompat`：daemon 比 hub 舊兩版以上 `needs_update`、新兩版以上 `hub_too_old`，其他接受（**新一版的 daemon 也接受**：canary 比 hub 先升級時，新 daemon 有責任照舊協定和舊 hub 說話）。
+- 不接受：hub 記下 hello 的版本資訊（面板顯示「需要更新」／「hub 太舊」），送 `daemon.rejected { reason, hubProtocolVersion, release }`（`needs_update` 時 `release` 是這台可以更新到的目標：下載走 HTTP 不需要 WebSocket，daemon 照常自己更新）後以 4426 斷線；不算上線、不對帳 session。daemon 收到後改成每 5 分鐘重連一次（不轟炸）。既有 `features` 旗標保留；加欄位、加訊息類型不用加協定版本。
+- 加協定版本時：hub 要繼續接受前一版（舊 daemon 照常運作直到更新），新 daemon 要能和前一版的 hub 說話。
+
+### 21.5 schema：先加後刪（從 v11 起）
+
+- hub 資料庫的變更分兩版做：**這一版只加**（新表、新欄位、新索引；新欄位要有預設值或可為 null，舊程式不認得也照常讀寫），**下一版才刪或改名**舊的。這樣回滾到上一版時，上一版的 hub 至少讀得懂資料內容。
+- 但 hub 開資料庫時 schema 版本比自己新一律拒絕（`db.ts`），所以跨 schema 的回滾仍要還原備份：自動更新的回滾會自動還原（§21.3 更新程式第 4 點）；手動回滾跨過 schema 不做。
+- 升級前備份照舊（`hub.db.bak-<時間>-v<舊版>`），更新程式另外有 `hub.db.pre-update-*`。
+
+### 21.6 dev 實例
+
+- `scripts/dev-instance.sh start|pair <配對碼>|stop|status`：從工作目錄用 tsx 跑 hub、session host、daemon，各自 detached、pid 檔在資料夾裡。hub 只綁 `127.0.0.1:8024`（`AGENT_BOARD_DEV_PORT`），資料夾 `~/.agent-board-dev`（`AGENT_BOARD_DEV_DIR`；不能是 `~/.agent-board`、埠不能是 8787），機器名稱 `<hostname>-dev`。不建 launchd、不推播（`AGENT_BOARD_DISABLE_PUSH=1`）、不查新版（`AGENT_BOARD_DISABLE_RELEASE_CHECK=1`）、不自動更新（沒有 `AGENT_BOARD_INSTALL_ROOT`）。正式版服務的 `AGENT_BOARD_*` 環境不繼承。要從別台看就自己 `tailscale serve` 另一個埠（不自動做）。
+
+### 21.7 測試與未驗證
+
+- 單元：`protocol/src/release.test.ts`（版本比較、通道、延後條件、協定相容、SHA256SUMS）、`hub/src/test/release.test.ts`（假 gh：沒 repo、gh 不存在／沒登入、下載驗證、SHA 不符、權杖環境變數不給 gh、通道與目標、下載端點驗證、升 stable 的 24 小時、協定拒絕、失敗推播只推一次、回滾）、`daemon/src/selfUpdate.test.ts`、`scripts/updater.test.mjs`（`test:install`：遷移、保留 3 版、同版不同內容、更新成功、壞版回滾＋schema 還原、安裝程式失敗、鎖、手動回滾與 schema_changed、detached 存活）。
+- e2e：`corepack pnpm e2e:update`（先 `build:release`；只在 Apple Silicon Mac）：真的成品改版本號當假 Release、假 gh、假 launchctl（照 plist 真的跑），hub 從原始碼跑。canary 自動更新成功；壞版（新 daemon 起不來）在健康檢查時限後自動回滾、面板標失敗。
+- **未驗證**：真的 GitHub Actions（workflow 只做過 YAML 解析）、Windows 成品的建置與安裝（junction、zip、工作排程器停服務時 detached 更新程式會不會被收掉）、真的 launchd 停 daemon 時更新程式存活（用假 launchctl 模擬 process group 訊號）、Linux（沒有成品，daemon 回報 linux-x64 不會有目標）、真的 gh（只測假的）。

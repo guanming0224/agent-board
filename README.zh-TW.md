@@ -204,10 +204,10 @@ git clone https://github.com/OWNER/agent-board.git
 cd agent-board
 corepack pnpm install
 corepack pnpm build:release
-sh scripts/install.sh hub --from release/agent-board.tar.gz
+sh scripts/install.sh hub --from release/agent-board-0.1.0-darwin-arm64.tar.gz
 ```
 
-daemon 也用同樣的 `--from`。要裝到其他機器，把 `release/agent-board.tar.gz` 複製過去。
+daemon 也用同樣的 `--from`。要裝到其他機器，把 `release/agent-board-<版本>-<平台>.tar.gz`（Windows 是 `.zip`）複製過去。之後的新版由 hub 自動更新（CONTRACTS §21）。
 
 ## 安裝腳本做了什麼
 

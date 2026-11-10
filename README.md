@@ -204,10 +204,10 @@ git clone https://github.com/OWNER/agent-board.git
 cd agent-board
 corepack pnpm install
 corepack pnpm build:release
-sh scripts/install.sh hub --from release/agent-board.tar.gz
+sh scripts/install.sh hub --from release/agent-board-0.1.0-darwin-arm64.tar.gz
 ```
 
-Then use the same `--from` for the daemon. To set up other machines, copy `release/agent-board.tar.gz` to them.
+Then use the same `--from` for the daemon. To set up other machines, copy `release/agent-board-<version>-<platform>.tar.gz` (`.zip` on Windows) to them. After that, new versions arrive through the hub (CONTRACTS §21).
 
 ## What the installer does
 

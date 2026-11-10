@@ -59,7 +59,7 @@ corepack pnpm notices         # refresh THIRD_PARTY_NOTICES.md when dependencies
 corepack pnpm screenshots     # refresh docs/screenshots/ when the UI changes (demo data only)
 ```
 
-Upload these four files from `release/` to a GitHub Release: `agent-board.tar.gz`, `agent-board.tar.gz.sha256`, `install.sh`, `install.ps1`.
+Releases are now made by pushing a tag (CONTRACTS §21): set `version` in `package.json`, commit, `git tag v<version>`, push the tag. `.github/workflows/release.yml` builds `agent-board-<version>-<platform>` on macos-14 and windows-latest and attaches them with a merged `SHA256SUMS`. The hub finds new tags with the logged-in `gh` every 10 minutes and sets them as canary; daemons update through the hub. A local `build:release` only builds this machine's platform, for first installs and emergency fixes (`install.sh --from`).
 
 **Before the first release:** replace `OWNER` in `README.md`, `README.zh-TW.md`, `scripts/install.sh`, and `scripts/install.ps1` with the real GitHub account or organization. While it still says `OWNER`, the install scripts require `--from` and won't try to download.
 

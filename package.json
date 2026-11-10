@@ -12,6 +12,7 @@
     "postinstall": "node scripts/fix-node-pty.mjs",
     "build:release": "node scripts/build-release.mjs",
     "smoke:release": "node scripts/smoke-release.mjs",
+    "e2e:update": "node scripts/e2e-update.mjs",
     "screenshots": "node scripts/screenshots.mjs",
     "notices": "node scripts/third-party-notices.mjs",
     "typecheck": "pnpm -r typecheck",

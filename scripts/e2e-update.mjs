@@ -1,0 +1,340 @@
+// 自動更新的端到端測試（CONTRACTS §21，corepack pnpm e2e:update；先跑 corepack pnpm build:release）：
+// 用本機建的成品當假 Release（改版本號重新打包）、PATH 上的假 gh、照 plist 真的把程式跑起來的假 launchctl，
+// 走一次完整的鏈：hub 查到新 tag → 下載驗證 → canary 機器的 daemon 向 hub 下載 → detached 更新程式換 current、
+// 重啟 → 新 daemon 連上 hub 回報新版 → 成功；再發一個壞版（新 daemon 起不來）→ 時限內自動回滾、hub 面板標失敗。
+// hub 從工作目錄的原始碼跑；daemon 與 session host 是裝在臨時 HOME 的發布檔。不碰這台機器的服務、不連 GitHub。
+import assert from 'node:assert/strict';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
+import { installFakeLaunchctl, runningPid, stopAll } from './test-support/fake-launchctl.mjs';
+
+const repo = join(import.meta.dirname, '..');
+const { version: BASE } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+const platform = `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`;
+if (platform !== 'darwin-arm64')
+  throw new Error('這個測試只在 Apple Silicon Mac 上跑（成品平台 darwin-arm64）');
+const tarball = join(repo, 'release', `agent-board-${BASE}-${platform}.tar.gz`);
+if (!existsSync(tarball)) throw new Error('先執行 corepack pnpm build:release');
+const HEALTH_MS = 15_000;
+const LABELS = ['com.agent-board.hub', 'com.agent-board.daemon', 'com.agent-board.session-host'];
+
+const base = mkdtempSync(join(realpathSync(tmpdir()), 'ab e2e update-'));
+const home = join(base, 'home');
+const stubs = join(base, 'stubs');
+const launchd = join(base, 'launchd');
+const ghDir = join(base, 'fake-github');
+const hubData = join(base, 'hub-data');
+const data = join(home, '.agent-board');
+const root = join(home, '.local/share/agent-board');
+mkdirSync(home, { recursive: true });
+mkdirSync(ghDir, { recursive: true });
+installFakeLaunchctl(stubs, launchd);
+
+const v = (patch) => BASE.replace(/\d+$/, (n) => String(Number(n) + patch));
+const GOOD = v(1);
+const BAD = v(2);
+
+// ── 假 Release ────────────────────────────────────────────
+const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
+
+/** 把本機成品解開、改版本號（壞版把 daemon 換成一啟動就失敗的程式）、重新打包，放進假 GitHub。 */
+function publish(version, { broken = false } = {}) {
+  const work = join(base, `pack-${version}`);
+  mkdirSync(work, { recursive: true });
+  execFileSync('tar', ['-xzf', tarball, '-C', work]);
+  const dir = join(work, 'agent-board');
+  const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+  writeFileSync(
+    join(dir, 'package.json'),
+    `${JSON.stringify({ ...manifest, version }, null, 2)}\n`,
+  );
+  writeFileSync(
+    join(dir, 'BUILD_ID'),
+    `${readFileSync(join(dir, 'BUILD_ID'), 'utf8').trim()}-${version}\n`,
+  );
+  if (broken) {
+    writeFileSync(
+      join(dir, 'daemon/dist/index.mjs'),
+      "console.error('broken build'); process.exit(1);\n",
+    );
+  }
+  const asset = `agent-board-${version}-${platform}.tar.gz`;
+  const out = join(ghDir, `v${version}`);
+  mkdirSync(out, { recursive: true });
+  execFileSync('tar', ['-czf', join(out, asset), 'agent-board'], {
+    cwd: work,
+    env: { ...process.env, COPYFILE_DISABLE: '1' },
+  });
+  writeFileSync(join(out, 'SHA256SUMS'), `${sha(join(out, asset))}  ${asset}\n`);
+  rmSync(work, { recursive: true, force: true });
+  const list = existsSync(join(ghDir, 'releases.json'))
+    ? JSON.parse(readFileSync(join(ghDir, 'releases.json'), 'utf8'))
+    : [];
+  list.push({ tagName: `v${version}`, isDraft: false, publishedAt: new Date().toISOString() });
+  writeFileSync(join(ghDir, 'releases.json'), JSON.stringify(list));
+}
+
+/** 假 gh：auth status 成功；release list 讀 releases.json；release download 從假 GitHub 複製（記下呼叫）。 */
+const fakeGh = join(stubs, 'gh');
+writeFileSync(
+  fakeGh,
+  `#!${process.execPath}
+const { appendFileSync, copyFileSync, readFileSync, readdirSync } = require('node:fs');
+const { join } = require('node:path');
+const dir = ${JSON.stringify(ghDir)};
+const args = process.argv.slice(2);
+appendFileSync(join(dir, 'calls.log'), JSON.stringify({ args, token: process.env.GH_TOKEN ?? null }) + '\\n');
+if (args[0] === 'auth') process.exit(0);
+if (args[0] === 'release' && args[1] === 'list') { process.stdout.write(readFileSync(join(dir, 'releases.json'))); process.exit(0); }
+if (args[0] === 'release' && args[1] === 'download') {
+  const out = args[args.indexOf('--dir') + 1];
+  for (const name of readdirSync(join(dir, args[2]))) copyFileSync(join(dir, args[2], name), join(out, name));
+  process.exit(0);
+}
+process.exit(1);
+`,
+);
+chmodSync(fakeGh, 0o755);
+
+// ── hub（原始碼）────────────────────────────────────────────
+function freePort() {
+  return new Promise((done) => {
+    const server = createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => done(port));
+    });
+  });
+}
+
+async function poll(what, check, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await check();
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error(`逾時：${what}`);
+    await new Promise((done) => setTimeout(done, 300));
+  }
+}
+
+let passed = 0;
+const step = (name) => {
+  passed += 1;
+  console.log(`  ok ${passed} ${name}`);
+};
+
+let hubProc = null;
+let cookie = '';
+let hubUrl = '';
+async function api(method, path, body) {
+  const response = await fetch(`${hubUrl}${path}`, {
+    method,
+    headers: {
+      cookie,
+      origin: hubUrl,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  if (!cookie && response.headers.get('set-cookie')) {
+    cookie = response.headers.get('set-cookie').split(';')[0];
+  }
+  try {
+    return { status: response.status, body: JSON.parse(text) };
+  } catch {
+    return { status: response.status, body: text };
+  }
+}
+
+async function main() {
+  const port = await freePort();
+  hubUrl = `http://127.0.0.1:${port}`;
+  let hubLog = '';
+  hubProc = spawn(join(repo, 'node_modules/.bin/tsx'), [join(repo, 'packages/hub/src/main.ts')], {
+    env: {
+      PATH: process.env.PATH,
+      HOME: home,
+      AGENT_BOARD_DATA_DIR: hubData,
+      AGENT_BOARD_PORT: String(port),
+      AGENT_BOARD_HOST: '127.0.0.1',
+      AGENT_BOARD_GH_BIN: fakeGh,
+      AGENT_BOARD_DISABLE_RELEASE_CHECK: '1',
+      AGENT_BOARD_DISABLE_PUSH: '1',
+      // 權杖環境變數不能傳給 gh（hub 會拿掉）。
+      GH_TOKEN: 'sk-ant-demo-should-not-reach-gh',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  hubProc.stdout.on('data', (chunk) => (hubLog += chunk));
+  hubProc.stderr.on('data', (chunk) => (hubLog += chunk));
+  await poll('hub 起來', async () => (await fetch(`${hubUrl}/api/health`).catch(() => null))?.ok);
+  await api('POST', '/api/auth/setup', {
+    name: 'owner',
+    password: 'correct horse battery',
+    locale: 'en',
+  });
+  assert.equal(
+    (await api('PATCH', '/api/releases/config', { repo: 'example/agent-board' })).status,
+    200,
+  );
+  const code = (await api('POST', '/api/machines/pairing-codes')).body.code;
+  step('hub（原始碼）起來，設定 Release repo，假 gh 在 PATH 外以 AGENT_BOARD_GH_BIN 指定');
+
+  // ── daemon：裝在臨時 HOME 的發布檔 ───────────────────────────
+  const fakeClaude = join(base, 'fake-bin', 'claude');
+  mkdirSync(dirname(fakeClaude), { recursive: true });
+  cpSync(join(repo, 'packages/web/e2e/fixtures/fake-claude.mjs'), fakeClaude);
+  chmodSync(fakeClaude, 0o755);
+  const env = {
+    HOME: home,
+    PATH: [stubs, dirname(process.execPath), '/usr/bin', '/bin'].join(':'),
+    TMPDIR: tmpdir(),
+    LANG: 'zh_TW.UTF-8',
+    AGENT_BOARD_UPDATE_HEALTH_MS: String(HEALTH_MS),
+  };
+  const install = spawnSync(
+    'sh',
+    [
+      join(repo, 'scripts/install.sh'),
+      'daemon',
+      '--from',
+      tarball,
+      '--hub',
+      hubUrl,
+      '--code',
+      code,
+      '--name',
+      'canary mac',
+      '--claude-bin',
+      fakeClaude,
+    ],
+    { env, encoding: 'utf8' },
+  );
+  assert.equal(install.status, 0, `${install.stdout}${install.stderr}`);
+  const machine = await poll('daemon 連上 hub', async () => {
+    const overview = await api('GET', '/api/releases');
+    return overview.body.machines?.find((m) => m.online && m.version === BASE);
+  });
+  assert.equal(machine.platform, platform);
+  assert.equal(machine.protocolVersion, 1);
+  assert.equal(machine.previousVersion, null);
+  const hostPid = runningPid(launchd, 'com.agent-board.session-host');
+  assert.ok(hostPid, 'session host 在跑');
+  step(`daemon ${BASE} 從發布檔安裝並連上 hub（releases/${BASE}，current 指向它）`);
+
+  const channel = await api('PUT', `/api/machines/${machine.machineId}/channel`, {
+    channel: 'canary',
+  });
+  assert.equal(channel.body.machines[0].channel, 'canary');
+
+  // ── 好的新版 ─────────────────────────────────────────────
+  publish(GOOD);
+  const started = Date.now();
+  const check = await api('POST', '/api/releases/check');
+  assert.equal(check.body.gh.state, 'ok');
+  assert.equal(check.body.canary, GOOD, JSON.stringify(check.body));
+  assert.equal(check.body.machines[0].targetVersion, GOOD);
+  const calls = readFileSync(join(ghDir, 'calls.log'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(
+    calls.every((c) => c.token === null),
+    'gh 不該拿到環境裡的 GH_TOKEN',
+  );
+  step(`hub 用 gh 查到 v${GOOD}、下載並驗 SHA-256，設為 canary（gh 拿不到 GH_TOKEN）`);
+
+  const updated = await poll(
+    'canary 自動更新完成',
+    async () => {
+      const m = (await api('GET', '/api/releases')).body.machines[0];
+      return m.online && m.version === GOOD && m.update?.phase === 'succeeded' ? m : null;
+    },
+    90_000,
+  );
+  assert.equal(updated.previousVersion, BASE);
+  assert.equal(basename(realpathSync(join(root, 'current'))), GOOD);
+  assert.equal(
+    runningPid(launchd, 'com.agent-board.session-host'),
+    hostPid,
+    'session host 不該重啟',
+  );
+  const state = JSON.parse(readFileSync(join(data, 'update-state.json'), 'utf8'));
+  assert.equal(state.phase, 'succeeded');
+  assert.ok(
+    !existsSync(join(root, 'releases/.incoming')) ||
+      !existsSync(join(root, 'releases/.incoming', GOOD)),
+  );
+  const audit = await api('GET', '/api/audit?action=release.download');
+  assert.match(JSON.stringify(audit.body), new RegExp(GOOD.replaceAll('.', '\\.')));
+  step(
+    `canary 機器自動更新到 ${GOOD}：向 hub 下載、detached 更新程式換 current、健康檢查通過（${Math.round((Date.now() - started) / 1000)} 秒），session host 沒重啟`,
+  );
+
+  // ── 壞版：新 daemon 起不來 ────────────────────────────────────
+  publish(BAD, { broken: true });
+  const badStarted = Date.now();
+  assert.equal((await api('POST', '/api/releases/check')).body.canary, BAD);
+  const failed = await poll(
+    '壞版自動回滾',
+    async () => {
+      const m = (await api('GET', '/api/releases')).body.machines[0];
+      return m.online && m.update?.phase === 'rolled_back' ? m : null;
+    },
+    HEALTH_MS + 60_000,
+  );
+  const elapsed = Date.now() - badStarted;
+  assert.equal(failed.version, GOOD);
+  assert.equal(failed.update.reason, 'health_timeout');
+  assert.equal(failed.update.toVersion, BAD);
+  assert.equal(basename(realpathSync(join(root, 'current'))), GOOD);
+  const failures = await api('GET', '/api/audit?action=release.update_failed');
+  assert.match(JSON.stringify(failures.body), /rolled_back/);
+  step(
+    `壞版 ${BAD}（新 daemon 起不來）：${HEALTH_MS / 1000} 秒健康檢查沒過，自動回滾到 ${GOOD}，hub 面板標失敗並記 audit（共 ${Math.round(elapsed / 1000)} 秒）`,
+  );
+
+  // 同一個壞版不會自動重試。
+  await new Promise((done) => setTimeout(done, 3_000));
+  const still = (await api('GET', '/api/releases')).body.machines[0];
+  assert.equal(still.update.phase, 'rolled_back');
+  assert.equal(still.version, GOOD);
+  step('回滾後不會自動再試同一個壞版（要按「立即更新」）');
+  void hubLog;
+}
+
+let failed = false;
+try {
+  console.log(`自動更新 e2e（${base}）`);
+  await main();
+  console.log(`通過 ${passed} 項`);
+  if (process.env.E2E_UPDATE_VERBOSE) {
+    console.log(readFileSync(join(data, 'logs/updater.log'), 'utf8'));
+  }
+} catch (error) {
+  failed = true;
+  console.error(`失敗（已通過 ${passed} 項）：`, error);
+  for (const file of ['logs/updater.log', 'logs/daemon.log']) {
+    const path = join(data, file);
+    if (existsSync(path))
+      console.error(`── ${file} ──\n${readFileSync(path, 'utf8').slice(-4000)}`);
+  }
+} finally {
+  stopAll(launchd, LABELS);
+  hubProc?.kill('SIGTERM');
+  await new Promise((done) => setTimeout(done, 500));
+  if (!failed) rmSync(base, { recursive: true, force: true });
+}
+process.exit(failed ? 1 : 0);

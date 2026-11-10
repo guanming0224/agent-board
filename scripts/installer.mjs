@@ -513,6 +513,10 @@ function serviceEnv(role, ctx) {
     if (process.env.SHELL) env.SHELL = process.env.SHELL;
   }
   if (process.env.AGENT_BOARD_DATA_DIR) env.AGENT_BOARD_DATA_DIR = process.env.AGENT_BOARD_DATA_DIR;
+  // 只給測試：縮短更新程式的健康檢查時限（scripts/e2e-update.mjs）。正式使用不設。
+  if (role === 'daemon' && process.env.AGENT_BOARD_UPDATE_HEALTH_MS) {
+    env.AGENT_BOARD_UPDATE_HEALTH_MS = process.env.AGENT_BOARD_UPDATE_HEALTH_MS;
+  }
   if (role === 'hub') {
     env.AGENT_BOARD_PORT = String(state.port ?? DEFAULT_PORT);
     if (state.host) env.AGENT_BOARD_HOST = state.host;
