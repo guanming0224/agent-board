@@ -416,9 +416,10 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 - **沒有 Stop 的情況**：使用者在成員回合進行中（running／stuck／waiting_permission）按 Esc 或 Ctrl+C（`terminal.input` 剛好是 `\x1b`／`\x03`，或 `terminal.signal` escape／ctrl_c）→ 清掉工作，事件 `dispatch.blocked` reason `interrupted`；成員結束或封存 → 清掉，reason `member_ended`。呼叫者已結束或封存、設定關掉 → 結果不送（`target_ended`／`dispatch_disabled`）。
 - 使用者自己在成員終端機裡打字**不**清掉工作（例如 GM 回答了成員的問題，成員接著把工作做完，結果照樣送回）。
 - **等隊長／等成員結果**（GM 2026-11-11）：hub 在送給網頁的 `Session` 上算 `awaiting?: 'lead' | 'members'`（protocol optional，只有 `waiting_input` 才帶；舊網頁忽略、舊 hub 不送＝照舊 ASK）。不存資料庫欄位，由 `store.withAwaiting` 每次讀的時候算（廣播、快照、REST、推播與「等你」計數都用同一份）。畫面是 **NEW**（灰），說明文字「等隊長」（Awaiting lead）／「等成員結果」（Awaiting members）；狀態代碼仍是 10 種。**不算等你**：不進頁首「等你 N」、收件匣與待處理（`triageItems` 不列，除非同時有 approval）、「下一個等我的」、合併通知總表，hub 不推播（`afterChange` 擋 `isAwaitingTeam`）。
-  - `lead`（成員）：結果排進送字佇列送回呼叫者時記 settings 表 `awaitingLead:<成員 id>`＝呼叫者 id（不升 schema，hub 重啟照樣在）；成員開始下一個回合（狀態變成 `running`、`starting`、`waiting_permission`、`plan_review`）、結束、封存時清掉。另外成員手上還有 `dispatch_work`、狀態已經是 `waiting_input`（daemon 的狀態常比 `Stop` 早到）時也先算 `lead`，不先推一則 ASK。結果被擋下（`target_ended`、`dispatch_disabled`、`rate_limit`）不標，照常 ASK（變回等你時照常推播）。呼叫者結束、封存或 done 後不再算（在等它的成員清掉記錄、重新廣播，不推播）。GM 之後直接對成員下指令：新回合清掉，下次停下照常 ASK。
-  - `members`（隊長）：有任何成員的 `dispatch_work.from` 是它，或有成員的結果正在送進它（只在記憶體，同送字佇列，hub 重啟就沒有）。最後一則結果打進去後就不算（它接著讀結果，自己做完停下才是 ASK）；結果沒送成（`dropped`／`aborted`）照常推播。
-  - 派工資料變了（工作送達、Stop、中斷、成員結束、結果送達）hub 重新廣播受影響的成員與隊長（`DispatchDeps.awaitingChanged`），畫面馬上更新。
+  - `lead`（成員）：結果在送字佇列裡時只記在記憶體（佇列本身也只在記憶體，hub 重啟兩邊一起沒了）；**送到隊長時**才寫 settings 表 `awaitingLead:<成員 id>`＝隊長 id（不升 schema，hub 重啟照樣在；hub 啟動時清掉指向已不存在、結束、封存或 done 的隊長的記錄）。成員開始下一個回合（狀態變成 `running`、`starting`、`waiting_permission`、`plan_review`）、結束、封存，或收到沒有派工的 `UserPromptSubmit`／`Stop`（GM 直接下指令；`Stop` 照常推播），或收到新的工作時清掉。結果被擋下或在佇列裡沒送成（`dropped`／`aborted`）不標，照常 ASK 並推播。隊長結束、封存或 done 後不再算，在等它的成員清掉記錄並**推播**（GM 2026-11-11）；隊長離線時不算（記錄留著，連回來恢復，進出離線不推播）。
+  - **寬限期**（`Timing.awaitingGraceMs`，預設 30 秒，審查後補）：成員手上還有 `dispatch_work`、已經 `waiting_input`（daemon 的狀態常比 `Stop` 早到），從「進入 waiting_input」與「工作送達」較晚的那個時間起 30 秒內也算 `lead`，不先推一則 ASK。Stop 掉了、送字被吃掉、開成員的第一個指令沒送進去時，寬限期一到 hub 重算並照常推播（成員變 ASK；隊長不再是等成員結果）。
+  - `members`（隊長）：沒有全部暫停，而且有成員的結果正在送進它（記憶體），或有成員的 `dispatch_work.from` 是它且那位成員還在做事：狀態 `running`、`starting`、`waiting_permission`、`plan_review`、`stuck`、`error`，或寬限期內的 `waiting_input`（`offline`、`rate_limited`、`queued` 不算）。最後一則結果打進去後就不算（它接著讀結果，自己做完停下才是 ASK，不推播）；結果沒送成照常推播；成員狀態變化讓它不再算時照常推播（進出離線除外）。全部暫停、繼續時重算（GM 自己按的，不推播）。
+  - 派工資料變了（工作送達、Stop、中斷、成員狀態變化、成員結束、結果送達或沒送成、寬限期到、全部暫停／繼續、刪除成員）hub 重新廣播受影響的成員與隊長（`DispatchDeps.awaitingChanged`），和畫面上最後一次送出的值比對；巢狀的變動只在最外層比一次，同一個變化不會推兩次。
 
 ### 11.5 紀錄與畫面
 

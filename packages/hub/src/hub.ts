@@ -87,7 +87,7 @@ import {
 } from './push';
 import { parseRateLimitReset } from './rateLimitReset';
 import { TerminalRelay, type RelayClient } from './relay';
-import type { Store, StoredBoardPause } from './store';
+import { AWAITING_GRACE_MS, type Store, type StoredBoardPause } from './store';
 import { TaskEngine } from './tasks';
 import { DeepSearchEngine } from './deepSearch';
 
@@ -117,6 +117,8 @@ export interface Timing {
   /** 深層搜尋（P3 ③b）：每台 daemon 的時間上限，以及 hub 多等的寬限（之後當逾時）。測試縮短。 */
   deepSearchDeadlineMs: number;
   deepSearchGraceMs: number;
+  /** 派工成員手上有工作、已經 waiting_input 時還算「等隊長／在做事」的寬限期（GM 2026-11-11 審查）。測試縮短。 */
+  awaitingGraceMs: number;
 }
 
 export const DEFAULT_TIMING: Timing = {
@@ -138,6 +140,7 @@ export const DEFAULT_TIMING: Timing = {
   notifyMaxWindowMs: DEFAULT_WINDOWS.maxMs,
   deepSearchDeadlineMs: SEARCH_DEEP_DEADLINE_MS,
   deepSearchGraceMs: SEARCH_DEEP_GRACE_MS,
+  awaitingGraceMs: AWAITING_GRACE_MS,
 };
 
 export const CLOSE_REVOKED = 4401;
@@ -371,6 +374,11 @@ export class Hub {
   /** 「立刻中斷」送出、等 daemon 回報結果的 session → 按暫停的使用者。 */
   private readonly pauseInterrupts = new Map<string, string>();
   private closed = false;
+  /** 每個 session 最後一次送給畫面的 awaiting（awaitingChanged 比對用）。 */
+  private readonly shownAwaiting = new Map<string, Session['awaiting']>();
+  private awaitingDepth = 0;
+  private awaitingBefore = new Map<string, Session['awaiting']>();
+  private awaitingNotify = new Set<string>();
 
   constructor(private readonly deps: HubDeps) {
     this.store = deps.store;
@@ -378,6 +386,7 @@ export class Hub {
     this.timing = deps.timing;
     // 暫停狀態要在任何引擎還原（可能排進送字）之前讀出來。
     this.pause = this.loadPause();
+    this.store.awaitingGraceMs = deps.timing.awaitingGraceMs;
     this.loadUsage();
     this.relay = new TerminalRelay<ClientConn>({
       subscribeUpstream: (id) =>
@@ -532,6 +541,9 @@ export class Hub {
     for (const machine of this.store.listMachines()) this.markMachineOffline(machine.id);
     // 排好的自動接續存在資料庫：照樣計時（到時候 session 還沒回來就等它回來）。
     this.autoContinue.restore();
+    // 等隊長：送字佇列沒了，指向已經不在的隊長的記錄清掉；寬限期計時器重排。
+    this.store.pruneAwaitingLead();
+    this.dispatch.resumeTimers();
     this.heartbeat = setInterval(
       () => this.guarded('heartbeat', () => this.tick()),
       deps.timing.heartbeatMs,
@@ -1740,7 +1752,7 @@ export class Hub {
   private afterChange(prev: Session, rawNext: Session, mayNotify: boolean): void {
     // 等隊長／等成員結果是讀的時候算的（store.withAwaiting）：組出來的 next 可能帶著舊值，先重算。
     const next = this.store.withAwaiting(rawNext);
-    this.broadcast({ type: 'session.updated', session: next });
+    this.sessionUpdated(next);
     // QUE 數、會放出的 QUE 數（名額、限流、機器在線都看狀態）都可能變了；沒變的不會推。
     if (prev.status !== next.status) this.pauseCountsChanged();
     // 「結果不明」當時沒推播；daemon 補送真正的結果時才算第一次得知，所以就算同樣是 error 也要發。
@@ -2281,27 +2293,60 @@ export class Hub {
 
   /**
    * 派工改了會影響 awaiting 的資料（DispatchDeps.awaitingChanged）：前後比對 `ids`，有變的重新廣播；
-   * 從「等隊長／等成員結果」變回在等你（例如結果沒送回去）而且 `notify` 時照常推播。
+   * 從「等隊長／等成員結果」變回在等你而且 `notify` 時照常推播。巢狀呼叫（change 裡又 touch）只在最外層比對一次，
+   * 同一個變化不會推兩次。「之前」用畫面上最後一次送出的值（寬限期到時 change 是空的，靠這個比出差別）。
    */
   private awaitingChanged(ids: readonly string[], change: () => void, notify: boolean): void {
-    const before = new Map(ids.map((id) => [id, this.store.getSession(id)?.awaiting]));
-    change();
-    let changed = false;
     for (const id of ids) {
+      if (!this.awaitingBefore.has(id)) {
+        this.awaitingBefore.set(
+          id,
+          this.shownAwaiting.has(id)
+            ? this.shownAwaiting.get(id)
+            : this.store.getSession(id)?.awaiting,
+        );
+      }
+      if (notify) this.awaitingNotify.add(id);
+    }
+    this.awaitingDepth += 1;
+    try {
+      change();
+    } finally {
+      this.awaitingDepth -= 1;
+    }
+    if (this.awaitingDepth > 0) return;
+    const before = this.awaitingBefore;
+    const notifyIds = this.awaitingNotify;
+    this.awaitingBefore = new Map();
+    this.awaitingNotify = new Set();
+    let changed = false;
+    for (const [id, was] of before) {
       const session = this.store.getSession(id);
-      if (!session || session.awaiting === before.get(id)) continue;
+      if (!session) {
+        this.shownAwaiting.delete(id);
+        continue;
+      }
+      // 和畫面上最後一次送出的值比（期間已經被狀態變化那條路廣播過同樣的值：不重送、不重複推播）。
+      const shown = this.shownAwaiting.has(id) ? this.shownAwaiting.get(id) : was;
+      if (session.awaiting === shown) continue;
       changed = true;
-      this.broadcast({ type: 'session.updated', session });
-      if (notify && before.get(id) !== undefined && sessionWaitsForUser(session)) {
+      this.sessionUpdated(session);
+      if (notifyIds.has(id) && was !== undefined && sessionWaitsForUser(session)) {
         this.notifyAttention(session);
       }
     }
-    if (changed) this.checkWaiting(notify);
+    if (changed) this.checkWaiting(notifyIds.size > 0);
   }
 
   broadcastSession(sessionId: string): void {
     const session = this.store.getSession(sessionId);
-    if (session) this.broadcast({ type: 'session.updated', session });
+    if (session) this.sessionUpdated(session);
+  }
+
+  /** 推 session.updated，記下畫面上現在的 awaiting（寬限期到時、巢狀變動時拿來比對）。 */
+  private sessionUpdated(session: Session): void {
+    this.shownAwaiting.set(session.id, session.awaiting);
+    this.broadcast({ type: 'session.updated', session });
   }
 
   latestUsage(machineId: string): UsageSummary | null {
@@ -2523,7 +2568,9 @@ export class Hub {
       );
       throw error;
     }
-    this.store.deleteSession(id);
+    const work = this.store.dispatchWork(id);
+    this.awaitingChanged(work ? [work.from] : [], () => this.store.deleteSession(id), true);
+    this.shownAwaiting.delete(id);
     this.prompts.forget(id);
     this.relay.dropSession(id);
     this.audit(
@@ -2743,6 +2790,8 @@ export class Hub {
       heldInMemory: this.heldDeliveries(),
     };
     this.store.setBoardPause(this.pause);
+    // 全部暫停時隊長不算「等成員結果」（結果送不進去，要等 GM 繼續）。GM 自己按的，不推播。
+    if (!prev) this.awaitingChanged(this.store.leadsWithPending(), () => undefined, false);
     // 剛暫停：已在佇列裡等目標空下來的，從現在起也是被擋下的，一則一則記下來。
     if (!prev) this.delivery.noteHeld();
     const interrupted = mode === 'interrupt' ? this.interruptRunning() : [];
@@ -2837,6 +2886,7 @@ export class Hub {
     this.pause = null;
     this.pauseInterrupts.clear();
     this.store.setBoardPause(null);
+    this.awaitingChanged(this.store.leadsWithPending(), () => undefined, false);
     this.audit(
       user.id,
       null,
@@ -3202,6 +3252,7 @@ export class Hub {
     this.relay.close();
     this.deepSearch.dispose();
     this.coalescer.close();
+    this.dispatch.close();
     this.autoContinue.close();
     this.delivery.close();
     for (const pending of this.pendingCreates.values()) clearTimeout(pending.timer);

@@ -69,6 +69,17 @@ const SESSION_AGENT_PREFIX = 'sessionAgent:';
  * `awaitingLead:<成員 id>`，值是隊長的 session id，不升 schema。成員離開 waiting_input（新回合、結束、封存）時清掉。
  */
 const AWAITING_LEAD_PREFIX = 'awaitingLead:';
+/** 成員手上有工作、已經 waiting_input 但 Stop 還沒到（或送字被吃掉）時，還算在做事的寬限期。 */
+export const AWAITING_GRACE_MS = 30_000;
+/** 隊長「等成員結果」時算在做事的成員狀態（GM 2026-11-11 審查）；waiting_input 另看寬限期。 */
+const AWAITING_ACTIVE: ReadonlySet<string> = new Set([
+  'running',
+  'starting',
+  'waiting_permission',
+  'plan_review',
+  'stuck',
+  'error',
+]);
 
 const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   listenAddress,
@@ -453,10 +464,15 @@ export class Store {
   private agentCache: Map<string, AgentKind> | null = null;
   /** `awaitingLead:*` 的快取（成員 id → 隊長 id）。setAwaitingLead、deleteSession 時清掉。 */
   private awaitingLeadCache: Map<string, string> | null = null;
-  /** `dispatch_work` 的快取：成員 id → 派工的隊長 id，以及有派出工作的隊長。setDispatchWork 時清掉。 */
-  private workFromCache: { byMember: Map<string, string>; leads: Set<string> } | null = null;
+  /** `dispatch_work` 的快取：成員 id → 工作。setDispatchWork、deleteSession 時清掉。 */
+  private workCache: Map<string, DispatchWork> | null = null;
   /** 正要送進隊長的結果（隊長 id → 送字佇列 key），只在記憶體。 */
   private readonly resultsPending = new Map<string, Set<string>>();
+  /** 同上，從成員這邊看（成員 id → 隊長與 key）。 */
+  private readonly memberResults = new Map<string, { leadId: string; key: string }>();
+  /** 全部暫停中（setBoardPause 時更新；null＝還沒讀）。 */
+  private pausedCache: boolean | null = null;
+  private statusStmt: ReturnType<Db['prepare']> | null = null;
 
   constructor(
     readonly db: Db,
@@ -775,7 +791,7 @@ export class Store {
       this.agentCache = null;
       this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${AWAITING_LEAD_PREFIX}${id}`);
       this.awaitingLeadCache = null;
-      this.workFromCache = null;
+      this.workCache = null;
       return this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes === 1;
     })();
   }
@@ -882,7 +898,7 @@ export class Store {
     this.db
       .prepare('UPDATE sessions SET dispatch_work = ? WHERE id = ?')
       .run(work ? JSON.stringify(work) : null, id);
-    this.workFromCache = null;
+    this.workCache = null;
   }
 
   // ── 等隊長／等成員結果（GM 2026-11-11，CONTRACTS §11.4） ──────────────
@@ -890,10 +906,12 @@ export class Store {
   /**
    * 重新算 `session.awaiting`（只有 `waiting_input` 才有）。傳進來的 Session 可能是舊的（hub 用 `{ ...prev, status }`
    * 組出下一個狀態），所以廣播、推播前都要過這一道。
-   * - `members`：有成員手上還有它派的工作（`dispatch_work.from` 是它），或有成員的結果正要送進它（記憶體）。
-   * - `lead`：它的結果已送回隊長（`awaitingLead:<id>`），或手上的工作已做完、`Stop` 還沒到（`dispatch_work`
-   *   還在、已經 `waiting_input`：daemon 的狀態常比 `Stop` 事件早到，不先算進來會先推一則 ASK）。
-   *   隊長已經結束或封存就不算（沒有人會接手，照常 ASK）。
+   * - `members`（隊長）：沒有全部暫停，而且有結果正要送進它（記憶體），或有成員手上還有它派的工作且還在做
+   *   （`AWAITING_ACTIVE` 的狀態，或 waiting_input 還在寬限期內；offline、rate_limited、queued 的不算）。
+   * - `lead`（成員）：結果已送到隊長（`awaitingLead:<id>`）、結果正在送字佇列裡（記憶體），或手上的工作還在、
+   *   已經 waiting_input 但還在寬限期內（daemon 的狀態常比 `Stop` 早到；送字被吃掉、Stop 掉了時寬限期一過就是 ASK）。
+   *   隊長已經結束、封存、done 或離線就不算（照常 ASK）。
+   * 寬限期從「進入 waiting_input」與「工作送達」較晚的那個算起（`awaitingGraceDeadline`）。
    */
   withAwaiting(session: Session): Session {
     const rest: Session = { ...session };
@@ -901,38 +919,101 @@ export class Store {
     if (session.status !== 'waiting_input' || session.archived || session.endedAt !== null) {
       return rest;
     }
-    if (this.workFrom().has(session.id) || (this.resultsPending.get(session.id)?.size ?? 0) > 0) {
-      return { ...rest, awaiting: 'members' };
-    }
-    const lead = this.allAwaitingLead().get(session.id) ?? this.workFrom().memberOf(session.id);
+    if (this.leadAwaitsMembers(session.id)) return { ...rest, awaiting: 'members' };
+    const work = this.works().get(session.id);
+    const lead =
+      this.allAwaitingLead().get(session.id) ??
+      this.memberResults.get(session.id)?.leadId ??
+      (work && this.inGrace(session, work) ? work.from : undefined);
     return lead !== undefined && this.leadAlive(lead) ? { ...rest, awaiting: 'lead' } : rest;
   }
 
-  /** 每個成員手上的工作是誰派的（`dispatch_work.from`）；快取，setDispatchWork、deleteSession 時清掉。 */
-  private workFrom(): { has(leadId: string): boolean; memberOf(id: string): string | undefined } {
-    if (!this.workFromCache) {
-      const byMember = new Map<string, string>();
+  /** 寬限期（毫秒）與時鐘；hub 依 timing 設定，測試縮短。 */
+  awaitingGraceMs = AWAITING_GRACE_MS;
+  awaitingNow: () => number = () => Date.now();
+
+  /** waiting_input 且手上有工作的成員：寬限期到期的時間（epoch 毫秒）；不適用就是 null。 */
+  awaitingGraceDeadline(memberId: string): number | null {
+    const work = this.works().get(memberId);
+    const row = this.statusRow(memberId);
+    if (!work || !row || row.status !== 'waiting_input') return null;
+    return Math.max(Date.parse(row.status_since), Date.parse(work.at)) + this.awaitingGraceMs;
+  }
+
+  private inGrace(
+    member: { statusSince: string } | { status_since: string },
+    work: DispatchWork,
+  ): boolean {
+    const since = 'statusSince' in member ? member.statusSince : member.status_since;
+    const from = Math.max(Date.parse(since), Date.parse(work.at));
+    return this.awaitingNow() - from < this.awaitingGraceMs;
+  }
+
+  private leadAwaitsMembers(leadId: string): boolean {
+    if (this.boardPaused()) return false;
+    if ((this.resultsPending.get(leadId)?.size ?? 0) > 0) return true;
+    for (const [memberId, work] of this.works()) {
+      if (work.from !== leadId) continue;
+      const row = this.statusRow(memberId);
+      if (!row || row.ended_at !== null || row.archived !== 0) continue;
+      if (AWAITING_ACTIVE.has(row.status)) return true;
+      if (row.status === 'waiting_input' && this.inGrace(row, work)) return true;
+    }
+    return false;
+  }
+
+  /** 有工作的成員 → 工作（`dispatch_work`）；快取，setDispatchWork、deleteSession 時清掉。 */
+  private works(): Map<string, DispatchWork> {
+    if (!this.workCache) {
+      const out = new Map<string, DispatchWork>();
       const rows = this.db
         .prepare('SELECT id, dispatch_work FROM sessions WHERE dispatch_work IS NOT NULL')
         .all() as { id: string; dispatch_work: string }[];
       for (const row of rows) {
         const parsed = DispatchWork.safeParse(safeJson(row.dispatch_work));
-        if (parsed.success) byMember.set(row.id, parsed.data.from);
+        if (parsed.success) out.set(row.id, parsed.data);
       }
-      this.workFromCache = { byMember, leads: new Set(byMember.values()) };
+      this.workCache = out;
     }
-    const { byMember, leads } = this.workFromCache;
-    return { has: (id) => leads.has(id), memberOf: (id) => byMember.get(id) };
+    return this.workCache;
   }
 
-  /** 隊長還在（同 dispatch.ts 送結果前的判斷：沒結束、沒封存、不是 done）。 */
-  private leadAlive(id: string): boolean {
-    const row = this.db
-      .prepare('SELECT ended_at, archived, status FROM sessions WHERE id = ?')
-      .get(id) as { ended_at: string | null; archived: number; status: string } | undefined;
-    return (
-      row !== undefined && row.ended_at === null && row.archived === 0 && row.status !== 'done'
+  /** 手上還有 `leadId` 派的工作的成員。 */
+  membersWorkingFor(leadId: string): string[] {
+    return [...this.works()].filter(([, work]) => work.from === leadId).map(([id]) => id);
+  }
+
+  /** 有派出工作或有結果正要送進來的隊長（全部暫停、恢復時要重算）。 */
+  leadsWithPending(): string[] {
+    return [
+      ...new Set([...[...this.works().values()].map((w) => w.from), ...this.resultsPending.keys()]),
+    ];
+  }
+
+  private statusRow(id: string) {
+    this.statusStmt ??= this.db.prepare(
+      'SELECT status, status_since, ended_at, archived FROM sessions WHERE id = ?',
     );
+    return this.statusStmt.get(id) as
+      | { status: string; status_since: string; ended_at: string | null; archived: number }
+      | undefined;
+  }
+
+  /** 隊長還在、而且連得到（同 dispatch.ts 送結果前的判斷，再加上不是 offline）。 */
+  private leadAlive(id: string): boolean {
+    const row = this.statusRow(id);
+    return (
+      row !== undefined &&
+      row.ended_at === null &&
+      row.archived === 0 &&
+      row.status !== 'done' &&
+      row.status !== 'offline'
+    );
+  }
+
+  private boardPaused(): boolean {
+    this.pausedCache ??= this.getBoardPause().pause !== null;
+    return this.pausedCache;
   }
 
   private allAwaitingLead(): Map<string, string> {
@@ -949,9 +1030,10 @@ export class Store {
     return out;
   }
 
-  /** 成員的結果已送回（排進送字佇列）`leadId`：成員在 waiting_input 時顯示「等隊長」。null 清掉。 */
+  /** 成員的結果已送到 `leadId`：成員在 waiting_input 時顯示「等隊長」。null 清掉。 */
   setAwaitingLead(memberId: string, leadId: string | null): void {
     if (leadId === null) {
+      if (!this.allAwaitingLead().has(memberId)) return;
       this.db
         .prepare('DELETE FROM settings WHERE key = ?')
         .run(`${AWAITING_LEAD_PREFIX}${memberId}`);
@@ -965,21 +1047,58 @@ export class Store {
     return this.allAwaitingLead().get(memberId) ?? null;
   }
 
-  /** 在等 `leadId` 的成員（結果送回後還沒開始下一個回合的）。 */
+  /** 在等 `leadId` 的成員：結果已送到的（settings）與還在送字佇列裡的（記憶體）。 */
   membersAwaiting(leadId: string): string[] {
-    return [...this.allAwaitingLead()].filter(([, lead]) => lead === leadId).map(([id]) => id);
+    const ids = [...this.allAwaitingLead()].filter(([, lead]) => lead === leadId).map(([id]) => id);
+    for (const [id, pending] of this.memberResults) if (pending.leadId === leadId) ids.push(id);
+    return [...new Set(ids)];
   }
 
   /**
-   * 正要送進 `leadId` 的結果（只在記憶體，和送字佇列一樣 hub 重啟就沒有）：最後一位成員的工作已清掉、
-   * 結果還沒打進隊長之前，隊長還是「等成員結果」，不會先閃一下 ASK。
+   * hub 啟動時：`awaitingLead` 指向的隊長已經不存在、結束、封存或 done 的，清掉（離線的留著，等它連回來）。
+   * 回傳清掉的成員 id。
    */
-  setResultPending(leadId: string, key: string, pending: boolean): void {
+  pruneAwaitingLead(): string[] {
+    const pruned: string[] = [];
+    for (const [memberId, leadId] of this.allAwaitingLead()) {
+      const row = this.statusRow(leadId);
+      if (row && row.ended_at === null && row.archived === 0 && row.status !== 'done') continue;
+      pruned.push(memberId);
+    }
+    for (const id of pruned) this.setAwaitingLead(id, null);
+    return pruned;
+  }
+
+  /**
+   * 正在送字佇列裡、要送進隊長的結果（只在記憶體，和送字佇列一樣 hub 重啟就沒有）。成員這段時間是「等隊長」，
+   * 隊長是「等成員結果」（不先閃一下 ASK）。`pending` false 時清掉兩邊；回傳清掉前成員是不是還掛著這一則
+   * （成員自己開始新回合時會先清掉，送到時就不再標等隊長）。
+   */
+  setResultPending(leadId: string, memberId: string, key: string, pending: boolean): boolean {
     const keys = this.resultsPending.get(leadId) ?? new Set<string>();
-    if (pending) keys.add(key);
-    else keys.delete(key);
+    let memberStill = false;
+    if (pending) {
+      keys.add(key);
+      this.memberResults.set(memberId, { leadId, key });
+    } else {
+      keys.delete(key);
+      memberStill = this.memberResults.get(memberId)?.key === key;
+      if (memberStill) this.memberResults.delete(memberId);
+    }
     if (keys.size > 0) this.resultsPending.set(leadId, keys);
     else this.resultsPending.delete(leadId);
+    return memberStill;
+  }
+
+  /** 這個 session 現在有沒有「等隊長」的記錄（settings 或送字佇列中）。 */
+  membersAwaitingAny(memberId: string): boolean {
+    return this.allAwaitingLead().has(memberId) || this.memberResults.has(memberId);
+  }
+
+  /** 成員自己開始新回合（或 GM 對它下了指令）：不再是等隊長（記憶體與 settings 都清）。 */
+  clearMemberAwaiting(memberId: string): void {
+    this.memberResults.delete(memberId);
+    this.setAwaitingLead(memberId, null);
   }
 
   /** 由 callerId 用 spawn_member 開的 session（含已結束、已封存的；呼叫端自己篩）。 */
@@ -1746,6 +1865,7 @@ export class Store {
   }
 
   setBoardPause(pause: StoredBoardPause | null): void {
+    this.pausedCache = pause !== null;
     if (pause === null) {
       this.db.prepare('DELETE FROM settings WHERE key = ?').run(BOARD_PAUSE_KEY);
       return;

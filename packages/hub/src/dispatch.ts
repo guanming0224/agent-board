@@ -316,7 +316,43 @@ export class DispatchEngine {
   /** 每個團隊（還沒有團隊時是呼叫者）10 分鐘內新增成員的時間。 */
   private readonly adds = new Map<string, number[]>();
 
+  /** 寬限期到時重算成員與隊長的 awaiting（成員 id → 計時器）。 */
+  private readonly graceTimers = new Map<string, NodeJS.Timeout>();
+
   constructor(private readonly deps: DispatchDeps) {}
+
+  /** hub 啟動：手上有工作、已經 waiting_input 的成員重新排寬限期計時器。 */
+  resumeTimers(): void {
+    for (const session of this.deps.store.listSessions(false)) this.scheduleGrace(session.id);
+  }
+
+  close(): void {
+    for (const timer of this.graceTimers.values()) clearTimeout(timer);
+    this.graceTimers.clear();
+  }
+
+  /**
+   * 成員手上有工作、已經 waiting_input：寬限期（store.awaitingGraceMs）一到，它和隊長都不再算等隊長／等成員結果
+   * （送字被吃掉、Stop 掉了、第一個指令沒送進去）。到時重算並照常推播。
+   */
+  private scheduleGrace(memberId: string): void {
+    const { store } = this.deps;
+    const deadline = store.awaitingGraceDeadline(memberId);
+    const lead = store.dispatchWork(memberId)?.from;
+    const old = this.graceTimers.get(memberId);
+    if (old) clearTimeout(old);
+    this.graceTimers.delete(memberId);
+    if (deadline === null || lead === undefined) return;
+    const timer = setTimeout(
+      () => {
+        this.graceTimers.delete(memberId);
+        this.touch([memberId, lead], () => undefined);
+      },
+      Math.max(0, deadline - store.awaitingNow()) + 20,
+    );
+    timer.unref();
+    this.graceTimers.set(memberId, timer);
+  }
 
   /** 會影響 `ids` 的 awaiting 的變動，都包在這裡（見 DispatchDeps.awaitingChanged）。 */
   private touch(ids: readonly (string | null | undefined)[], change: () => void, notify = true) {
@@ -937,15 +973,17 @@ export class DispatchEngine {
       aborted: () => this.blocked(caller.id, caller.id, target.id, 'target_busy', workId),
       delivered: () => {
         const { store } = this.deps;
-        // 隊長可能已經停下（等你）：從這裡起它是「等成員結果」。
-        this.touch([caller.id, target.id], () =>
+        // 隊長可能已經停下（等你）：從這裡起它是「等成員結果」。成員收到新工作，上一輪的「等隊長」結束。
+        this.touch([caller.id, target.id], () => {
           store.setDispatchWork(target.id, {
             from: caller.id,
             workId,
             kind: 'send',
             at: this.deps.now().toISOString(),
-          }),
-        );
+          });
+          store.clearMemberAwaiting(target.id);
+        });
+        this.scheduleGrace(target.id);
         // 分界要接在 daemon 事件之後（各台機器的時鐘不一定和 hub 相同），同交接。
         const { lastDaemonAt } = sessionReport(store, target.id, (e) => BOUNDARY.has(e.type));
         this.deps.audit(caller.id, 'dispatch.delivered', JSON.stringify(detail));
@@ -982,9 +1020,24 @@ export class DispatchEngine {
 
   /** daemon 的 session 事件（hub 已確認來源機器）。成員回合結束（Stop）且手上有派工的工作 → 結果送回呼叫者一次。 */
   onEvent(event: SessionEvent): void {
-    if (event.type !== 'hook' || event.payload.event !== 'Stop') return;
-    const work = this.deps.store.dispatchWork(event.sessionId);
-    if (!work) return;
+    if (event.type !== 'hook') return;
+    const hook = event.payload.event;
+    if (hook !== 'Stop' && hook !== 'UserPromptSubmit') return;
+    const { store } = this.deps;
+    const work = store.dispatchWork(event.sessionId);
+    if (!work) {
+      // 沒有派工的回合（GM 直接對成員下指令）：不再是等隊長，停下時照常 ASK、照常推播。
+      // UserPromptSubmit 時它馬上就要開始做事，不推播；Stop 才推。
+      if (store.membersAwaitingAny(event.sessionId)) {
+        this.touch(
+          [event.sessionId],
+          () => store.clearMemberAwaiting(event.sessionId),
+          hook === 'Stop',
+        );
+      }
+      return;
+    }
+    if (hook !== 'Stop') return;
     // 成員（Stop 前可能已經是 waiting_input、先算成等隊長）與隊長（少了一份工作）的 awaiting 都可能變。
     this.touch([event.sessionId, work.from], () => this.reportResult(event, work));
   }
@@ -993,8 +1046,9 @@ export class DispatchEngine {
     const { store } = this.deps;
     // 先清掉：同一份工作只回報一次；結果本身送進呼叫者不算新的工作，不會再觸發任何自動送字。
     store.setDispatchWork(event.sessionId, null);
-    // 這一次沒送回（下面擋下的情況）就沒有人會接手，照常 ASK；送回才標「等隊長」。
-    store.setAwaitingLead(event.sessionId, null);
+    // 這一次沒送回（下面擋下的情況）就沒有人會接手，照常 ASK；送到才標「等隊長」。
+    store.clearMemberAwaiting(event.sessionId);
+    this.scheduleGrace(event.sessionId);
     this.deps.delivery.retry(event.sessionId);
     const member = store.getSession(event.sessionId);
     if (!member) return;
@@ -1019,28 +1073,34 @@ export class DispatchEngine {
     this.deps.audit(member.id, 'dispatch.result', JSON.stringify({ ...detail, message }));
     this.deps.addEvent(member.id, 'dispatch.result', { ...detail, summary }, event.at);
     const key = `dispatch-result:${member.id}:${work.workId}`;
-    // 成員：結果交給隊長了，到它開始下一個回合前都是「等隊長」（GM 2026-11-11）。
-    store.setAwaitingLead(member.id, caller.id);
-    // 隊長：結果打進去之前還是「等成員結果」，不先閃一下 ASK。
-    store.setResultPending(caller.id, key, true);
-    // 送到了：隊長馬上會開始讀結果，不推播；沒送成：照常（變回在等你就推播）。
-    const settle = (notify: boolean) =>
-      this.touch([caller.id], () => store.setResultPending(caller.id, key, false), notify);
+    // 排隊中：成員「等隊長」、隊長「等成員結果」，只記在記憶體（佇列本身也只在記憶體，hub 重啟就一起沒了）。
+    store.setResultPending(caller.id, member.id, key, true);
+    // 送到了：成員寫進 settings（到它開始下一個回合前都是「等隊長」），隊長馬上會開始讀結果，不推播。
+    // 沒送成：兩邊都變回照常，變回在等你就推播。成員在這期間自己開始過新回合就不標。
+    const settle = (delivered: boolean) =>
+      this.touch(
+        [caller.id, member.id],
+        () => {
+          const still = store.setResultPending(caller.id, member.id, key, false);
+          if (delivered && still) store.setAwaitingLead(member.id, caller.id);
+        },
+        !delivered,
+      );
     this.deps.delivery.enqueue({
       key,
       targetId: caller.id,
       message,
       check: () => (this.deps.enabled() ? null : 'dispatch_disabled'),
       dropped: (reason) => {
-        settle(true);
+        settle(false);
         this.blocked(member.id, member.id, caller.id, reason, work.workId);
       },
       aborted: () => {
-        settle(true);
+        settle(false);
         this.blocked(member.id, member.id, caller.id, 'target_busy', work.workId);
       },
       delivered: () => {
-        settle(false);
+        settle(true);
         this.deps.audit(member.id, 'dispatch.result_delivered', JSON.stringify(detail));
         this.deps.addEvent(caller.id, 'dispatch.result_delivered', { ...detail, summary });
       },
@@ -1061,32 +1121,48 @@ export class DispatchEngine {
 
   /**
    * 成員結束或封存：手上的工作不會再有結果。
-   * 「等隊長」在成員開始下一個回合（或結束、封存）時清掉；隊長結束或封存時，在等它的成員改回照常（ASK，不推播）。
+   * 「等隊長」在成員開始下一個回合（或結束、封存）時清掉；隊長結束或封存時，在等它的成員改回照常並推播
+   * （GM 2026-11-11）。隊長進出離線、成員狀態變了，隊長與成員的 awaiting 都重算。
    */
   onSessionChange(prev: Session, next: Session): void {
     const { store } = this.deps;
     const gone = isGone(next) && !isGone(prev);
+    const statusChanged = prev.status !== next.status;
     if (
-      store.awaitingLeadOf(next.id) !== null &&
-      (gone || (prev.status !== next.status && TURN_STARTED.has(next.status)))
+      store.membersAwaitingAny(next.id) &&
+      (gone || (statusChanged && TURN_STARTED.has(next.status)))
     ) {
-      store.setAwaitingLead(next.id, null);
+      store.clearMemberAwaiting(next.id);
     }
-    if (!gone) return;
-    const waiting = store.membersAwaiting(next.id);
-    if (waiting.length > 0) {
-      this.touch(
-        waiting,
-        () => {
-          for (const id of waiting) store.setAwaitingLead(id, null);
-        },
-        false,
-      );
+    // 這個 session 當隊長：在等它的成員、手上有它的工作的成員。
+    const offlineFlip = statusChanged && (prev.status === 'offline' || next.status === 'offline');
+    if (gone || offlineFlip) {
+      const waiting = store.membersAwaiting(next.id);
+      const related = [...waiting, ...store.membersWorkingFor(next.id)];
+      if (related.length > 0) {
+        this.touch(
+          related,
+          () => {
+            if (gone) for (const id of waiting) store.clearMemberAwaiting(id);
+          },
+          // 機器斷線、重連常常只是一下子，不推播；隊長結束、封存才推播（GM 2026-11-11）。
+          gone,
+        );
+      }
     }
     const work = store.dispatchWork(next.id);
     if (!work) return;
-    this.touch([work.from], () => store.setDispatchWork(next.id, null));
-    this.blocked(next.id, next.id, work.from, 'member_ended', work.workId);
+    if (gone) {
+      this.touch([work.from], () => store.setDispatchWork(next.id, null));
+      this.scheduleGrace(next.id);
+      this.blocked(next.id, next.id, work.from, 'member_ended', work.workId);
+      return;
+    }
+    // 這個 session 當成員：狀態變了，隊長算不算「等成員結果」可能跟著變（例如成員限流、出錯）。
+    if (statusChanged) {
+      this.touch([work.from], () => undefined, !offlineFlip);
+      this.scheduleGrace(next.id);
+    }
   }
 
   /** 擋下或沒送出：audit 加事件（記在來源那一邊，畫布畫成擋下）。 */
