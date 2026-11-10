@@ -62,6 +62,25 @@ describe('parseCommand（群發 @ 點名）', () => {
   });
 });
 
+describe('全形 ＠ 和半形 @ 一樣', () => {
+  it('parseCommand：全形點名成員、角色，可以和半形混用', () => {
+    expect(parseCommand('＠tw-review 再看一次', members)).toEqual({
+      text: '再看一次',
+      targets: ['b'],
+      unknown: [],
+    });
+    expect(parseCommand('＠Fix login 和 @tw-lead 一起看', members).targets).toEqual(['c', 'a']);
+    const team = [{ id: 'r', name: 'rv-1', roles: ['審查'] }];
+    expect(parseCommand('＠審查 這版再看一次', team).targets).toEqual(['r']);
+    expect(parseCommand('＠nobody 看一下', members).unknown).toEqual(['nobody']);
+  });
+
+  it('activeMention：全形 ＠ 也會開成員選單', () => {
+    expect(activeMention('＠tw', 3)).toEqual({ start: 0, query: 'tw' });
+    expect(activeMention('先看 ＠fi', 7)).toEqual({ start: 3, query: 'fi' });
+  });
+});
+
 describe('activeMention', () => {
   it('游標前是還沒打完的 @ 點名才算', () => {
     expect(activeMention('@tw', 3)).toEqual({ start: 0, query: 'tw' });
