@@ -21,8 +21,8 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, posix } from 'node:path';
+import { lstat, mkdir, readdir, readlink, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, posix, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
@@ -128,13 +128,13 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** update.lock 的持有者（更新程式）還活著嗎。 */
-export function updaterLockHeld(root: string): boolean {
+/** update.lock 的持有者（更新程式）的 pid；沒有鎖或持有者已經不在回 null。 */
+export function updaterLockPid(root: string): number | null {
   try {
     const pid = Number(readFileSync(join(root, 'update.lock'), 'utf8').trim());
-    return pid > 0 && pidAlive(pid);
+    return pid > 0 && pidAlive(pid) ? pid : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -194,11 +194,11 @@ function tarExtract(archive: string, dest: string): Promise<void> {
   });
 }
 
-function tarList(archive: string, verbose: boolean): Promise<string[]> {
+function tarList(archive: string): Promise<string[]> {
   return new Promise((resolve, reject) => {
     execFile(
       'tar',
-      [verbose ? '-tvf' : '-tf', archive],
+      ['-tf', archive],
       { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, windowsHide: true },
       (error, stdout) =>
         error ? reject(error) : resolve(stdout.split(/\r?\n/).filter((line) => line.length > 0)),
@@ -219,27 +219,41 @@ export function insideRelease(path: string, linkTarget?: string): boolean {
   return resolved === 'agent-board' || resolved.startsWith('agent-board/');
 }
 
-/**
- * 解壓前檢查內容清單（B4）：每一項都要在 agent-board/ 底下、沒有絕對路徑或 ..；symlink 與 hard link 的目標
- * 也不能指出 agent-board/。`tar -tvf` 的連結寫成 `名稱 -> 目標`（symlink）或 `名稱 link to 目標`（hard link）。
- */
+/** 解壓前的第一道檢查（B4）：`tar -tf` 的每一項都要在 agent-board/ 底下、沒有絕對路徑或 ..。 */
 export async function checkArchive(archive: string): Promise<void> {
-  const names = await tarList(archive, false);
-  for (const name of names) {
+  for (const name of await tarList(archive)) {
     if (!insideRelease(name)) throw new Error(`成品裡有不該有的路徑：${name}`);
   }
-  for (const line of await tarList(archive, true)) {
-    for (const marker of [' -> ', ' link to ']) {
-      const at = line.lastIndexOf(marker);
-      if (at < 0) continue;
-      const target = line.slice(at + marker.length);
-      const head = line.slice(0, at);
-      const name = names.find((n) => head.endsWith(` ${n}`) || head.endsWith(n.replace(/\/$/, '')));
-      if (!name) throw new Error(`看不懂成品裡的連結：${line}`);
-      const ok = marker === ' -> ' ? insideRelease(name, target) : insideRelease(target);
-      if (!ok) throw new Error(`成品裡的連結指出了發布檔：${name} -> ${target}`);
+}
+
+/**
+ * 解壓後的第二道檢查（N3）：用 lstat 走 `<dir>/agent-board` 整棵樹，每個 symlink 的實際目標（realpath；
+ * 指到不存在的東西就照連結文字算）都要留在 `<dir>/agent-board` 裡面；不是一般檔案、資料夾、symlink 的
+ * （裝置檔、FIFO、socket）一律拒絕。比解析 `tar -tvf` 的文字可靠（hard link 解開後就是一般檔案）。
+ */
+export async function checkExtractedTree(dir: string): Promise<void> {
+  const base = await realpath(join(dir, 'agent-board'));
+  const inside = (path: string) => path === base || path.startsWith(`${base}${sep}`);
+  const walk = async (current: string): Promise<void> => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      const info = await lstat(path);
+      if (info.isSymbolicLink()) {
+        let target: string;
+        try {
+          target = await realpath(path);
+        } catch {
+          target = resolve(dirname(path), await readlink(path));
+        }
+        if (!inside(target)) throw new Error(`成品裡的連結指出了發布檔：${path} -> ${target}`);
+      } else if (info.isDirectory()) {
+        await walk(path);
+      } else if (!info.isFile()) {
+        throw new Error(`成品裡有不該有的檔案類型：${path}`);
+      }
     }
-  }
+  };
+  await walk(base);
 }
 
 export interface SelfUpdaterDeps {
@@ -260,8 +274,10 @@ export interface SelfUpdaterDeps {
   extract?: (archive: string, dest: string) => Promise<void>;
   /** 解壓前檢查內容清單；預設 checkArchive。 */
   inspectArchive?: (archive: string) => Promise<void>;
-  /** 更新程式的鎖還有人拿著嗎；預設看 `<安裝根目錄>/update.lock` 的 pid。 */
-  lockHeld?: () => boolean;
+  /** 解壓後檢查整棵樹（symlink 不能指出去）；預設 checkExtractedTree。 */
+  inspectTree?: (dir: string) => Promise<void>;
+  /** 更新程式的鎖的持有者 pid（活著才算）；預設看 `<安裝根目錄>/update.lock`。 */
+  lockPid?: () => number | null;
   now?: () => Date;
   deferRetryMs?: number;
   /** 更新程式健康檢查的上限（毫秒）；預設 60 秒，測試縮短（`AGENT_BOARD_UPDATE_HEALTH_MS`）。 */
@@ -288,6 +304,8 @@ export class SelfUpdater {
   private retryTimer: NodeJS.Timeout | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private disposed = false;
+  /** 回滾因為延後條件在等（retryTimer 是回滾的）。新目標不會無聲取消它（N2）。 */
+  private pendingRollback = false;
 
   constructor(private readonly deps: SelfUpdaterDeps) {}
 
@@ -328,8 +346,12 @@ export class SelfUpdater {
   }
 
   /**
-   * 進行中的狀態是不是已經沒人在做了（S1）。downloading 只有這個 daemon 下載時寫（busy），不 busy 就是
-   * daemon 重啟過；其他階段：開始超過 15 分鐘，或更新程式的鎖沒人拿著（寫完 installing 一分鐘後還沒有）。
+   * 進行中的狀態是不是已經沒人在做了（S1、N2）：
+   * - downloading 只有這個 daemon 下載時寫（busy），不 busy 就是 daemon 重啟過。
+   * - 更新程式寫的（state.pid）：它還拿著 update.lock 就不算過期，只有開始（拿到鎖）超過 60 分鐘的硬上限；
+   *   鎖不是它的或它不在了＝中斷。
+   * - daemon 自己寫的 installing／rolling_back（更新程式還沒拿到鎖）：有活著的更新程式拿著鎖就等；
+   *   沒有的話寫完一分鐘後算中斷。
    */
   private staleness(state: UpdateState): string | null {
     if (!UPDATE_IN_PROGRESS.includes(state.phase)) return null;
@@ -337,12 +359,17 @@ export class SelfUpdater {
       return this.busy ? null : 'daemon 在下載時重啟了';
     }
     const started = Date.parse(state.startedAt ?? state.at);
-    if (this.nowMs() - started > UPDATE_STALE_MS) return '超過 15 分鐘沒有結束';
-    const held = this.deps.lockHeld
-      ? this.deps.lockHeld()
-      : this.deps.installRoot !== null && updaterLockHeld(this.deps.installRoot);
-    if (!held && this.nowMs() - Date.parse(state.at) > SPAWN_GRACE_MS) {
-      return '更新程式已經不在了';
+    if (this.nowMs() - started > UPDATE_STALE_MS) return '超過 60 分鐘沒有結束';
+    const lockPid = this.deps.lockPid
+      ? this.deps.lockPid()
+      : this.deps.installRoot !== null
+        ? updaterLockPid(this.deps.installRoot)
+        : null;
+    if (state.pid !== undefined && state.pid !== process.pid) {
+      return lockPid === state.pid ? null : '更新程式已經不在了';
+    }
+    if (lockPid === null && this.nowMs() - Date.parse(state.at) > SPAWN_GRACE_MS) {
+      return '更新程式沒有啟動';
     }
     return null;
   }
@@ -419,6 +446,25 @@ export class SelfUpdater {
   onTarget(target: ReleaseTarget | null, force: boolean): void {
     this.target = target;
     this.force = force;
+    if (this.pendingRollback) {
+      if (!force) {
+        // 回滾在等延後條件：新目標先記著，回滾做完（或被取代）之後才看（N2：不無聲取消回滾）。
+        log.info(`回滾延後中，新的目標 ${target?.version ?? '（無）'} 等回滾之後再處理`);
+        return;
+      }
+      // 「立即更新」取代延後中的回滾：明確記下來，面板看得到。
+      this.pendingRollback = false;
+      if (this.retryTimer) clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      void this.setState({
+        phase: 'idle',
+        fromVersion: this.deps.currentVersion,
+        toVersion: target?.version ?? null,
+        reason: 'superseded',
+        detail: '延後中的回滾被「立即更新」取代',
+      }).then(() => this.consider());
+      return;
+    }
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
     void this.consider();
@@ -473,6 +519,7 @@ export class SelfUpdater {
   }
 
   private defer(target: ReleaseTarget | null, reason: UpdateReason, toVersion: string | null) {
+    this.pendingRollback = target === null;
     this.scheduleRetry(target ? undefined : () => void this.rollback());
     return this.setState({
       phase: 'deferred',
@@ -513,6 +560,7 @@ export class SelfUpdater {
         try {
           await (this.deps.inspectArchive ?? checkArchive)(archive);
           await (this.deps.extract ?? tarExtract)(archive, partial);
+          await (this.deps.inspectTree ?? checkExtractedTree)(partial);
         } catch (error) {
           throw new UpdateFailure('extract_failed', errorMessage(error));
         } finally {
@@ -547,8 +595,6 @@ export class SelfUpdater {
         this.deps.dataDir,
         '--root',
         root,
-        '--started-at',
-        startedAt,
         ...this.timeoutArgs(),
       ];
       const request: SpawnRequest = {
@@ -662,6 +708,13 @@ export class SelfUpdater {
   async rollback(): Promise<void> {
     const root = this.deps.installRoot;
     const from = this.deps.currentVersion;
+    // 已經有更新（或回滾）在跑：不啟動第二個，狀態檔不動（N2）。
+    const running = this.state;
+    if (running && UPDATE_IN_PROGRESS.includes(running.phase) && !this.staleness(running)) {
+      log.warn(`更新進行中（${running.phase}），這次不回滾`);
+      this.deps.report(running);
+      return;
+    }
     const install = readInstallState(root);
     const previous = install?.previousVersion ?? null;
     const previousRelease = install?.previousRelease ?? null;
@@ -685,6 +738,7 @@ export class SelfUpdater {
       await this.defer(null, busy, previous);
       return;
     }
+    this.pendingRollback = false;
     const startedAt = new Date(this.nowMs()).toISOString();
     await this.setState({
       phase: 'rolling_back',
@@ -694,16 +748,7 @@ export class SelfUpdater {
       detail: null,
       startedAt,
     });
-    const args = [
-      'rollback',
-      '--data',
-      this.deps.dataDir,
-      '--root',
-      root,
-      '--started-at',
-      startedAt,
-      ...this.timeoutArgs(),
-    ];
+    const args = ['rollback', '--data', this.deps.dataDir, '--root', root, ...this.timeoutArgs()];
     try {
       await (this.deps.spawnUpdater ?? ((r) => spawnDetached(r)))({
         script: join(root, 'current', 'scripts', 'updater.mjs'),

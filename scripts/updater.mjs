@@ -4,7 +4,7 @@
 // 不對外連線：健康檢查只連本機的 hub（127.0.0.1／安裝時的位址）、讀本機狀態檔。
 //
 //   node updater.mjs update --source <解開的新版> --to <版本> --from <版本> --data <資料夾> --root <安裝根目錄>
-//                           [--started-at <ISO>] [--health-timeout-ms 60000] [--connect-timeout-ms 300000]
+//                           [--health-timeout-ms 60000] [--connect-timeout-ms 300000]
 //   node updater.mjs rollback --data <資料夾> --root <安裝根目錄> [同上的時限]
 //
 // update：執行新版的 installer.mjs install（有 hub 的機器帶 --backup-db：在停 hub 前一刻備份 hub.db、600）→
@@ -266,6 +266,8 @@ async function update(options) {
   const base = { fromVersion: from ?? null, toVersion: to };
   const release = takeLock(root);
   if (!release) return lockBusy(data, base);
+  // 開始時間＝拿到鎖的時間（daemon 用它算 60 分鐘的硬上限，N2）。
+  startedAt = new Date().toISOString();
   try {
     const before = installState(root);
     const fromRelease = currentRelease(root) ?? before.currentRelease;
@@ -389,6 +391,7 @@ async function rollback(options) {
   };
   const release = takeLock(root);
   if (!release) return lockBusy(data, base);
+  startedAt = new Date().toISOString();
   try {
     const target = before.previousRelease;
     const fromRelease = currentRelease(root) ?? before.currentRelease;
@@ -469,14 +472,10 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(import.met
       from: { type: 'string' },
       data: { type: 'string' },
       root: { type: 'string' },
-      'started-at': { type: 'string' },
       'health-timeout-ms': { type: 'string' },
       'connect-timeout-ms': { type: 'string' },
     },
   });
-  if (values['started-at'] && !Number.isNaN(Date.parse(values['started-at']))) {
-    startedAt = values['started-at'];
-  }
   log(`agent-board-updater ${command} 開始（pid ${process.pid}）`);
   try {
     const code =

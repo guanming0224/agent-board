@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, symlinkSync } from 'node:fs';
 import {
   checkArchive,
+  checkExtractedTree,
   EXTRACTED_MARKER,
   hubHttpBase,
   insideRelease,
@@ -53,7 +54,7 @@ function harness(over: Partial<SelfUpdaterDeps> & { hostProtocol?: number } = {}
   const spawned: SpawnRequest[] = [];
   const fetches: { url: string; auth: string | null }[] = [];
   let statuses: string[] = [];
-  let held = false;
+  let lockPid: number | null = null;
   let nowMs = Date.now();
   const updater = new SelfUpdater({
     dataDir: data,
@@ -68,7 +69,7 @@ function harness(over: Partial<SelfUpdaterDeps> & { hostProtocol?: number } = {}
       spawned.push(request);
     },
     inspectArchive: async () => {},
-    lockHeld: () => held,
+    lockPid: () => lockPid,
     now: () => new Date(nowMs),
     fetch: (async (url: string, init: RequestInit) => {
       fetches.push({ url, auth: new Headers(init.headers).get('authorization') });
@@ -99,7 +100,7 @@ function harness(over: Partial<SelfUpdaterDeps> & { hostProtocol?: number } = {}
     spawned,
     fetches,
     setStatuses: (next: string[]) => (statuses = next),
-    setHeld: (next: boolean) => (held = next),
+    setLock: (next: number | null) => (lockPid = next),
     advance: (ms: number) => (nowMs += ms),
     phases: () => reports.map((r) => r.phase),
   };
@@ -151,8 +152,6 @@ describe('SelfUpdater', () => {
       data,
       '--root',
       root,
-      '--started-at',
-      expect.any(String),
       '--health-timeout-ms',
       '5000',
     ]);
@@ -290,6 +289,8 @@ describe('SelfUpdater', () => {
     expect(h.reports[0]).toMatchObject({ phase: 'rolling_back', toVersion: '0.0.9' });
 
     writeFileSync(join(root, 'install.json'), JSON.stringify({ roles: ['daemon'] }));
+    // 上一個回滾的狀態（rolling_back）清掉，不然會被當成「更新進行中」（N2）。
+    rmSync(join(data, 'update-state.json'));
     const none = harness();
     await none.updater.rollback();
     expect(none.spawned).toEqual([]);
@@ -347,11 +348,23 @@ describe('SelfUpdater：卡住的狀態（S1）', () => {
     h.updater.dispose();
   });
 
-  it('checking 超過 15 分鐘（鎖還在也算）：「立即更新」清掉過期狀態再做', async () => {
-    const old = new Date(Date.now() - 20 * 60_000).toISOString();
-    await writeUpdateState(data, inProgress({ phase: 'checking', startedAt: old, at: old }));
+  it('更新程式還拿著鎖：30 分鐘也不算過期；超過 60 分鐘的硬上限才算，「立即更新」清掉再做（N2）', async () => {
+    const at = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    await writeUpdateState(
+      data,
+      inProgress({ phase: 'checking', pid: 4242, startedAt: at(30), at: at(1) }),
+    );
     const h = harness();
-    h.setHeld(true);
+    h.setLock(4242);
+    h.updater.onTarget(target(), true);
+    await settle();
+    expect(h.reports).toEqual([]);
+    expect(h.spawned).toEqual([]);
+
+    await writeUpdateState(
+      data,
+      inProgress({ phase: 'checking', pid: 4242, startedAt: at(70), at: at(1) }),
+    );
     h.updater.onTarget(target(), true);
     await settle();
     expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
@@ -359,27 +372,92 @@ describe('SelfUpdater：卡住的狀態（S1）', () => {
     h.updater.dispose();
   });
 
-  it('真的還在進行（鎖有人拿著、沒過期）：force 也不重複啟動', async () => {
-    await writeUpdateState(data, inProgress({ phase: 'checking' }));
+  it('狀態是更新程式寫的，但鎖已經不是它的（它不在了）：馬上算中斷', async () => {
+    await writeUpdateState(data, inProgress({ phase: 'checking', pid: 4242 }));
     const h = harness();
-    h.setHeld(true);
+    h.setLock(5353);
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
+    h.updater.dispose();
+  });
+
+  it('真的還在進行（鎖是寫狀態的那個更新程式拿著）：force 也不重複啟動', async () => {
+    await writeUpdateState(data, inProgress({ phase: 'checking', pid: 4242 }));
+    const h = harness();
+    h.setLock(4242);
     h.updater.onTarget(target(), true);
     await settle();
     expect(h.reports).toEqual([]);
     expect(h.spawned).toEqual([]);
   });
 
-  it('輪詢沒有時間上限；更新程式不在了、狀態過期就標中斷並停止輪詢', async () => {
-    await writeUpdateState(data, inProgress({ phase: 'checking' }));
+  it('輪詢沒有時間上限；更新程式不在了就標中斷並停止輪詢', async () => {
+    await writeUpdateState(data, inProgress({ phase: 'checking', pid: 4242 }));
     const h = harness();
-    h.setHeld(true);
+    h.setLock(4242);
     h.updater.onConnected();
     h.advance(11 * 60_000); // 舊版 10 分鐘就停止輪詢
     await new Promise((resolve) => setTimeout(resolve, 2_300));
     expect(h.reports).toEqual([]);
-    h.setHeld(false);
+    h.setLock(null);
     await new Promise((resolve) => setTimeout(resolve, 2_300));
     expect(h.reports.at(-1)).toMatchObject({ phase: 'failed', reason: 'interrupted' });
+    h.updater.dispose();
+  });
+});
+
+describe('SelfUpdater：回滾與進行中的更新（N2）', () => {
+  beforeEach(() => {
+    writeFileSync(
+      join(root, 'install.json'),
+      JSON.stringify({
+        roles: ['daemon'],
+        previousVersion: '0.1.0',
+        previousRelease: '0.1.0',
+        sessionHostProtocol: 1,
+      }),
+    );
+  });
+
+  it('有更新在跑：回滾不啟動第二個，狀態檔不動', async () => {
+    const running = inProgress({ phase: 'checking', pid: 4242 });
+    await writeUpdateState(data, running);
+    const h = harness();
+    h.setLock(4242);
+    await h.updater.rollback();
+    expect(h.spawned).toEqual([]);
+    expect(readUpdateState(data)).toEqual(running);
+    expect(h.reports).toEqual([running]);
+  });
+
+  it('回滾延後中收到新目標：不取消回滾（面板仍看到延後的回滾）；回滾做完才處理新目標', async () => {
+    const h = harness({ deferRetryMs: 150 });
+    h.setStatuses(['waiting_permission']);
+    await h.updater.rollback();
+    expect(h.reports.at(-1)).toMatchObject({ phase: 'deferred', toVersion: '0.1.0' });
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.fetches).toEqual([]);
+    expect(readUpdateState(data)).toMatchObject({ phase: 'deferred', toVersion: '0.1.0' });
+    h.setStatuses([]);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(h.spawned).toHaveLength(1);
+    expect(h.spawned[0]!.args[0]).toBe('rollback');
+    h.updater.dispose();
+  });
+
+  it('回滾延後中按「立即更新」：明確記成被取代（superseded），再照新目標更新', async () => {
+    const h = harness({ deferRetryMs: 60_000 });
+    h.setStatuses(['waiting_permission']);
+    await h.updater.rollback();
+    h.setStatuses([]);
+    h.updater.onTarget(target(), true);
+    await settle();
+    await settle();
+    expect(h.reports.some((r) => r.phase === 'idle' && r.reason === 'superseded')).toBe(true);
+    expect(h.spawned).toHaveLength(1);
+    expect(h.spawned[0]!.args[0]).toBe('update');
     h.updater.dispose();
   });
 });
@@ -469,9 +547,49 @@ describe('SelfUpdater：解壓與成品檢查', () => {
       execFileSync('tar', ['-czf', archive, '-C', dir, 'agent-board']);
       return archive;
     };
+    // 第一道：tar -tf 的路徑都在 agent-board/ 底下（連結的目標要解開後才看得到）。
     await expect(checkArchive(make('good'))).resolves.toBeUndefined();
-    await expect(checkArchive(make('abs', ['escape', '/etc']))).rejects.toThrow(/連結/);
-    await expect(checkArchive(make('up', ['escape', '../../outside']))).rejects.toThrow(/連結/);
+    // 第二道（N3）：解開後用 lstat 走整棵樹，symlink 的實際目標要留在 agent-board 裡。
+    const extracted = (name: string, link?: [string, string]) => {
+      const archive = make(name, link);
+      const dest = join(base, `${name}-out`);
+      mkdirSync(dest);
+      execFileSync('tar', ['-xf', archive, '-C', dest]);
+      return dest;
+    };
+    await expect(checkExtractedTree(extracted('good2'))).resolves.toBeUndefined();
+    await expect(checkExtractedTree(extracted('abs', ['escape', '/etc']))).rejects.toThrow(/連結/);
+    await expect(checkExtractedTree(extracted('up', ['escape', '../../outside']))).rejects.toThrow(
+      /連結/,
+    );
+    // 指到不存在的地方（懸空）也照連結文字判斷。
+    await expect(
+      checkExtractedTree(extracted('dangling', ['escape', '../../nowhere/x'])),
+    ).rejects.toThrow(/連結/);
+    await expect(
+      checkExtractedTree(extracted('dangling-in', ['ok', 'node_modules/missing'])),
+    ).resolves.toBeUndefined();
+  });
+
+  it('解開後發現連結指出去：不寫完成標記、不啟動、記成 extract_failed（N3）', async () => {
+    const h = harness({
+      extract: async (_archive, dest) => {
+        const dir = join(dest, 'agent-board');
+        mkdirSync(join(dir, 'scripts'), { recursive: true });
+        writeFileSync(
+          join(dir, 'package.json'),
+          JSON.stringify({ name: 'agent-board-release', version: '0.2.0' }),
+        );
+        writeFileSync(join(dir, 'BUILD_ID'), 'b2\n');
+        writeFileSync(join(dir, 'scripts', 'updater.mjs'), '');
+        symlinkSync('/etc', join(dir, 'escape'));
+      },
+    });
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.reports.at(-1)).toMatchObject({ phase: 'failed', reason: 'extract_failed' });
+    expect(h.spawned).toEqual([]);
+    expect(existsSync(join(root, 'releases', '.incoming'))).toBe(false);
   });
 });
 

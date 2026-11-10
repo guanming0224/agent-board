@@ -419,8 +419,11 @@ function pruneReleases(paths, state) {
   const others = names
     .filter((name) => !keep.has(name))
     .sort((a, b) => installedAt(b) - installedAt(a));
-  // 清不掉（例如 Windows 檔案被鎖住）就留著，下次再清（W4）。agent 的 PATH 與 MCP 設定檔指的是 current／app，
-  // 不會直接參照 releases/<版本>，所以只要 current 與上一版留著，還活著的 agent 不受影響。
+  // 清不掉（例如 Windows 檔案被鎖住）就留著，下次再清（W4）。
+  // 已知限制：agent 的 PATH 與 MCP 設定檔寫的是 current／app，但 node 啟動時會把 symlink 解開，長時間跑的 agent
+  // 底下的 MCP server（與 hook 之後要讀的檔）其實是從 releases/<當時的版本> 載入的。那一版被清掉之後，
+  // 它還在記憶體裡的部分照常運作，之後才要讀的檔會失敗（重開 session 就好）。只留 3 版、current 與上一版一定留，
+  // 所以要連續換三版以上才會遇到（CONTRACTS §21.8）。
   for (const name of others.slice(Math.max(0, KEEP_RELEASES - keep.size))) {
     try {
       rmSync(join(paths.releases, name), { recursive: true, force: true });
@@ -447,7 +450,8 @@ function ensureAppLink(paths) {
 
 /**
  * 停 hub 前一刻備份 hub.db（W3，更新程式帶 --backup-db）：用 current 這版的 better-sqlite3 線上備份（含 WAL），
- * 先用 0600 建空檔再寫進去，做完確認讀得出 schema 版本。失敗就中止（hub 還沒重啟，資料庫沒變）。
+ * 先用 0600 建空檔再寫進去，做完確認讀得出 schema 版本。失敗就中止安裝：這時 hub 還沒重啟、資料庫沒變，
+ * 但 current 已經換成新版，更新程式會照「換了 current 才失敗」走回滾（切回舊版、重啟）。
  */
 function backupHubDb(paths, target) {
   const db = join(dataDir(paths), 'hub.db');
