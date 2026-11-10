@@ -18,6 +18,7 @@ import {
   resultMessage,
   workMessage,
 } from '../dispatch';
+import type { Timing } from '../hub';
 import { Store } from '../store';
 import { perEventPush, type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
 
@@ -223,6 +224,93 @@ describe('DispatchEngine：結果', () => {
   });
 });
 
+describe('DispatchEngine：等隊長／等成員結果（GM 2026-11-11）', () => {
+  it('隊長有派出去的工作是 members；成員 Stop 後結果送回是 lead；結果送到前隊長還是 members', () => {
+    const t = engineSetup();
+    t.give();
+    expect(t.store.getSession('caller')?.awaiting).toBe('members');
+    // 成員還沒 Stop、但已經 waiting_input（daemon 的狀態比 Stop 早到）：先算等隊長，不先跳 ASK。
+    expect(t.store.getSession('member')?.awaiting).toBe('lead');
+    t.engine.onEvent(t.stopEvent('Done.'));
+    expect(t.store.dispatchWork('member')).toBeNull();
+    expect(t.store.getSession('member')?.awaiting).toBe('lead');
+    expect(t.store.getSession('caller')?.awaiting).toBe('members');
+    t.queued[0]!.delivered!();
+    expect(t.store.getSession('caller')?.awaiting).toBeUndefined();
+    // 只有 waiting_input 才有：狀態換了就不帶。
+    const running = t.store.getSession('member')!;
+    expect(t.store.withAwaiting({ ...running, status: 'running' }).awaiting).toBeUndefined();
+    // 重啟後還在（新的 Store 讀同一個資料庫）。
+    expect(new Store(t.store.db, '127.0.0.1').getSession('member')?.awaiting).toBe('lead');
+  });
+
+  it('結果沒送回（呼叫者已封存、設定關掉、限流）：不標等隊長，照常 ASK', () => {
+    const t = engineSetup();
+    t.off();
+    t.give();
+    t.engine.onEvent(t.stopEvent('Done here.'));
+    expect(t.store.getSession('member')?.awaiting).toBeUndefined();
+
+    const u = engineSetup();
+    u.give();
+    u.store.updateSession({ ...u.store.getSession('caller')!, archived: true });
+    u.engine.onEvent(u.stopEvent('Done here.'));
+    expect(u.queued).toHaveLength(0);
+    expect(u.store.getSession('member')?.awaiting).toBeUndefined();
+  });
+
+  it('S3 排隊中只記在記憶體（hub 重啟就沒有），送到才寫 settings；啟動時清掉指向已不在的隊長的記錄', () => {
+    const t = engineSetup();
+    t.give();
+    t.engine.onEvent(t.stopEvent('Done.'));
+    expect(t.store.getSession('member')?.awaiting).toBe('lead');
+    expect(t.store.awaitingLeadOf('member')).toBeNull();
+    expect(new Store(t.store.db, '127.0.0.1').getSession('member')?.awaiting).toBeUndefined();
+    t.queued[0]!.delivered!();
+    expect(new Store(t.store.db, '127.0.0.1').getSession('member')?.awaiting).toBe('lead');
+    t.store.updateSession({ ...t.store.getSession('caller')!, archived: true });
+    const fresh = new Store(t.store.db, '127.0.0.1');
+    expect(fresh.pruneAwaitingLead()).toEqual(['member']);
+    expect(fresh.awaitingLeadOf('member')).toBeNull();
+  });
+
+  it('W3 隊長離線時成員不算等隊長（記錄留著），連回來又是等隊長', () => {
+    const t = engineSetup();
+    t.give();
+    t.engine.onEvent(t.stopEvent('Done.'));
+    t.queued[0]!.delivered!();
+    const caller = t.store.getSession('caller')!;
+    const offline = { ...caller, status: 'offline' as const };
+    t.store.updateSession(offline);
+    t.engine.onSessionChange(caller, offline);
+    expect(t.store.getSession('member')?.awaiting).toBeUndefined();
+    expect(t.store.awaitingLeadOf('member')).toBe('caller');
+    t.store.updateSession(caller);
+    t.engine.onSessionChange(offline, caller);
+    expect(t.store.getSession('member')?.awaiting).toBe('lead');
+  });
+
+  it('成員開始下一個回合就清掉；隊長結束或封存後，在等它的成員改回照常', () => {
+    const t = engineSetup();
+    t.give();
+    t.engine.onEvent(t.stopEvent('Done.'));
+    const member = t.store.getSession('member')!;
+    t.engine.onSessionChange(member, { ...member, status: 'running' });
+    expect(t.store.awaitingLeadOf('member')).toBeNull();
+
+    const u = engineSetup();
+    u.give();
+    u.engine.onEvent(u.stopEvent('Done.'));
+    expect(u.store.getSession('member')?.awaiting).toBe('lead');
+    const caller = u.store.getSession('caller')!;
+    const ended = { ...caller, endedAt: new Date().toISOString() };
+    u.store.updateSession(ended);
+    u.engine.onSessionChange(caller, ended);
+    expect(u.store.awaitingLeadOf('member')).toBeNull();
+    expect(u.store.getSession('member')?.awaiting).toBeUndefined();
+  });
+});
+
 // ── 整合：真的 hub、假 daemon ────────────────────────────
 
 interface Board {
@@ -234,8 +322,12 @@ interface Board {
 
 const CWD = '/fake/project';
 
-async function board(over: Partial<SessionSpec> = {}, repoRoot: string | null = CWD) {
-  hub = await startHub({ timing: { handoffEnterDelayMs: 20 } });
+async function board(
+  over: Partial<SessionSpec> = {},
+  repoRoot: string | null = CWD,
+  timing: Partial<Timing> = {},
+) {
+  hub = await startHub({ timing: { handoffEnterDelayMs: 20, ...timing } });
   const cookie = await hub.setupOwner();
   const { daemon, machineId } = await hub.onlineDaemon(cookie);
   const caller = await startSession(
@@ -714,6 +806,261 @@ const subscribePush = (b: Board) =>
     cookie: b.cookie,
     body: { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } },
   });
+
+describe('派工：等隊長／等成員結果（GM 2026-11-11）', () => {
+  // 狀態推播（attentionPayload 帶 status）；團隊動態那則（team_member_added）也帶成員 id，不算。
+  const pushesFor = (id: string) =>
+    hub.push.sent.filter((p) => {
+      const payload = JSON.parse(p.payload) as { sessionId?: string; status?: string };
+      return payload.sessionId === id && payload.status !== undefined;
+    });
+
+  it('成員結果送回後是「等隊長」、隊長有未回工作是「等成員結果」：不算等你、不推播；GM 直接下指令後照常 ASK', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    await perEventPush(hub, b.cookie);
+    await subscribePush(b);
+    const client = await hub.client(b.cookie);
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Fix the parser.' });
+
+    // 隊長派完工作、回合結束：手上還有成員沒回來的工作 → 等成員結果，不推播。
+    await setStatus(b, b.caller, 'running');
+    await setStatus(b, b.caller, 'waiting_input');
+    expect(get(b.caller)?.awaiting).toBe('members');
+    await setStatus(b, bd, 'running');
+    expect(get(bd)?.awaiting).toBeUndefined();
+
+    // 成員做完：結果送回隊長，成員停在 waiting_input → 等隊長，不推播、不算等你。
+    stop(b, bd, 'Fixed the parser.');
+    await setStatus(b, bd, 'waiting_input');
+    await until(() => enterTo(b, b.caller) === 1, 'result delivered');
+    expect(get(bd)?.awaiting).toBe('lead');
+    await client.next('session.updated', (m) => {
+      const s = m.session as { id: string; awaiting?: string };
+      return s.id === bd && s.awaiting === 'lead';
+    });
+    // 最後一個結果送到了：隊長不再是等成員結果（接著它會讀結果、自己做完再停下才是 ASK）。
+    await until(() => get(b.caller)?.awaiting === undefined, 'lead cleared');
+    const board1 = await hub.api('GET', '/api/sessions', { cookie: b.cookie });
+    expect(
+      (board1.body as { id: string; awaiting?: string }[]).find((s) => s.id === bd),
+    ).toMatchObject({
+      awaiting: 'lead',
+    });
+    await settle();
+    expect(pushesFor(bd)).toHaveLength(0);
+    expect(pushesFor(b.caller)).toHaveLength(0);
+
+    // GM 直接對成員下指令：新回合清掉等隊長；下一次停下照常 ASK、照常推播。
+    await setStatus(b, bd, 'running');
+    expect(hub.running.store.awaitingLeadOf(bd)).toBeNull();
+    stop(b, bd, 'Answered the user.');
+    await setStatus(b, bd, 'waiting_input');
+    expect(get(bd)?.awaiting).toBeUndefined();
+    await until(() => pushesFor(bd).length === 1, 'ASK pushed');
+    expect(JSON.parse(pushesFor(bd)[0]!.payload)).toMatchObject({ status: 'waiting_input' });
+  });
+
+  it('成員要權限照樣是 PERM、照樣推播（等成員結果只管 waiting_input）', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    await perEventPush(hub, b.cookie);
+    await subscribePush(b);
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Fix the parser.' });
+    await setStatus(b, bd, 'waiting_permission');
+    expect(get(bd)?.awaiting).toBeUndefined();
+    await until(() => pushesFor(bd).length === 1, 'PERM pushed');
+  });
+
+  // ── 審查後補（GM 2026-11-11）：不能把真正要 GM 處理的藏成 NEW ──
+
+  const GRACE = 600;
+  const pushingBoard = async () => {
+    const b = await board({ permissionMode: 'acceptEdits' }, CWD, { awaitingGraceMs: GRACE });
+    await perEventPush(hub, b.cookie);
+    await subscribePush(b);
+    return b;
+  };
+  /** 隊長派完工作、自己停下。 */
+  const leadStops = async (b: Board) => {
+    await setStatus(b, b.caller, 'running');
+    await setStatus(b, b.caller, 'waiting_input');
+  };
+
+  it('S1 Stop 掉了：寬限期內成員等隊長、隊長等成員結果；寬限期一到兩邊都變 ASK 並各推播一次', async () => {
+    const b = await pushingBoard();
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Fix.' });
+    await setStatus(b, bd, 'running');
+    await leadStops(b);
+    expect(get(b.caller)?.awaiting).toBe('members');
+    await setStatus(b, bd, 'waiting_input'); // Stop 沒來
+    expect(get(bd)?.awaiting).toBe('lead');
+    expect(get(b.caller)?.awaiting).toBe('members');
+    expect(pushesFor(bd)).toHaveLength(0);
+    await until(
+      () => pushesFor(bd).length === 1 && pushesFor(b.caller).length === 1,
+      'pushed after grace',
+      GRACE * 5,
+    );
+    expect(get(bd)?.awaiting).toBeUndefined();
+    expect(get(b.caller)?.awaiting).toBeUndefined();
+    await settle();
+    expect(pushesFor(bd)).toHaveLength(1);
+    expect(pushesFor(b.caller)).toHaveLength(1);
+  });
+
+  it('S1 送字被吃掉（工作送達、成員沒動）：寬限期後成員與隊長都變 ASK 並推播', async () => {
+    const b = await pushingBoard();
+    const { id: rs } = await spawnMember(b, { role: 'researcher', prompt: 'Survey.' });
+    await setStatus(b, rs, 'running');
+    stop(b, rs, 'Surveyed.');
+    await setStatus(b, rs, 'waiting_input');
+    await until(() => enterTo(b, b.caller) === 1, 'first result');
+    await setStatus(b, b.caller, 'running');
+    json(await ask(b, 'send_task', { member: 'Lead-RS', text: 'Compare costs.' }));
+    await until(() => hub.running.store.dispatchWork(rs) !== null, 'task delivered');
+    await setStatus(b, b.caller, 'waiting_input');
+    // 成員一直停在 waiting_input（字被吃掉）：寬限期內不推。
+    expect(get(rs)?.awaiting).toBe('lead');
+    expect(get(b.caller)?.awaiting).toBe('members');
+    expect(pushesFor(rs)).toHaveLength(0);
+    expect(pushesFor(b.caller)).toHaveLength(0);
+    await until(
+      () => pushesFor(rs).length === 1 && pushesFor(b.caller).length === 1,
+      'pushed after grace',
+      GRACE * 5,
+    );
+    expect(get(rs)?.awaiting).toBeUndefined();
+    expect(get(b.caller)?.awaiting).toBeUndefined();
+  });
+
+  it('S1 開成員的第一個指令沒送進去（一直是剛開好）：寬限期後隊長變 ASK 並推播；成員維持 NEW 剛開好', async () => {
+    const b = await pushingBoard();
+    const reply = json(
+      await ask(b, 'spawn_member', { role: 'researcher', prompt: 'Survey.', reason: 'Need it.' }),
+    );
+    const create = await b.daemon.next(
+      'session.create',
+      (m) => (m.spec as SessionSpec).name === reply.name,
+    );
+    const id = create.sessionId as string;
+    b.daemon.send({
+      type: 'session.created',
+      requestId: create.requestId,
+      session: runtime(id, { status: 'waiting_input', statusDetail: 'idle:start', cwd: CWD }),
+    });
+    await until(() => get(id)?.status === 'waiting_input', 'member started');
+    await leadStops(b);
+    expect(get(b.caller)?.awaiting).toBe('members');
+    await until(() => pushesFor(b.caller).length === 1, 'lead pushed after grace', GRACE * 5);
+    expect(get(b.caller)?.awaiting).toBeUndefined();
+    expect(get(id)?.statusDetail).toBe('idle:start');
+    expect(pushesFor(id)).toHaveLength(0);
+  });
+
+  it('S2 結果還在排隊時隊長封存：成員變回 ASK 並推播（GM 決定）；排隊期間不寫 settings', async () => {
+    const b = await pushingBoard();
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Fix.' });
+    await setStatus(b, b.caller, 'running'); // 隊長忙：結果排隊
+    await setStatus(b, bd, 'running');
+    stop(b, bd, 'Fixed.');
+    await setStatus(b, bd, 'waiting_input');
+    await until(() => hub.running.store.dispatchWork(bd) === null, 'reported');
+    expect(get(bd)?.awaiting).toBe('lead');
+    expect(hub.running.store.awaitingLeadOf(bd)).toBeNull();
+    const archived = await hub.api('PATCH', `/api/sessions/${b.caller}`, {
+      cookie: b.cookie,
+      body: { archived: true },
+    });
+    expect(archived.status).toBe(200);
+    await until(() => pushesFor(bd).length === 1, 'member pushed');
+    expect(get(bd)?.awaiting).toBeUndefined();
+    // 佇列裡的結果在隊長狀態變了（停掉）時才丟掉，不影響成員已經變回 ASK。
+  });
+
+  it('S2 結果沒送成（排隊期間關掉派工）：成員與隊長都變回 ASK 並推播', async () => {
+    const b = await pushingBoard();
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Fix.' });
+    await setStatus(b, b.caller, 'running');
+    await setStatus(b, bd, 'running');
+    stop(b, bd, 'Fixed.');
+    await setStatus(b, bd, 'waiting_input');
+    await until(() => hub.running.store.dispatchWork(bd) === null, 'reported');
+    const off = await hub.api('PATCH', '/api/settings', {
+      cookie: b.cookie,
+      body: { dispatch: false },
+    });
+    expect(off.status).toBe(200);
+    await setStatus(b, b.caller, 'waiting_input');
+    await until(
+      () => pushesFor(bd).length === 1 && pushesFor(b.caller).length === 1,
+      'both pushed',
+    );
+    expect(get(bd)?.awaiting).toBeUndefined();
+    expect(get(b.caller)?.awaiting).toBeUndefined();
+    expect(textsTo(b, b.caller)).toEqual([]);
+  });
+
+  it('W1 全部暫停時隊長不算等成員結果（不推播，GM 自己按的），繼續後恢復', async () => {
+    const b = await pushingBoard();
+    const client = await hub.client(b.cookie);
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Fix.' });
+    await setStatus(b, bd, 'running');
+    await leadStops(b);
+    expect(get(b.caller)?.awaiting).toBe('members');
+    const paused = await hub.api('POST', '/api/board/pause', {
+      cookie: b.cookie,
+      body: { mode: 'finish_turn' },
+    });
+    expect(paused.status).toBe(200);
+    expect(get(b.caller)?.awaiting).toBeUndefined();
+    await client.next('session.updated', (m) => {
+      const s = m.session as { id: string; awaiting?: string };
+      return s.id === b.caller && s.awaiting === undefined;
+    });
+    expect((await hub.api('POST', '/api/board/resume', { cookie: b.cookie })).status).toBe(200);
+    expect(get(b.caller)?.awaiting).toBe('members');
+    await settle();
+    expect(pushesFor(b.caller)).toHaveLength(0);
+  });
+
+  it('W2 成員限流（rate_limited）不算在做事：隊長變 ASK 並推播', async () => {
+    const b = await pushingBoard();
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Fix.' });
+    await setStatus(b, bd, 'running');
+    await leadStops(b);
+    expect(get(b.caller)?.awaiting).toBe('members');
+    await setStatus(b, bd, 'rate_limited');
+    expect(get(b.caller)?.awaiting).toBeUndefined();
+    await until(() => pushesFor(b.caller).length === 1, 'lead pushed');
+    await setStatus(b, bd, 'running');
+    expect(get(b.caller)?.awaiting).toBe('members');
+  });
+
+  it('W6 等隊長時 GM 直接下指令：UserPromptSubmit 清掉（不推）；沒有工作的 Stop 也清掉並推播', async () => {
+    const b = await pushingBoard();
+    const { id: bd } = await spawnMember(b, { role: 'worker', prompt: 'Fix.' });
+    await setStatus(b, bd, 'running');
+    stop(b, bd, 'Fixed.');
+    await setStatus(b, bd, 'waiting_input');
+    await until(() => enterTo(b, b.caller) === 1, 'result delivered');
+    await until(() => hub.running.store.awaitingLeadOf(bd) === b.caller, 'awaiting lead stored');
+    sendEvent(b, bd, 'hook', { event: 'UserPromptSubmit', prompt: 'x' });
+    await until(() => get(bd)?.awaiting === undefined, 'cleared by prompt');
+    await settle();
+    expect(pushesFor(bd)).toHaveLength(0);
+
+    // 再一輪：結果送回後，狀態沒變化只來了 Stop（沒有工作）→ 清掉並推播。
+    await leadStops(b); // 隊長讀了第一則結果（送字佇列要等它動過才送下一則）
+    json(await ask(b, 'send_task', { member: 'Lead-BD1', text: 'Again.' }));
+    await until(() => hub.running.store.dispatchWork(bd) !== null, 'task delivered');
+    await setStatus(b, bd, 'running');
+    stop(b, bd, 'Again done.');
+    await setStatus(b, bd, 'waiting_input');
+    await until(() => hub.running.store.awaitingLeadOf(bd) === b.caller, 'awaiting lead again');
+    stop(b, bd, 'Answered the user.');
+    await until(() => pushesFor(bd).length === 1, 'pushed on plain Stop');
+    expect(get(bd)?.awaiting).toBeUndefined();
+  });
+});
 
 describe('隊長自主擴編：新增理由、上限、通知', () => {
   it('reason 必填：舊呼叫（沒帶 reason）回 reason_required 並說明怎麼補', async () => {

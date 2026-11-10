@@ -106,6 +106,8 @@ process.stdin.on('data', (chunk) => {
     console.log(`GOT ${line}`);
     if (line === 'quit') process.exit(0);
     if (line === 'crash') process.exit(3);
+    // 派工測試：模擬送進來的字被吃掉（沒開始回合、沒有任何 hook）。
+    if (line.startsWith('[From ') && line.includes('#eaten')) continue;
     hook('UserPromptSubmit', { prompt: line });
     if (line === 'whoami') console.log(`PID ${process.pid}`);
     // session host 測試：這一輪的 hook 都送完才印 EXIT SCHEDULED，過一會兒自己結束（測試在這段時間停掉 daemon）。

@@ -109,6 +109,33 @@ describe('statusCode', () => {
     expect(statusGlyph(of('waiting_input', IDLE_START_DETAIL))).toBe(statusGlyph(of('starting')));
   });
 
+  it('等隊長／等成員結果（派工，GM 2026-11-11）：NEW、說明文字分開、不算等你；其他狀態不受影響', () => {
+    const lead = { ...of('waiting_input'), awaiting: 'lead' as const };
+    const members = { ...of('waiting_input'), awaiting: 'members' as const };
+    expect(statusCode(lead)).toBe('NEW');
+    expect(statusCode(members)).toBe('NEW');
+    expect(statusLabelKey(lead)).toBe('status.awaiting_lead');
+    expect(statusLabelKey(members)).toBe('status.awaiting_members');
+    expect(statusGlyph(lead)).toBe(statusGlyph(of('starting')));
+    expect(waitsForYou(lead)).toBe(false);
+    expect(waitsForYou(members)).toBe(false);
+    // PERM、ERR 不受影響（成員要權限照樣等你）。
+    expect(statusCode({ ...of('waiting_permission'), awaiting: 'lead' })).toBe('PERM');
+    expect(waitsForYou({ ...of('error'), awaiting: 'members' })).toBe(true);
+    // 剛開好優先寫「剛開好」。
+    expect(statusLabelKey({ ...of('waiting_input', IDLE_START_DETAIL), awaiting: 'lead' })).toBe(
+      'status.idle_start',
+    );
+    const sessions = [
+      session({ id: 'ask', status: 'waiting_input' }),
+      session({ id: 'lead', status: 'waiting_input', awaiting: 'lead' }),
+      session({ id: 'members', status: 'waiting_input', awaiting: 'members' }),
+    ];
+    expect(attentionQueue(sessions).map((s) => s.id)).toEqual(['ask']);
+    expect(waitingSessions(sessions, []).map((s) => s.id)).toEqual(['ask']);
+    expect(nextInQueue(pendingQueue(sessions.slice(1), []), null)).toBeNull();
+  });
+
   it('和 protocol 的「等你」定義一致（頁首計數）', () => {
     const statuses: SessionStatus[] = [
       'starting',

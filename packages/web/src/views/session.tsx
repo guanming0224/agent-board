@@ -43,19 +43,22 @@ export function Callsign({ session }: { session: Session }) {
  * 完整說明（分得出錯誤／卡住、剛開好／啟動中）放在 title 與 aria-label。
  * badge：實心膠囊徽章（shared/styles/status.css），卡片標題列與圖例用，只顯示代碼；
  * 不是徽章的（清單、成員列）代碼後面再接一段說明文字。
- * detail 是 session 的 statusDetail（判斷 NEW 要用）；只有狀態沒有 session 時（例如狀態變化紀錄）可以不給。
+ * detail 是 session 的 statusDetail、awaiting 是 hub 算的等隊長／等成員結果（判斷 NEW 要用）；
+ * 只有狀態沒有 session 時（例如狀態變化紀錄）可以不給。
  */
 export function Lamp({
   status,
   detail = null,
+  awaiting,
   badge = false,
 }: {
   status: Session['status'];
   detail?: string | null;
+  awaiting?: Session['awaiting'];
   badge?: boolean;
 }) {
   const t = useT();
-  const session = { status, statusDetail: detail };
+  const session = { status, statusDetail: detail, awaiting };
   return (
     <CodeChip
       code={statusCode(session)}

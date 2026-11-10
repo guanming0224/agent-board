@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   IDLE_START_DETAIL,
+  isAwaitingTeam,
   isIdleStart,
   sessionWaitsForUser,
   waitingSessions,
@@ -34,6 +35,20 @@ const session = (id: string, status: SessionStatus, over: Partial<Session> = {})
   });
 
 describe('「等你」的定義', () => {
+  it('等隊長／等成員結果的 waiting_input 不算（GM 2026-11-11）；其他狀態帶了也照算', () => {
+    expect(isAwaitingTeam({ status: 'waiting_input', awaiting: 'lead' })).toBe(true);
+    expect(isAwaitingTeam({ status: 'waiting_input' })).toBe(false);
+    expect(isAwaitingTeam({ status: 'waiting_permission', awaiting: 'lead' })).toBe(false);
+    expect(sessionWaitsForUser(session('a', 'waiting_input', { awaiting: 'lead' }))).toBe(false);
+    expect(sessionWaitsForUser(session('b', 'waiting_input', { awaiting: 'members' }))).toBe(false);
+    expect(sessionWaitsForUser(session('c', 'waiting_permission', { awaiting: 'lead' }))).toBe(
+      true,
+    );
+    expect(Session.parse({ ...session('d', 'waiting_input'), awaiting: 'members' }).awaiting).toBe(
+      'members',
+    );
+  });
+
   it('收件匣的狀態都算；工作中、限流、排隊、完成、離線不算', () => {
     for (const status of [
       'waiting_permission',

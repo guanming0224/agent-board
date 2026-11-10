@@ -142,7 +142,12 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
     <>
       {/* 標題列就是卡片頂端的狀態帶（canvas.css），所以危險指令的警示放在它下面。 */}
       <div className="head">
-        <Lamp status={session.status} detail={session.statusDetail} badge />
+        <Lamp
+          status={session.status}
+          detail={session.statusDetail}
+          awaiting={session.awaiting}
+          badge
+        />
         {renaming ? (
           <RenameInput session={session} onDone={() => setRenaming(false)} />
         ) : (

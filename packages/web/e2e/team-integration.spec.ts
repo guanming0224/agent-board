@@ -41,6 +41,8 @@ let lead: Session;
 let worker: Session;
 let plain: Session;
 let teamId: string;
+/** 「等隊長」測試的隊長與成員，下一則（送字被吃掉）接著用。 */
+let awaitPair: { lead: string; member: string } | undefined;
 
 function daemonEnv(): NodeJS.ProcessEnv {
   return {
@@ -824,4 +826,83 @@ test('隊長自主擴編（真 hub、真 MCP server）：spawn_member → 新成
   });
   const archive = await auditOf(page, 'session.archive');
   expect(archive.some((a) => a.sessionId === member.id)).toBe(true);
+});
+
+test('派工的成員做完、結果送回隊長後：卡片是 NEW「等隊長」，不算在頁首的等你（GM 2026-11-11）', async ({
+  page,
+}) => {
+  await page.goto('/#/canvas');
+  const awaitLead = await createSession(page, 'await-ld', false);
+  await typeInto(
+    page,
+    awaitLead.id,
+    'mcp spawn_member {"role":"researcher","prompt":"Check the docs.","reason":"Need the docs checked."}',
+  );
+  await screenOf(page, awaitLead.id).toContain('MCP ok');
+
+  // 成員開起來、做完第一個工作（假 claude 收到 [From await-ld] 後回合結束）→ 結果送回隊長。
+  let memberId = '';
+  await expect
+    .poll(
+      async () => {
+        const sessions = (await (await page.request.get('/api/sessions')).json()) as Session[];
+        const member = sessions.find((s) => s.dispatchedBy === awaitLead.id && !s.archived);
+        memberId = member?.id ?? '';
+        return member ? [member.status, member.awaiting ?? null] : null;
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual(['waiting_input', 'lead']);
+  await screenOf(page, awaitLead.id).toContain('[Result from await-ld-RS]');
+  awaitPair = { lead: awaitLead.id, member: memberId };
+
+  // 卡片：NEW 灰、提示框「等隊長」，不是 ASK，不算等你。
+  const card = page.getByTestId(`card-${memberId}`);
+  await expect(card.locator('.lamp')).toHaveText('◌NEW', { timeout: 20_000 });
+  await expect(card.locator('.lamp')).toHaveAttribute('title', 'NEW：等隊長');
+  await expect(card).not.toHaveAttribute('data-waits', 'true');
+
+  // 頁首的「等你 N」：和 API 上「真的在等你」的數量一樣，不含這位成員。
+  const waits = (s: Session) =>
+    !s.archived &&
+    ['waiting_permission', 'waiting_input', 'plan_review', 'error', 'stuck'].includes(s.status) &&
+    s.statusDetail !== 'idle:start' &&
+    !(s.status === 'waiting_input' && s.awaiting);
+  await expect
+    .poll(
+      async () => {
+        const sessions = (await (await page.request.get('/api/sessions')).json()) as Session[];
+        const expected = String(sessions.filter(waits).length);
+        const shown = (await page.getByTestId('waiting-count').textContent())?.trim();
+        return [shown === expected, sessions.some((s) => s.id === memberId && waits(s))];
+      },
+      { timeout: 20_000 },
+    )
+    .toEqual([true, false]);
+});
+
+test('送進成員的工作被吃掉（成員沒開始做）：寬限期（30 秒）內是 NEW，過了變回 ASK、算在等你（GM 2026-11-11 審查）', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  expect(awaitPair).toBeDefined();
+  const { lead, member } = awaitPair!;
+  await page.goto('/#/canvas');
+  // 隊長先把上一則結果讀完（回合結束），再送下一份工作。
+  await screenOf(page, lead).toContain('GOT [Result from await-ld-RS]');
+  await expectStatus(page.request, lead, 'waiting_input');
+  // 假 claude 收到含 #eaten 的那一行什麼都不做（沒有 UserPromptSubmit、沒有 Stop）。
+  await typeInto(page, lead, 'mcp send_task {"member":"await-ld-RS","text":"Check again #eaten"}');
+  await screenOf(page, lead).toContain('MCP ok {"member":"await-ld-RS"');
+  await screenOf(page, member).toContain('[From await-ld] Check again #eaten');
+  const awaitingOf = async (id: string) => (await getSession(page.request, id)).awaiting ?? null;
+  // 工作送達、成員一直沒動：寬限期內還是等隊長，隊長是等成員結果。
+  await expect.poll(() => awaitingOf(member), { timeout: 10_000 }).toBe('lead');
+  await expect.poll(() => awaitingOf(lead), { timeout: 20_000 }).toBe('members');
+  // 寬限期過了：兩邊都變回 ASK。
+  await expect.poll(() => awaitingOf(member), { timeout: 60_000 }).toBeNull();
+  await expect.poll(() => awaitingOf(lead), { timeout: 10_000 }).toBeNull();
+  const card = page.getByTestId(`card-${member}`);
+  await expect(card.locator('.lamp')).toHaveText('◇ASK', { timeout: 10_000 });
+  await expect(card).toHaveAttribute('data-waits', 'true');
 });

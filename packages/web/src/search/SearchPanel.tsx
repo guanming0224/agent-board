@@ -193,7 +193,7 @@ function Row({
     >
       <span className="search-lamp">
         {session && !teamLike ? (
-          <Lamp status={session.status} detail={session.statusDetail} />
+          <Lamp status={session.status} detail={session.statusDetail} awaiting={session.awaiting} />
         ) : (
           <span className="search-team-mark" aria-hidden="true">
             ▦

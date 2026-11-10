@@ -34,9 +34,9 @@
 
 | 代碼 | 對應的 session 狀態 | 顏色（`tokens.css` 的 `--c-<code>`） | 算不算「等你」 |
 |---|---|---|---|
-| **NEW** | `starting`，或 `waiting_input` 且 `statusDetail = 'idle:start'`（剛開好、還沒下指令） | 灰 `#9aa4b2` | 否 |
+| **NEW** | `starting`，或 `waiting_input` 且 `statusDetail = 'idle:start'`（剛開好、還沒下指令），或 `waiting_input` 且 `awaiting` 有值（派工：「等隊長」／「等成員結果」，GM 2026-11-11） | 灰 `#9aa4b2` | 否 |
 | **RUN** | `running` | 藍 `#4aa3ff` | 否 |
-| **ASK** | `waiting_input`（不是 idle:start；重新接回的 `resume` 也算） | 黃 `#ffe14d` | 是 |
+| **ASK** | `waiting_input`（不是 idle:start、不是等隊長／等成員結果；重新接回的 `resume` 也算） | 黃 `#ffe14d` | 是 |
 | **PERM** | `waiting_permission`（含命中危險指令，徽章用 ⛔） | 洋紅 `#ff4fd8` | 是，最急 |
 | **PLAN** | `plan_review` | 青 `#3dd5e0` | 是 |
 | **ERR** | `error` 與 `stuck`（提示框分辨是錯誤還是卡住，符號 ✕／⚠） | 紅 `#f0665f` | 是 |

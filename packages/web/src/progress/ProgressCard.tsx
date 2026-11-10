@@ -23,6 +23,7 @@ import { useMaskMode, useMaskText } from '../security';
 import { errorCode, errorDetail } from '../shared/backend';
 import { useT } from '../shared/i18n';
 import { statusCode } from '../shared/status';
+import { useShallow } from 'zustand/react/shallow';
 import { useBoard } from '../shared/store';
 import { useTeams } from '../team/store';
 import { errorText, formatSpan, useClock, useNow } from '../views';
@@ -405,6 +406,12 @@ function Facts({ card }: { card: ProgressCard }) {
   const t = useT();
   const mask = useMaskText();
   const { facts } = card;
+  // 只取這張卡成員的 awaiting（逐項比較），其他 session 變動不重畫。
+  const awaiting = useBoard(
+    useShallow((s) =>
+      facts.members.map((m) => s.sessions.find((x) => x.id === m.sessionId)?.awaiting),
+    ),
+  );
   return (
     <div className="progress-facts" data-testid="progress-facts">
       <h4>{t('progress.facts.title')}</h4>
@@ -429,10 +436,15 @@ function Facts({ card }: { card: ProgressCard }) {
         {facts.members.length > 0 && (
           <li className="progress-members">
             {t('progress.facts.members')}：
-            {facts.members.map((m) => {
+            {facts.members.map((m, index) => {
+              // 等隊長／等成員結果是 hub 即時算的（不在事實快照裡），從畫面上的 session 補。
               const code = m.ended
                 ? 'DONE'
-                : statusCode({ status: m.status, statusDetail: m.statusDetail } as never);
+                : statusCode({
+                    status: m.status,
+                    statusDetail: m.statusDetail,
+                    awaiting: awaiting[index],
+                  });
               return (
                 <span key={m.sessionId} className="progress-member" title={m.name}>
                   <span className="mono">{code}</span> {m.name}

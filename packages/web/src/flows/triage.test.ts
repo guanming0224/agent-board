@@ -132,6 +132,18 @@ describe('triageItems', () => {
     expect(items.filter((i) => !i.counted).map((i) => i.session.id)).toEqual(['quota', 'idle']);
   });
 
+  it('等隊長／等成員結果（派工，GM 2026-11-11）不列；同一個 session 有 approval 時照樣列', () => {
+    const items = triageItems(
+      [
+        session({ id: 'lead', status: 'waiting_input', awaiting: 'lead' }),
+        session({ id: 'members', status: 'waiting_input', awaiting: 'members' }),
+        session({ id: 'asked', status: 'waiting_input', awaiting: 'lead' }),
+      ],
+      [approval({ id: 'q', sessionId: 'asked', kind: 'question' })],
+    );
+    expect(items.map((i) => i.session.id)).toEqual(['asked']);
+  });
+
   it('同一個 session 有多筆 approval：一列，危險指令優先', () => {
     const approvals = [
       approval({ id: 'p', sessionId: 's', createdAt: at(10) }),

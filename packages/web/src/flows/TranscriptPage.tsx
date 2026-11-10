@@ -75,7 +75,7 @@ export function TranscriptPage() {
         {back}
         <header className="page-head archive-head transcript-head">
           <h1>{session.name}</h1>
-          <Lamp status={session.status} detail={session.statusDetail} />
+          <Lamp status={session.status} detail={session.statusDetail} awaiting={session.awaiting} />
         </header>
         <Callsign text={callsign(session, machines, projects.data ?? [])} />
         <Transcript
