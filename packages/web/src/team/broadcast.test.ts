@@ -75,6 +75,22 @@ describe('全形 ＠ 和半形 @ 一樣', () => {
     expect(parseCommand('＠nobody 看一下', members).unknown).toEqual(['nobody']);
   });
 
+  it('緊貼中文的 ＠／@ 也算點名；英數字後面的（email）不算', () => {
+    expect(parseCommand('請＠tw-review 再看一次', members)).toEqual({
+      text: '請 再看一次',
+      targets: ['b'],
+      unknown: [],
+    });
+    expect(parseCommand('請@tw-lead 看', members).targets).toEqual(['a']);
+    expect(parseCommand('寄到 a@tw-lead 就好', members)).toEqual({
+      text: '寄到 a@tw-lead 就好',
+      targets: [],
+      unknown: [],
+    });
+    expect(activeMention('請＠tw', 4)).toEqual({ start: 1, query: 'tw' });
+    expect(activeMention('mail a@tw', 9)).toBeNull();
+  });
+
   it('activeMention：全形 ＠ 也會開成員選單', () => {
     expect(activeMention('＠tw', 3)).toEqual({ start: 0, query: 'tw' });
     expect(activeMention('先看 ＠fi', 7)).toEqual({ start: 3, query: 'fi' });

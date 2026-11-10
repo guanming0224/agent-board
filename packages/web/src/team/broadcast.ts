@@ -40,9 +40,14 @@ export interface ParsedCommand {
 const isSpace = (ch: string | undefined) => ch === undefined || /\s/.test(ch);
 /** 半形 @ 與全形 ＠（中文輸入法常打出來的）都算點名。 */
 const isAt = (ch: string | undefined) => ch === '@' || ch === '＠';
+/**
+ * @ 前面可以是什麼才算點名：開頭、空白，或中文等非英數字（「請＠BD1 看一下」，GM 2026-11-10）。
+ * 英文字母、數字與 email 常見符號後面的不算，避免把 a@b.com 當點名。
+ */
+const mentionBoundary = (ch: string | undefined) => ch === undefined || !/[A-Za-z0-9_.+-]/.test(ch);
 
 /**
- * 解析指令框：`@`（或全形 `＠`）只在開頭或空白後面才算點名。名稱可能有空白（session 名稱），所以由長到短比對成員名稱，
+ * 解析指令框：`@`（或全形 `＠`）在開頭、空白或中文等非英數字後面才算點名。名稱可能有空白（session 名稱），所以由長到短比對成員名稱，
  * 名稱後面要接空白或結尾。比對不到名稱時再比角色（`@審查`、`@RV`、`@reviewer`）：這個角色的成員全部點名。
  * 都比對不到的取到下一個空白為止，當成「不是本團隊成員」。
  */
@@ -65,7 +70,7 @@ export function parseCommand(input: string, members: readonly MentionCandidate[]
   let i = 0;
   while (i < input.length) {
     const ch = input[i]!;
-    if (isAt(ch) && isSpace(input[i - 1])) {
+    if (isAt(ch) && mentionBoundary(input[i - 1])) {
       const rest = input.slice(i + 1);
       const hit = byLength.find((m) => startsWithWord(rest, m.name));
       if (hit) {
@@ -102,7 +107,7 @@ export function activeMention(
 ): { start: number; query: string } | null {
   const before = input.slice(0, caret);
   const at = Math.max(before.lastIndexOf('@'), before.lastIndexOf('＠'));
-  if (at < 0 || !isSpace(before[at - 1])) return null;
+  if (at < 0 || !mentionBoundary(before[at - 1])) return null;
   const query = before.slice(at + 1);
   if (/\s/.test(query)) return null;
   return { start: at, query };
