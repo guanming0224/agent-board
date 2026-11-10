@@ -3,6 +3,7 @@
 // （CONTRACTS.md §4.2、§4.3、§19）。
 // 跑在使用者每一次工具呼叫的路徑上：只用 node 內建模組，runtime 不 import protocol（zod 太慢）。
 // 鐵律：永遠 exit 0、stdout 只會有一個 JSON 物件或什麼都沒有。
+import { statSync } from 'node:fs';
 import { connect } from 'node:net';
 import type { Socket } from 'node:net';
 import type { HookPayload, HookRequest } from '@agent-board/protocol';
@@ -12,9 +13,16 @@ import {
   BLOCKING_EVENTS,
   CODEX_PERMISSION_HOOK_WAIT_MS,
   CODEX_SHELL_TOOLS,
+  CODEX_SHORT_EVENTS,
+  CODEX_SHORT_RETRY_MS,
   CONNECT_DEADLINE_MS,
+  DOWN_MARKER_STALE_MS,
+  DOWN_MARKER_SUFFIX,
   HOOK_EVENTS,
   HOOK_WAIT_MS,
+  RETRY_INTERVAL_MS,
+  RETRY_OVERRIDE_ENV,
+  RETRY_WINDOW_MS,
   SEND_DEADLINE_MS,
   SESSION_FLAG,
   SESSION_ID_ENV,
@@ -73,12 +81,69 @@ function readStdin(): Promise<string> {
   });
 }
 
+/**
+ * 連不上時重試多久（毫秒，不超過 limit）。daemon 留了停止記號而且已經很久：daemon 是停了不是在重啟，不重試。
+ * Windows 的 named pipe 旁邊沒有記號，stat 一律失敗，照樣重試。
+ */
+function retryWindow(socketPath: string, limit: number): number {
+  const raw = process.env[RETRY_OVERRIDE_ENV];
+  const override = Number(raw);
+  const window =
+    raw !== undefined && raw !== '' && override >= 0 && override < RETRY_WINDOW_MS
+      ? override
+      : RETRY_WINDOW_MS;
+  try {
+    if (
+      Date.now() - statSync(`${socketPath}${DOWN_MARKER_SUFFIX}`).mtimeMs >
+      DOWN_MARKER_STALE_MS
+    ) {
+      return 0;
+    }
+  } catch {
+    // 沒有記號：daemon 在跑、剛崩潰或是 Windows。
+  }
+  return Math.max(0, Math.min(window, limit));
+}
+
+/**
+ * 連 socket；連不上（session host 模式下 daemon 重啟中）每 RETRY_INTERVAL_MS 再試，過了 deadline 就放棄。
+ * 連上之後的錯誤由呼叫端處理。
+ */
+function connectWithRetry(
+  socketPath: string,
+  deadline: number,
+  onConnect: (socket: Socket) => void,
+  onGiveUp: () => void,
+): void {
+  const attempt = () => {
+    if (finished) return;
+    const socket = connect(socketPath);
+    socket.once('error', () => {
+      socket.destroy();
+      if (finished) return;
+      if (Date.now() + RETRY_INTERVAL_MS > deadline) onGiveUp();
+      else setTimeout(attempt, RETRY_INTERVAL_MS);
+    });
+    socket.once('connect', () => {
+      socket.removeAllListeners('error');
+      onConnect(socket);
+    });
+  };
+  attempt();
+}
+
 /** 送出就走。任何失敗都安靜結束。 */
-function sendAndLeave(socketPath: string, line: string): void {
-  setTimeout(finish, SEND_DEADLINE_MS);
-  const socket = connect(socketPath);
-  socket.on('error', () => finish());
-  socket.end(line, () => finish());
+function sendAndLeave(socketPath: string, line: string, retryMs: number): void {
+  setTimeout(finish, retryMs + SEND_DEADLINE_MS);
+  connectWithRetry(
+    socketPath,
+    Date.now() + retryMs,
+    (socket) => {
+      socket.on('error', () => finish());
+      socket.end(line, () => finish());
+    },
+    () => finish(),
+  );
 }
 
 /**
@@ -92,27 +157,34 @@ function sendAndWait(
   unreachable: Output,
   timeoutOutput: Output,
   limit: number,
+  retryMs: number,
 ): void {
-  setTimeout(() => finish(timeoutOutput), waitMs(limit));
-  const connectDeadline = setTimeout(() => finish(unreachable), CONNECT_DEADLINE_MS);
-  const socket: Socket = connect(socketPath);
-  let buffer = '';
-  socket.setEncoding('utf8');
-  socket.on('connect', () => {
-    clearTimeout(connectDeadline);
-    socket.write(line);
-  });
-  socket.on('error', () => finish(unreachable));
-  socket.on('close', () => finish(unreachable));
-  socket.on('data', (chunk: string) => {
-    buffer += chunk;
-    let newline: number;
-    while ((newline = buffer.indexOf('\n')) !== -1) {
-      const replyLine = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      handleReply(replyLine, requestId, unreachable);
-    }
-  });
+  // 重試的時間也算在原本的等待上限裡。
+  setTimeout(() => finish(timeoutOutput), limit);
+  const connectDeadline = setTimeout(() => finish(unreachable), retryMs + CONNECT_DEADLINE_MS);
+  connectWithRetry(
+    socketPath,
+    Date.now() + retryMs,
+    (socket) => {
+      clearTimeout(connectDeadline);
+      let buffer = '';
+      socket.setEncoding('utf8');
+      // 連上之後才斷（daemon 在等待中重啟）：不重送，交回原生流程（審批改在終端機回答）。
+      socket.on('error', () => finish(unreachable));
+      socket.on('close', () => finish(unreachable));
+      socket.on('data', (chunk: string) => {
+        buffer += chunk;
+        let newline: number;
+        while ((newline = buffer.indexOf('\n')) !== -1) {
+          const replyLine = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          handleReply(replyLine, requestId, unreachable);
+        }
+      });
+      socket.write(line);
+    },
+    () => finish(unreachable),
+  );
 }
 
 function handleReply(line: string, requestId: string, unreachable: Output): void {
@@ -257,11 +329,22 @@ async function main(): Promise<void> {
   };
   const line = `${JSON.stringify(request)}\n`;
   if (BLOCKING_EVENTS.includes(event)) {
-    const limit =
-      codex && event === 'PermissionRequest' ? CODEX_PERMISSION_HOOK_WAIT_MS : HOOK_WAIT_MS;
-    sendAndWait(socketPath, line, requestId, unreachable, timeoutOutput, limit);
+    const limit = waitMs(
+      codex && event === 'PermissionRequest' ? CODEX_PERMISSION_HOOK_WAIT_MS : HOOK_WAIT_MS,
+    );
+    sendAndWait(
+      socketPath,
+      line,
+      requestId,
+      unreachable,
+      timeoutOutput,
+      limit,
+      retryWindow(socketPath, limit),
+    );
   } else {
-    sendAndLeave(socketPath, line);
+    const limit =
+      codex && CODEX_SHORT_EVENTS.includes(event) ? CODEX_SHORT_RETRY_MS : RETRY_WINDOW_MS;
+    sendAndLeave(socketPath, line, retryWindow(socketPath, limit));
   }
 }
 

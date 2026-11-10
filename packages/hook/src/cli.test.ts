@@ -1,6 +1,6 @@
 // 用真的子行程跑 cli.ts，對面是臨時 socket 上的假 daemon。不會執行 claude。
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import type { Server, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -29,6 +29,10 @@ import {
   SESSION_FLAG,
   SOCKET_FLAG,
   HOOK_WAIT_MS as CLI_HOOK_WAIT_MS,
+  CODEX_SHORT_RETRY_MS,
+  DOWN_MARKER_STALE_MS,
+  RETRY_OVERRIDE_ENV,
+  RETRY_WINDOW_MS,
   SESSION_ID_ENV,
   SOCKET_ENV,
   WAIT_OVERRIDE_ENV,
@@ -77,7 +81,8 @@ function runCli({ args, env = {}, stdin, onSpawn }: RunOptions): Promise<RunResu
     const started = Date.now();
     // 不繼承外面的環境，確保不會碰到真的 session 或 daemon。
     const child = spawn(process.execPath, [CLI, ...args], {
-      env: { PATH: process.env.PATH ?? '', ...env },
+      // 連不上時的重試預設關掉（不然每個「連不上」的測試都要等 10 秒）；要測重試的自己給值。
+      env: { PATH: process.env.PATH ?? '', [RETRY_OVERRIDE_ENV]: '0', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -212,6 +217,15 @@ describe('agent-board-hook CLI', () => {
       expect(CLI_HOOK_WAIT_MS).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
     });
 
+    it('連不上時的重試：10 秒（GM 2026-11-10），在每個事件的 hook timeout 之內', () => {
+      expect(RETRY_WINDOW_MS).toBe(10_000);
+      expect(RETRY_WINDOW_MS).toBeLessThan(60_000); // Claude 的 SessionEnd 上限 60 秒
+      // Codex 的 SessionEnd、Interrupt 只給 3 秒，其他事件 30 秒以上。
+      expect(CODEX_SHORT_RETRY_MS).toBeLessThan(codexHookTimeout('SessionEnd') * 1000);
+      expect(CODEX_SHORT_RETRY_MS).toBeLessThan(codexHookTimeout('Interrupt') * 1000);
+      expect(RETRY_WINDOW_MS).toBeLessThan(codexHookTimeout('Stop') * 1000);
+    });
+
     it('cli.ts 與 cli-constants.ts 在 runtime 不載入 protocol 或任何第三方套件', async () => {
       for (const file of ['./cli.ts', './cli-constants.ts']) {
         const source = await readFile(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
@@ -331,6 +345,109 @@ describe('agent-board-hook CLI', () => {
         expectSilentExit(result);
       },
     );
+  });
+
+  describe('daemon 重啟中：連不上就重試（session host 模式，CONTRACTS §20.4）', () => {
+    /** 等一下才開的假 daemon（模擬 daemon 重啟的空窗）。 */
+    function startDaemonLater(ms: number, onRequest?: OnRequest): Promise<FakeDaemon> {
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          void startDaemon(dir, onRequest).then((started) => {
+            daemon = started;
+            resolve(started);
+          });
+        }, ms);
+      });
+    }
+
+    it.skipIf(process.platform === 'win32')(
+      '非阻擋事件：daemon 晚 600ms 才起來，事件照樣送到',
+      async () => {
+        const socket = join(dir, 'd.sock');
+        const later = startDaemonLater(600);
+        const result = await runCli({
+          args: ['Stop'],
+          env: env(socket, { [RETRY_OVERRIDE_ENV]: '5000' }),
+          stdin: JSON.stringify(stopInput),
+        });
+        expectSilentExit(result);
+        const started = await later;
+        expect(started.requests.map((r) => r.event)).toEqual(['Stop']);
+        expect(result.ms).toBeGreaterThanOrEqual(500);
+      },
+    );
+
+    it.skipIf(process.platform === 'win32')(
+      '阻擋事件：daemon 晚 600ms 才起來，照樣等到回答',
+      async () => {
+        const socket = join(dir, 'd.sock');
+        const later = startDaemonLater(600, (request, s) =>
+          reply(s, request.requestId, {
+            hookSpecificOutput: { hookEventName: 'PermissionRequest' },
+          }),
+        );
+        const result = await runCli({
+          args: ['PermissionRequest'],
+          env: env(socket, { [RETRY_OVERRIDE_ENV]: '5000' }),
+          stdin: JSON.stringify(permissionInput),
+        });
+        await later;
+        expect(JSON.parse(result.stdout)).toEqual({
+          hookSpecificOutput: { hookEventName: 'PermissionRequest' },
+        });
+      },
+    );
+
+    it.skipIf(process.platform === 'win32')(
+      '重試到上限還是連不上：PreToolUse + Bash 回 ask，其他安靜結束',
+      async () => {
+        const result = await runCli({
+          args: ['PreToolUse'],
+          env: env(missingSocket(), { [RETRY_OVERRIDE_ENV]: '1000' }),
+          stdin: JSON.stringify(bashInput),
+        });
+        expect(decisionOf(result.stdout)).toBe('ask');
+        expect(result.ms).toBeGreaterThanOrEqual(700);
+        const stop = await runCli({
+          args: ['Stop'],
+          env: env(missingSocket(), { [RETRY_OVERRIDE_ENV]: '1000' }),
+          stdin: JSON.stringify(stopInput),
+        });
+        expectSilentExit(stop);
+        expect(stop.ms).toBeGreaterThanOrEqual(700);
+      },
+    );
+
+    it.skipIf(process.platform === 'win32')(
+      'daemon 留的停止記號超過 1 分鐘（停了，不是在重啟）：不重試，馬上結束',
+      async () => {
+        const socket = missingSocket();
+        await writeFile(`${socket}.down`, 'x');
+        const old = (Date.now() - DOWN_MARKER_STALE_MS - 5_000) / 1000;
+        await utimes(`${socket}.down`, old, old);
+        const result = await runCli({
+          args: ['Stop'],
+          env: env(socket, { [RETRY_OVERRIDE_ENV]: '5000' }),
+          stdin: JSON.stringify(stopInput),
+        });
+        expectSilentExit(result);
+        expect(result.ms).toBeLessThan(3_000);
+      },
+    );
+
+    it.skipIf(process.platform === 'win32')('剛留的停止記號（重啟中）：照樣重試', async () => {
+      const socket = join(dir, 'd.sock');
+      await writeFile(`${socket}.down`, 'x');
+      const later = startDaemonLater(500);
+      expectSilentExit(
+        await runCli({
+          args: ['Notification'],
+          env: env(socket, { [RETRY_OVERRIDE_ENV]: '5000' }),
+          stdin: JSON.stringify({ ...base, hook_event_name: 'Notification' }),
+        }),
+      );
+      expect((await later).requests.map((r) => r.event)).toEqual(['Notification']);
+    });
   });
 
   describe('連不上 socket', () => {

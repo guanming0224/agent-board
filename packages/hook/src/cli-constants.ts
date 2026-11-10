@@ -49,3 +49,20 @@ export const STDIN_DEADLINE_MS = 5_000;
 export const CONNECT_DEADLINE_MS = 2_000;
 /** 非 blocking 事件從連線到送完的上限。 */
 export const SEND_DEADLINE_MS = 1_000;
+/**
+ * 連不上 daemon（session host 模式下 daemon 重啟中）時重試多久（GM 2026-11-10）：非阻擋事件最多 10 秒，
+ * 阻擋事件也是 10 秒、而且不超過原本的等待上限。agent 在這段時間會等這個 hook。
+ */
+export const RETRY_WINDOW_MS = 10_000;
+export const RETRY_INTERVAL_MS = 200;
+/** Codex 給 SessionEnd、Interrupt 的 timeout 只有 3 秒（protocol 的 codexHookTimeout），重試要在那之前結束。 */
+export const CODEX_SHORT_RETRY_MS = 2_000;
+export const CODEX_SHORT_EVENTS: readonly string[] = ['SessionEnd', 'Interrupt'];
+/**
+ * daemon 在 session host 模式下停止時在 socket 旁邊留的記號（`<socket>.down`）。記號超過這麼久：daemon
+ * 不是在重啟而是停了，不重試（不然每個 hook 都讓 agent 卡 10 秒）。沒有記號（daemon 崩潰）照樣重試。
+ */
+export const DOWN_MARKER_SUFFIX = '.down';
+export const DOWN_MARKER_STALE_MS = 60_000;
+/** 只給測試縮短重試時間；只能比 RETRY_WINDOW_MS 短，正式環境不設。 */
+export const RETRY_OVERRIDE_ENV = 'AGENT_BOARD_HOOK_RETRY_MS';
