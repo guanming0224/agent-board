@@ -80,12 +80,45 @@ console.log('READY');
 process.stdin.setEncoding('utf8');
 // PTY 關閉（daemon 被殺）就結束，和真 claude 收到 SIGHUP 一樣。
 process.stdin.on('end', () => process.exit(0));
+/**
+ * session host 的整合測試：一個會跑好幾秒的回合（`slow <步數>`），每 300ms 印一行、跑一次工具 hook，
+ * 最後才 Stop。測試在中途重啟 daemon，驗證 agent 沒死、每一行輸出都在、狀態正確。
+ */
+function slowWork(steps) {
+  let step = 0;
+  const timer = setInterval(() => {
+    step += 1;
+    console.log(`WORK ${step}/${steps}`);
+    hook('PostToolUse', {
+      tool_name: 'Read',
+      tool_input: { file_path: `/tmp/step-${step}` },
+      tool_use_id: randomUUID(),
+    });
+    if (step < steps) return;
+    clearInterval(timer);
+    console.log('WORK DONE');
+    hook('Stop', { last_assistant_message: `done: slow ${steps}`, stop_hook_active: false });
+  }, 300);
+}
+
 process.stdin.on('data', (chunk) => {
   for (const line of chunk.split(/[\r\n]+/).filter(Boolean)) {
     console.log(`GOT ${line}`);
     if (line === 'quit') process.exit(0);
     if (line === 'crash') process.exit(3);
     hook('UserPromptSubmit', { prompt: line });
+    if (line === 'whoami') console.log(`PID ${process.pid}`);
+    // session host 測試：這一輪的 hook 都送完才印 EXIT SCHEDULED，過一會兒自己結束（測試在這段時間停掉 daemon）。
+    if (line.startsWith('exit-later ')) {
+      hook('Stop', { last_assistant_message: `done: ${line}`, stop_hook_active: false });
+      console.log('EXIT SCHEDULED');
+      setTimeout(() => process.exit(0), Number(line.slice('exit-later '.length)) || 1_000);
+      continue;
+    }
+    if (line.startsWith('slow ')) {
+      slowWork(Number(line.slice('slow '.length)) || 10);
+      continue;
+    }
     if (line === 'ask-permission') tool('Bash', { command: 'npm test' });
     // 模擬收到交接後動手改檔：防迴圈測試需要目標在沒有人輸入的情況下再觸發規則。
     if (line.startsWith('[Handoff]')) {
