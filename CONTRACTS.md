@@ -657,11 +657,21 @@ codex [resume <thread id>] <權限參數> [-m <model>] --dangerously-bypass-hook
 - 新增 session 頁：「Agent」分段選 Claude Code／Codex；那台的 `capabilities.codexVersion` 沒有就停用並說明。選 Codex 時：每個權限模式下面列換算後的 Codex 參數、整段換算說明；模型不給 Claude 別名；帳號欄停用；接續清單只列 Codex 的對話；預覽是 codex 指令（hook 設定以 `-c <hooks>` 表示）。
 - 卡片（畫布、團隊頁）：`AgentChip` 中性色「Codex」晶片（Claude Code 是預設，不標）。狀態、收件匣、核准沿用。
 
-### 19.6 未驗證（沒有跑過真的 codex，見回報）
+### 19.6 實測結果（2026-11-10，Lead 在 Mac mini 用真的 codex-cli 0.167.0，gpt-6-luna／low，送指令 5 次，每次約 6 千至 1.3 萬 token）
 
-1. `-c hooks.<Event>=[…]` 能不能讓 Codex 0.167.0 載入 hook（文件只寫 `config.toml` 的 `[hooks]` 與 `hooks.json`，沒寫 `-c`）。**上架前一定要確認**。
-2. hook 子程序有沒有繼承 PATH（找 `agent-board-hook`）。session 與 socket 已改成寫在指令上，不再依賴環境變數；hook 執行方式（shell 或自己拆字）未驗證，單引號兩種都讀得對。
-3. Codex 對未信任專案的 `.codex` 會不會載入（決定 §19.2 的專案 hook 檢查能不能放寬）。
-4. SessionStart 是開好就送，還是等第一句；`session_id` 是否等於 `codex resume` 用的 id；`transcript_path` 是否為 null。
-5. shell 工具的 `tool_name` 與 `tool_input.command` 格式；`PostModelRequest` 的 `status`／`error` 格式；額度用完的實際訊息；資料夾信任畫面與標題的文字。
-6. PreToolUse 回 allow（不帶 updatedInput）的行為——所以 daemon 改成不輸出。
+已驗證：
+
+1. `-c hooks.<Event>=[{hooks=[{type="command",command="…",timeout=N}]}]` ＋ `--dangerously-bypass-hook-trust`：Codex 會載入並觸發 hook，沒有改 `~/.codex`。啟動畫面會有一則警告「Running without the shared background server: command-line configuration overrides (-c …) requires embedded mode」，不影響功能。
+2. **SessionStart 不是開好就送，是送出第一句時才送**（`source: "startup"`），所以 NEW 要靠畫面後備規則；`codex resume <id>` 時送 `source: "resume"`。
+3. `session_id` 就是 `codex resume` 用的 id（UUID 格式），各事件都一樣；`transcript_path` 有值，檔名含這個 id。
+4. shell 工具：`tool_name` 是 `Bash`，`tool_input.command` 是整段字串（例如 `python3 -c "…"`）；PermissionRequest 的 `tool_input` 另有 `description`（模型寫的說明）。
+5. 唯讀沙盒（`-s read-only -a on-request`）：唯讀指令（`pwd && ls -la`）不問；要寫檔時先送 PreToolUse 再送 PermissionRequest。PermissionRequest 回 `hookSpecificOutput.decision.behavior = "allow"` → 指令執行、檔案寫入；PreToolUse 回 `permissionDecision: "deny"`＋理由 → 指令沒執行，模型收到理由並停下說明。
+6. resume：hook 照常觸發，模型記得前文。
+7. 沒有接回終端機查詢回應時，Codex 仍會畫出輸入提示（daemon 不必轉送 headless xterm 的回應）。
+8. hook 子程序繼承 Codex 的 PATH：hook 指令只寫程式名稱也找得到（daemon 把 hook 資料夾放在 PATH 最前面，和 Claude 相同）。
+
+仍未驗證：
+
+- `PostModelRequest` 的 `status`／`error` 格式、額度用完的實際訊息（沒有故意耗盡額度）。
+- Codex 對未信任專案的 `.codex` 會不會載入（§19.2 的專案 hook 檢查維持保守）。
+- PreToolUse 回 allow（不帶 updatedInput）的行為——daemon 維持不輸出。
