@@ -60,6 +60,8 @@ const KEY = {
   fetchFailure: 'release.fetchFailure',
   /** 最後一次 hello 說自己有 hub 的那台（N1）：只認這一台，舊紀錄會被取代或清掉。 */
   hubMachine: 'release.hubMachine',
+  /** 手動回滾退掉的版本（M1）：通道目標還是這一版就不發，免得一分鐘內又升回去。 */
+  hold: (id: string) => `machineHold:${id}`,
   channel: (id: string) => `machineChannel:${id}`,
   machine: (id: string) => `machineRelease:${id}`,
 };
@@ -252,6 +254,7 @@ export class ReleaseManager {
   /** 刪機器時一起清。 */
   forgetMachine(machineId: string): void {
     if (this.str(KEY.hubMachine) === machineId) this.deps.store.setRawJson(KEY.hubMachine, null);
+    this.deps.store.setRawJson(KEY.hold(machineId), null);
     this.deps.store.setRawJson(KEY.channel(machineId), null);
     this.deps.store.setRawJson(KEY.machine(machineId), null);
   }
@@ -268,6 +271,16 @@ export class ReleaseManager {
     this.deps.store.setRawJson(KEY.channel(machineId), channel);
     this.deps.audit(userId, 'release.channel', JSON.stringify({ machineId, channel }));
     this.deps.onTargetsChanged();
+  }
+
+  /** 手動回滾：暫停退掉的那一版（M1）。 */
+  holdVersion(machineId: string, version: string): void {
+    this.deps.store.setRawJson(KEY.hold(machineId), version);
+  }
+
+  /** 「立即更新」：解除暫停（M1）。 */
+  releaseHold(machineId: string): void {
+    this.deps.store.setRawJson(KEY.hold(machineId), null);
   }
 
   // ── hello 與狀態回報 ──────────────────────────────────
@@ -401,6 +414,13 @@ export class ReleaseManager {
     const record = this.record(machineId);
     const version = this.channelVersion(machineId);
     if (!version || !record.platform) return none;
+    // 手動回滾後暫停那一版（M1）；通道已經換成別的版本就解除。hub_first 的計算也走這裡，
+    // 所以 hub 那台被暫停時視同它拿不到目標，不會卡住其他機器。
+    const hold = this.str(KEY.hold(machineId));
+    if (hold !== null) {
+      if (hold === version) return { target: null, note: 'rolled_back_hold' };
+      this.deps.store.setRawJson(KEY.hold(machineId), null);
+    }
     if (
       UNVERIFIED_PLATFORMS.includes(record.platform) &&
       process.env.AGENT_BOARD_ALLOW_UNVERIFIED_PLATFORMS !== '1'

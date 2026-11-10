@@ -498,6 +498,15 @@ export class SelfUpdater {
     ) {
       return;
     }
+    // 保險（M1）：剛手動回滾掉的那一版，不自動升回去（hub 也會暫停它）；按「立即更新」才再升。
+    if (
+      !force &&
+      last?.phase === 'succeeded' &&
+      last.reason === 'rollback_requested' &&
+      last.fromVersion === target.version
+    ) {
+      return;
+    }
     if (!this.deps.installRoot) {
       if (last?.reason !== 'not_installed' || last.toVersion !== target.version) {
         await this.setState({

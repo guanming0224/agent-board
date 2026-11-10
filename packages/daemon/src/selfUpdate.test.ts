@@ -639,3 +639,24 @@ describe('SelfUpdater：延後', () => {
     h.updater.dispose();
   });
 });
+
+describe('SelfUpdater：手動回滾後的保險（M1）', () => {
+  it('上次是手動回滾成功、目標是退掉的那一版：非 force 不升回去；force 才升', async () => {
+    await writeUpdateState(data, {
+      phase: 'succeeded',
+      fromVersion: '0.2.0',
+      toVersion: '0.1.0',
+      reason: 'rollback_requested',
+      detail: null,
+      at: new Date().toISOString(),
+    });
+    const h = harness();
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.fetches).toEqual([]);
+    h.updater.onTarget(target(), true);
+    await settle();
+    expect(h.spawned).toHaveLength(1);
+    h.updater.dispose();
+  });
+});

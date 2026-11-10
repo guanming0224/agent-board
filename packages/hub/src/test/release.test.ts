@@ -22,7 +22,7 @@ import {
 } from '@agent-board/protocol';
 import { CLOSE_INCOMPATIBLE } from '../hub';
 import { execGh, type GhResult, type GhRunner } from '../release';
-import { hello, startHub, until, type TestHub } from './helpers';
+import { hello, startHub, until, type Peer, type TestHub } from './helpers';
 
 const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
 
@@ -588,6 +588,91 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
       expect(res.status).toBe(409);
       expect(res.body.code).toBe('update_in_progress');
     }
+  });
+
+  describe('手動回滾後暫停那一版（M1）', () => {
+    /** 0.2.0 是 stable；一台已經在 0.2.0、上一版 0.1.0 的機器。 */
+    async function onNew(extra: object = {}) {
+      const ctx = await ready([release('0.2.0'), release('0.3.0')]);
+      const { hub, cookie, gh } = ctx;
+      gh.state.releases = [release('0.2.0')];
+      await hub.api('POST', '/api/releases/check', { cookie });
+      await hub.api('POST', '/api/releases/promote', {
+        cookie,
+        body: { version: '0.2.0', confirm: true },
+      });
+      const machine = await hub.pair(cookie, 'laptop');
+      const daemon = await hub.daemon(machine.token);
+      daemon.send(macHello({ version: '0.2.0', previousVersion: '0.1.0', ...extra }));
+      await daemon.next('hub.welcome');
+      return { ...ctx, machine, daemon };
+    }
+
+    /** 回滾成功後 daemon 以 0.1.0 重連。 */
+    async function rolledBack(
+      hub: TestHub,
+      cookie: string,
+      token: string,
+      daemon: Peer,
+      extra = {},
+    ) {
+      const res = await hub.api('POST', `/api/machines/${await machineIdOf(hub, token)}/rollback`, {
+        cookie,
+      });
+      expect(res.status).toBe(200);
+      await daemon.next('release.rollback');
+      daemon.close();
+      const again = await hub.daemon(token);
+      again.send(macHello({ version: '0.1.0', previousVersion: '0.2.0', ...extra }));
+      return { again, welcome: await again.next('hub.welcome') };
+    }
+
+    const machineIdOf = async (hub: TestHub, token: string) =>
+      hub.running.store.machineByTokenHash(createHash('sha256').update(token).digest('hex'))!.id;
+
+    it('回滾後重連：目標是 null（rolled_back_hold），不會又升回去', async () => {
+      const { hub, cookie, machine, daemon } = await onNew();
+      const { welcome } = await rolledBack(hub, cookie, machine.token, daemon);
+      expect(welcome.release).toBeNull();
+      const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
+      expect(overview.body.machines.find((m) => m.machineId === machine.machineId)).toMatchObject({
+        targetVersion: null,
+        targetNote: 'rolled_back_hold',
+      });
+    });
+
+    it('按「立即更新」解除暫停（送 force 的 0.2.0）', async () => {
+      const { hub, cookie, machine, daemon } = await onNew();
+      const { again } = await rolledBack(hub, cookie, machine.token, daemon);
+      const res = await hub.api('POST', `/api/machines/${machine.machineId}/update`, { cookie });
+      expect(res.status).toBe(200);
+      const next = await again.next('release.target', (m) => m.force === true);
+      expect((next.target as { version: string }).version).toBe('0.2.0');
+      expect(hub.running.store.getRawJson(`machineHold:${machine.machineId}`)).toBeNull();
+    });
+
+    it('通道換成別的版本（升了新的 stable）：暫停自動解除', async () => {
+      const { hub, cookie, gh, machine, daemon } = await onNew();
+      const { again } = await rolledBack(hub, cookie, machine.token, daemon);
+      gh.state.releases = [release('0.2.0'), release('0.3.0')];
+      await hub.api('POST', '/api/releases/check', { cookie });
+      await hub.api('POST', '/api/releases/promote', {
+        cookie,
+        body: { version: '0.3.0', confirm: true },
+      });
+      const next = await again.next('release.target', (m) => m.target !== null);
+      expect((next.target as { version: string }).version).toBe('0.3.0');
+      expect(hub.running.store.getRawJson(`machineHold:${machine.machineId}`)).toBeNull();
+    });
+
+    it('hub 那台被暫停：視同拿不到目標，其他機器不卡 hub_first', async () => {
+      const { hub, cookie, machine, daemon } = await onNew({ hostsHub: true });
+      await rolledBack(hub, cookie, machine.token, daemon, { hostsHub: true });
+      const other = await hub.pair(cookie, 'other');
+      const otherDaemon = await hub.daemon(other.token);
+      otherDaemon.send(macHello());
+      expect(releaseOf(await otherDaemon.next('hub.welcome'))).toBe('0.2.0');
+    });
   });
 
   it('canary 版本和 hub 那台（stable）不同：不用等 hub', async () => {

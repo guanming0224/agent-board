@@ -896,6 +896,8 @@ export class Hub {
         'An update is already running on this machine',
       );
     }
+    // 「立即更新」解除手動回滾的暫停（M1）。
+    this.release.releaseHold(machineId);
     const target = this.release.targetFor(machineId);
     if (!target) throw new HttpError(409, 'no_target', 'No release for this machine');
     this.audit(
@@ -936,6 +938,9 @@ export class Hub {
       );
     }
     this.audit(user.id, null, 'release.rollback', JSON.stringify({ machineId, to: previous }));
+    // 暫停退掉的那一版（M1）：不然 daemon 重連拿到同一個通道目標，一分鐘內又升回去。
+    const current = this.release.record(machineId).version;
+    if (current) this.release.holdVersion(machineId, current);
     this.send(conn.ws, { type: 'release.rollback' });
   }
 

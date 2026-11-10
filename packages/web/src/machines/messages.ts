@@ -109,6 +109,7 @@ export const zhTW: Record<string, string> = {
   'machines.reason.interrupted': '上次的更新中斷了（可以再試）',
   'machines.reason.spawn_failed': '啟動不了更新程式',
   'machines.note.hub_first': '等 hub 那台先升到這一版',
+  'machines.note.rolled_back_hold': '已手動回滾，暫停這一版；按「立即更新」或通道換新版才解除',
   'machines.note.hub_update_failed': 'hub 更新失敗，其他機器暫停',
   'machines.reason.superseded': '延後中的回滾被「立即更新」取代',
   'machines.err.update_in_progress': '這台的更新還在進行，等它結束再試',
@@ -254,6 +255,8 @@ export const en: Record<string, string> = {
   'machines.reason.interrupted': 'the previous update was interrupted (you can retry)',
   'machines.reason.spawn_failed': 'could not start the updater',
   'machines.note.hub_first': 'waiting for the hub machine to update to this version first',
+  'machines.note.rolled_back_hold':
+    'rolled back by hand; this version is on hold until you press “Update now” or the channel moves to a new version',
   'machines.note.hub_update_failed': 'the hub machine failed to update; other machines are paused',
   'machines.reason.superseded': 'the deferred rollback was replaced by “Update now”',
   'machines.err.update_in_progress':

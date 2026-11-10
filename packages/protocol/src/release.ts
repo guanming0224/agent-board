@@ -224,6 +224,8 @@ export function rollbackSupported(previousVersion: string | null): boolean {
 export const TargetNote = z.enum([
   'hub_first',
   'hub_update_failed',
+  /** 手動回滾後暫停剛退掉的那一版（M1）：「立即更新」或通道換成別的版本才解除。 */
+  'rolled_back_hold',
   'platform_unverified',
   'abi_mismatch',
 ]);
