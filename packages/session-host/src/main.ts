@@ -31,6 +31,16 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
   // host 沒有終端機；SIGHUP 不該讓它結束。
   process.on('SIGHUP', () => {});
+  // 開好之後的意外（某個連線的處理出錯）記下來繼續跑：host 一掛，所有 agent 都會跟著結束。
+  // 啟動階段的錯誤照舊讓程序失敗（launchd 會重試）。
+  process.on('uncaughtException', (error) => {
+    consoleLogger.error(
+      `未預期的錯誤（繼續執行）：${error instanceof Error ? error.stack : String(error)}`,
+    );
+  });
+  process.on('unhandledRejection', (error) => {
+    consoleLogger.error(`未處理的 Promise 錯誤（繼續執行）：${String(error)}`);
+  });
 }
 
 const entry = process.argv[1];

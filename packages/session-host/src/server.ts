@@ -8,6 +8,7 @@ import { dirname } from 'node:path';
 import {
   DaemonToHost,
   SESSION_HOST_BUFFER_BYTES,
+  SESSION_HOST_MAX_LINE_BYTES,
   SESSION_HOST_PROTOCOL,
   type HostSessionInfo,
   type HostSignal,
@@ -15,7 +16,7 @@ import {
 } from '@agent-board/protocol/session-host';
 import { spawn as spawnPty, type IPty } from 'node-pty';
 import { ensurePrivateDir, hostEndpoint, writeToken, type HostEndpoint } from './endpoint';
-import { onLines, sendLine } from './lines';
+import { onLines, sendLine, UNAUTHED_MAX_LINE_BYTES } from './lines';
 import { RingBuffer } from './ringBuffer';
 
 /** 第一則一定要是 hello，等太久就斷。 */
@@ -25,6 +26,11 @@ const MAX_EXITED = 100;
 /** 關閉 host 時：SIGHUP 之後等多久才強制結束。 */
 const SHUTDOWN_GRACE_MS = 2_000;
 const SIGKILL = 9;
+/**
+ * daemon 讀不完時 socket 裡積著的上限。超過就斷線讓 daemon 重新 attach（輸出照樣進環狀緩衝，重播時補回），
+ * 不讓 host 的記憶體無限長。
+ */
+export const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 
 export interface HostLogger {
   info: (message: string) => void;
@@ -47,6 +53,8 @@ export interface SessionHostServerOptions {
   log?: HostLogger;
   helloTimeoutMs?: number;
   maxExited?: number;
+  /** owner 連線積著還沒送出的上限（測試用）。 */
+  maxPendingWriteBytes?: number;
 }
 
 interface Connection {
@@ -211,6 +219,7 @@ export class SessionHostServer {
         this.log.warn('訊息超過上限，中斷連線');
         socket.destroy();
       },
+      () => (connection.authed ? SESSION_HOST_MAX_LINE_BYTES : UNAUTHED_MAX_LINE_BYTES),
     );
   }
 
@@ -384,8 +393,17 @@ export class SessionHostServer {
   private handleData(session: HostSession, data: string): void {
     const bytes = Buffer.from(data, 'utf8');
     const seq = session.buffer.append(bytes);
-    if (session.owner) {
-      this.send(session.owner, {
+    const owner = session.owner;
+    if (owner) {
+      if (
+        owner.socket.writableLength > (this.options.maxPendingWriteBytes ?? MAX_PENDING_WRITE_BYTES)
+      ) {
+        // daemon 卡住讀不完：斷線（close 事件會把所有 owner 清掉），daemon 重新 attach 從緩衝補回。
+        this.log.warn(`daemon 讀不完輸出（積了 ${owner.socket.writableLength} bytes），中斷連線`);
+        owner.socket.destroy();
+        return;
+      }
+      this.send(owner, {
         type: 'output',
         id: session.id,
         seq,

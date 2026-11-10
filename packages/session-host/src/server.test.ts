@@ -334,6 +334,51 @@ describe('session host', () => {
     // afterEach 會再關一次，要能重複呼叫。
   });
 
+  it('還沒 hello 的連線一行超過 4KB：直接斷線', async () => {
+    const closed = await new Promise<boolean>((resolve) => {
+      const socket = connect(hostEndpoint(dataDir).path, () => {
+        socket.write('x'.repeat(8 * 1024));
+      });
+      socket.on('close', () => resolve(true));
+      socket.on('error', () => {});
+    });
+    expect(closed).toBe(true);
+  });
+
+  it('背壓：daemon 讀不完、積著的輸出超過上限就斷線，輸出照樣進緩衝，重新 attach 補得回來', async () => {
+    await server.close();
+    server = new SessionHostServer({ dataDir, log: quiet, maxPendingWriteBytes: 16 * 1024 });
+    await server.start();
+    const client = await connectClient();
+    const rec = recorder();
+    client.register('s1', rec.handlers);
+    await spawnEcho(client, 's1');
+    await waitUntil(() => rec.text.includes('READY'), 'READY');
+    let closed = false;
+    client.onClose(() => (closed = true));
+    // 不讀：socket 的接收端塞滿後 host 這邊的寫入會積起來。
+    client['socket'].pause();
+    client.write('s1', 'flood 100000\r');
+    // 暫停讀取時客戶端看不到 EOF：從 host 那邊確認連線被切掉，再恢復讀取讓客戶端收到關閉。
+    await waitUntil(() => server['connections'].size === 0, 'host 切斷連線');
+    client['socket'].resume();
+    await waitUntil(() => closed, '客戶端收到關閉');
+    const again = await connectClient();
+    // 等 agent 印完（seqEnd 不再變）再 attach 一次。
+    let last = -1;
+    for (let i = 0; i < 100; i += 1) {
+      const end = (await again.list())[0]!.seqEnd;
+      if (end === last) break;
+      last = end;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    const after = recorder();
+    again.register('s1', after.handlers);
+    again.attach('s1', 0);
+    await waitUntil(() => after.replayDone !== null, 'replay');
+    expect(after.text).toContain('FLOOD DONE');
+  });
+
   it('host 關閉：客戶端收到 onClose，之後的請求立刻失敗', async () => {
     const client = await connectClient();
     let closed = false;
