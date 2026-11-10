@@ -1,7 +1,7 @@
 // 服務模板的跳脫測試。Linux、Windows 只驗設定檔內容，沒有實際跑過 systemd 與工作排程器。
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { test } from 'node:test';
@@ -122,4 +122,45 @@ test('服務 PATH：node、claude 在最前面，去重，不收相對路徑與 
     absolute: isAbsolute,
   });
   assert.equal(path, '/n:/c:/usr/bin:/tool:/bin');
+});
+
+test(
+  'session host 的 launchd 設定：獨立的 job（不是 daemon 的子程序），失敗才重啟，不需要 AbandonProcessGroup',
+  { skip: process.platform !== 'darwin' },
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ab-plist-'));
+    try {
+      const file = join(dir, 'host.plist');
+      const entry = `${tricky}/session-host/dist/main.mjs`;
+      writeFileSync(
+        file,
+        renderLaunchd({
+          ...spec,
+          label: 'com.agent-board.session-host',
+          entry,
+          env: { PATH: '/usr/bin', HOME: tricky },
+          log: `${tricky}/logs/session-host.log`,
+        }),
+      );
+      execFileSync('plutil', ['-lint', file]);
+      const parsed = JSON.parse(
+        execFileSync('plutil', ['-convert', 'json', '-o', '-', file], { encoding: 'utf8' }),
+      );
+      assert.equal(parsed.Label, 'com.agent-board.session-host');
+      assert.deepEqual(parsed.ProgramArguments, [spec.node, entry]);
+      assert.deepEqual(parsed.KeepAlive, { SuccessfulExit: false });
+      assert.equal(parsed.AbandonProcessGroup, undefined);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  },
+);
+
+test('安裝程式：daemon 角色連 session host 一起裝、順序在 daemon 前面；daemon 知道怎麼拉起它', () => {
+  const source = readFileSync(join(import.meta.dirname, 'installer.mjs'), 'utf8');
+  assert.match(source, /role === 'daemon' \? \[SESSION_HOST, 'daemon'\]/);
+  assert.match(source, /AGENT_BOARD_SESSION_HOST_SERVICE = serviceName\(SESSION_HOST\)/);
+  assert.match(source, /'session-host': \['session-host', 'dist', 'main\.mjs'\]/);
+  // 解除安裝也要移除 session host 的服務。
+  assert.match(source, /for \(const role of servicesFor\(ROLES\)\) removeService\(role, paths\)/);
 });

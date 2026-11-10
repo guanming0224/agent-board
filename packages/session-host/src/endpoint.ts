@@ -9,7 +9,7 @@ import {
   SESSION_HOST_PIPE_PREFIX,
   SESSION_HOST_SOCKET_FILE,
   SESSION_HOST_TOKEN_FILE,
-} from '@agent-board/protocol';
+} from '@agent-board/protocol/session-host';
 
 /** macOS 的 sun_path 上限 104 bytes，保守一點（和 daemon 的 hook socket 同一個值）。 */
 const MAX_UNIX_SOCKET_BYTES = 100;

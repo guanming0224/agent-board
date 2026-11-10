@@ -5,8 +5,12 @@
 #   sh install.sh daemon --hub 'https://hub.example' --code ABCD-1234 [--name 機器名稱]
 #   sh install.sh --uninstall [--purge]
 #
-# 其他選項：--from <發布檔.tar.gz 或資料夾>、--claude-bin <路徑>、--repair、--no-service、--no-start
+# 其他選項：--from <發布檔.tar.gz 或資料夾>、--claude-bin <路徑>、--repair、--no-service、--no-start、
+#           --restart-session-host（session host 換版時才加：重啟會結束所有 session，之後用 --resume 接回）
 # 可重複執行：內容沒變就不重裝、不重啟服務。
+# daemon 角色會一起裝 session host（macOS LaunchAgent com.agent-board.session-host、Linux systemd user
+# unit agent-board-session-host.service）：agent 掛在它底下，daemon 重啟或更新時不中斷（CONTRACTS §20）。
+# 服務設定由 scripts/installer.mjs 產生。
 set -eu
 
 MIN_NODE_MAJOR=22

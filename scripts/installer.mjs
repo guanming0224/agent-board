@@ -4,7 +4,7 @@
 //   node installer.mjs install hub|daemon --source <解開的發布檔> [選項]
 //   node installer.mjs uninstall [--purge]
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   accessSync,
   chmodSync,
@@ -47,7 +47,15 @@ const SHIM_NAMES = ['agent-board-hub', 'agent-board-daemon', 'agent-board-hook']
 const ENTRY = {
   hub: ['hub', 'dist', 'main.mjs'],
   daemon: ['daemon', 'dist', 'index.mjs'],
+  'session-host': ['session-host', 'dist', 'main.mjs'],
 };
+/**
+ * session host（CONTRACTS §20）：跟著 daemon 角色一起裝的獨立服務，agent 是它的子程序，daemon 重啟時不會結束。
+ * 一定要是另一個服務：launchd 停 daemon 會殺掉整個程序群組。順序在 daemon 前面，daemon 起來時它已經在了。
+ */
+const SESSION_HOST = 'session-host';
+const servicesFor = (roles) =>
+  roles.flatMap((role) => (role === 'daemon' ? [SESSION_HOST, 'daemon'] : [role]));
 const HOOK_PATH = ['daemon', 'node_modules', '.bin', 'agent-board-hook'];
 
 // 使用者看 README 用什麼語言不一定，跟著系統語系走；不是中文就用英文。
@@ -305,7 +313,10 @@ function serviceEnv(role, ctx) {
   ];
   const env = {
     PATH: servicePath({
-      first: [dirname(node), ...(role === 'daemon' && claude ? [dirname(claude)] : [])],
+      first: [
+        dirname(node),
+        ...((role === 'daemon' || role === SESSION_HOST) && claude ? [dirname(claude)] : []),
+      ],
       current: process.env.PATH || '',
       delimiter,
       extra: isWindows ? [] : [paths.bin, ...unixExtra],
@@ -323,10 +334,12 @@ function serviceEnv(role, ctx) {
   if (role === 'hub') {
     env.AGENT_BOARD_PORT = String(state.port ?? DEFAULT_PORT);
     if (state.host) env.AGENT_BOARD_HOST = state.host;
-  } else {
+  } else if (role === 'daemon') {
     env.AGENT_BOARD_CLAUDE_BIN = claude;
     if (state.name) env.AGENT_BOARD_MACHINE_NAME = state.name;
     if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+    // 連不上 session host 時，daemon 用這個名稱叫服務管理程式把它拉起來（launchctl kickstart 等）。
+    env.AGENT_BOARD_SESSION_HOST_SERVICE = serviceName(SESSION_HOST);
   }
   return env;
 }
@@ -340,6 +353,24 @@ const systemdName = (role) => `agent-board-${role}.service`;
 const systemdFile = (paths, role) =>
   join(paths.home, '.config', 'systemd', 'user', systemdName(role));
 const taskName = (role) => `AgentBoard-${role}`;
+/** 各平台服務管理程式認得的名稱。 */
+const serviceName = (role) =>
+  platform === 'darwin'
+    ? launchdLabel(role)
+    : platform === 'linux'
+      ? systemdName(role)
+      : taskName(role);
+
+/** session host 程式的雜湊：變了才需要重啟它（重啟會結束所有 agent）。 */
+function sessionHostBuild(paths) {
+  try {
+    return createHash('sha256')
+      .update(readFileSync(join(paths.app, ...ENTRY[SESSION_HOST])))
+      .digest('hex');
+  } catch {
+    return null;
+  }
+}
 
 /** 寫服務設定，回傳有沒有變動。 */
 function writeService(role, ctx) {
@@ -602,6 +633,8 @@ const INSTALL_OPTIONS = {
   repair: { type: 'boolean' },
   'no-service': { type: 'boolean' },
   'no-start': { type: 'boolean' },
+  // session host 換版要重啟才生效，重啟會結束所有 agent（之後用 --resume 接回）；確認沒有在跑的 session 才加。
+  'restart-session-host': { type: 'boolean' },
 };
 
 async function install(argv) {
@@ -634,6 +667,7 @@ async function install(argv) {
     host: previous.host,
     name: previous.name,
     claudeBin: previous.claudeBin,
+    sessionHostBuild: previous.sessionHostBuild,
   };
   if (options.port !== undefined) {
     const port = Number(options.port);
@@ -687,19 +721,38 @@ async function install(argv) {
   }
 
   const appChanged = installApp(paths, options.source, () => {
-    if (activate) for (const r of previous.roles) stopService(r);
+    // Windows 換程式檔前要停掉所有服務（含 session host：它載入了 node-pty，agent 會一起結束）。
+    if (activate) for (const r of servicesFor(previous.roles)) stopService(r);
   });
   installShims(paths, node);
   if (role === 'daemon') pairDaemon(options, ctx);
 
   const started = {};
-  for (const r of state.roles) {
+  let hostUpdatePending = false;
+  for (const r of servicesFor(state.roles)) {
     if (!manageServices) break;
     const serviceChanged = writeService(r, ctx);
-    if (activate) {
-      const restart = appChanged || serviceChanged || (r === 'daemon' && Boolean(ctx.justPaired));
+    if (!activate) continue;
+    if (r === SESSION_HOST) {
+      // session host 不跟著 app 重啟：重啟會結束所有 agent。沒在跑就啟動；換版要明確加 --restart-session-host
+      // （Windows 換程式檔時已經停掉了，一定要重新啟動）。
+      const build = sessionHostBuild(paths);
+      const restart = Boolean(options['restart-session-host']) || (isWindows && appChanged);
       started[r] = startService(r, ctx, { restart });
+      if (restart || state.sessionHostBuild === undefined) state.sessionHostBuild = build;
+      else if (build !== state.sessionHostBuild || serviceChanged) hostUpdatePending = true;
+      continue;
     }
+    const restart = appChanged || serviceChanged || (r === 'daemon' && Boolean(ctx.justPaired));
+    started[r] = startService(r, ctx, { restart });
+  }
+  if (hostUpdatePending) {
+    say(
+      t(
+        'session host 有新版，但沒有重啟（重啟會結束所有 session，之後用 --resume 接回）。確認沒有在跑的 session 後，再執行一次同樣的安裝指令並加上 --restart-session-host。',
+        'A new session host is installed but was not restarted (restarting ends every session; they come back with --resume). When no session is running, run the same install command again with --restart-session-host.',
+      ),
+    );
   }
   writeFileSync(paths.state, `${JSON.stringify(state, null, 2)}\n`);
 
@@ -793,7 +846,7 @@ function uninstall(argv) {
   });
   const paths = layout();
   const state = readState(paths);
-  for (const role of ROLES) removeService(role, paths);
+  for (const role of servicesFor(ROLES)) removeService(role, paths);
   for (const name of SHIM_NAMES) {
     for (const suffix of isWindows ? ['', '.cmd'] : ['']) {
       const shim = join(paths.bin, name + suffix);

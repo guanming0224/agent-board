@@ -8,7 +8,7 @@ import {
   type DaemonToHost,
   type HostSessionInfo,
   type HostSignal,
-} from '@agent-board/protocol';
+} from '@agent-board/protocol/session-host';
 import { readToken, type HostEndpoint } from './endpoint';
 import { onLines, sendLine } from './lines';
 

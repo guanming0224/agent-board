@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { HostToDaemon, SESSION_HOST_PROTOCOL, type HostSessionInfo } from '@agent-board/protocol';
+import {
+  HostToDaemon,
+  SESSION_HOST_PROTOCOL,
+  type HostSessionInfo,
+} from '@agent-board/protocol/session-host';
 import { HostConnectError, SessionHostClient } from './client';
 import { hostEndpoint } from './endpoint';
 import { HostAlreadyRunningError, SessionHostServer, type HostLogger } from './server';

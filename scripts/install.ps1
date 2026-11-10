@@ -4,8 +4,13 @@
 #   .\install.ps1 daemon --hub 'https://hub.example' --code ABCD-1234 [--name 機器名稱]
 #   .\install.ps1 --uninstall [--purge]
 #
-# 其他選項：--from <發布檔.tar.gz 或資料夾>、--claude-bin <路徑>、--repair、--no-service、--no-start
+# 其他選項：--from <發布檔.tar.gz 或資料夾>、--claude-bin <路徑>、--repair、--no-service、--no-start、
+#           --restart-session-host（session host 換版時才加：重啟會結束所有 session，之後用 --resume 接回）
 # 可重複執行：內容沒變就不重裝、不重啟服務。
+# daemon 角色會一起裝 session host：工作排程器多一個「登入時」工作 AgentBoard-session-host（設定由
+# scripts/installer.mjs 產生，和 daemon 同一份 task.xml 模板）。agent 掛在它底下，daemon 重啟時不中斷
+# （CONTRACTS §20）。Windows 換程式檔時 node-pty 被鎖住，更新一定會停掉 session host，session 會用 --resume 接回。
+# 未在 Windows 實機驗證。
 $ErrorActionPreference = 'Stop'
 
 $minMajor = 22

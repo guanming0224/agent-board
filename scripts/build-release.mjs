@@ -3,6 +3,7 @@
 //   hub/dist/main.mjs    → ../../web/dist（server.ts 找前端）
 //   daemon/dist/index.mjs → ../node_modules/.bin/agent-board-hook（useBundledHook 找 hook）
 //   daemon/dist/deepSearchWorker.mjs（深層搜尋的 worker_threads 入口，和 index.mjs 同資料夾）
+//   session-host/dist/main.mjs（session host 服務，CONTRACTS §20；node-pty 從根目錄的 node_modules 載入）
 // 那個 .bin 只放 hook：daemon 會把它所在資料夾加進 PTY 的 PATH，不能混進別的執行檔。
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -66,6 +67,12 @@ async function bundleAll() {
   // 派工 MCP server 也只能有 node 內建模組（claude 每開一個 session 就啟動一次）。
   const mcp = readFileSync(bundleOptions(root, stage).mcp.outfile, 'utf8');
   if (mcp.includes('zod')) throw new Error('派工 MCP server 打包結果不該含有 zod');
+  // session host 不懂畫面、不連網路：不該打包進 xterm 或 ws。
+  const host = readFileSync(bundleOptions(root, stage).sessionHost.outfile, 'utf8');
+  // 只看模組名稱（帶引號）：protocol 的註解裡有提到 @xterm 的字樣。
+  for (const banned of ['"@xterm/', "'@xterm/", '"ws"', "'ws'"]) {
+    if (host.includes(banned)) throw new Error(`session host 打包結果不該含有 ${banned}`);
+  }
   await checkSearchWorker();
   return { metafiles, hookBytes: statSync(hook).size };
 }

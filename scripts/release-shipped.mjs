@@ -14,6 +14,8 @@ import { build } from 'esbuild';
 export const RUNTIME_DEPS = {
   daemon: ['node-pty', '@xterm/headless', '@xterm/addon-serialize'],
   hub: ['better-sqlite3', 'argon2'],
+  // session host（CONTRACTS §20）只用 node-pty；和 daemon 共用發布檔根目錄的 node_modules。
+  'session-host': ['node-pty'],
 };
 
 // ESM 輸出裡的 CJS 依賴會 require node 內建模組，需要一個真的 require。
@@ -22,7 +24,7 @@ const ESM_BANNER = [
   'const require = __abCreateRequire(import.meta.url);',
 ].join('\n');
 
-/** 五個打包檔（hub、daemon、深層搜尋 worker、hook、派工 MCP server）的 esbuild 設定。 */
+/** 六個打包檔（hub、daemon、深層搜尋 worker、session host、hook、派工 MCP server）的 esbuild 設定。 */
 export function bundleOptions(root, stage) {
   const service = {
     bundle: true,
@@ -53,6 +55,13 @@ export function bundleOptions(root, stage) {
       entryPoints: [join(root, 'packages/daemon/src/deepSearchWorker.ts')],
       outfile: join(stage, 'daemon/dist/deepSearchWorker.mjs'),
       external: RUNTIME_DEPS.daemon,
+    },
+    // session host：獨立服務（launchd／工作排程器），agent 是它的子程序，daemon 重啟時不會結束。
+    sessionHost: {
+      ...service,
+      entryPoints: [join(root, 'packages/session-host/src/main.ts')],
+      outfile: join(stage, 'session-host/dist/main.mjs'),
+      external: RUNTIME_DEPS['session-host'],
     },
     // hook 跑在每次工具呼叫的路徑上：CJS、不帶 banner、只有 node 內建模組。
     hook: {

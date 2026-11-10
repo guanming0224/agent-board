@@ -1,6 +1,6 @@
 // NDJSON：一行一則。超過上限就當成壞掉的連線（呼叫端斷線）。
 import type { Socket } from 'node:net';
-import { SESSION_HOST_MAX_LINE_BYTES } from '@agent-board/protocol';
+import { SESSION_HOST_MAX_LINE_BYTES } from '@agent-board/protocol/session-host';
 
 export function onLines(
   socket: Socket,

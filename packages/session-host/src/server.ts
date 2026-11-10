@@ -12,7 +12,7 @@ import {
   type HostSessionInfo,
   type HostSignal,
   type HostToDaemon,
-} from '@agent-board/protocol';
+} from '@agent-board/protocol/session-host';
 import { spawn as spawnPty, type IPty } from 'node-pty';
 import { ensurePrivateDir, hostEndpoint, writeToken, type HostEndpoint } from './endpoint';
 import { onLines, sendLine } from './lines';

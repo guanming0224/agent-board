@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./lead-guide": "./src/leadGuide.ts"
+    "./lead-guide": "./src/leadGuide.ts",
+    "./session-host": "./src/sessionHost.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
