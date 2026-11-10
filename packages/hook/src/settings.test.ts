@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { HOOK_TIMEOUT_SECONDS, HookEventName } from '@agent-board/protocol';
+import { CLAUDE_HOOK_EVENTS, HOOK_TIMEOUT_SECONDS } from '@agent-board/protocol';
 import { HookSettingsError, installHooks } from './index';
 
 interface Handler {
@@ -54,7 +54,9 @@ describe('installHooks', () => {
   it('沒有設定檔時建立資料夾與檔案，每個事件都裝好', async () => {
     await installHooks(cwd);
     const settings = await read();
-    for (const event of HookEventName.options) {
+    // 只裝 Claude Code 認得的事件：多一個不認得的名稱，Claude 啟動就卡在設定錯誤對話框。
+    expect(Object.keys(settings.hooks).sort()).toEqual([...CLAUDE_HOOK_EVENTS].sort());
+    for (const event of CLAUDE_HOOK_EVENTS) {
       expect(settings.hooks[event]).toEqual([
         {
           hooks: [
@@ -67,6 +69,38 @@ describe('installHooks', () => {
         },
       ]);
     }
+  });
+
+  it('拿掉先前誤裝在 Claude 不認得事件上的 agent-board-hook，別人的 hook 原樣保留', async () => {
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    const theirs = { type: 'command', command: 'my-tool interrupt' };
+    await writeFile(
+      path,
+      JSON.stringify({
+        hooks: {
+          Interrupt: [
+            {
+              hooks: [
+                { type: 'command', command: 'agent-board-hook Interrupt', timeout: 600 },
+                theirs,
+              ],
+            },
+          ],
+          PostModelRequest: [
+            {
+              hooks: [
+                { type: 'command', command: 'agent-board-hook PostModelRequest', timeout: 600 },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await installHooks(cwd);
+    const settings = await read();
+    expect(settings.hooks.PostModelRequest).toBeUndefined();
+    expect(settings.hooks.Interrupt).toEqual([{ hooks: [theirs] }]);
+    expect(commands(settings, 'SessionStart')).toEqual(['agent-board-hook SessionStart']);
   });
 
   it('SessionEnd 的 timeout 不超過 60', async () => {

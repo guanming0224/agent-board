@@ -2,7 +2,12 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { HOOK_COMMAND, HOOK_TIMEOUT_SECONDS, HookEventName } from '@agent-board/protocol';
+import {
+  CLAUDE_HOOK_EVENTS,
+  HOOK_COMMAND,
+  HOOK_TIMEOUT_SECONDS,
+  HookEventName,
+} from '@agent-board/protocol';
 
 /** Claude Code 對 SessionEnd hook 的 timeout 上限（docs/claude-code-notes.md）。 */
 const SESSION_END_MAX_TIMEOUT_SECONDS = 60;
@@ -28,6 +33,39 @@ function timeoutFor(event: HookEventName): number {
     : HOOK_TIMEOUT_SECONDS;
 }
 
+const CLAUDE_EVENTS: ReadonlySet<string> = new Set(CLAUDE_HOOK_EVENTS);
+
+/**
+ * 拿掉我們自己寫進 Claude 不認得事件的 hook（cd4e753 曾誤裝 Interrupt、PostModelRequest，
+ * 會讓 Claude Code 啟動時卡在設定錯誤對話框）。只動 command 是 `agent-board-hook <Event>` 的項目，
+ * 別人的設定原樣保留；拿完變空的群組與事件鍵一併刪掉。
+ */
+function removeForeignEvents(hooks: Record<string, unknown>): boolean {
+  let changed = false;
+  for (const event of HookEventName.options) {
+    if (CLAUDE_EVENTS.has(event)) continue;
+    const groups = hooks[event];
+    if (!Array.isArray(groups)) continue;
+    const command = `${HOOK_COMMAND} ${event}`;
+    const next: unknown[] = [];
+    for (const group of groups) {
+      if (!isRecord(group) || !Array.isArray(group.hooks)) {
+        next.push(group);
+        continue;
+      }
+      const handlers = group.hooks as unknown[];
+      const kept = handlers.filter((h) => !(isRecord(h) && h.command === command));
+      if (kept.length === handlers.length) next.push(group);
+      else if (kept.length > 0) next.push({ ...group, hooks: kept });
+    }
+    if (next.length === groups.length && next.every((g, i) => g === groups[i])) continue;
+    changed = true;
+    if (next.length === 0) delete hooks[event];
+    else hooks[event] = next;
+  }
+  return changed;
+}
+
 /** 就地合併，回傳有沒有變動。不認得的內容一律原樣保留。 */
 function mergeHooks(settings: Record<string, unknown>, path: string): boolean {
   const hooks = settings.hooks ?? {};
@@ -35,7 +73,9 @@ function mergeHooks(settings: Record<string, unknown>, path: string): boolean {
   let changed = settings.hooks === undefined;
   settings.hooks = hooks;
 
-  for (const event of HookEventName.options) {
+  if (removeForeignEvents(hooks)) changed = true;
+
+  for (const event of CLAUDE_HOOK_EVENTS) {
     const groups = hooks[event] ?? [];
     if (!Array.isArray(groups)) {
       throw new HookSettingsError(path, `"hooks.${event}" is not an array`);

@@ -21,7 +21,7 @@ export const HOOK_AGENT_FLAG = '--agent';
 export const HOOK_SESSION_FLAG = '--session';
 export const HOOK_SOCKET_FLAG = '--socket';
 
-/** 需要安裝的 hook 事件。 */
+/** hook CLI 收得到的事件：Claude Code 與 Codex 的聯集。Claude 實際裝哪些見 CLAUDE_HOOK_EVENTS。 */
 export const HookEventName = z.enum([
   'SessionStart',
   'UserPromptSubmit',
@@ -38,6 +38,25 @@ export const HookEventName = z.enum([
   'PostModelRequest',
 ]);
 export type HookEventName = z.infer<typeof HookEventName>;
+
+/**
+ * 裝進 Claude Code `settings.local.json` 的事件。不能直接用 HookEventName.options：Claude Code 不認得的事件名稱
+ * （例如 Codex 才有的 Interrupt、PostModelRequest）會讓設定檔驗證失敗，啟動時卡在「Continue／Fix with Claude」
+ * 對話框、SessionStart 不會觸發（2026-11-10 上架 cd4e753 後實際發生）。
+ */
+export const CLAUDE_HOOK_EVENTS = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PermissionRequest',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'Notification',
+  'Stop',
+  'StopFailure',
+  'SessionEnd',
+] as const satisfies readonly HookEventName[];
+export type ClaudeHookEvent = (typeof CLAUDE_HOOK_EVENTS)[number];
 
 /** 會卡住等 daemon 回答的事件；其餘送出即結束。 */
 export const BLOCKING_HOOK_EVENTS = [
