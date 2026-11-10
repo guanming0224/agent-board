@@ -149,6 +149,8 @@ export interface SpawnRequest {
  * 啟動更新程式：detached（setsid，新的 session 與 process group）、stdio 接到紀錄檔、unref。
  * launchd 停 daemon 時只殺 daemon 的 process group（plist 沒開 AbandonProcessGroup 也一樣），收不到它。
  * 啟動不了（例如 node 或工作目錄不見了）會 reject（S2）；紀錄檔的 fd 交給子程序後就關掉。
+ * Linux 限制：systemd user unit 預設 KillMode=control-group，停 daemon 會殺掉整個 cgroup，setsid 擋不住；
+ * 目前沒有 Linux 成品（hub 不發目標），之後要支援得改用 systemd-run --user --scope 啟動（CONTRACTS §21.7）。
  */
 export function spawnDetached(
   request: SpawnRequest,
