@@ -188,8 +188,17 @@ describe('session host', () => {
     client.write('s1', 'hello\r');
     await waitUntil(() => rec.text.includes('ECHO:hello'), 'echo');
     client.resize('s1', 100, 30);
-    client.write('s1', 'size\r');
-    await waitUntil(() => rec.text.includes('SIZE 100x30'), 'size');
+    // agent 讀的是 Node 快取的尺寸，收到 SIGWINCH 才更新；機器忙時 size 可能比 SIGWINCH 先到、回舊尺寸。
+    // 所以沒看到新尺寸就隔一下重問（全套並行時實際發生過）。
+    let asked = 0;
+    await waitUntil(() => {
+      if (rec.text.includes('SIZE 100x30')) return true;
+      if (Date.now() - asked > 200) {
+        asked = Date.now();
+        client.write('s1', 'size\r');
+      }
+      return false;
+    }, 'size');
     // 序號＝之前所有輸出的位元組數。
     let expected = 0;
     const outputs = rec.seqs;
