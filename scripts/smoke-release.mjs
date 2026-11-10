@@ -249,9 +249,22 @@ async function main() {
   assert.match(again, /略過配對/);
   step('重跑舊的配對指令不會失敗，也不會重新配對');
 
+  // session host（CONTRACTS §20）：照 plist 啟動打包的 session-host/dist/main.mjs（node-pty 用發布檔的 node_modules），
+  // daemon 起來時先連它。daemon 的服務設定要知道怎麼拉起它。
+  const hostProc = startFromPlist('session-host');
+  const hostToken = join(home, '.agent-board/session-host.token');
+  await poll('session host 起來', () => existsSync(hostToken));
+  assert.equal(lstatSync(hostToken).mode & 0o777, 0o600);
+  // socket 的位置看路徑長度（太長時改放 tmpdir 底下），權限由單元測試驗。
+  step('session host 在服務環境下啟動：token 檔 0600');
+
   // 拿掉 PATH 上的 hook：確定 daemon 靠 useBundledHook 找到打包進去的那一支。
   rmSync(join(home, '.local/bin/agent-board-hook'));
   const daemonProc = startFromPlist('daemon');
+  assert.equal(
+    daemonProc.plist.EnvironmentVariables.AGENT_BOARD_SESSION_HOST_SERVICE,
+    'com.agent-board.session-host',
+  );
   assert.ok(!('AGENT_BOARD_HOOK_BIN' in daemonProc.plist.EnvironmentVariables));
   const machine = await poll('機器上線', async () => {
     const machines = await api('GET', '/api/machines');
@@ -298,6 +311,9 @@ async function main() {
   const settings = JSON.parse(readFileSync(join(workdir, '.claude/settings.local.json'), 'utf8'));
   assert.equal(settings.hooks.Stop[0].hooks[0].command, 'agent-board-hook Stop');
   step('開 session：打包的 hook 從含空格的路徑執行成功，SessionStart 接上');
+  // 狀態快照只有 session host 模式才寫：有這個檔就代表 agent 是 host 開的。
+  assert.ok(existsSync(join(home, '.agent-board/state', `${session.id}.json`)));
+  step('session 由打包的 session host 開（狀態快照存在）');
 
   // ── 危險指令：真 hook 卡住、網頁決定 ──
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/client`, {
@@ -359,6 +375,12 @@ async function main() {
     daemonProc.child.kill('SIGTERM');
   });
   assert.equal(daemonProc.child.exitCode, 0, daemonProc.output());
+  await new Promise((done) => {
+    hostProc.child.once('exit', done);
+    hostProc.child.kill('SIGTERM');
+  });
+  assert.equal(hostProc.child.exitCode, 0, hostProc.output());
+  step('session host 收到 SIGTERM 正常結束');
 
   // ── 啟動服務的流程（launchctl 是假的）──
   const activated = mustInstall(['hub', ...from]);
@@ -442,6 +464,7 @@ async function main() {
   assert.ok(!existsSync(join(home, '.local/share/agent-board')));
   assert.ok(!existsSync(join(home, 'Library/LaunchAgents/com.agent-board.hub.plist')));
   assert.ok(!existsSync(join(home, 'Library/LaunchAgents/com.agent-board.daemon.plist')));
+  assert.ok(!existsSync(join(home, 'Library/LaunchAgents/com.agent-board.session-host.plist')));
   assert.deepEqual(readdirSync(join(home, '.local/bin')), []);
   assert.ok(existsSync(join(home, '.agent-board/hub.db')));
   assert.ok(existsSync(credentials));
