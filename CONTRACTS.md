@@ -851,24 +851,32 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
 
 - 單元：`protocol/src/release.test.ts`（版本比較、通道、延後條件、協定相容、SHA256SUMS）、`hub/src/test/release.test.ts`（假 gh：沒 repo、gh 不存在／沒登入、下載驗證、SHA 不符、權杖環境變數不給 gh、通道與目標、下載端點驗證、升 stable 的 24 小時、協定拒絕、失敗推播只推一次、回滾）、`daemon/src/selfUpdate.test.ts`、`scripts/updater.test.mjs`（`test:install`：遷移、保留 3 版、同版不同內容、更新成功、壞版回滾＋schema 還原、安裝程式失敗、鎖、手動回滾與 schema_changed、detached 存活）。
 - e2e：`corepack pnpm e2e:update`（先 `build:release`；只在 Apple Silicon Mac）：真的成品改版本號當假 Release、假 gh、假 launchctl（照 plist 真的跑），hub 從原始碼跑。canary 自動更新成功；壞版（新 daemon 起不來）在健康檢查時限後自動回滾、面板標失敗。
-- **未驗證**：真的 GitHub Actions（workflow 只做過 YAML 解析）、Windows 成品的建置與安裝（junction、zip、工作排程器停服務時 detached 更新程式會不會被收掉；實機驗證前 hub 不發 win-x64 目標）、真的 launchd 停 daemon 時更新程式存活（用假 launchctl 模擬 process group 訊號）、真的 gh（只測假的）。
+- **未驗證**：真的 GitHub Actions（workflow 只做過 YAML 解析）、Windows 成品的建置與安裝（junction、zip、工作排程器停服務時 detached 更新程式會不會被收掉；實機驗證前 hub 不發 win-x64 目標）、真的 gh（只測假的）。
+- **已驗證**：macOS 真的 launchd 停服務（`launchctl bootout`）時，detached（setsid）＋stdio 導到檔案的子程序會活下來（2026-11-11，Lead 用拋棄式 label 在真機實測）；`scripts/updater.test.mjs` 另用「停服務時殺整個 process group」的假 launchctl 驗證同一件事。
 - **Linux／systemd 的限制**：沒有 Linux 成品（daemon 回報 `linux-x64` 不會有目標，只能 `install.sh --from` 手動更新）。systemd 的 user unit 預設 `KillMode=control-group`：停 daemon 時會殺掉整個 cgroup，**detached（setsid）擋不住**，所以就算之後有 Linux 成品，自動更新程式也要改用 `systemd-run --user --scope` 之類的方式啟動才能活過 daemon 重啟（未實作）。
 
 ### 21.8 審查後的修正（2026-11-11）
 
-- **進行中的狀態會過期（S1）**：`UpdateState` 多了 `pid`、`startedAt`。`downloading` 只有 daemon 下載時寫，daemon 不在下載（重啟過）就是中斷；其他進行中的階段：開始超過 `UPDATE_STALE_MS`（15 分鐘），或 `update.lock` 的持有者不在（寫完 installing 一分鐘後還沒有）→ 過期。daemon 連上 hub、收到目標、輪詢時都會檢查，過期就寫 `failed/interrupted`（中斷的可以自動重試，「立即更新」也會清掉過期狀態；真的還在進行的 force 也不重複啟動）。輪詢沒有時間上限。hub 只把「最近 15 分鐘內的進行中狀態」期間的斷線當成預期的（canary 統計）。
+- **進行中的狀態會過期（S1；判斷規則 §21.9 N2 改過）**：`UpdateState` 多了 `pid`、`startedAt`。`downloading` 只有 daemon 下載時寫，daemon 不在下載（重啟過）就是中斷；其他進行中的階段：開始超過 `UPDATE_STALE_MS`（15 分鐘），或 `update.lock` 的持有者不在（寫完 installing 一分鐘後還沒有）→ 過期。daemon 連上 hub、收到目標、輪詢時都會檢查，過期就寫 `failed/interrupted`（中斷的可以自動重試，「立即更新」也會清掉過期狀態；真的還在進行的 force 也不重複啟動）。輪詢沒有時間上限。hub 只把「最近 15 分鐘內的進行中狀態」期間的斷線當成預期的（canary 統計）。
 - **spawn（S2）**：啟動更新程式等 `spawn` 事件，`error` → `failed/spawn_failed`；紀錄檔的 fd 交給子程序後關掉。
 - **先升 hub（S3a）**：hub 那台（hello `hostsHub`）的通道目標也是這一版、但它還沒升上去時，其他機器的目標是 null（`targetNote: hub_first`）；hub 那台換了版本（hello 版本變了）再送目標給其他機器。不同版本（例如 canary 比 hub 的 stable 新）不用等。
 - **健康檢查分辨「連不上 hub」（S3b）**：daemon 一啟動就寫 `daemon-status.json`（`startedAt`、`connectedAt: null`），連上 hub 再寫一次。新 daemon 程序活著、本機 hub（有的話）也正常、只是還沒連上 hub：等到 `--connect-timeout-ms`（預設 5 分鐘）；daemon 起不來、崩潰（pid 不在）就照健康檢查時限（60 秒）回滾。
 - **鎖（W1）**：先寫 `update.lock.<pid>`，再 `link` 成 `update.lock`（已存在就失敗，原子）；已有的鎖內容是空的或 10 秒內建立的一律當作有人拿著；pid 不在了才清掉重試；結束時只刪自己的鎖。
 - **解壓（W2）**：解到 `.incoming/<版本>.partial`，檢查內容（名稱、版本、BUILD_ID、updater.mjs）後寫 `.extracted` 標記再改名成 `.incoming/<版本>`；沒有標記的一律重下載。
-- **成品檢查（B2–B4）**：daemon 只接受 `asset === releaseAssetName(version, platform)`；hub 的下載端點同樣比對檔名。解壓前 `tar -tf`／`tar -tvf` 檢查：每一項都要在 `agent-board/` 底下、沒有絕對路徑或 `..`，symlink／hard link 的目標也不能指出 `agent-board/`。
+- **成品檢查（B2–B4）**：daemon 只接受 `asset === releaseAssetName(version, platform)`；hub 的下載端點同樣比對檔名。解壓前 `tar -tf` 檢查：每一項都要在 `agent-board/` 底下、沒有絕對路徑或 `..`；symlink 的目標在解開後檢查（§21.9 N3）。
 - **原生模組 ABI（B5）**：hub 驗證成品時讀 `.node-modules-platform` 的 `modules`（Node ABI）記在 `verified.json`；daemon hello 帶 `nodeAbi`（`process.versions.modules`）。不合 → 不發目標（`targetNote: abi_mismatch`），面板請人手動安裝。
 - **win-x64（W8）**：`UNVERIFIED_PLATFORMS`（目前 `win-x64`）：hub 照樣下載、驗證成品，但不發目標（`targetNote: platform_unverified`）；實機驗證後從清單拿掉（測試用 `AGENT_BOARD_ALLOW_UNVERIFIED_PLATFORMS=1`）。workflow 照樣建 win-x64 成品。
 - **延後（W5、W6）**：安裝程式因為 session 忙碌（要換 session host）中止時以 **75** 結束（什麼都沒改）；更新程式寫 `deferred/host_busy`（不算失敗、不推播），daemon 5 分鐘後再試。手動回滾套用同樣的延後條件（上一版的 session host 協定不同就看 RUN／PERM／PLAN／starting）。上一版是 `0.0.0-legacy` 或比 `FIRST_UPDATER_VERSION`（0.1.0）舊：hub 回 409 `previous_unsupported`，面板不給按並說明（要用 `install.sh --from` 重裝）。
 - **schema 判斷（W3）**：回滾時用舊版的 better-sqlite3 讀現在的 schema；和更新前不同（或讀更新前時讀不到、改用舊版 hub 的 `schema-version` 比對 `user_version >` 它）就帶 `--restore-db`。
-- **保留舊版（W4）**：清舊版失敗（例如 Windows 檔案被鎖）吞掉、下次再清。agent 的 PATH 與 MCP 設定檔指 `current`／`app`，不直接參照 `releases/<版本>`，所以留 current＋上一版就不影響還活著的 agent（沒有另外用 session host 快照的 agentPid 判斷）。
+- **保留舊版（W4）**：清舊版失敗（例如 Windows 檔案被鎖）吞掉、下次再清。**已知限制**：agent 的 PATH 與 MCP 設定檔寫的是 `current`／`app`，但 node 啟動時會把 symlink 解開，長時間跑的 agent 底下的 MCP server 其實是從 `releases/<當時的版本>` 載入的；那一版被清掉後，已經載入記憶體的部分照常運作，之後才要讀的檔會失敗（重開 session 即可）。只留 3 版、current 與上一版一定留，要連續換三版以上才會遇到。沒有用 session host 快照的 agentPid 判斷要不要留。
 - **app 連結（W7）**：每次 install，`app` 不存在而 `current` 存在就補建 `app → current`（新安裝也有）。
 - **下載退避（W9）**：同一版從 GitHub 下載失敗，自動檢查照 10、20、40…分鐘（上限 6 小時）退避，記在 settings `release.fetchFailure`；手動「檢查新版」不受限，成功後清掉。重新讀 cache 時刪掉 `.download-*` 暫存。
 - **workflow（W10）**：最上層 `permissions: contents: read`，只有 publish job `contents: write`；checkout `persist-credentials: false`；actions 釘 commit SHA；先 `gh release create --draft` 上傳完再 `gh release edit --draft=false`（hub 只看非草稿）。
 - **沒做**：成品簽章／attestation（B1）與審查清單上的 B6、B7。
+
+### 21.9 複查後的修正（2026-11-11）
+
+- **hub_first 只在 hub 那台真的會升時才擋（N1）**：哪一台是 hub＝最後一次 hello 說自己有 hub 的那台（settings `release.hubMachine`；那台之後的 hello 說沒有就清掉、刪機器也清）。其他機器只在「hub 那台自己的目標（不看 hub_first）也是這一版、它還沒升上去、而且在線」時才拿到 null（`hub_first`）；hub 那台被平台（win-x64）、ABI 擋住、或離線時不擋。hub 那台這一版 `rolled_back`／`rollback_failed`：不管在不在線都繼續擋，說明改成 `hub_update_failed`（面板「hub 更新失敗，其他機器暫停」）。hub 那台上線、離線、換版本都會重送目標。
+- **過期判斷（N2）**：更新程式寫的狀態帶自己的 pid，`startedAt`＝更新程式拿到鎖的時間。它還拿著 `update.lock` 就不算過期，只有 `UPDATE_STALE_MS`（改成 60 分鐘）的硬上限；鎖不是它的或它不在了＝中斷。daemon 自己寫的 installing／rolling_back（更新程式還沒拿到鎖）：有活著的鎖持有者就等，沒有的話一分鐘後算中斷。hub 的斷線統計也用 60 分鐘。
+- **不重複啟動（N2）**：hub 在這台有最近 60 分鐘內的進行中狀態時，「立即更新」「回滾」回 409 `update_in_progress`；daemon 的 `rollback()` 也先看狀態檔，有更新在跑就不啟動第二個、狀態檔不動。回滾延後中收到新目標不會取消回滾（面板照樣看到延後的回滾，回滾做完才處理新目標）；按「立即更新」（force）會取代它，並明確記成 `idle/superseded`。
+- **解開後檢查整棵樹（N3）**：`tar -tf` 的路徑檢查留著當第一道；解到 `.partial` 之後用 lstat 走 `agent-board/` 整棵樹，每個 symlink 的實際目標（realpath；懸空的照連結文字算）都要在 `.partial/agent-board` 裡，不是一般檔案／資料夾／symlink 的一律拒絕，過了才寫完成標記。真的發布檔（node_modules/.bin 有 6 個 symlink）實測不誤擋。不再解析 `tar -tvf` 的文字。

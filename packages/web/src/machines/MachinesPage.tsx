@@ -56,6 +56,7 @@ function actionError(e: unknown, t: T): string {
     code === 'machine_offline' ||
     code === 'no_previous' ||
     code === 'previous_unsupported' ||
+    code === 'update_in_progress' ||
     code === 'no_target' ||
     code === 'schema_changed'
   ) {

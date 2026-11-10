@@ -109,6 +109,9 @@ export const zhTW: Record<string, string> = {
   'machines.reason.interrupted': '上次的更新中斷了（可以再試）',
   'machines.reason.spawn_failed': '啟動不了更新程式',
   'machines.note.hub_first': '等 hub 那台先升到這一版',
+  'machines.note.hub_update_failed': 'hub 更新失敗，其他機器暫停',
+  'machines.reason.superseded': '延後中的回滾被「立即更新」取代',
+  'machines.err.update_in_progress': '這台的更新還在進行，等它結束再試',
   'machines.note.platform_unverified': 'Windows 還沒實機驗證，暫不自動更新',
   'machines.note.abi_mismatch': '成品的原生模組和這台的 Node 版本不合，請手動安裝',
   'machines.block.previous_unsupported':
@@ -251,6 +254,10 @@ export const en: Record<string, string> = {
   'machines.reason.interrupted': 'the previous update was interrupted (you can retry)',
   'machines.reason.spawn_failed': 'could not start the updater',
   'machines.note.hub_first': 'waiting for the hub machine to update to this version first',
+  'machines.note.hub_update_failed': 'the hub machine failed to update; other machines are paused',
+  'machines.reason.superseded': 'the deferred rollback was replaced by “Update now”',
+  'machines.err.update_in_progress':
+    'an update is still running on this machine; try again when it finishes',
   'machines.note.platform_unverified':
     'Windows is not verified on a real machine yet; no automatic updates',
   'machines.note.abi_mismatch':
