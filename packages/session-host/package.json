@@ -1,0 +1,23 @@
+{
+  "name": "@agent-board/session-host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts"
+  },
+  "bin": {
+    "agent-board-session-host": "./src/main.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@agent-board/protocol": "workspace:*",
+    "node-pty": "^1.1.0",
+    "zod": "^4.6.7"
+  }
+}
