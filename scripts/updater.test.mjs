@@ -4,7 +4,7 @@
 // 全部在臨時資料夾：HOME、資料夾、launchctl（假的，照 plist 真的把程式跑起來）都是假的，不碰這台機器的服務。
 // 發布檔是假的（hub／daemon／session host 是幾行的小程式），只有 better-sqlite3 借用 repo 裡裝好的。
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -18,6 +18,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -293,6 +294,187 @@ describe('安裝配置', () => {
   });
 });
 
+describe('更新程式的鎖與健康檢查', () => {
+  const lockScript = join(repo, 'scripts', 'updater.mjs');
+
+  test('takeLock：空的或很新的鎖當有人拿著；過期（pid 不在、10 秒以上）的清掉；同時搶只有一個拿到（W1）', async () => {
+    freshHome();
+    mkdirSync(root, { recursive: true });
+    const { takeLock } = await import(lockScript);
+    const lock = join(root, 'update.lock');
+    writeFileSync(lock, '');
+    assert.equal(takeLock(root), null, '空的鎖');
+    writeFileSync(lock, '999999');
+    assert.equal(takeLock(root), null, '剛建立的鎖（pid 不在也一樣）');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+    const release = takeLock(root);
+    assert.ok(release, '過期的鎖');
+    assert.equal(readFileSync(lock, 'utf8'), String(process.pid));
+    release();
+    assert.ok(!existsSync(lock));
+    // 同時搶：十個程序一起拿，只有一個拿到。
+    const racer = join(home, 'racer.mjs');
+    writeFileSync(
+      racer,
+      `import { takeLock } from ${JSON.stringify(lockScript)};
+const got = takeLock(${JSON.stringify(root)});
+console.log(got ? 'got' : 'no');
+setTimeout(() => process.exit(0), 500);`,
+    );
+    const results = await Promise.all(
+      Array.from(
+        { length: 10 },
+        () =>
+          new Promise((done) => {
+            const child = spawn(process.execPath, [racer], { stdio: ['ignore', 'pipe', 'ignore'] });
+            let out = '';
+            child.stdout.on('data', (chunk) => (out += chunk));
+            child.on('exit', () => done(out.trim()));
+          }),
+      ),
+    );
+    assert.equal(results.filter((r) => r === 'got').length, 1, results.join(','));
+    assert.deepEqual(
+      readdirSync(root).filter((n) => n.startsWith('update.lock.')),
+      [],
+    );
+  });
+
+  test('健康檢查：新 daemon 活著只是連不上 hub 時等到連線時限；起不來照原本的時限（S3b）', async () => {
+    freshHome();
+    mkdirSync(root, { recursive: true });
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(root, 'install.json'), JSON.stringify({ roles: ['daemon'] }));
+    const { healthy } = await import(lockScript);
+    const status = (over) =>
+      writeFileSync(
+        join(data, 'daemon-status.json'),
+        JSON.stringify({
+          pid: process.pid,
+          version: '0.2.0',
+          buildId: 'x',
+          startedAt: new Date().toISOString(),
+          connectedAt: null,
+          ...over,
+        }),
+      );
+    // 起不來：沒有狀態檔 → 原本的時限就放棄。
+    let since = Date.now();
+    let started = Date.now();
+    assert.equal(
+      await healthy({
+        data,
+        root,
+        version: '0.2.0',
+        since,
+        timeoutMs: 500,
+        connectTimeoutMs: 5000,
+      }),
+      false,
+    );
+    assert.ok(Date.now() - started < 2500);
+    // 活著但連不上 hub：超過原本的時限還在等，連上了就成功。
+    since = Date.now() - 10;
+    status({});
+    started = Date.now();
+    setTimeout(() => status({ connectedAt: new Date().toISOString() }), 1800);
+    assert.equal(
+      await healthy({
+        data,
+        root,
+        version: '0.2.0',
+        since,
+        timeoutMs: 500,
+        connectTimeoutMs: 6000,
+      }),
+      true,
+    );
+    assert.ok(Date.now() - started >= 1700);
+    // 活著但一直連不上：等到連線時限才放棄。
+    since = Date.now() - 10;
+    status({});
+    started = Date.now();
+    assert.equal(
+      await healthy({
+        data,
+        root,
+        version: '0.2.0',
+        since,
+        timeoutMs: 300,
+        connectTimeoutMs: 1500,
+      }),
+      false,
+    );
+    assert.ok(Date.now() - started >= 1400);
+    // 崩潰（pid 不在）：不延長。
+    since = Date.now() - 10;
+    status({ pid: 999999 });
+    started = Date.now();
+    assert.equal(
+      await healthy({
+        data,
+        root,
+        version: '0.2.0',
+        since,
+        timeoutMs: 300,
+        connectTimeoutMs: 5000,
+      }),
+      false,
+    );
+    assert.ok(Date.now() - started < 2000);
+  });
+
+  test('app 連結不見了：下次安裝補回 app → current（W7）', () => {
+    freshHome();
+    mustInstall([
+      'install',
+      'hub',
+      '--source',
+      makeRelease('0.1.0'),
+      '--port',
+      String(port),
+      '--no-start',
+    ]);
+    assert.equal(readlinkSync(join(root, 'app')), 'current');
+    rmSync(join(root, 'app'));
+    mustInstall(['install', 'hub', '--source', makeRelease('0.1.0'), '--no-start']);
+    assert.equal(readlinkSync(join(root, 'app')), 'current');
+  });
+
+  test('自動更新時原生模組載不起來：不跑 npm ci，直接失敗（B5）', () => {
+    freshHome();
+    mustInstall([
+      'install',
+      'hub',
+      '--source',
+      makeRelease('0.1.0'),
+      '--port',
+      String(port),
+      '--no-start',
+    ]);
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(repo, 'scripts/installer.mjs'),
+        'install',
+        'hub',
+        '--source',
+        makeRelease('0.1.1'),
+        '--no-start',
+      ],
+      {
+        env: { ...env, AGENT_BOARD_INSTALL_TEST_SKIP_NATIVE: '', AGENT_BOARD_UPDATER: '1' },
+        encoding: 'utf8',
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(`${result.stdout}${result.stderr}`, /自動更新不跑 npm ci/);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /npm ci…/);
+    assert.equal(currentTarget(), '0.1.0');
+  });
+});
+
 describe('detached 更新程式', () => {
   test('停 daemon（對整個 process group 送訊號，同 launchd）時，detached 啟動的更新程式不會被收掉', async () => {
     freshHome();
@@ -468,14 +650,53 @@ describe('更新程式', () => {
     assert.equal((await health()).version, '0.1.0');
   });
 
-  test('已經有更新程式在跑：第二個不做事', async () => {
+  test('已經有更新程式在跑：第二個不做事，記成 failed/busy（不是默默結束）', async () => {
     await installRunning();
     writeFileSync(join(root, 'update.lock'), String(process.pid));
     const result = runUpdate(incoming('0.1.1'), '0.1.1', '0.1.0');
-    assert.equal(result.status, 0);
-    assert.match(result.output, /已經有更新程式在跑/);
+    assert.equal(result.status, 1);
+    assert.equal(updateState().phase, 'failed');
+    assert.equal(updateState().reason, 'busy');
     assert.equal(currentTarget(), '0.1.0');
+    assert.equal(
+      readFileSync(join(root, 'update.lock'), 'utf8'),
+      String(process.pid),
+      '別人的鎖不動',
+    );
     rmSync(join(root, 'update.lock'));
+  });
+
+  test('session 忙碌而這次要換 session host：安裝程式以 75 中止，記成 deferred/host_busy、不算失敗（W5）', async () => {
+    await installRunning();
+    // 快照記著一個工作中、agent 還活著的 session（用測試自己的 pid 當 agent）。
+    mkdirSync(join(data, 'state'), { recursive: true });
+    writeFileSync(
+      join(data, 'state', 's1.json'),
+      JSON.stringify({ sessionId: 's1', status: 'running', agentPid: process.pid }),
+    );
+    const source = incoming('0.1.1');
+    writeFileSync(join(source, 'session-host/dist/meta.json'), JSON.stringify({ protocol: 2 }));
+    const result = runUpdate(source, '0.1.1', '0.1.0');
+    assert.equal(result.status, 0, result.output);
+    assert.equal(updateState().phase, 'deferred');
+    assert.equal(updateState().reason, 'host_busy');
+    assert.equal(currentTarget(), '0.1.0');
+    rmSync(join(data, 'state'), { recursive: true });
+  });
+
+  test('hub.db 備份由安裝程式在停 hub 前一刻做，只留最近 5 份（W3）', async () => {
+    await installRunning();
+    for (let i = 0; i < 6; i++) {
+      writeFileSync(join(data, `hub.db.pre-update-0.0.${i}-2026010${i}T000000`), '', {
+        mode: 0o600,
+      });
+    }
+    const result = runUpdate(incoming('0.1.1'), '0.1.1', '0.1.0');
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /已備份 hub\.db（schema v1）/);
+    const backups = readdirSync(data).filter((name) => name.startsWith('hub.db.pre-update-'));
+    assert.equal(backups.length, 5);
+    assert.ok(backups.some((name) => name.startsWith('hub.db.pre-update-0.1.0-')));
   });
 
   test('手動回滾：回到上一版（不推播的成功）；上一版的 hub 讀不了新 schema 就不做', async () => {

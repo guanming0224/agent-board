@@ -72,10 +72,18 @@ const HOOK_PATH = ['daemon', 'node_modules', '.bin', 'agent-board-hook'];
 const isZh = new Intl.DateTimeFormat().resolvedOptions().locale.startsWith('zh');
 const t = (zh, en) => (isZh ? zh : en);
 
-class InstallError extends Error {}
-const fail = (message) => {
-  throw new InstallError(message);
+class InstallError extends Error {
+  exitCode = 1;
+}
+/** session 忙碌、這次要換 session host 而中止（什麼都沒改）：更新程式看這個結束碼記成延後（W5）。 */
+const EXIT_BUSY = 75;
+const fail = (message, exitCode = 1) => {
+  const error = new InstallError(message);
+  error.exitCode = exitCode;
+  throw error;
 };
+/** 自動更新程式（updater.mjs）呼叫的：不在更新中跑 npm ci（B5）。 */
+const fromUpdater = process.env.AGENT_BOARD_UPDATER === '1';
 const say = (message) => console.log(message);
 
 function layout() {
@@ -298,6 +306,15 @@ function installDependencies(dir) {
     existsSync(join(dir, 'node_modules')) &&
     readJsonFile(join(dir, MODULES_PLATFORM_FILE))?.platform === thisPlatform();
   if (bundled && probeNative(dir).status === 0) return;
+  if (fromUpdater) {
+    // 自動更新不現場 npm ci（要連 npm registry、原生模組可能要編譯）：hub 只發 ABI 相同的成品，到這裡就是例外。
+    fail(
+      t(
+        `發布檔附的原生模組在這台的 Node（${process.versions.node}，ABI ${process.versions.modules}）載不起來，自動更新不跑 npm ci。請用 install.sh --from 手動安裝。`,
+        `The bundled native modules do not load on this Node (${process.versions.node}, ABI ${process.versions.modules}); automatic updates do not run npm ci. Install by hand with install.sh --from.`,
+      ),
+    );
+  }
   if (bundled) {
     say(
       t(
@@ -402,9 +419,67 @@ function pruneReleases(paths, state) {
   const others = names
     .filter((name) => !keep.has(name))
     .sort((a, b) => installedAt(b) - installedAt(a));
+  // 清不掉（例如 Windows 檔案被鎖住）就留著，下次再清（W4）。agent 的 PATH 與 MCP 設定檔指的是 current／app，
+  // 不會直接參照 releases/<版本>，所以只要 current 與上一版留著，還活著的 agent 不受影響。
   for (const name of others.slice(Math.max(0, KEEP_RELEASES - keep.size))) {
-    rmSync(join(paths.releases, name), { recursive: true, force: true });
+    try {
+      rmSync(join(paths.releases, name), { recursive: true, force: true });
+    } catch (error) {
+      say(
+        t(
+          `舊版 ${name} 清不掉，下次再清：${error.message}`,
+          `Could not remove old release ${name}; will retry next time: ${error.message}`,
+        ),
+      );
+    }
   }
+}
+
+/** current 在而 app 不在：補建 app → current（舊 session 的路徑、被手動刪掉的連結，W7）。 */
+function ensureAppLink(paths) {
+  if (existsSync(paths.app) || isLink(paths.app) || !existsSync(paths.current)) return;
+  try {
+    pointLink(paths.app, paths.current);
+  } catch {
+    // 補不了不影響這次安裝
+  }
+}
+
+/**
+ * 停 hub 前一刻備份 hub.db（W3，更新程式帶 --backup-db）：用 current 這版的 better-sqlite3 線上備份（含 WAL），
+ * 先用 0600 建空檔再寫進去，做完確認讀得出 schema 版本。失敗就中止（hub 還沒重啟，資料庫沒變）。
+ */
+function backupHubDb(paths, target) {
+  const db = join(dataDir(paths), 'hub.db');
+  if (!existsSync(db)) return;
+  writeFileSync(target, '', { mode: 0o600, flag: 'wx' });
+  const script = `
+const Database = require('better-sqlite3');
+const db = new Database(process.argv[1], { readonly: true, fileMustExist: true });
+db.backup(process.argv[2]).then(() => {
+  db.close();
+  const check = new Database(process.argv[2], { readonly: true });
+  console.log(check.pragma('user_version', { simple: true }));
+  check.close();
+}, (error) => { console.error(error.message); process.exit(1); });
+`;
+  const result = run(process.execPath, ['-e', script, db, target], { cwd: paths.current });
+  if (result.status !== 0) {
+    rmSync(target, { force: true });
+    fail(
+      t(
+        `備份 hub.db 失敗：${result.stderr.trim()}`,
+        `Backing up hub.db failed: ${result.stderr.trim()}`,
+      ),
+    );
+  }
+  chmodSync(target, 0o600);
+  say(
+    t(
+      `已備份 hub.db（schema v${result.stdout.trim()}）到 ${target}`,
+      `Backed up hub.db (schema v${result.stdout.trim()}) to ${target}`,
+    ),
+  );
 }
 
 const shellQuote = (text) => `'${text.replaceAll("'", `'\\''`)}'`;
@@ -514,8 +589,8 @@ function serviceEnv(role, ctx) {
   }
   if (process.env.AGENT_BOARD_DATA_DIR) env.AGENT_BOARD_DATA_DIR = process.env.AGENT_BOARD_DATA_DIR;
   // 只給測試：縮短更新程式的健康檢查時限（scripts/e2e-update.mjs）。正式使用不設。
-  if (role === 'daemon' && process.env.AGENT_BOARD_UPDATE_HEALTH_MS) {
-    env.AGENT_BOARD_UPDATE_HEALTH_MS = process.env.AGENT_BOARD_UPDATE_HEALTH_MS;
+  for (const key of ['AGENT_BOARD_UPDATE_HEALTH_MS', 'AGENT_BOARD_UPDATE_CONNECT_MS']) {
+    if (role === 'daemon' && process.env[key]) env[key] = process.env[key];
   }
   if (role === 'hub') {
     env.AGENT_BOARD_PORT = String(state.port ?? DEFAULT_PORT);
@@ -939,6 +1014,8 @@ const INSTALL_OPTIONS = {
   'no-start': { type: 'boolean' },
   // session host 換版要重啟才生效，重啟會結束所有 agent（之後用 --resume 接回）；確認沒有在跑的 session 才加。
   'restart-session-host': { type: 'boolean' },
+  // 更新程式用：重啟 hub 前一刻把 hub.db 備份到這個路徑（W3）。
+  'backup-db': { type: 'string' },
 };
 
 async function install(argv) {
@@ -1046,6 +1123,7 @@ async function install(argv) {
           `session host 需要重啟（${protocolChanged ? `協定從 ${state.sessionHostProtocol ?? '舊版'} 變成 ${newProtocol}` : '加了 --restart-session-host'}），重啟會結束所有 agent，但還有 ${busy.length} 個 session 在工作（RUN／PERM／PLAN／starting）。等它們停下來再執行一次同樣的指令。這次什麼都沒有改。`,
           `The session host must restart (${protocolChanged ? `protocol ${state.sessionHostProtocol ?? 'old'} → ${newProtocol}` : '--restart-session-host'}), which ends every agent, but ${busy.length} session(s) are still working. Run the same command again once they stop. Nothing was changed.`,
         ),
+        EXIT_BUSY,
       );
     }
   }
@@ -1055,6 +1133,7 @@ async function install(argv) {
   const appChanged = installRelease(paths, options.source, state);
   // current 換了就先記下來：後面（服務設定、啟動）失敗時，install.json 和實際的 current 也一致。
   if (appChanged) writeFileSync(paths.state, `${JSON.stringify(state, null, 2)}\n`);
+  ensureAppLink(paths);
   installShims(paths, node);
   if (role === 'daemon') pairDaemon(options, ctx);
 
@@ -1089,6 +1168,7 @@ async function install(argv) {
       continue;
     }
     const restart = appChanged || serviceChanged || (r === 'daemon' && Boolean(ctx.justPaired));
+    if (r === 'hub' && restart && options['backup-db']) backupHubDb(paths, options['backup-db']);
     started[r] = startService(r, ctx, { restart });
   }
   if (hostUpdatePending) {
@@ -1309,5 +1389,5 @@ try {
   console.error(
     `${t('安裝失敗', 'Install failed')}: ${error instanceof Error ? error.message : error}`,
   );
-  process.exit(1);
+  process.exit(error instanceof InstallError ? error.exitCode : 1);
 }
