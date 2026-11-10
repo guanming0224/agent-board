@@ -133,13 +133,19 @@ describe('rest routes', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it('exposes only setup, login, status and pairing without a session (§10)', () => {
+  it('exposes only setup, login, status, pairing and health without a session (§10, §21)', () => {
     const open = list
       .filter((r) => r.auth === 'public')
       .map((r) => r.path)
       .sort();
     expect(open).toEqual(
-      ['/api/auth/login', '/api/auth/setup', '/api/auth/status', '/api/machines/pair'].sort(),
+      [
+        '/api/auth/login',
+        '/api/auth/setup',
+        '/api/auth/status',
+        '/api/health',
+        '/api/machines/pair',
+      ].sort(),
     );
   });
 });

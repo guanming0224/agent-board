@@ -78,6 +78,10 @@ const CALL_SITES = new Set([
   'packages/daemon/src/worktree.ts child-process',
   'packages/daemon/src/sessionFiles.ts child-process',
   'packages/daemon/src/hookServer.ts node-network',
+  // 自動更新（2026-11-11，CONTRACTS §21.3）：用機器 token 向已配對的 hub 下載成品（不連 GitHub）、
+  // 用系統 tar 解壓、以 detached 方式啟動新版裡的 scripts/updater.mjs。
+  'packages/daemon/src/selfUpdate.ts fetch',
+  'packages/daemon/src/selfUpdate.ts child-process',
   // session host（2026-11-10，CONTRACTS §20）：本機 socket／named pipe，用 node-pty 開 daemon 指定的 agent、
   // 原樣轉送 daemon 的輸入。不連網路、不解析畫面、不呼叫 LLM。
   'packages/session-host/src/server.ts node-pty',
@@ -94,6 +98,9 @@ const CALL_SITES = new Set([
   'packages/hub/src/hub.ts terminal-input',
   'packages/hub/src/config.ts node-network',
   'packages/hub/src/auth.ts node-network',
+  // 發版（2026-11-11，CONTRACTS §21）：hub 機器上已登入的 gh CLI（子程序）查／下載 Release；
+  // 拿掉環境裡的 GH_TOKEN 等權杖、不讀權杖檔，只用 gh 自己的登入。
+  'packages/hub/src/release.ts child-process',
   // web：同源 API 與 WebSocket；使用者按下送出的 prompt
   'packages/web/src/shared/hubBackend.ts fetch',
   'packages/web/src/shared/hubBackend.ts websocket',
@@ -110,6 +117,10 @@ const CALL_SITES = new Set([
   'scripts/installer.mjs child-process',
   'scripts/installer.mjs fetch',
   'scripts/installer.mjs node-network',
+  // 獨立更新程式（隨發布檔散布）：跑新版的 installer.mjs、`agent-board-hub schema-version`，
+  // 健康檢查只連本機 hub 的 /api/health。
+  'scripts/updater.mjs child-process',
+  'scripts/updater.mjs fetch',
   // 在 Agent Board session 裡執行時，用 node spawn 把 install.sh 自己移到背景（2026-11-06 Lead 審查）
   'scripts/install.sh child-process',
 ]);
@@ -170,7 +181,13 @@ function sourceFiles() {
     files.push(...walk(join(root, 'packages', pkg, 'src'), (p) => CODE.test(p) && !isTest(p)));
   }
   // 安裝程式會隨發布檔散布並在使用者電腦上執行。
-  for (const file of ['installer.mjs', 'install.sh', 'install.ps1', 'fix-node-pty.mjs']) {
+  for (const file of [
+    'installer.mjs',
+    'updater.mjs',
+    'install.sh',
+    'install.ps1',
+    'fix-node-pty.mjs',
+  ]) {
     files.push(join(root, 'scripts', file));
   }
   files.push(...walk(join(root, 'scripts/lib'), (p) => CODE.test(p) && !isTest(p)));
@@ -278,11 +295,15 @@ const AGENT_BOARD_TOOLS = [
   }
   const mcpFiles = readFileSync(join(root, 'packages/daemon/src/mcpFiles.ts'), 'utf8');
   if (!mcpFiles.includes('`mcp__${DISPATCH_MCP_SERVER}__${tool}`')) {
-    problems.push('packages/daemon/src/mcpFiles.ts：--allowedTools 的工具全名不是 mcp__agent-board__<tool>');
+    problems.push(
+      'packages/daemon/src/mcpFiles.ts：--allowedTools 的工具全名不是 mcp__agent-board__<tool>',
+    );
   }
   const daemon = readFileSync(join(root, 'packages/daemon/src/daemon.ts'), 'utf8');
   if (!/allowedTools: tools\.map\(toolFullName\)/.test(daemon)) {
-    problems.push('packages/daemon/src/daemon.ts：--allowedTools 不是由 enabledTools 的 agent-board 工具組成');
+    problems.push(
+      'packages/daemon/src/daemon.ts：--allowedTools 不是由 enabledTools 的 agent-board 工具組成',
+    );
   }
 }
 

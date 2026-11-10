@@ -8,6 +8,8 @@
 # 其他選項：--from <發布檔.tar.gz 或資料夾>、--claude-bin <路徑>、--repair、--no-service、--no-start、
 #           --restart-session-host（session host 換版時才加：重啟會結束所有 session，之後用 --resume 接回）
 # 可重複執行：內容沒變就不重裝、不重啟服務。
+# 程式裝在 ~/.local/share/agent-board/releases/<版本>/，current 指向正在用的那版（保留最近 3 版）；
+# 之後的版本由 hub 自動更新（CONTRACTS §21）。--from 留給第一次安裝與緊急修復。
 # daemon 角色會一起裝 session host（macOS LaunchAgent com.agent-board.session-host、Linux systemd user
 # unit agent-board-session-host.service）：agent 掛在它底下，daemon 重啟或更新時不中斷（CONTRACTS §20）。
 # 服務設定由 scripts/installer.mjs 產生。
@@ -87,12 +89,15 @@ for arg in "$@"; do
 done
 
 if [ -n "$uninstall" ]; then
-  [ -f "$data_root/app/scripts/installer.mjs" ] || die "$(t "這台機器沒有安裝 Agent Board。" "Agent Board is not installed on this machine.")"
+  # 新配置是 current/（指向 releases/<版本>），舊配置是 app/。
+  installed="$data_root/current/scripts/installer.mjs"
+  [ -f "$installed" ] || installed="$data_root/app/scripts/installer.mjs"
+  [ -f "$installed" ] || die "$(t "這台機器沒有安裝 Agent Board。" "Agent Board is not installed on this machine.")"
   for arg in "$@"; do
     shift
     [ "$arg" = "--uninstall" ] || set -- "$@" "$arg"
   done
-  node "$data_root/app/scripts/installer.mjs" uninstall "$@"
+  node "$installed" uninstall "$@"
   exit $?
 fi
 

@@ -13,6 +13,8 @@ import {
   HOOK_ENV,
   MachineOs,
   DAEMON_FEATURES,
+  platformKey,
+  PROTOCOL_VERSION,
   type AgentKind,
   type DaemonToHub,
   type Approval,
@@ -30,7 +32,8 @@ import {
   probeHost,
   SessionHostClient,
 } from '@agent-board/session-host';
-import pkg from '../package.json' with { type: 'json' };
+import { SelfUpdater, writeDaemonStatus } from './selfUpdate';
+import { APP_VERSION } from './version';
 import { ApprovalManager } from './approvals';
 import {
   buildCodexArgs,
@@ -238,6 +241,8 @@ function editedFilePath(payload: HookRequest['payload']): string | null {
 export class Daemon {
   private readonly store: SessionStore;
   private readonly hub: HubClient;
+  /** 自動更新（CONTRACTS §21.3）。 */
+  private readonly updater: SelfUpdater;
   private readonly hookServer: HookServer;
   private readonly approvals: ApprovalManager;
   private readonly resources: ResourceMonitor;
@@ -305,6 +310,18 @@ export class Daemon {
     this.stuckMinutes = this.store.stuckMinutes ?? DEFAULT_STUCK_MINUTES;
     this.dispatchEnabled = this.store.dispatch;
     this.memoryEnabled = this.store.memory;
+    this.updater = new SelfUpdater({
+      dataDir: config.dataDir,
+      installRoot: config.installRoot ?? null,
+      currentVersion: APP_VERSION.version,
+      platform: platformKey(process.platform, process.arch),
+      hubUrl: config.hubUrl,
+      token: config.token,
+      sessionStatuses: () =>
+        [...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.runtime().status),
+      report: (state) => this.send({ type: 'update.status', state }),
+      ...(config.updateHealthMs ? { healthTimeoutMs: config.updateHealthMs } : {}),
+    });
     this.hub = new HubClient({
       url: config.hubUrl,
       token: config.token,
@@ -395,6 +412,7 @@ export class Daemon {
     if (this.usageTimer) clearInterval(this.usageTimer);
     this.usageTimer = null;
     this.clearRevokedTimer();
+    this.updater.dispose();
     this.resources.stop();
     await Promise.allSettled(this.creating.values());
     const sessions = [...this.sessions.values()];
@@ -880,7 +898,7 @@ export class Daemon {
       type: 'daemon.hello',
       name: this.deps.config.machineName,
       os: MachineOs.parse(process.platform),
-      version: pkg.version,
+      version: APP_VERSION.version,
       capabilities: this.capabilities,
       sessions: [
         ...[...this.sessions.values()].filter((s) => s.isAlive).map((s) => s.runtime()),
@@ -896,6 +914,13 @@ export class Daemon {
         // 偵測到 codex 才宣告：hub 只把 Codex 的 spec 送給有這個旗標的 daemon（§19）。
         ...(this.capabilities.codexVersion ? [DAEMON_FEATURES.codex] : []),
       ],
+      // 發版與自動更新（CONTRACTS §21）
+      protocolVersion: this.deps.config.protocolVersionOverride ?? PROTOCOL_VERSION,
+      buildId: APP_VERSION.buildId,
+      platform: platformKey(process.platform, process.arch),
+      previousVersion: this.updater.previousVersion,
+      hostsHub: this.updater.hostsHub,
+      update: this.updater.state,
     };
   }
 
@@ -939,10 +964,26 @@ export class Daemon {
         );
         for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
         this.settleStaleApprovals();
+        // 自動更新（§21.3）：健康檢查看 daemon-status.json；目標交給 SelfUpdater 判斷。
+        writeDaemonStatus(this.deps.config.dataDir, APP_VERSION).catch((error: unknown) =>
+          log.warn(`寫不進 daemon 狀態檔：${errorMessage(error)}`),
+        );
+        this.updater.onConnected();
+        if (message.release !== undefined) this.updater.onTarget(message.release, false);
         if (!this.usageReportedOnConnect) {
           this.usageReportedOnConnect = true;
           void this.reportUsage();
         }
+        return;
+      case 'release.target':
+        this.updater.onTarget(message.target, message.force);
+        return;
+      case 'release.rollback':
+        void this.updater.rollback();
+        return;
+      case 'daemon.rejected':
+        // 協定不相容（§21.4）：HubClient 已改成每 5 分鐘重試；太舊的話照 hub 給的版本自己更新（下載走 HTTP）。
+        if (message.reason === 'needs_update') this.updater.onTarget(message.release, false);
         return;
       case 'session.create':
         void this.createSession(message.requestId, message.sessionId, message.spec);

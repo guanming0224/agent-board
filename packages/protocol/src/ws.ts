@@ -32,6 +32,7 @@ import {
 } from './models';
 import { AgentBoardTool, ProgressCard } from './progress';
 import { UsageDetail } from './usage';
+import { ReleaseTarget, UpdateState } from './release';
 import {
   DeepSearchLimits,
   DeepSearchMachine,
@@ -190,11 +191,25 @@ export const DaemonToHub = z.discriminatedUnion('type', [
      * 例如「立刻中斷」只對支援 `signal.onlyIfStatus` 的 daemon 送 Esc。
      */
     features: z.array(z.string()).default([]),
+    /** hub ↔ daemon 協定版本（CONTRACTS §21.4）；舊 daemon 不送＝`LEGACY_PROTOCOL_VERSION`。 */
+    protocolVersion: z.number().int().positive().optional(),
+    /** 發布檔的 BUILD_ID（內容雜湊）；開發模式是 `dev`。舊 daemon 不送。 */
+    buildId: z.string().optional(),
+    /** `platformKey(os, arch)`，例如 `darwin-arm64`、`win-x64`。舊 daemon 不送（沒有自動更新）。 */
+    platform: z.string().optional(),
+    /** 上一版（可回滾到的版本）；開發模式或不知道為 null。 */
+    previousVersion: z.string().nullable().optional(),
+    /** 這台也裝了 hub（安裝程式的 roles 有 hub）：hub 自己的更新走這台 daemon。 */
+    hostsHub: z.boolean().optional(),
+    /** `<dataDir>/update-state.json` 的內容（上次更新的結果）。壞掉當沒送。 */
+    update: UpdateState.nullable().optional().catch(undefined),
   }),
   z.object({ type: z.literal('session.created'), requestId: Id, session: SessionRuntime }),
   z.object({ type: z.literal('session.createFailed'), requestId: Id, error: z.string() }),
   z.object({ type: z.literal('session.runtime'), session: SessionRuntime }),
   z.object({ type: z.literal('session.event'), event: SessionEvent }),
+  /** 更新狀態變了（延後、下載中、結果；CONTRACTS §21.3）。 */
+  z.object({ type: z.literal('update.status'), state: UpdateState }),
   /**
    * 帶 `onlyIfStatus` 的 `terminal.signal` 處理結果（不帶的不回）。sent＝已送出；false＝daemon 看到的狀態不符
    * 或找不到 session，沒送。status 是 daemon 當下看到的狀態（找不到 session 時為 null）。
@@ -294,6 +309,31 @@ export const HubToDaemon = z.discriminatedUnion('type', [
     dispatch: z.boolean().optional(),
     /** `Settings.memory`：新開的 claude 要不要掛進度卡工具（P3 項目一）。舊版 hub 不送 → 不掛。 */
     memory: z.boolean().optional(),
+    /** hub 的協定版本（CONTRACTS §21.4）。舊 hub 不送。 */
+    protocolVersion: z.number().int().positive().optional(),
+    /** 這台的更新目標（依通道）；null＝沒有。舊 hub 不送。 */
+    release: ReleaseTarget.nullable().optional(),
+  }),
+  /**
+   * 更新目標變了（新版、升 stable、切通道）或面板按「立即更新」（force：不管版本新舊、上次失敗過都照做，
+   * 延後條件仍然要過）。target null＝沒有目標。
+   */
+  z.object({
+    type: z.literal('release.target'),
+    target: ReleaseTarget.nullable(),
+    force: z.boolean(),
+  }),
+  /** 面板按「回滾到上一版」。 */
+  z.object({ type: z.literal('release.rollback') }),
+  /**
+   * 協定版本差太多，hub 不接受這個 daemon（送完就斷線）。needs_update：daemon 太舊，`release` 是可以更新到的版本
+   * （下載走 HTTP，不用 WebSocket）；hub_too_old：hub 太舊。daemon 改成每 5 分鐘重試一次。
+   */
+  z.object({
+    type: z.literal('daemon.rejected'),
+    reason: z.enum(['needs_update', 'hub_too_old']),
+    hubProtocolVersion: z.number().int().positive(),
+    release: ReleaseTarget.nullable(),
   }),
   z.object({ type: z.literal('session.create'), requestId: Id, sessionId: Id, spec: SessionSpec }),
   z.object({ type: z.literal('session.stop'), sessionId: Id }),

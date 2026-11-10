@@ -13,3 +13,4 @@ export * from './usageReport';
 export * from './leadGuide';
 export * from './codex';
 export * from './sessionHost';
+export * from './release';

@@ -1,8 +1,8 @@
 // 把 Fastify、WebSocket 升級與 Hub 組起來。測試與 main.ts 都走這裡。
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { relative, resolve, sep } from 'node:path';
+import { dirname, relative, resolve, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
@@ -29,8 +29,10 @@ import { HttpError } from './errors';
 import { DEFAULT_TIMING, Hub, type Timing } from './hub';
 import { generateVapidKeys, webPushTransport, type PushTransport } from './push';
 import { AUTH_COOKIE, registerRest } from './rest';
+import { RELEASE_CHECK_INTERVAL_MS, type GhRunner } from './release';
 import { runRetention, RETENTION_INTERVAL_MS } from './retention';
 import { Store } from './store';
+import type { AppVersion } from './version';
 
 export interface HubOptions {
   dbPath: string;
@@ -49,6 +51,14 @@ export interface HubOptions {
   pairingLimit?: { perIp: number; global: number };
   /** undefined 用預設天數；null 不跑（測試用）。 */
   retention?: RetentionDays | null;
+  /**
+   * 發版與自動更新（CONTRACTS §21）。releaseDataDir：release-cache 的上層（預設資料庫所在的資料夾，記憶體資料庫為
+   * null）；gh：測試換成假的；releaseCheckIntervalMs：多久查一次新版（null 不自動查）；version：測試假裝成別的版本。
+   */
+  releaseDataDir?: string | null;
+  gh?: GhRunner;
+  releaseCheckIntervalMs?: number | null;
+  version?: AppVersion;
 }
 
 export interface RunningHub {
@@ -153,6 +163,16 @@ export function createHub(options: HubOptions): RunningHub {
     now,
     pushTransport: options.pushTransport ?? webPushTransport,
     vapid,
+    release: {
+      dataDir:
+        options.releaseDataDir !== undefined
+          ? options.releaseDataDir
+          : options.dbPath === ':memory:'
+            ? null
+            : dirname(options.dbPath),
+      ...(options.gh ? { gh: options.gh } : {}),
+      ...(options.version ? { version: options.version } : {}),
+    },
   });
 
   // 前端的 fetch 可能帶 JSON content-type 卻沒有 body（stop、logout 這類路由）。
@@ -225,6 +245,34 @@ export function createHub(options: HubOptions): RunningHub {
       pairingLimit: options.pairingLimit ?? { perIp: 10, global: 30 },
     });
   });
+
+  // daemon 下載成品（§21.3）：機器 token 驗證，只給 release-cache 裡驗過 SHA-256 的檔案。回的是檔案，不在 routes 表。
+  app.get<{ Params: { version: string; platform: string } }>(
+    '/api/releases/:version/:platform',
+    async (req, reply) => {
+      const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
+      const machine = bearer ? store.machineByTokenHash(sha256(bearer)) : null;
+      if (!machine) throw new HttpError(401, 'unauthenticated', 'Machine token required');
+      await hub.release.loadCache();
+      const file = hub.release.releaseFile(req.params.version, req.params.platform);
+      if (!file) throw new HttpError(404, 'not_found', 'No such release file');
+      hub.audit(
+        null,
+        null,
+        'release.download',
+        JSON.stringify({
+          machineId: machine.id,
+          version: req.params.version,
+          platform: req.params.platform,
+        }),
+      );
+      return reply
+        .header('content-type', 'application/octet-stream')
+        .header('content-length', file.size)
+        .header('x-agent-board-sha256', file.sha256)
+        .send(createReadStream(file.path));
+    },
+  );
 
   const webDir =
     options.webDir === undefined ? resolve(import.meta.dirname, '../../web/dist') : options.webDir;
@@ -310,6 +358,18 @@ export function createHub(options: HubOptions): RunningHub {
     }
   };
 
+  const releaseInterval =
+    options.releaseCheckIntervalMs === undefined
+      ? RELEASE_CHECK_INTERVAL_MS
+      : options.releaseCheckIntervalMs;
+  let releaseTimer: NodeJS.Timeout | null = null;
+  let releaseFirst: NodeJS.Timeout | null = null;
+  const checkReleases = () => {
+    hub.release.check().catch((error: unknown) => {
+      app.log.warn({ err: error }, 'release check failed');
+    });
+  };
+
   let closing: Promise<void> | null = null;
 
   return {
@@ -324,6 +384,14 @@ export function createHub(options: HubOptions): RunningHub {
       retain();
       retentionTimer = setInterval(retain, RETENTION_INTERVAL_MS);
       retentionTimer.unref();
+      void hub.release.loadCache();
+      if (releaseInterval !== null) {
+        // 開機後稍等再查第一次（不拖慢啟動），之後每 10 分鐘。沒設 repo 不會叫 gh。
+        releaseFirst = setTimeout(checkReleases, Math.min(30_000, releaseInterval));
+        releaseFirst.unref();
+        releaseTimer = setInterval(checkReleases, releaseInterval);
+        releaseTimer.unref();
+      }
       const { port } = app.server.address() as AddressInfo;
       const urlHost = host.includes(':') ? `[${host}]` : host;
       return { host, port, url: `http://${urlHost}:${port}` };
@@ -331,6 +399,8 @@ export function createHub(options: HubOptions): RunningHub {
     close() {
       closing ??= (async () => {
         if (retentionTimer) clearInterval(retentionTimer);
+        if (releaseTimer) clearInterval(releaseTimer);
+        if (releaseFirst) clearTimeout(releaseFirst);
         app.server.off('upgrade', onUpgrade);
         await hub.close();
         daemonWss.close();

@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   handoffRuleProblem,
   isReadOnlyMember,
+  PROTOCOL_VERSION,
   routes,
   type HandoffRule,
   type RouteName,
@@ -613,6 +614,38 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     pushUnsubscribe: (ctx) => {
       store.deletePushSubscription(ctx.user.id, ctx.body.endpoint);
       return ok;
+    },
+
+    // 發版與自動更新（CONTRACTS §21）
+    health: () => ({ ok: true, ...hub.release.hubVersion, protocolVersion: PROTOCOL_VERSION }),
+    releasesOverview: async () => {
+      await hub.release.loadCache();
+      return hub.release.overview();
+    },
+    releasesCheck: async (ctx) => {
+      await hub.release.check(ctx.user.id);
+      return hub.release.overview();
+    },
+    releasesPromote: async (ctx) => {
+      await hub.release.loadCache();
+      hub.release.promote(ctx.body.version, ctx.body.confirm, ctx.user.id);
+      return hub.release.overview();
+    },
+    releasesConfig: (ctx) => {
+      hub.release.setRepo(ctx.body.repo, ctx.user.id);
+      return hub.release.overview();
+    },
+    machineChannel: (ctx) => {
+      hub.release.setChannel(param(ctx), ctx.body.channel, ctx.user.id);
+      return hub.release.overview();
+    },
+    machineUpdate: (ctx) => {
+      hub.updateMachineNow(param(ctx), ctx.user);
+      return hub.release.overview();
+    },
+    machineRollback: (ctx) => {
+      hub.rollbackMachine(param(ctx), ctx.user);
+      return hub.release.overview();
     },
   };
 

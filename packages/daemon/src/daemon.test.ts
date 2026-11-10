@@ -6,6 +6,8 @@ import { DAEMON_FEATURES, DaemonToHub } from '@agent-board/protocol';
 import type { Daemon } from './daemon';
 import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { platformKey, PROTOCOL_VERSION } from '@agent-board/protocol';
+import rootPkg from '../../../package.json' with { type: 'json' };
 import {
   dumpScreen,
   flushTerm,
@@ -1916,7 +1918,14 @@ describe('capabilities', () => {
     const hello = await h.hub.waitFor('daemon.hello');
     expect(hello.capabilities.claudeVersion).toBe('9.9.9');
     expect(hello.capabilities.cpuCores).toBeGreaterThan(0);
-    expect(hello.version).toBe('0.0.0');
+    // 版本是 repo 根目錄 package.json 的（開發模式 buildId 是 dev），協定版本與平台一起回報（§21）。
+    expect(hello.version).toBe(rootPkg.version);
+    expect(hello.buildId).toBe('dev');
+    expect(hello.protocolVersion).toBe(PROTOCOL_VERSION);
+    expect(hello.platform).toBe(platformKey(process.platform, process.arch));
+    // 不是安裝程式裝的：沒有上一版、不是 hub 機器。
+    expect(hello.previousVersion).toBeNull();
+    expect(hello.hostsHub).toBe(false);
     expect(hello.name).toBe('test-machine');
     expect(hello.os).toBe(process.platform);
   });

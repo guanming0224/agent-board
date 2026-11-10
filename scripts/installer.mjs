@@ -1,8 +1,15 @@
-// 跨平台安裝邏輯，由 install.sh／install.ps1 呼叫（它們負責檢查 Node、取得發布檔）。
-// 只用 node 內建模組。除了 npm ci 下載依賴，不對外連線、不送任何資料；只碰使用者目錄，不需要 root。
+// 跨平台安裝邏輯，由 install.sh／install.ps1 與自動更新程式（updater.mjs）呼叫。
+// 只用 node 內建模組。除了發布檔沒帶這個平台的依賴時用 npm ci 下載，不對外連線、不送任何資料；
+// 只碰使用者目錄，不需要 root。
 //
 //   node installer.mjs install hub|daemon --source <解開的發布檔> [選項]
+//   node installer.mjs switch --to <releases 底下的資料夾> [--restore-db <備份檔>]   （更新程式回滾用）
 //   node installer.mjs uninstall [--purge]
+//
+// 配置（CONTRACTS §21.2）：每版一個資料夾 releases/<版本>/，current 指向正在用的那版（Mac／Linux 是 symlink，
+// Windows 是 junction），服務與捷徑一律指 current/…，換版只換 current。保留最近 3 版。
+// 舊的單一 app/ 第一次執行時搬成 releases/<版本或 0.0.0-legacy>/，app 留成指向 current 的連結
+// （舊 session 的 PATH、MCP 設定檔寫的是 app/… 的路徑）。
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
@@ -25,7 +32,7 @@ import {
 } from 'node:fs';
 import { createServer, isIP } from 'node:net';
 import { homedir, userInfo } from 'node:os';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   renderLaunchd,
@@ -38,6 +45,8 @@ import {
 // 只給測試用：在 macOS 上演練 Linux 的流程。正式使用不設。
 const platform = process.env.AGENT_BOARD_INSTALL_PLATFORM || process.platform;
 const isWindows = platform === 'win32';
+// 只給測試用：假發布檔沒有原生模組，略過 npm ci、原生模組與 PTY 檢查（scripts/updater.test.mjs）。正式使用不設。
+const skipNativeChecks = process.env.AGENT_BOARD_INSTALL_TEST_SKIP_NATIVE === '1';
 
 const DEFAULT_PORT = 8787;
 const HEALTH_TIMEOUT_MS = 20_000;
@@ -77,7 +86,11 @@ function layout() {
   return {
     home,
     root,
+    /** 舊版的單一程式資料夾；搬到 releases 之後留成指向 current 的連結。 */
     app: join(root, 'app'),
+    releases: join(root, 'releases'),
+    /** 正在用的那一版（連結）。服務、捷徑、hook 路徑都指這裡。 */
+    current: join(root, 'current'),
     state: join(root, 'install.json'),
     services: join(root, 'services'),
     // session host 跑的那一份（W1）：和 app 分開，換 app 時不動正在跑的 host 載入的檔案（node-pty、spawn-helper）。
@@ -172,26 +185,133 @@ function writeIfChanged(path, content) {
   return true;
 }
 
-// ── 程式檔 ───────────────────────────────────────────────
+// ── 程式檔（releases/<版本> ＋ current） ─────────────────────
 
-/** 回傳 app 內容有沒有變動。一樣就不重裝，服務也不用重啟（重啟會打斷 session）。 */
-function installApp(paths, source, stopServices) {
-  const buildId = readFileSync(join(source, 'BUILD_ID'), 'utf8').trim();
-  const installedId = join(paths.app, 'BUILD_ID');
-  if (existsSync(installedId) && readFileSync(installedId, 'utf8').trim() === buildId) {
-    say(t('程式已是這個版本，略過安裝。', 'Already on this version, skipping install.'));
+/** 保留幾版（current、上一版一定留）。 */
+const KEEP_RELEASES = 3;
+/** 依賴與原生模組檢查都過了才寫：沒有這個檔的資料夾是半成品。 */
+const INSTALLED_MARKER = '.installed';
+/** 發布檔裡 node_modules 是哪個平台建的（build-release 寫）；和這台一樣才直接用。 */
+const MODULES_PLATFORM_FILE = '.node-modules-platform';
+const thisPlatform = () => `${platform === 'win32' ? 'win' : platform}-${process.arch}`;
+
+const readJsonFile = (path) => {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+};
+const readBuildId = (dir) => {
+  try {
+    return readFileSync(join(dir, 'BUILD_ID'), 'utf8').trim();
+  } catch {
+    return null;
+  }
+};
+/** 發布檔的版本（package.json）；舊版發布檔是 0.0.0 或沒有，記成 0.0.0-legacy。 */
+const releaseVersion = (dir) => {
+  const version = readJsonFile(join(dir, 'package.json'))?.version;
+  return typeof version === 'string' && version !== '0.0.0' ? version : '0.0.0-legacy';
+};
+
+function isLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
     return false;
   }
-  const staging = `${paths.app}.new`;
-  rmSync(staging, { recursive: true, force: true });
-  mkdirSync(paths.root, { recursive: true });
-  cpSync(source, staging, { recursive: true });
+}
 
+/** current 指向的 releases 底下的資料夾名稱；沒有回 null。 */
+function currentRelease(paths) {
+  try {
+    const real = realpathSync(paths.current);
+    return dirname(real) === realpathSync(paths.releases) ? basename(real) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把 link 指向 target（資料夾）。Mac／Linux：先建暫時的 symlink 再 rename 蓋過去（原子操作，任何時刻
+ * current 都指著一個完整的版本）；目標用相對路徑，整個安裝資料夾搬家也不會斷。
+ * Windows：junction 不能 rename 蓋過，先刪再建（有極短的空窗；未在 Windows 實測）。
+ */
+function pointLink(link, target) {
+  if (isWindows) {
+    if (existsSync(link) || isLink(link)) rmSync(link, { recursive: false, force: true });
+    symlinkSync(target, link, 'junction');
+    return;
+  }
+  const base = dirname(link);
+  const relativeTarget = target.startsWith(`${base}/`) ? target.slice(base.length + 1) : target;
+  const temp = `${link}.new-${randomBytes(4).toString('hex')}`;
+  symlinkSync(relativeTarget, temp);
+  renameSync(temp, link);
+}
+
+/**
+ * 舊配置（單一 app/ 資料夾）第一次遇到新安裝程式：搬成 releases/<版本或 0.0.0-legacy>/、建 current，
+ * app 留成指向 current 的連結。正在跑的 hub、daemon 不受影響（檔案沒變，只是換了名字），換版時才重啟。
+ */
+function migrateLegacyApp(paths, state) {
+  let stat;
+  try {
+    stat = lstatSync(paths.app);
+  } catch {
+    return;
+  }
+  if (!stat.isDirectory() || existsSync(paths.current)) return;
+  mkdirSync(paths.releases, { recursive: true });
+  let name = releaseVersion(paths.app);
+  if (existsSync(join(paths.releases, name))) name = `${name}-${randomBytes(3).toString('hex')}`;
+  const target = join(paths.releases, name);
+  renameSync(paths.app, target);
+  writeFileSync(join(target, INSTALLED_MARKER), `${new Date().toISOString()}\n`);
+  pointLink(paths.current, target);
+  pointLink(paths.app, paths.current);
+  state.currentRelease = name;
+  state.currentVersion = releaseVersion(target);
+  say(
+    t(
+      `已把舊的程式資料夾搬到 ${target}，current 指向它（app 留成連結）。`,
+      `Moved the old program folder to ${target} and pointed current at it (app is kept as a link).`,
+    ),
+  );
+}
+
+const probeNative = (dir) =>
+  run(
+    process.execPath,
+    [
+      '-e',
+      "require('node-pty');require('argon2');new (require('better-sqlite3'))(':memory:').close()",
+    ],
+    { cwd: dir },
+  );
+
+/** 依賴與原生模組：發布檔帶了這個平台的 node_modules 就先試；載不起來（例如 Node 版本不同）再 npm ci。 */
+function installDependencies(dir) {
+  if (skipNativeChecks) return;
+  const bundled =
+    existsSync(join(dir, 'node_modules')) &&
+    readJsonFile(join(dir, MODULES_PLATFORM_FILE))?.platform === thisPlatform();
+  if (bundled && probeNative(dir).status === 0) return;
+  if (bundled) {
+    say(
+      t(
+        '發布檔附的原生模組在這個 Node 版本載不起來，改用 npm ci 重新安裝…',
+        'The bundled native modules do not load on this Node version; reinstalling with npm ci...',
+      ),
+    );
+  }
+  rmSync(join(dir, 'node_modules'), { recursive: true, force: true });
   say(t('安裝依賴（npm ci）…', 'Installing dependencies (npm ci)...'));
   const npm = run(
     'npm',
     ['ci', '--omit=dev', '--no-audit', '--no-fund', '--no-update-notifier', '--loglevel=error'],
-    { cwd: staging, stdio: 'inherit' },
+    { cwd: dir, stdio: 'inherit' },
   );
   if (npm.status !== 0) {
     fail(
@@ -206,14 +326,7 @@ function installApp(paths, source, stopServices) {
           ),
     );
   }
-  const probe = run(
-    process.execPath,
-    [
-      '-e',
-      "require('node-pty');require('argon2');new (require('better-sqlite3'))(':memory:').close()",
-    ],
-    { cwd: staging },
-  );
+  const probe = probeNative(dir);
   if (probe.status !== 0) {
     fail(
       t(
@@ -222,14 +335,76 @@ function installApp(paths, source, stopServices) {
       ),
     );
   }
+}
 
-  // Windows 不能換掉執行中程式載入的 .node 檔；其他平台換完再重啟，中斷時間最短。
-  if (isWindows) stopServices();
-  const old = `${paths.app}.old-${randomBytes(4).toString('hex')}`;
-  if (existsSync(paths.app)) renameSync(paths.app, old);
-  renameSync(staging, paths.app);
-  rmSync(old, { recursive: true, force: true });
+/**
+ * 把發布檔裝到 releases/<版本>/（先在 .partial 準備好、依賴與原生模組都過了才改名），再把 current 指過去。
+ * current 已經是同一份內容（BUILD_ID 相同）就什麼都不做：服務也不用重啟（重啟會打斷 session）。
+ * 同版本但內容不同（從原始碼重建）而且那版正在用：裝到 <版本>+<BUILD_ID 前 8 碼>，不動正在用的那份。
+ * 回傳 current 有沒有換。
+ */
+function installRelease(paths, source, state) {
+  const buildId = readBuildId(source);
+  const version = releaseVersion(source);
+  const active = currentRelease(paths);
+  if (active && readBuildId(join(paths.releases, active)) === buildId) {
+    say(t('程式已是這個版本，略過安裝。', 'Already on this version, skipping install.'));
+    return false;
+  }
+  mkdirSync(paths.releases, { recursive: true });
+  let name = version;
+  if (name === active) {
+    name = `${version}+${buildId.slice(0, 8)}`;
+    say(
+      t(`同版本不同內容，裝到 ${name}。`, `Same version, different build: installing as ${name}.`),
+    );
+  }
+  const target = join(paths.releases, name);
+  const ready = existsSync(join(target, INSTALLED_MARKER)) && readBuildId(target) === buildId;
+  if (!ready) {
+    rmSync(target, { recursive: true, force: true });
+    const staging = `${target}.partial`;
+    rmSync(staging, { recursive: true, force: true });
+    cpSync(source, staging, { recursive: true, verbatimSymlinks: true });
+    installDependencies(staging);
+    writeFileSync(join(staging, INSTALLED_MARKER), `${new Date().toISOString()}\n`);
+    renameSync(staging, target);
+  }
+  pointLink(paths.current, target);
+  if (active && active !== name) {
+    state.previousRelease = active;
+    state.previousVersion = releaseVersion(join(paths.releases, active));
+  }
+  state.currentRelease = name;
+  state.currentVersion = version;
+  pruneReleases(paths, state);
   return true;
+}
+
+/** 只留最近 KEEP_RELEASES 版（依安裝時間）；current 與上一版一定留。 */
+function pruneReleases(paths, state) {
+  let names;
+  try {
+    names = readdirSync(paths.releases).filter(
+      (name) => !name.startsWith('.') && !name.endsWith('.partial'),
+    );
+  } catch {
+    return;
+  }
+  const keep = new Set([state.currentRelease, state.previousRelease].filter(Boolean));
+  const installedAt = (name) => {
+    try {
+      return lstatSync(join(paths.releases, name, INSTALLED_MARKER)).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
+  const others = names
+    .filter((name) => !keep.has(name))
+    .sort((a, b) => installedAt(b) - installedAt(a));
+  for (const name of others.slice(Math.max(0, KEEP_RELEASES - keep.size))) {
+    rmSync(join(paths.releases, name), { recursive: true, force: true });
+  }
 }
 
 const shellQuote = (text) => `'${text.replaceAll("'", `'\\''`)}'`;
@@ -260,7 +435,7 @@ function installShims(paths, node) {
   mkdirSync(paths.bin, { recursive: true });
   if (isWindows) {
     // .cmd 用系統碼頁解讀，使用者名稱有中文時不能寫死路徑；一律相對於 shim 自己。
-    const relative = (parts) => `%~dp0..\\app\\${parts.join('\\')}`;
+    const relative = (parts) => `%~dp0..\\current\\${parts.join('\\')}`;
     const cmd = (parts) => `@rem ${SHIM_MARKER}\r\n@node "${relative(parts)}" %*\r\n`;
     writeShim(join(paths.bin, 'agent-board-hub.cmd'), cmd(ENTRY.hub), 0o755);
     writeShim(join(paths.bin, 'agent-board-daemon.cmd'), cmd(ENTRY.daemon), 0o755);
@@ -268,18 +443,22 @@ function installShims(paths, node) {
     // Claude Code 在 Windows 可能用 Git Bash 跑 hook，bash 不認 .cmd。
     writeShim(
       join(paths.bin, 'agent-board-hook'),
-      `#!/bin/sh\n# ${SHIM_MARKER}\nexec node "$(dirname "$0")/../app/${HOOK_PATH.join('/')}" "$@"\n`,
+      `#!/bin/sh\n# ${SHIM_MARKER}\nexec node "$(dirname "$0")/../current/${HOOK_PATH.join('/')}" "$@"\n`,
       0o755,
     );
     return;
   }
   const script = (entry) =>
     `#!/bin/sh\n# ${SHIM_MARKER}\nexec ${shellQuote(node)} ${shellQuote(entry)} "$@"\n`;
-  writeShim(join(paths.bin, 'agent-board-hub'), script(join(paths.app, ...ENTRY.hub)), 0o755);
-  writeShim(join(paths.bin, 'agent-board-daemon'), script(join(paths.app, ...ENTRY.daemon)), 0o755);
+  writeShim(join(paths.bin, 'agent-board-hub'), script(join(paths.current, ...ENTRY.hub)), 0o755);
+  writeShim(
+    join(paths.bin, 'agent-board-daemon'),
+    script(join(paths.current, ...ENTRY.daemon)),
+    0o755,
+  );
   // 專案的 settings.local.json 留有 hook 設定，使用者自己開 claude 時也會呼叫；
   // 放在 PATH 上它會立刻 exit 0（沒有 session 標記），否則每次工具呼叫都噴 exit 127。
-  const hook = join(paths.app, ...HOOK_PATH);
+  const hook = join(paths.current, ...HOOK_PATH);
   const hookLink = join(paths.bin, 'agent-board-hook');
   if (existsSync(hookLink) || isDanglingLink(hookLink)) {
     if (!isOurShim(hookLink))
@@ -343,6 +522,12 @@ function serviceEnv(role, ctx) {
     if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
     // 連不上 session host 時，daemon 用這個名稱叫服務管理程式把它拉起來（launchctl kickstart 等）。
     env.AGENT_BOARD_SESSION_HOST_SERVICE = serviceName(SESSION_HOST);
+    // 自動更新（CONTRACTS §21.3）：daemon 從這裡找 releases、current、install.json。
+    env.AGENT_BOARD_INSTALL_ROOT = paths.root;
+    // hook 與派工 MCP server 用 current 底下的路徑：node 會把入口的 symlink 解開，不指定的話 daemon 寫進
+    // agent 環境（PATH）與 MCP 設定檔的是 releases/<版本>/…，舊版被清掉後還活著的 agent 就找不到。
+    env.AGENT_BOARD_HOOK_BIN = join(paths.current, ...HOOK_PATH);
+    env.AGENT_BOARD_MCP_SERVER = join(paths.current, 'daemon', 'dist', 'agent-board-mcp.mjs');
   }
   return env;
 }
@@ -434,14 +619,16 @@ function busySessions(paths) {
  * 只在 host 要（重新）啟動時做：換 app 時正在跑的那份完全不動。
  */
 function prepareHostRuntime(paths) {
-  const source = appHostFiles(paths.app);
+  const source = appHostFiles(paths.current);
   const staging = `${paths.host}.new`;
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(join(staging, 'node_modules'), { recursive: true });
   cpSync(dirname(source.main), join(staging, 'dist'), { recursive: true });
   cpSync(source.nodePty, join(staging, 'node_modules', 'node-pty'), { recursive: true });
   // 不只載入：真的用這份 node-pty 開一個 PTY 跑 echo（spawn-helper 壞掉、權限不對都會在這裡被擋下）。
-  const probe = run(process.execPath, ['-e', PTY_PROBE], { cwd: staging, timeout: 15_000 });
+  const probe = skipNativeChecks
+    ? { status: 0 }
+    : run(process.execPath, ['-e', PTY_PROBE], { cwd: staging, timeout: 15_000 });
   if (probe.status !== 0) {
     rmSync(staging, { recursive: true, force: true });
     fail(
@@ -491,7 +678,8 @@ function writeService(role, ctx) {
     label: launchdLabel(role),
     description: `Agent Board ${role}`,
     node,
-    entry: role === SESSION_HOST ? runningHostFiles(paths).main : join(paths.app, ...ENTRY[role]),
+    entry:
+      role === SESSION_HOST ? runningHostFiles(paths).main : join(paths.current, ...ENTRY[role]),
     env: serviceEnv(role, ctx),
     workdir: paths.home,
     log: logPath(paths, role),
@@ -712,7 +900,7 @@ function pairDaemon(options, ctx) {
   }
   const paired = run(
     node,
-    [join(paths.app, ...ENTRY.daemon), 'pair', '--hub', options.hub, '--code', options.code],
+    [join(paths.current, ...ENTRY.daemon), 'pair', '--hub', options.hub, '--code', options.code],
     {
       stdio: 'inherit',
       env: {
@@ -781,6 +969,10 @@ async function install(argv) {
     claudeBin: previous.claudeBin,
     sessionHostBuild: previous.sessionHostBuild,
     sessionHostProtocol: previous.sessionHostProtocol,
+    currentRelease: previous.currentRelease,
+    currentVersion: previous.currentVersion,
+    previousRelease: previous.previousRelease,
+    previousVersion: previous.previousVersion,
   };
   if (options.port !== undefined) {
     const port = Number(options.port);
@@ -854,10 +1046,11 @@ async function install(argv) {
     }
   }
 
-  const appChanged = installApp(paths, options.source, () => {
-    // Windows 換程式檔前要停掉服務（.node 檔被鎖）。session host 跑的是自己資料夾裡那份，不用停（W1）。
-    if (activate) for (const r of previous.roles) stopService(r);
-  });
+  // 新版裝在自己的資料夾，不會蓋到正在跑的程式載入的檔案（Windows 的 .node 也不會被鎖住），換 current 再重啟。
+  migrateLegacyApp(paths, state);
+  const appChanged = installRelease(paths, options.source, state);
+  // current 換了就先記下來：後面（服務設定、啟動）失敗時，install.json 和實際的 current 也一致。
+  if (appChanged) writeFileSync(paths.state, `${JSON.stringify(state, null, 2)}\n`);
   installShims(paths, node);
   if (role === 'daemon') pairDaemon(options, ctx);
 
@@ -883,7 +1076,7 @@ async function install(argv) {
         state.sessionHostBuild = sessionHostBuild(runningHostFiles(paths));
         state.sessionHostProtocol = sessionHostProtocol(runningHostFiles(paths));
       } else if (
-        sessionHostBuild(appHostFiles(paths.app)) !== state.sessionHostBuild ||
+        sessionHostBuild(appHostFiles(paths.current)) !== state.sessionHostBuild ||
         serviceChanged
       ) {
         hostUpdatePending = true;
@@ -1029,15 +1222,83 @@ function uninstall(argv) {
   }
 }
 
+/**
+ * 把 current 指回 releases 底下已裝好的某一版並重啟 hub、daemon（更新程式的回滾，CONTRACTS §21.3）。
+ * --restore-db：先停 hub、用更新前的備份蓋回 hub.db（這次升級改了 schema 時，舊版 hub 開不了新的資料庫）。
+ * 目標版的 session host 協定和現在跑的不同：連 session host 一起換回（不然舊 daemon 連不上新 host；
+ * 會結束所有 agent，之後照 §3.2 --resume 接回）。不檢查有沒有 session 在工作：回滾時不換的話 agent 一樣接不回。
+ */
+async function switchRelease(argv) {
+  const { values: options } = parseArgs({
+    args: argv,
+    options: {
+      to: { type: 'string' },
+      'restore-db': { type: 'string' },
+      'no-start': { type: 'boolean' },
+    },
+  });
+  const paths = layout();
+  const state = { ...readState(paths) };
+  const name = options.to;
+  if (!name || name.includes('/') || name.includes('\\') || name.startsWith('.'))
+    fail(
+      t('要用 --to 指定 releases 底下的資料夾名稱。', '--to must name a folder under releases.'),
+    );
+  const target = join(paths.releases, name);
+  if (!existsSync(join(target, INSTALLED_MARKER)))
+    fail(t(`${target} 不是裝好的版本。`, `${target} is not an installed release.`));
+  const ctx = { paths, node: stableNodePath(), state, claude: state.claudeBin ?? null };
+  const roles = state.roles.filter((r) => ROLES.includes(r));
+  const activate = !options['no-start'];
+
+  const restore = options['restore-db'];
+  if (restore) {
+    if (!existsSync(restore)) fail(t(`找不到備份：${restore}`, `Backup not found: ${restore}`));
+    if (activate && roles.includes('hub')) stopService('hub');
+    const db = join(dataDir(paths), 'hub.db');
+    for (const suffix of ['-wal', '-shm']) rmSync(`${db}${suffix}`, { force: true });
+    cpSync(restore, db);
+    chmodSync(db, 0o600);
+    say(t(`已用 ${restore} 還原 ${db}。`, `Restored ${db} from ${restore}.`));
+  }
+
+  const from = currentRelease(paths);
+  pointLink(paths.current, target);
+  if (from && from !== name) {
+    state.previousRelease = from;
+    state.previousVersion = releaseVersion(join(paths.releases, from));
+  }
+  state.currentRelease = name;
+  state.currentVersion = releaseVersion(target);
+
+  if (roles.includes('daemon') && existsSync(runningHostFiles(paths).main)) {
+    const wanted = sessionHostProtocol(appHostFiles(paths.current));
+    if (wanted !== null && wanted !== (state.sessionHostProtocol ?? null)) {
+      installHostRuntime(paths, { stopRunning: activate });
+      state.sessionHostBuild = sessionHostBuild(runningHostFiles(paths));
+      state.sessionHostProtocol = sessionHostProtocol(runningHostFiles(paths));
+      if (activate) startService(SESSION_HOST, ctx, { restart: false });
+    }
+  }
+  installShims(paths, ctx.node);
+  for (const role of roles) {
+    writeService(role, ctx);
+    if (activate) startService(role, ctx, { restart: true });
+  }
+  writeFileSync(paths.state, `${JSON.stringify(state, null, 2)}\n`);
+  say(t(`current 已指向 ${name}。`, `current now points to ${name}.`));
+}
+
 const [command, ...rest] = process.argv.slice(2);
 try {
   if (command === 'install') await install(rest);
+  else if (command === 'switch') await switchRelease(rest);
   else if (command === 'uninstall') uninstall(rest);
   else
     fail(
       t(
-        '用法：installer.mjs install hub|daemon [選項]，或 installer.mjs uninstall [--purge]',
-        'Usage: installer.mjs install hub|daemon [options], or installer.mjs uninstall [--purge]',
+        '用法：installer.mjs install hub|daemon [選項]、installer.mjs switch --to <版本資料夾>，或 installer.mjs uninstall [--purge]',
+        'Usage: installer.mjs install hub|daemon [options], installer.mjs switch --to <release folder>, or installer.mjs uninstall [--purge]',
       ),
     );
 } catch (error) {

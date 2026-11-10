@@ -1,4 +1,7 @@
-// 打包發布檔：release/agent-board.tar.gz，用 Node ≥22.18 直接跑，不需要 tsx 或 pnpm。
+// 打包發布檔（CONTRACTS §21.1）：release/agent-board-<版本>-<平台>.tar.gz（Windows 是 .zip）與 SHA256SUMS，
+// 用 Node ≥22.18 直接跑，不需要 tsx 或 pnpm。平台是建置這台機器的平台（darwin-arm64、win-x64…）：
+// 發布檔裡附這個平台的 node_modules（含 node-pty、better-sqlite3、argon2 的原生檔），各機更新時不用再 npm ci；
+// 安裝時載不起來（例如 Node 版本不同）安裝程式會退回 npm ci。GitHub Actions 在 macos-14 與 windows-latest 各建一份。
 // 目錄結構刻意和 monorepo 對齊，功能程式碼裡的相對路徑才不用改：
 //   hub/dist/main.mjs    → ../../web/dist（server.ts 找前端）
 //   daemon/dist/index.mjs → ../node_modules/.bin/agent-board-hook（useBundledHook 找 hook）
@@ -148,7 +151,13 @@ function buildWeb() {
 
 function copyInstallFiles() {
   mkdirSync(join(stage, 'scripts'), { recursive: true });
-  for (const file of ['install.sh', 'install.ps1', 'installer.mjs', 'fix-node-pty.mjs']) {
+  for (const file of [
+    'install.sh',
+    'install.ps1',
+    'installer.mjs',
+    'updater.mjs',
+    'fix-node-pty.mjs',
+  ]) {
     cpSync(join(root, 'scripts', file), join(stage, 'scripts', file));
   }
   cpSync(join(root, 'scripts/lib'), join(stage, 'scripts/lib'), { recursive: true });
@@ -202,19 +211,45 @@ function writeBuildId() {
   writeFileSync(join(stage, 'BUILD_ID'), `${hash.digest('hex')}\n`);
 }
 
-function packTarball() {
-  const tarball = join(outDir, 'agent-board.tar.gz');
-  execFileSync('tar', ['-czf', 'agent-board.tar.gz', 'agent-board'], {
-    cwd: outDir,
-    env: { ...process.env, COPYFILE_DISABLE: '1' },
-  });
-  const digest = createHash('sha256').update(readFileSync(tarball)).digest('hex');
-  writeFileSync(`${tarball}.sha256`, `${digest}  agent-board.tar.gz\n`);
+/** 這台機器的平台字串，和 protocol 的 platformKey 一樣（win32 寫成 win）。 */
+const platformKey = () =>
+  `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`;
+
+/**
+ * 執行依賴裝進發布檔（npm ci --omit=dev，跑 postinstall 修 spawn-helper 權限），記下是哪個平台建的。
+ * BUILD_ID 在這之前算：內容雜湊只看我們自己的檔案，兩個平台的發布檔是同一個 BUILD_ID。
+ */
+function bundleDependencies() {
+  execFileSync(
+    'npm',
+    ['ci', '--omit=dev', '--no-audit', '--no-fund', '--no-update-notifier', '--loglevel=error'],
+    { cwd: stage, stdio: 'inherit', shell: process.platform === 'win32' },
+  );
+  writeFileSync(
+    join(stage, '.node-modules-platform'),
+    `${JSON.stringify({ platform: platformKey(), node: process.versions.node, modules: process.versions.modules })}\n`,
+  );
+}
+
+/** 成品檔名：agent-board-<版本>-<平台>.tar.gz（Windows .zip，Windows 10 以上內建的 tar 解得開）。 */
+function packArchive() {
+  const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const platform = platformKey();
+  const name = `agent-board-${version}-${platform}.${platform.startsWith('win-') ? 'zip' : 'tar.gz'}`;
+  const archive = join(outDir, name);
+  // bsdtar（macOS、Windows）用 -a 依副檔名選格式；GNU tar 只建 tar.gz。
+  const args = name.endsWith('.zip')
+    ? ['-a', '-cf', name, 'agent-board']
+    : ['-czf', name, 'agent-board'];
+  execFileSync('tar', args, { cwd: outDir, env: { ...process.env, COPYFILE_DISABLE: '1' } });
+  const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
+  // sha256sum 的格式，GitHub Release 上兩個平台的 job 各自產一份，release.yml 合併成一個 SHA256SUMS。
+  writeFileSync(join(outDir, 'SHA256SUMS'), `${digest}  ${name}\n`);
   // 一行安裝指令直接下載這兩支，要和發布檔一起上傳。
   for (const file of ['install.sh', 'install.ps1']) {
     cpSync(join(root, 'scripts', file), join(outDir, file));
   }
-  return { tarball, bytes: statSync(tarball).size };
+  return { archive, bytes: statSync(archive).size };
 }
 
 rmSync(outDir, { recursive: true, force: true });
@@ -225,7 +260,8 @@ copyInstallFiles();
 writeManifest();
 const noticed = await checkNotices(metafiles);
 writeBuildId();
-const { tarball, bytes } = packTarball();
+bundleDependencies();
+const { archive, bytes } = packArchive();
 console.log(`hook ${hookBytes} bytes`);
 console.log(`THIRD_PARTY_NOTICES.md 涵蓋 ${noticed} 個散布的套件`);
-console.log(`${relative(root, tarball)} ${(bytes / 1024 / 1024).toFixed(1)} MB`);
+console.log(`${relative(root, archive)} ${(bytes / 1024 / 1024).toFixed(1)} MB`);

@@ -1,0 +1,89 @@
+# 發版（CONTRACTS §21.1）：打 tag v<版本>（和根目錄 package.json 的 version 一致）後，
+# macos-14（darwin-arm64）與 windows-latest（win-x64）各建一份成品，附 SHA256SUMS 放到這個 tag 的 Release。
+# 只跑單元測試；e2e、smoke:release、test:install 在本機跑（要開瀏覽器、裝服務）。
+# 只用 GITHUB_TOKEN（這個 repo 的 contents: write），不需要其他秘密。
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin-arm64
+          - os: windows-latest
+            platform: win-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - name: tag 要和 package.json 的版本一致
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} 和 package.json 的版本 ${version} 不一致" >&2
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      # macOS 跑全部單元測試；Windows 只跑不碰 PTY／Unix socket 的套件（其他套件的測試未在 Windows 驗證）。
+      - if: runner.os == 'macOS'
+        run: pnpm -r test
+      - if: runner.os == 'Windows'
+        run: pnpm --filter @agent-board/protocol --filter @agent-board/web test
+      - run: pnpm build:release
+      - name: 檢查成品
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          ext=tar.gz
+          [ "${{ matrix.platform }}" = win-x64 ] && ext=zip
+          test -f "release/agent-board-${version}-${{ matrix.platform }}.${ext}"
+          cat release/SHA256SUMS
+          mv release/SHA256SUMS "release/SHA256SUMS.${{ matrix.platform }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            release/agent-board-*-${{ matrix.platform }}.*
+            release/SHA256SUMS.${{ matrix.platform }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 合併 SHA256SUMS 並重新驗一次
+        working-directory: dist
+        run: |
+          cat SHA256SUMS.* | sort -k2 > SHA256SUMS
+          rm SHA256SUMS.*
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+      - name: 建立 Release 並上傳
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: dist
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes "Agent Board ${GITHUB_REF_NAME}" --verify-tag
+          gh release upload "${GITHUB_REF_NAME}" agent-board-* SHA256SUMS --clobber

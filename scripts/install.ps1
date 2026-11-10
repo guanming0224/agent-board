@@ -60,7 +60,9 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 }
 
 if ($uninstall) {
-  $installer = Join-Path $root 'app\scripts\installer.mjs'
+  # 新配置是 current\（指向 releases\<版本>），舊配置是 app\。
+  $installer = Join-Path $root 'current\scripts\installer.mjs'
+  if (-not (Test-Path $installer)) { $installer = Join-Path $root 'app\scripts\installer.mjs' }
   if (-not (Test-Path $installer)) { Fail (T '這台機器沒有安裝 Agent Board。' 'Agent Board is not installed on this machine.') }
   node $installer uninstall @rest
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -93,7 +95,7 @@ try {
     $source = (Resolve-Path $from).Path
   } else {
     if (-not (Test-Path $from)) { Fail (T "找不到 --from 指定的檔案：$from" "Cannot find the --from file: $from") }
-    tar -xzf $from -C $tmp
+    tar -xf $from -C $tmp
     if ($LASTEXITCODE -ne 0) { Fail (T "解壓縮失敗：$from" "Could not extract: $from") }
     $source = Join-Path $tmp 'agent-board'
   }

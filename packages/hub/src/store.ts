@@ -1605,6 +1605,42 @@ export class Store {
     return this.getSettings();
   }
 
+  /**
+   * 發版與自動更新（CONTRACTS §21）用的 settings 表鍵：`release.*`、`machineChannel:<id>`、`machineRelease:<id>`。
+   * 和 `teamHold:` 一樣不是 `Settings` 的欄位（getSettings 會被 schema 濾掉），不升 schema。讀不懂回 null。
+   */
+  getRawJson(key: string): unknown {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+      { value: string } | undefined;
+    if (!row) return null;
+    try {
+      return JSON.parse(row.value) as unknown;
+    } catch {
+      return null;
+    }
+  }
+
+  setRawJson(key: string, value: unknown): void {
+    if (value === null || value === undefined) {
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+      return;
+    }
+    this.setRaw(key, value);
+  }
+
+  /** `since` 之後這些機器上進入 error 的 session 狀態事件數（canary 統計）。 */
+  countErrorEvents(machineIds: readonly string[], since: string): number {
+    if (machineIds.length === 0) return 0;
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM session_events e JOIN sessions s ON s.id = e.session_id
+          WHERE e.type = 'status' AND json_extract(e.payload, '$.to') = 'error' AND e.at >= ?
+            AND s.machine_id IN (${machineIds.map(() => '?').join(',')})`,
+      )
+      .get(since, ...machineIds) as { n: number };
+    return row.n;
+  }
+
   private setRaw(key: string, value: unknown): void {
     this.db
       .prepare(

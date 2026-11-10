@@ -46,6 +46,7 @@ import {
   ZoneName,
 } from './models';
 import { UsageReport } from './usage';
+import { HealthInfo, ReleaseChannel, ReleaseOverview, ReleaseRepo, Version } from './release';
 import { ProgressCard, ProgressRevision, ProgressWrite } from './progress';
 import { SearchQuery, SearchResults } from './search';
 import { TeamPreset, TeamPresetConfig, TeamPresetName, TeamPresetUsed } from './presets';
@@ -802,6 +803,70 @@ export const routes = {
     auth: 'user',
     body: z.object({ endpoint: z.string().url() }),
     response: Ok,
+  }),
+
+  // 發版與自動更新（CONTRACTS §21）。成品下載 `GET /api/releases/:version/:platform` 用機器 token，不在這張表。
+  /** 服務活著、版本（更新程式的健康檢查）。不需登入。 */
+  health: route({
+    method: 'GET',
+    path: '/api/health',
+    auth: 'public',
+    response: HealthInfo,
+  }),
+  /** 機器面板：canary／stable、gh 狀態、各機版本與更新狀態。 */
+  releasesOverview: route({
+    method: 'GET',
+    path: '/api/releases',
+    auth: 'user',
+    response: ReleaseOverview,
+  }),
+  /** 「檢查新版」：用 hub 機器上已登入的 gh 查 Release、下載並驗 SHA-256，新版設為 canary。 */
+  releasesCheck: route({
+    method: 'POST',
+    path: '/api/releases/check',
+    auth: 'owner',
+    response: ReleaseOverview,
+  }),
+  /**
+   * 「升為 stable」。canary 跑不到 24 小時要帶 `confirm: true`（不帶回 409 `canary_too_new`）；
+   * 版本不在 release-cache 回 409 `not_cached`。
+   */
+  releasesPromote: route({
+    method: 'POST',
+    path: '/api/releases/promote',
+    auth: 'owner',
+    body: z.object({ version: Version, confirm: z.boolean().default(false) }),
+    response: ReleaseOverview,
+  }),
+  /** Release 所在的 GitHub repo（`owner/name`；null 清掉）。 */
+  releasesConfig: route({
+    method: 'PATCH',
+    path: '/api/releases/config',
+    auth: 'owner',
+    body: z.object({ repo: ReleaseRepo.nullable() }),
+    response: ReleaseOverview,
+  }),
+  /** 切換機器的通道。 */
+  machineChannel: route({
+    method: 'PUT',
+    path: '/api/machines/:id/channel',
+    auth: 'owner',
+    body: z.object({ channel: ReleaseChannel }),
+    response: ReleaseOverview,
+  }),
+  /** 「立即更新」：照目前目標版本更新（不管上次失敗過；延後條件仍然要過）。機器離線回 409 `machine_offline`。 */
+  machineUpdate: route({
+    method: 'POST',
+    path: '/api/machines/:id/update',
+    auth: 'owner',
+    response: ReleaseOverview,
+  }),
+  /** 「回滾到上一版」。機器離線回 409 `machine_offline`，不知道上一版回 409 `no_previous`。 */
+  machineRollback: route({
+    method: 'POST',
+    path: '/api/machines/:id/rollback',
+    auth: 'owner',
+    response: ReleaseOverview,
   }),
 } as const;
 

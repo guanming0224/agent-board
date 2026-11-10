@@ -1,6 +1,6 @@
 {
   "name": "agent-board",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -16,7 +16,7 @@
     "notices": "node scripts/third-party-notices.mjs",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "test:install": "node --test scripts/service-templates.test.mjs",
+    "test:install": "node --test scripts/service-templates.test.mjs scripts/updater.test.mjs",
     "test:notices": "node --test scripts/release-shipped.test.mjs",
     "check:no-llm": "node scripts/check-no-llm.mjs",
     "lint": "eslint .",

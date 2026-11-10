@@ -2,8 +2,12 @@
 // 資料歸屬見 CONTRACTS §2：終端機內容只經過這裡，不落地；approval 只快取，daemon 才是擁有者。
 import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
+import { execGh, ReleaseManager, type GhRunner } from './release';
+import { APP_VERSION, type AppVersion } from './version';
 import {
   agentOf,
+  PROTOCOL_VERSION,
+  type UpdateState,
   ClientToHub,
   DAEMON_FEATURES,
   SEARCH_DEEP_DEADLINE_MS,
@@ -141,6 +145,8 @@ export const DEFAULT_TIMING: Timing = {
 export const CLOSE_REVOKED = 4401;
 export const CLOSE_REPLACED = 4409;
 export const CLOSE_HELLO_TIMEOUT = 4408;
+/** 協定版本差太多（CONTRACTS §21.4），先送 daemon.rejected 再用這個碼斷線。 */
+export const CLOSE_INCOMPATIBLE = 4426;
 
 export interface HubLog {
   info(obj: object, msg: string): void;
@@ -305,6 +311,8 @@ export interface HubDeps {
   now(): Date;
   pushTransport: PushTransport;
   vapid: VapidKeys;
+  /** 發版與自動更新（CONTRACTS §21）。dataDir null：不下載（測試、記憶體資料庫）。 */
+  release?: { dataDir: string | null; gh?: GhRunner; version?: AppVersion };
 }
 
 /** 保留順序的聯集。 */
@@ -369,11 +377,26 @@ export class Hub {
   /** 「立刻中斷」送出、等 daemon 回報結果的 session → 按暫停的使用者。 */
   private readonly pauseInterrupts = new Map<string, string>();
   private closed = false;
+  /** 發版與自動更新（CONTRACTS §21）：通道、目標、release-cache、各機更新狀態。 */
+  readonly release: ReleaseManager;
 
   constructor(private readonly deps: HubDeps) {
     this.store = deps.store;
     this.log = deps.log;
     this.timing = deps.timing;
+    this.release = new ReleaseManager({
+      store: deps.store,
+      dataDir: deps.release?.dataDir ?? null,
+      gh: deps.release?.gh ?? execGh(),
+      now: deps.now,
+      hubVersion: deps.release?.version ?? APP_VERSION,
+      log: deps.log,
+      audit: (userId, action, detail) => this.audit(userId, null, action, detail),
+      isOnline: (machineId) => this.daemonFor(machineId) !== null,
+      onTargetsChanged: () => this.sendReleaseTargets(),
+      notifyUpdateFailed: (machineId, name, state) =>
+        this.notifyUpdateFailed(machineId, name, state),
+    });
     // 暫停狀態要在任何引擎還原（可能排進送字）之前讀出來。
     this.pause = this.loadPause();
     this.loadUsage();
@@ -663,6 +686,9 @@ export class Hub {
       case 'dispatch.request':
         this.onDispatchRequest(conn, msg);
         return;
+      case 'update.status':
+        this.release.onUpdateStatus(conn.machineId, msg.state);
+        return;
       case 'terminal.output':
         if (this.ownsSession(conn, msg.sessionId)) {
           this.prompts.onOutput(msg.sessionId, msg.data);
@@ -745,6 +771,22 @@ export class Hub {
   private onHello(conn: DaemonConn, msg: Extract<DaemonToHub, { type: 'daemon.hello' }>): void {
     if (conn.helloTimer) clearTimeout(conn.helloTimer);
     conn.helloTimer = null;
+    // 協定版本差太多（§21.4）：記下版本（面板顯示「需要更新」），告訴 daemon 可以更新到哪一版，然後斷線。
+    const compat = this.release.onHello(conn.machineId, msg);
+    if (compat !== 'ok') {
+      this.log.warn(
+        { machineId: conn.machineId, protocolVersion: msg.protocolVersion, compat },
+        'daemon protocol not compatible',
+      );
+      this.send(conn.ws, {
+        type: 'daemon.rejected',
+        reason: compat,
+        hubProtocolVersion: PROTOCOL_VERSION,
+        release: compat === 'needs_update' ? this.release.targetFor(conn.machineId) : null,
+      });
+      conn.ws.close(CLOSE_INCOMPATIBLE, compat);
+      return;
+    }
     conn.helloed = true;
     conn.features = new Set(msg.features);
     this.store.machineHello(conn.machineId, msg.os, msg.capabilities, this.nowIso());
@@ -816,7 +858,65 @@ export class Hub {
       stuckMinutes: settings.stuckMinutes,
       dispatch: settings.dispatch,
       memory: settings.memory,
+      protocolVersion: PROTOCOL_VERSION,
+      release: this.release.targetFor(machineId),
     };
+  }
+
+  /** 目標版本變了（新 canary、升 stable、切通道）：送給每台連著的 daemon（§21.3）。 */
+  private sendReleaseTargets(): void {
+    for (const conn of this.daemons.values()) {
+      if (!conn.helloed || conn.retired) continue;
+      this.send(conn.ws, {
+        type: 'release.target',
+        target: this.release.targetFor(conn.machineId),
+        force: false,
+      });
+    }
+  }
+
+  /** 面板「立即更新」。 */
+  updateMachineNow(machineId: string, user: User): void {
+    if (!this.store.getMachine(machineId)) throw notFound('Machine');
+    const conn = this.daemonFor(machineId);
+    if (!conn) throw new HttpError(409, 'machine_offline', 'Machine is offline');
+    const target = this.release.targetFor(machineId);
+    if (!target) throw new HttpError(409, 'no_target', 'No release for this machine');
+    this.audit(
+      user.id,
+      null,
+      'release.update_now',
+      JSON.stringify({ machineId, version: target.version }),
+    );
+    this.send(conn.ws, { type: 'release.target', target, force: true });
+  }
+
+  /** 面板「回滾到上一版」。 */
+  rollbackMachine(machineId: string, user: User): void {
+    if (!this.store.getMachine(machineId)) throw notFound('Machine');
+    const conn = this.daemonFor(machineId);
+    if (!conn) throw new HttpError(409, 'machine_offline', 'Machine is offline');
+    const previous = this.release.record(machineId).previousVersion;
+    if (!previous) throw new HttpError(409, 'no_previous', 'No previous version on this machine');
+    this.audit(user.id, null, 'release.rollback', JSON.stringify({ machineId, to: previous }));
+    this.send(conn.ws, { type: 'release.rollback' });
+  }
+
+  /** 更新失敗的推播：只有機器名稱、版本、原因代碼（不帶 Claude 寫的內容）。 */
+  private notifyUpdateFailed(machineId: string, name: string, state: UpdateState): void {
+    const settings = this.store.getSettings();
+    if (!this.pushAllowed(settings)) return;
+    this.sendPush(
+      JSON.stringify({
+        kind: 'update_failed',
+        machineId,
+        machine: name,
+        version: state.toVersion,
+        phase: state.phase,
+        reason: state.reason,
+        at: state.at,
+      }),
+    );
   }
 
   private onDaemonClose(conn: DaemonConn): void {
@@ -832,6 +932,7 @@ export class Hub {
       }
     }
     if (this.closed) return;
+    if (conn.helloed) this.release.onDisconnect(conn.machineId);
     this.markMachineOffline(conn.machineId);
   }
 
@@ -2223,6 +2324,7 @@ export class Hub {
     this.audit(user.id, null, 'machine.delete', JSON.stringify({ id, name: machine.name }));
     // 先刪 token（連同機器），這之後就算 daemon 重連也會在升級時被 401。
     this.store.deleteMachine(id);
+    this.release.forgetMachine(id);
     const conn = this.daemons.get(id);
     if (conn) {
       // token 撤銷後沒人管得到那邊的 claude，連線還在就請它一起停。

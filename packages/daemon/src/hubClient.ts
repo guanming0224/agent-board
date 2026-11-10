@@ -8,6 +8,8 @@ const BACKOFF_MAX_MS = 30_000;
 const BACKOFF_JITTER = 0.2;
 /** token 被撤銷時重試也沒用，只偶爾確認一下（例如 owner 復原或重新配對後）。 */
 const AUTH_REJECTED_RETRY_MS = 5 * 60_000;
+/** hub 說協定版本不相容（daemon.rejected）：不斷線重試轟炸，每 5 分鐘試一次（CONTRACTS §21.4）。 */
+const INCOMPATIBLE_RETRY_MS = 5 * 60_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const MAX_PAYLOAD_BYTES = 32 * 1024 * 1024;
 const OUTBOX_LIMIT = 2_000;
@@ -43,6 +45,7 @@ export interface HubClientOptions {
   onAuthRejected?: () => void;
   heartbeatMs?: number;
   authRetryMs?: number;
+  incompatibleRetryMs?: number;
 }
 
 export class HubClient {
@@ -53,6 +56,8 @@ export class HubClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private outbox: DaemonToHub[] = [];
+  /** 這條連線被 hub 以協定不相容拒絕：重連改用長間隔。 */
+  private rejected = false;
 
   constructor(private readonly options: HubClientOptions) {}
 
@@ -112,6 +117,7 @@ export class HubClient {
       maxPayload: MAX_PAYLOAD_BYTES,
     });
     this.ws = ws;
+    this.rejected = false;
     let authRejected = false;
 
     ws.on('unexpected-response', (_request, response) => {
@@ -162,6 +168,14 @@ export class HubClient {
       return;
     }
     const message = parsed.data;
+    if (message.type === 'daemon.rejected') {
+      this.rejected = true;
+      log.error(
+        message.reason === 'needs_update'
+          ? `hub（協定 ${message.hubProtocolVersion}）不接受這版 daemon：需要更新。約每 ${Math.round((this.options.incompatibleRetryMs ?? INCOMPATIBLE_RETRY_MS) / 60_000)} 分鐘重試一次。`
+          : `hub（協定 ${message.hubProtocolVersion}）比這版 daemon 舊太多：請先更新 hub。約每 ${Math.round((this.options.incompatibleRetryMs ?? INCOMPATIBLE_RETRY_MS) / 60_000)} 分鐘重試一次。`,
+      );
+    }
     if (message.type === 'hub.welcome') {
       // 收到 welcome 才歸零，避免 hub 接受後立刻踢線時以 1 秒間隔狂連。
       this.attempt = 0;
@@ -184,7 +198,10 @@ export class HubClient {
   private scheduleReconnect(authRejected: boolean): void {
     if (this.stopped) return;
     let delay: number;
-    if (authRejected) {
+    if (this.rejected) {
+      delay =
+        (this.options.incompatibleRetryMs ?? INCOMPATIBLE_RETRY_MS) * (0.9 + Math.random() * 0.2);
+    } else if (authRejected) {
       delay = (this.options.authRetryMs ?? AUTH_REJECTED_RETRY_MS) * (0.9 + Math.random() * 0.2);
     } else {
       delay = backoffDelay(this.attempt);

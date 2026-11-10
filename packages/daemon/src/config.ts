@@ -32,6 +32,15 @@ export interface DaemonConfig {
   sessionHostService?: string | null;
   /** 只給測試（AGENT_BOARD_SESSION_HOST_TEST_PROTOCOL）：hello 假裝成別的協定版本。 */
   sessionHostTestProtocol?: number;
+  /**
+   * 安裝根目錄（AGENT_BOARD_INSTALL_ROOT，安裝程式寫進服務設定）：自動更新要用（releases/、current、install.json）。
+   * 沒有＝不是安裝程式裝的（開發模式、dev 實例），不自動更新（CONTRACTS §21.3）。
+   */
+  installRoot?: string | null;
+  /** 更新程式健康檢查的上限（AGENT_BOARD_UPDATE_HEALTH_MS，只給測試縮短；預設 60 秒）。 */
+  updateHealthMs?: number;
+  /** 只給測試（AGENT_BOARD_PROTOCOL_VERSION_OVERRIDE）：hello 假裝成別的 hub 協定版本。 */
+  protocolVersionOverride?: number;
 }
 
 /** 接受 http(s) 或 ws(s)；沒寫路徑就補上 /ws/daemon。 */
@@ -83,6 +92,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     mcpServer: env.AGENT_BOARD_MCP_SERVER || null,
     sessionHost: env.AGENT_BOARD_SESSION_HOST === 'off' ? 'off' : 'auto',
     sessionHostService: env.AGENT_BOARD_SESSION_HOST_SERVICE || null,
+    installRoot: env.AGENT_BOARD_INSTALL_ROOT || null,
+    ...(Number(env.AGENT_BOARD_UPDATE_HEALTH_MS) > 0
+      ? { updateHealthMs: Number(env.AGENT_BOARD_UPDATE_HEALTH_MS) }
+      : {}),
+    ...(Number(env.AGENT_BOARD_PROTOCOL_VERSION_OVERRIDE) > 0
+      ? { protocolVersionOverride: Number(env.AGENT_BOARD_PROTOCOL_VERSION_OVERRIDE) }
+      : {}),
     ...(env.AGENT_BOARD_SESSION_HOST_TEST_PROTOCOL
       ? { sessionHostTestProtocol: Number(env.AGENT_BOARD_SESSION_HOST_TEST_PROTOCOL) }
       : {}),
