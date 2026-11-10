@@ -288,7 +288,9 @@ describe('通道、目標與 daemon', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.stable).toBe('0.2.0');
-    expect((await daemon.next('release.target')).target.version).toBe('0.2.0');
+    expect(((await daemon.next('release.target')).target as { version: string }).version).toBe(
+      '0.2.0',
+    );
   });
 
   it('協定版本差太多：daemon.rejected 帶可更新的版本並斷線，面板顯示需要更新', async () => {
