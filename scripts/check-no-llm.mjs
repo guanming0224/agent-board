@@ -64,13 +64,24 @@ const CALL_SITES = new Set([
   // daemon：配對、連 hub、開 claude、本機探測
   'packages/daemon/src/pair.ts fetch',
   'packages/daemon/src/hubClient.ts websocket',
-  'packages/daemon/src/session.ts node-pty',
+  // 開 agent 的 node-pty 從 session.ts 搬到 PtyBackend（2026-11-10 session host 拆分，CONTRACTS §20）：
+  // 本機模式 pty.ts、host 模式由 session host 開；session.ts 只剩送第一句提示。
+  'packages/daemon/src/pty.ts node-pty',
+  'packages/daemon/src/pty.ts pty-write',
   'packages/daemon/src/session.ts pty-write',
+  // 連不上 session host 時叫服務管理程式拉起它（launchctl kickstart／systemctl --user start／schtasks /Run）
+  'packages/daemon/src/sessionHostLauncher.ts child-process',
   'packages/daemon/src/resources.ts child-process',
   'packages/daemon/src/resources.ts systeminformation',
   'packages/daemon/src/worktree.ts child-process',
   'packages/daemon/src/sessionFiles.ts child-process',
   'packages/daemon/src/hookServer.ts node-network',
+  // session host（2026-11-10，CONTRACTS §20）：本機 socket／named pipe，用 node-pty 開 daemon 指定的 agent、
+  // 原樣轉送 daemon 的輸入。不連網路、不解析畫面、不呼叫 LLM。
+  'packages/session-host/src/server.ts node-pty',
+  'packages/session-host/src/server.ts node-network',
+  'packages/session-host/src/server.ts pty-write',
+  'packages/session-host/src/client.ts node-network',
   // hook：只連 daemon 的本機 socket
   'packages/hook/src/cli.ts node-network',
   // agent-board MCP server：只連 daemon 的本機 socket，把 Claude 的工具呼叫原樣轉過去
