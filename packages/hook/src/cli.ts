@@ -3,7 +3,7 @@
 // （CONTRACTS.md §4.2、§4.3、§19）。
 // 跑在使用者每一次工具呼叫的路徑上：只用 node 內建模組，runtime 不 import protocol（zod 太慢）。
 // 鐵律：永遠 exit 0、stdout 只會有一個 JSON 物件或什麼都沒有。
-import { statSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import type { Socket } from 'node:net';
 import type { HookPayload, HookRequest } from '@agent-board/protocol';
@@ -18,6 +18,8 @@ import {
   CONNECT_DEADLINE_MS,
   DOWN_MARKER_STALE_MS,
   DOWN_MARKER_SUFFIX,
+  GAVE_UP_MARKER,
+  GAVE_UP_QUIET_MS,
   HOOK_EVENTS,
   HOOK_WAIT_MS,
   RETRY_INTERVAL_MS,
@@ -93,16 +95,31 @@ function retryWindow(socketPath: string, limit: number): number {
       ? override
       : RETRY_WINDOW_MS;
   try {
-    if (
-      Date.now() - statSync(`${socketPath}${DOWN_MARKER_SUFFIX}`).mtimeMs >
-      DOWN_MARKER_STALE_MS
-    ) {
-      return 0;
-    }
+    const marker = `${socketPath}${DOWN_MARKER_SUFFIX}`;
+    const age = Date.now() - statSync(marker).mtimeMs;
+    if (age > DOWN_MARKER_STALE_MS) return 0;
+    // 前一個 hook 剛重試失敗過：daemon 短時間內不會回來，這次不再等。
+    if (age < GAVE_UP_QUIET_MS && readFileSync(marker, 'utf8').startsWith(GAVE_UP_MARKER)) return 0;
   } catch {
     // 沒有記號：daemon 在跑、剛崩潰或是 Windows。
   }
   return Math.max(0, Math.min(window, limit));
+}
+
+/** 重試到上限還是連不上：留下記號讓之後的 hook 不必再等（Windows 的 named pipe 旁邊不能放檔案）。 */
+function markGaveUp(socketPath: string): void {
+  if (socketPath.startsWith('\\\\.\\pipe\\')) return;
+  try {
+    writeFileSync(
+      `${socketPath}${DOWN_MARKER_SUFFIX}`,
+      `${GAVE_UP_MARKER} ${new Date().toISOString()}\n`,
+      {
+        mode: 0o600,
+      },
+    );
+  } catch {
+    // 寫不了就算了：只是之後的 hook 會再等一次。
+  }
 }
 
 /**
@@ -115,14 +132,20 @@ function connectWithRetry(
   onConnect: (socket: Socket) => void,
   onGiveUp: () => void,
 ): void {
+  let retried = false;
   const attempt = () => {
     if (finished) return;
     const socket = connect(socketPath);
     socket.once('error', () => {
       socket.destroy();
       if (finished) return;
-      if (Date.now() + RETRY_INTERVAL_MS > deadline) onGiveUp();
-      else setTimeout(attempt, RETRY_INTERVAL_MS);
+      if (Date.now() + RETRY_INTERVAL_MS > deadline) {
+        if (retried) markGaveUp(socketPath);
+        onGiveUp();
+      } else {
+        retried = true;
+        setTimeout(attempt, RETRY_INTERVAL_MS);
+      }
     });
     socket.once('connect', () => {
       socket.removeAllListeners('error');

@@ -64,5 +64,11 @@ export const CODEX_SHORT_EVENTS: readonly string[] = ['SessionEnd', 'Interrupt']
  */
 export const DOWN_MARKER_SUFFIX = '.down';
 export const DOWN_MARKER_STALE_MS = 60_000;
+/**
+ * hook CLI 重試到上限還是連不上時，自己在記號裡寫 `gave-up`（mtime＝現在）：之後這段時間內的 hook 不再重試，
+ * 不讓每個 hook 都卡 10 秒（W4）。daemon 啟動成功會清掉記號。
+ */
+export const GAVE_UP_MARKER = 'gave-up';
+export const GAVE_UP_QUIET_MS = 15_000;
 /** 只給測試縮短重試時間；只能比 RETRY_WINDOW_MS 短，正式環境不設。 */
 export const RETRY_OVERRIDE_ENV = 'AGENT_BOARD_HOOK_RETRY_MS';

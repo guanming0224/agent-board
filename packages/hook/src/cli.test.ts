@@ -408,6 +408,8 @@ describe('agent-board-hook CLI', () => {
         });
         expect(decisionOf(result.stdout)).toBe('ask');
         expect(result.ms).toBeGreaterThanOrEqual(700);
+        // 放棄時留的 gave-up 記號會讓下一個不重試（另一則測試驗），這裡要看的是重試本身。
+        await rm(`${missingSocket()}.down`, { force: true });
         const stop = await runCli({
           args: ['Stop'],
           env: env(missingSocket(), { [RETRY_OVERRIDE_ENV]: '1000' }),
@@ -432,6 +434,42 @@ describe('agent-board-hook CLI', () => {
         });
         expectSilentExit(result);
         expect(result.ms).toBeLessThan(3_000);
+      },
+    );
+
+    it.skipIf(process.platform === 'win32')(
+      '重試到上限還是連不上：自己留 gave-up 記號，15 秒內的下一個 hook 不再等（W4）',
+      async () => {
+        const socket = missingSocket();
+        const first = await runCli({
+          args: ['Stop'],
+          env: env(socket, { [RETRY_OVERRIDE_ENV]: '600' }),
+          stdin: JSON.stringify(stopInput),
+        });
+        expectSilentExit(first);
+        expect(first.ms).toBeGreaterThanOrEqual(400);
+        expect(await readFile(`${socket}.down`, 'utf8')).toMatch(/^gave-up /);
+        const second = await runCli({
+          args: ['Stop'],
+          env: env(socket, { [RETRY_OVERRIDE_ENV]: '5000' }),
+          stdin: JSON.stringify(stopInput),
+        });
+        expectSilentExit(second);
+        expect(second.ms).toBeLessThan(2_000);
+        // 記號過了 15 秒：又會重試（daemon 可能已經回來了）。
+        const live = join(dir, 'd.sock');
+        await writeFile(`${live}.down`, 'gave-up x');
+        const old = (Date.now() - 20_000) / 1000;
+        await utimes(`${live}.down`, old, old);
+        const later = startDaemonLater(300);
+        expectSilentExit(
+          await runCli({
+            args: ['Stop'],
+            env: env(live, { [RETRY_OVERRIDE_ENV]: '5000' }),
+            stdin: JSON.stringify(stopInput),
+          }),
+        );
+        expect((await later).requests).toHaveLength(1);
       },
     );
 
