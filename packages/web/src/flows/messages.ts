@@ -29,6 +29,9 @@ export const zhTW: Record<string, string> = {
   'flows.review.unknownSession': '找不到對應的 session',
   'flows.review.allowOnce': '允許一次',
   'flows.review.allowRemember': '允許並記住',
+  'flows.review.codexCountdown':
+    '還有 {n} 秒；沒有決定的話，Codex 會改在終端機顯示它自己的確認（在那之前終端機是卡住的）。',
+  'flows.review.codexCountdownDone': '已改在終端機顯示 Codex 的確認，請到終端機回答。',
   'flows.review.deny': '拒絕',
   'flows.review.denyReason': '拒絕原因（必填）',
   'flows.review.denyNeedsReason': '要填拒絕原因才能送出',
@@ -218,7 +221,9 @@ export const zhTW: Record<string, string> = {
   'flows.new.err.codex': '{machine} 沒有 Codex CLI，換一台或改選 Claude Code',
   'flows.new.codexMode': 'Codex：{args}',
   'flows.new.codexModeNote':
-    'Codex 沒有同名的權限模式，換算成沙盒與核准設定，不會比選的模式寬。plan、default 用唯讀沙盒，要寫檔或連網都會問你；acceptEdits、auto 可寫工作資料夾，沙盒內的指令不問就跑（不能連網、不能寫工作區外）；dontAsk 唯讀、不問、做不到的直接失敗。危險指令清單照樣攔。',
+    'Codex 沒有同名的權限模式，換算成沙盒與核准設定，不會比選的模式寬。除了 bypassPermissions，一律用唯讀沙盒：改檔、連網、跑沙盒外的指令都要你允許，所以 acceptEdits、auto 在 Codex 裡比 Claude 嚴（改檔也會問）。唯讀的指令不問就跑，而且讀得到工作資料夾外的檔案（Codex 0.167.0 沒有更嚴的選項）。dontAsk 唯讀、不問、做不到的直接失敗。危險指令清單照樣攔。',
+  'flows.new.codexHooksNote':
+    '中控台這次用 -c 帶入自己的 hook：你在 ~/.codex/config.toml 自訂的同名 hook 這次不會執行，hooks.json 的照常。資料夾裡有專案自己的 .codex 設定時不會開（中控台會略過 hook 信任確認）。權限請求等網頁 {seconds} 秒，沒決定才在終端機顯示 Codex 的確認。',
   'flows.new.modelHintCodex': '留空用 Codex 的預設模型；要指定就填完整的模型名稱。',
   'flows.new.accountCodex': 'Codex 不支援分帳號，用這台機器上 Codex 登入的帳號。',
   'flows.new.resumeHintCodex': '留空開新對話；要接續就選或貼上 Codex 的對話 ID。',
@@ -755,6 +760,10 @@ export const en: Record<string, string> = {
   'flows.review.unknownSession': 'No matching session found',
   'flows.review.allowOnce': 'Allow once',
   'flows.review.allowRemember': 'Always allow',
+  'flows.review.codexCountdown':
+    '{n} s left. If nobody decides, Codex shows its own prompt in the terminal (the terminal waits until then).',
+  'flows.review.codexCountdownDone':
+    'Codex now shows its own prompt in the terminal. Answer it there.',
   'flows.review.deny': 'Deny',
   'flows.review.denyReason': 'Reason for denying (required)',
   'flows.review.denyNeedsReason': 'Enter a reason before denying',
@@ -964,7 +973,9 @@ export const en: Record<string, string> = {
   'flows.new.err.codex': '{machine} has no Codex CLI. Choose another machine or Claude Code.',
   'flows.new.codexMode': 'Codex: {args}',
   'flows.new.codexModeNote':
-    'Codex has no modes with these names, so each is mapped to sandbox and approval settings that are never looser than the mode you pick. plan and default use a read-only sandbox and ask before writing or using the network; acceptEdits and auto can write the working folder and run sandboxed commands without asking (no network, nothing outside the workspace); dontAsk is read-only, never asks, and fails what it cannot do. The dangerous command list still applies.',
+    'Codex has no modes with these names, so each is mapped to sandbox and approval settings that are never looser than the mode you pick. Every mode except bypassPermissions uses a read-only sandbox: editing files, using the network and running commands outside the sandbox all ask you first, so acceptEdits and auto are stricter in Codex than in Claude (edits ask too). Read-only commands run without asking and can read files outside the working folder (Codex 0.167.0 has no stricter option). dontAsk is read-only, never asks, and fails what it cannot do. The dangerous command list still applies.',
+  'flows.new.codexHooksNote':
+    'Agent Board passes its own hooks with -c for this launch: hooks with the same event names in your ~/.codex/config.toml will not run this time; hooks.json still runs. Folders with their own project .codex settings are refused, because Agent Board skips the hook trust check. Permission requests wait {seconds} seconds for the web before Codex shows its own prompt in the terminal.',
   'flows.new.modelHintCodex': "Leave empty for Codex's default model, or enter a full model name.",
   'flows.new.accountCodex':
     "Codex doesn't support separate accounts; it uses the account Codex is signed in to on this machine.",

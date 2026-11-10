@@ -108,6 +108,14 @@ export interface ApprovalManagerOptions {
   waitMs?: number;
 }
 
+export interface HandleHookOptions {
+  /**
+   * PermissionRequest 等網頁的上限（毫秒）。Codex 的終端機在這段時間看不到原生確認，所以比 Claude 短
+   * （CODEX_PERMISSION_WAIT_MS）。不給＝APPROVAL_WAIT_MS；測試設的 waitMs 比較短時用測試的。
+   */
+  permissionWaitMs?: number;
+}
+
 export class ApprovalManager {
   private readonly pendingById = new Map<string, PendingApproval>();
 
@@ -124,8 +132,11 @@ export class ApprovalManager {
     sessionId: string,
     payload: HookPayload,
     signal: AbortSignal,
+    hookOptions: HandleHookOptions = {},
   ): Promise<HookOutput> {
-    if (event === 'PermissionRequest') return this.onPermissionRequest(sessionId, payload, signal);
+    if (event === 'PermissionRequest') {
+      return this.onPermissionRequest(sessionId, payload, signal, hookOptions.permissionWaitMs);
+    }
     if (event === 'PreToolUse') return this.onPreToolUse(sessionId, payload, signal);
     return Promise.resolve(null);
   }
@@ -187,6 +198,7 @@ export class ApprovalManager {
     sessionId: string,
     payload: HookPayload,
     signal: AbortSignal,
+    waitMs?: number,
   ): Promise<HookOutput> {
     const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null;
     const suggestions = Array.isArray(payload.permission_suggestions)
@@ -205,6 +217,7 @@ export class ApprovalManager {
       (decision) => permissionOutput(decision, suggestions, asRecord(payload.tool_input)),
       () => null, // 交回原生對話框
       signal,
+      waitMs,
     );
   }
 
@@ -251,6 +264,7 @@ export class ApprovalManager {
     render: PendingApproval['render'],
     giveUp: PendingApproval['giveUp'],
     signal: AbortSignal,
+    waitMs?: number,
   ): Promise<HookOutput> {
     const now = this.options.now ?? (() => new Date());
     const approval: Approval = {
@@ -264,7 +278,7 @@ export class ApprovalManager {
       const onAbort = () => this.finish(pending, giveUp('hook 已離開'), 'terminal');
       const timer = setTimeout(
         () => this.finish(pending, giveUp('等待逾時'), 'timeout'),
-        this.options.waitMs ?? APPROVAL_WAIT_MS,
+        Math.min(this.options.waitMs ?? APPROVAL_WAIT_MS, waitMs ?? APPROVAL_WAIT_MS),
       );
       const pending: PendingApproval = {
         approval,

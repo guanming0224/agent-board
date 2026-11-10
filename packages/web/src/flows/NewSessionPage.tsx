@@ -5,6 +5,7 @@ import {
   agentOf,
   AgentKind,
   ClaudeSessionId,
+  CODEX_PERMISSION_WAIT_MS,
   codexPermissionArgs,
   PermissionMode,
 } from '@agent-board/protocol';
@@ -394,7 +395,7 @@ export function NewSessionPage() {
 
           <fieldset className="field">
             <legend>{t('flows.new.taskType')}</legend>
-            <div className="segmented">
+            <div className="segmented" role="radiogroup" aria-label={t('flows.new.taskType')}>
               {TASK_TYPES.map((type) => (
                 <label key={type} className={taskType === type ? 'on' : ''}>
                   <input
@@ -445,7 +446,7 @@ export function NewSessionPage() {
 
           <fieldset className="field" data-testid="agent-picker">
             <legend>{t('flows.new.agent')}</legend>
-            <div className="segmented">
+            <div className="segmented" role="radiogroup" aria-label={t('flows.new.agent')}>
               {AgentKind.options.map((option) => (
                 <label key={option} className={agent === option ? 'on' : ''}>
                   <input
@@ -464,6 +465,11 @@ export function NewSessionPage() {
                 ? t('flows.new.agentHint', { version: codexVersion })
                 : t('flows.new.agentNoCodex', { machine: machine?.name ?? '—' })}
             </p>
+            {codex && (
+              <p className="hint" data-testid="codex-hooks-note">
+                {t('flows.new.codexHooksNote', { seconds: CODEX_PERMISSION_WAIT_MS / 1000 })}
+              </p>
+            )}
             {errors.agent && <p className="field-error">{errors.agent}</p>}
           </fieldset>
 

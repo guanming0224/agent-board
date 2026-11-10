@@ -1024,14 +1024,20 @@ describe('hook 與 approval（走真的 socket）', () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(h.outputText('fp')).not.toContain('INPUT:do the thing'); // SessionStart 之前不送
 
-    await client.request('fp', 'SessionStart', { session_id: 'real-id', context_tokens: 1234 });
-    await client.request('fp', 'SessionStart', { session_id: 'real-id', context_tokens: 1300 });
+    await client.request('fp', 'SessionStart', {
+      session_id: '5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f',
+      context_tokens: 1234,
+    });
+    await client.request('fp', 'SessionStart', {
+      session_id: '5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f',
+      context_tokens: 1300,
+    });
     await h.waitForOutput('fp', 'INPUT:do the thing');
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(h.outputText('fp').match(/INPUT:do the thing/g)).toHaveLength(1);
     expect(persisted().sessions.find((s) => s.sessionId === 'fp')?.pendingFirstPrompt).toBeNull();
     await waitUntil(() => lastRuntime('fp')?.contextTokens === 1300, 'contextTokens');
-    expect(lastRuntime('fp')?.claudeSessionId).toBe('real-id');
+    expect(lastRuntime('fp')?.claudeSessionId).toBe('5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f');
   });
 
   it('context 上限：SessionStart 的 model 決定；Stop 時從對話紀錄更新用量與模型', async () => {

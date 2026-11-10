@@ -9,15 +9,25 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   BLOCKING_HOOK_EVENTS,
+  CODEX_PERMISSION_HOOK_WAIT_MS,
+  CODEX_PERMISSION_WAIT_MS,
+  codexHookTimeout,
+  HOOK_AGENT_FLAG,
   HOOK_ENV,
+  HOOK_SESSION_FLAG,
+  HOOK_SOCKET_FLAG,
   HOOK_TIMEOUT_SECONDS,
   HOOK_WAIT_MS,
   HookEventName,
   HookRequest,
 } from '@agent-board/protocol';
 import {
+  AGENT_FLAG,
   BLOCKING_EVENTS,
+  CODEX_PERMISSION_HOOK_WAIT_MS as CLI_CODEX_PERMISSION_WAIT_MS,
   HOOK_EVENTS,
+  SESSION_FLAG,
+  SOCKET_FLAG,
   HOOK_WAIT_MS as CLI_HOOK_WAIT_MS,
   SESSION_ID_ENV,
   SOCKET_ENV,
@@ -185,6 +195,17 @@ describe('agent-board-hook CLI', () => {
       expect(CLI_HOOK_WAIT_MS).toBe(HOOK_WAIT_MS);
       expect([...HOOK_EVENTS]).toEqual([...HookEventName.options]);
       expect([...BLOCKING_EVENTS]).toEqual([...BLOCKING_HOOK_EVENTS]);
+      expect(AGENT_FLAG).toBe(HOOK_AGENT_FLAG);
+      expect(SESSION_FLAG).toBe(HOOK_SESSION_FLAG);
+      expect(SOCKET_FLAG).toBe(HOOK_SOCKET_FLAG);
+      expect(CLI_CODEX_PERMISSION_WAIT_MS).toBe(CODEX_PERMISSION_HOOK_WAIT_MS);
+    });
+
+    it('Codex PermissionRequest：daemon 先放棄、CLI 再放棄、最後才是 Codex 的 timeout（各差 5 秒）', () => {
+      expect(CODEX_PERMISSION_WAIT_MS + 5_000).toBe(CLI_CODEX_PERMISSION_WAIT_MS);
+      expect(CLI_CODEX_PERMISSION_WAIT_MS + 5_000).toBe(
+        codexHookTimeout('PermissionRequest') * 1000,
+      );
     });
 
     it('等待上限小於寫進設定的 hook timeout', () => {
@@ -715,7 +736,7 @@ describe('agent-board-hook CLI', () => {
       expect(daemon.requests).toEqual([]);
     });
 
-    it('shell 工具統一成 Bash、陣列指令接成字串，daemon 才比對得到', async () => {
+    it('shell 工具統一成 Bash、陣列指令加引號接成字串，daemon 才解得開 bash -c', async () => {
       daemon = await startDaemon(dir, (request, socket) => reply(socket, request.requestId, null));
       await runCli({
         args: ['--agent', 'codex', 'PreToolUse'],
@@ -727,7 +748,7 @@ describe('agent-board-hook CLI', () => {
         }),
       });
       expect(daemon.requests[0]?.payload.tool_name).toBe('Bash');
-      expect(daemon.requests[0]?.payload.tool_input).toEqual({ command: 'bash -lc rm -rf /' });
+      expect(daemon.requests[0]?.payload.tool_input).toEqual({ command: "bash -lc 'rm -rf /'" });
     });
 
     it('連不上：PreToolUse + Bash 回 deny（Codex 不支援 ask）', async () => {
@@ -763,6 +784,70 @@ describe('agent-board-hook CLI', () => {
           }),
         }),
       );
+    });
+
+    it('--session／--socket 參數：不靠環境變數也送得到，且優先於環境變數', async () => {
+      daemon = await startDaemon(dir);
+      expectSilentExit(
+        await runCli({
+          args: ['--agent', 'codex', '--session', 'board-arg', '--socket', daemon.path, 'Stop'],
+          env: {},
+          stdin: JSON.stringify({ ...codexBase, hook_event_name: 'Stop' }),
+        }),
+      );
+      expectSilentExit(
+        await runCli({
+          args: ['--agent', 'codex', '--session', 'board-arg', '--socket', daemon.path, 'Stop'],
+          env: env(missingSocket()),
+          stdin: JSON.stringify({ ...codexBase, hook_event_name: 'Stop' }),
+        }),
+      );
+      expect(daemon.requests.map((r) => r.sessionId)).toEqual(['board-arg', 'board-arg']);
+    });
+
+    it('拿不到 session：PreToolUse 回 deny（不安靜放行），其他事件安靜結束', async () => {
+      const result = await runCli({
+        args: ['--agent', 'codex', 'PreToolUse'],
+        env: {},
+        stdin: JSON.stringify(codexBash),
+      });
+      expect(result.code).toBe(0);
+      expect(decisionOf(result.stdout)).toBe('deny');
+      expectSilentExit(
+        await runCli({
+          args: ['--agent', 'codex', 'Stop'],
+          env: {},
+          stdin: JSON.stringify({ ...codexBase, hook_event_name: 'Stop' }),
+        }),
+      );
+    });
+
+    it('stdin 不是 JSON：PreToolUse 回 deny；Claude 照舊安靜結束', async () => {
+      const codexResult = await runCli({
+        args: ['--agent', 'codex', 'PreToolUse'],
+        env: env(missingSocket()),
+        stdin: 'not json',
+      });
+      expect(codexResult.code).toBe(0);
+      expect(decisionOf(codexResult.stdout)).toBe('deny');
+      expectSilentExit(
+        await runCli({ args: ['PreToolUse'], env: env(missingSocket()), stdin: 'not json' }),
+      );
+    });
+
+    it('不在清單裡的工具名，只要有 command 也當成 Bash 檢查', async () => {
+      daemon = await startDaemon(dir, (request, socket) => reply(socket, request.requestId, null));
+      await runCli({
+        args: ['--agent', 'codex', 'PreToolUse'],
+        env: env(daemon.path),
+        stdin: JSON.stringify({
+          ...codexBash,
+          tool_name: 'run_terminal_v9',
+          tool_input: { cmd: 'git push --force' },
+        }),
+      });
+      expect(daemon.requests[0]?.payload.tool_name).toBe('Bash');
+      expect(daemon.requests[0]?.payload.tool_input).toMatchObject({ command: 'git push --force' });
     });
 
     it('PermissionRequest：daemon 的回答原樣印出', async () => {

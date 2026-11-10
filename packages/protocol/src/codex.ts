@@ -1,11 +1,18 @@
 // Codex CLI 接口第一版（GM 2026-11-10，CONTRACTS §19）。daemon 組參數、web 預覽與畫面說明共用這一份，
 // 兩邊顯示的一定是實際執行的參數。
-import { HOOK_AGENT_FLAG, HOOK_COMMAND, HOOK_TIMEOUT_SECONDS, type HookEventName } from './hook';
+import {
+  HOOK_AGENT_FLAG,
+  HOOK_COMMAND,
+  HOOK_SESSION_FLAG,
+  HOOK_SOCKET_FLAG,
+  HOOK_TIMEOUT_SECONDS,
+  type HookEventName,
+} from './hook';
 import type { PermissionMode } from './models';
 
 /**
  * 中控台替 Codex 開的 hook 事件。以 `-c hooks.<Event>=[...]` 在每次啟動時帶入（不寫進 `~/.codex`、
- * 不建專案 `.codex`，GM 決策 1），command 是 `agent-board-hook --agent codex <Event>`。
+ * 不建專案 `.codex`，GM 決策 1），command 是 `agent-board-hook --agent codex --session <id> --socket <path> <Event>`。
  */
 export const CODEX_HOOK_EVENTS = [
   'SessionStart',
@@ -21,30 +28,70 @@ export const CODEX_HOOK_EVENTS = [
 export type CodexHookEvent = (typeof CODEX_HOOK_EVENTS)[number];
 
 /**
- * 每個事件的 timeout（秒）。等網頁決定的兩個和 Claude 一樣；SessionEnd／Interrupt 文件寫上限 3 秒；
- * 其他送出就走（hook CLI 自己 1 秒內結束），給 30 秒只是上限。
+ * Codex 的 PermissionRequest 是「先等 hook，沒決定才顯示原生確認」（和 Claude 並行顯示不同），
+ * 等太久終端機就一直卡著，所以比 Claude 短很多（CONTRACTS §19.4）。三層各差 5 秒：
+ * daemon 先放棄（不輸出）→ hook CLI 自己的上限 → Codex 給 hook 的 timeout。
+ */
+export const CODEX_PERMISSION_WAIT_MS = 90_000;
+/** hook CLI 等 daemon 回答 Codex PermissionRequest 的上限（cli-constants.ts 抄一份，測試保證一致）。 */
+export const CODEX_PERMISSION_HOOK_WAIT_MS = CODEX_PERMISSION_WAIT_MS + 5_000;
+const CODEX_PERMISSION_TIMEOUT_SECONDS = CODEX_PERMISSION_HOOK_WAIT_MS / 1000 + 5;
+
+/**
+ * 每個事件的 timeout（秒）。危險指令（PreToolUse）和 Claude 一樣等網頁 600 秒；PermissionRequest 見上；
+ * SessionEnd／Interrupt 文件寫上限 3 秒；其他送出就走（hook CLI 自己 1 秒內結束），給 30 秒只是上限。
  */
 export function codexHookTimeout(event: CodexHookEvent): number {
-  if (event === 'PreToolUse' || event === 'PermissionRequest') return HOOK_TIMEOUT_SECONDS;
+  if (event === 'PreToolUse') return HOOK_TIMEOUT_SECONDS;
+  if (event === 'PermissionRequest') return CODEX_PERMISSION_TIMEOUT_SECONDS;
   if (event === 'SessionEnd' || event === 'Interrupt') return 3;
   return 30;
 }
 
-export const codexHookCommand = (event: CodexHookEvent): string =>
-  `${HOOK_COMMAND} ${HOOK_AGENT_FLAG} codex ${event}`;
+/** POSIX shell 的單引號（也是 shlex 的寫法）：Codex 用 shell 或自己拆字都讀得對。 */
+function shellArg(value: string): string {
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** TOML basic string 的內容（雙引號裡面）。 */
+function tomlString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
+/** 每個 session 自己的 hook 位址，直接寫進 hook 指令（不依賴 Codex 有沒有把環境變數傳給 hook）。 */
+export interface CodexHookTarget {
+  sessionId: string;
+  socketPath: string;
+}
+
+export const codexHookCommand = (event: CodexHookEvent, target: CodexHookTarget): string =>
+  [
+    HOOK_COMMAND,
+    HOOK_AGENT_FLAG,
+    'codex',
+    HOOK_SESSION_FLAG,
+    shellArg(target.sessionId),
+    HOOK_SOCKET_FLAG,
+    shellArg(target.socketPath),
+    event,
+  ].join(' ');
 
 /**
  * `-c` 的值（TOML）：`hooks.<Event>=[{hooks=[{type="command",command="…",timeout=N}]}]`。
  * 不寫 matcher＝每個工具都送（daemon 只對 Bash 比對危險指令）。Windows 的 `commandWindows` 先不帶（第一版不做 Windows）。
  */
-export function codexHookOverrides(): string[] {
+export function codexHookOverrides(target: CodexHookTarget): string[] {
   return CODEX_HOOK_EVENTS.map(
     (event) =>
-      `hooks.${event}=[{hooks=[{type="command",command="${codexHookCommand(event)}",timeout=${codexHookTimeout(event)}}]}]`,
+      `hooks.${event}=[{hooks=[{type="command",command="${tomlString(codexHookCommand(event, target))}",timeout=${codexHookTimeout(event)}}]}]`,
   );
 }
 
 export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
+/**
+ * codex-cli 0.167.0 的 `-a` 只收這兩個（`codex --help` 與實際傳值確認）：`untrusted` 已移除
+ * （設定檔寫 `approval_policy="untrusted"` 會被拒絕：「is no longer supported」）。
+ */
 export type CodexApproval = 'on-request' | 'never';
 
 /** Claude 權限模式換成 Codex 的設定。`bypass` 為 true 時改帶 `--dangerously-bypass-approvals-and-sandbox`。 */
@@ -56,11 +103,13 @@ export interface CodexPermission {
 
 /**
  * 對應表（GM 決策 3：寬鬆程度相當、不比選的更寬）。理由見 CONTRACTS §19.2。
- * - plan、default：唯讀沙盒、需要時問你（要寫檔、連網、跑沙盒外的指令都要你允許）。
- * - acceptEdits、auto：工作資料夾可寫的沙盒、需要時問你（沙盒內的指令不問就跑，不能連網、不能寫工作區外）。
+ * workspace-write＋on-request 會讓沙盒內的任何指令不問就跑，比 Claude 的 acceptEdits／auto（指令要問或要分類器放行）寬，
+ * 而 0.167.0 沒有「改檔自動、指令要問」的 `untrusted`，所以除了 bypass 之外一律唯讀沙盒：
+ * - plan、default、acceptEdits、auto：唯讀沙盒、需要時問你（寫檔、連網、跑沙盒外的指令都要你允許）。
+ *   acceptEdits、auto 因此比 Claude 窄（改檔也要問）。唯讀沙盒裡的指令仍不問就跑、讀得到工作區外的檔案（已知差距，見 §19.2）。
  * - dontAsk：唯讀沙盒、從不問（做不到的直接失敗回給模型，和 Claude 的 dontAsk 一樣不問就拒）。
  * - bypassPermissions：`--dangerously-bypass-approvals-and-sandbox`（沿用 bypass 的警示）。
- * 唯讀 session：沙盒一律 read-only；bypass 也改成 read-only＋never，不開沙盒外的權限。
+ * 唯讀 session：bypass 也改成 read-only＋never，不開沙盒外的權限。
  */
 export function codexPermission(mode: PermissionMode, readOnly = false): CodexPermission {
   if (mode === 'bypassPermissions') {
@@ -68,9 +117,8 @@ export function codexPermission(mode: PermissionMode, readOnly = false): CodexPe
       ? { sandbox: 'read-only', approval: 'never', bypass: false }
       : { sandbox: null, approval: null, bypass: true };
   }
-  const writable = mode === 'acceptEdits' || mode === 'auto';
   return {
-    sandbox: writable && !readOnly ? 'workspace-write' : 'read-only',
+    sandbox: 'read-only',
     approval: mode === 'dontAsk' ? 'never' : 'on-request',
     bypass: false,
   };

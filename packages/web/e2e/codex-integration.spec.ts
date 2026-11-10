@@ -1,6 +1,7 @@
 // Codex 節點端對端（CONTRACTS §19）：真 hub、真 daemon、真 hook CLI（--agent codex）、真瀏覽器，只有 codex 是假的。
-// 走一遍：新增頁選 Codex → NEW → RUN → PERM（網頁允許）→ ASK → 危險指令擋下 → 模型錯誤 ERR → daemon 重啟用
-// codex resume 接回 → 結束 DONE。
+// 走一遍：新增頁選 Codex → NEW → RUN → PERM（網頁允許）→ ASK → 危險指令擋下（Bash 字串、shell 陣列）→
+// 模型錯誤 ERR → 額度用完 QUOTA → daemon 重啟用 codex resume 接回 → 結束 DONE → SessionStart 晚到時 NEW 靠畫面判斷。
+// 假 codex 跑 hook 時拿掉 AGENT_BOARD_* 環境變數：hook 只能靠指令上的 --session／--socket 回報。
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { chmodSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -180,8 +181,9 @@ test('新增頁選 Codex：預覽是 codex 的參數；建立後卡片標 Codex�
     'codex -s read-only -a on-request --dangerously-bypass-hook-trust',
   );
   await expect(page.getByTestId('codex-mode-acceptEdits')).toContainText(
-    '-s workspace-write -a on-request',
+    '-s read-only -a on-request',
   );
+  await expect(page.getByTestId('codex-hooks-note')).toContainText('config.toml');
   await page.getByRole('button', { name: '建立 session' }).click();
   await expect(page.getByText('已建立 codex-node')).toBeVisible();
 
@@ -212,6 +214,10 @@ test('權限請求：RUN → PERM，網頁允許，回到 Codex 的是 allow（�
   await type(page, session.id, 'ask-permission');
   await expectStatus(page.request, session.id, 'waiting_permission');
   await expect(inbox.getByText('touch a.txt').first()).toBeVisible();
+  // 展開的審核卡：Codex 沒有「記住」，顯示終端機還要等多久才跳原生確認。
+  await inbox.getByTestId(`inbox-toggle-${session.id}`).click();
+  await expect(inbox.getByTestId('codex-countdown').first()).toContainText('秒');
+  await expect(inbox.getByRole('button', { name: '允許並記住' })).toHaveCount(0);
   await inbox.getByRole('button', { name: '允許一次' }).first().click();
   await expect
     .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
@@ -258,11 +264,50 @@ test('危險指令：PreToolUse 卡住等網頁；拒絕 → Codex 收到 deny�
   await expectStatus(page.request, session.id, 'waiting_input');
 });
 
+test('危險指令（shell 工具、陣列指令、沒有 PermissionRequest）：一樣攔下、拒絕 → deny', async ({
+  page,
+}) => {
+  await page.goto('/#/inbox');
+  const inbox = page.getByTestId('inbox-drawer');
+  const before = (await readScreen(page, session.id)).split('BLOCKED').length;
+  await type(page, session.id, 'shell-danger');
+  await expect(inbox.getByText(/命中危險指令/).first()).toBeVisible({ timeout: 20_000 });
+  await expect(inbox.getByText(/git push --force/).first()).toBeVisible();
+  await inbox.getByTestId(`inbox-toggle-${session.id}`).click();
+  await inbox.getByRole('button', { name: '拒絕' }).first().click();
+  await inbox
+    .getByPlaceholder(/拒絕原因/)
+    .first()
+    .fill('codex-shell-denied');
+  await inbox.getByRole('button', { name: '拒絕' }).first().click();
+  await expect
+    .poll(async () => (await readScreen(page, session.id)).split('BLOCKED').length, {
+      timeout: 20_000,
+    })
+    .toBe(before + 1);
+  expect(await readScreen(page, session.id)).toContain('codex-shell-denied');
+  await expectStatus(page.request, session.id, 'waiting_input');
+});
+
 test('這一輪的模型請求失敗就結束：ERR', async ({ page }) => {
   await page.goto('/#/canvas');
   await type(page, session.id, 'model-error');
   await expectStatus(page.request, session.id, 'error');
   expect((await getSession(page.request, session.id)).statusDetail).toContain('500');
+});
+
+test('額度用完：QUOTA，這一輪的 Stop 不蓋掉', async ({ page }) => {
+  await page.goto('/#/canvas');
+  await type(page, session.id, 'quota');
+  await expectStatus(page.request, session.id, 'rate_limited');
+  await expect
+    .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
+    .toContain('GOT quota');
+  // Stop 已經送完（假 codex 一輪是同步跑完的）：再等一下確定沒有被改回等你。
+  await page.waitForTimeout(1_500);
+  const fresh = await getSession(page.request, session.id);
+  expect(fresh.status).toBe('rate_limited');
+  expect(fresh.statusDetail).toContain('usage limit');
 });
 
 test('daemon 被殺：失聯；重啟：codex resume <thread id> 接回', async ({ page }) => {
@@ -283,4 +328,39 @@ test('Codex 自己結束（exit 0）→ DONE', async ({ page }) => {
   await type(page, session.id, 'quit');
   await expectStatus(page.request, session.id, 'done');
   expect((await getSession(page.request, session.id)).endedAt).not.toBeNull();
+});
+
+test('SessionStart 等第一句才送：NEW 靠畫面上的 Codex 標題判斷；送出後記下 thread id', async ({
+  page,
+}) => {
+  await page.goto('/#/canvas');
+  const machines = (await (await page.request.get('/api/machines')).json()) as Machine[];
+  const response = await page.request.post('/api/sessions', {
+    data: {
+      machineId: machines.find((m) => m.online)!.id,
+      name: 'codex-late-start',
+      projectId: null,
+      cwd: repo,
+      useWorktree: false,
+      permissionMode: 'default',
+      model: 'fake-late-start',
+      accountProfile: null,
+      resumeClaudeSessionId: null,
+      firstPrompt: null,
+      agent: 'codex',
+    },
+  });
+  expect(response.ok()).toBe(true);
+  const late = (await response.json()) as Session;
+  await expectStatus(page.request, late.id, 'waiting_input');
+  const fresh = await getSession(page.request, late.id);
+  expect(fresh.statusDetail).toBe('idle:start');
+  expect(fresh.claudeSessionId).toBeNull();
+  await type(page, late.id, 'hello');
+  await expect
+    .poll(async () => (await getSession(page.request, late.id)).claudeSessionId, {
+      timeout: 20_000,
+    })
+    .toMatch(/^[0-9a-f-]{36}$/);
+  await expectStatus(page.request, late.id, 'waiting_input');
 });

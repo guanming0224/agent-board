@@ -1164,6 +1164,23 @@ describe('createStatusTracker', () => {
         codex('PostModelRequest', { error: "You've hit your usage limit. Try again later." }),
       );
       expect(tracker.status).toBe('rate_limited');
+      const count = changes.length;
+      tracker.onHook('Stop', codex('Stop'));
+      expect(tracker.status).toBe('rate_limited');
+      expect(changes).toHaveLength(count);
+      // 下一句話送出：回到工作中，之後正常結束是 ASK。
+      tracker.onHook('UserPromptSubmit', codex('UserPromptSubmit', { prompt: 'again' }));
+      expect(tracker.status).toBe('running');
+      tracker.onHook('Stop', codex('Stop'));
+      expect(tracker.status).toBe('waiting_input');
+    });
+
+    it('額度用完後 Codex 自己重試成功：回到工作中，Stop 是 ASK', () => {
+      toRunning();
+      tracker.onHook('PostModelRequest', codex('PostModelRequest', { error: 'HTTP 429' }));
+      expect(tracker.status).toBe('rate_limited');
+      tracker.onHook('PostModelRequest', codex('PostModelRequest', { status: 'completed' }));
+      expect(tracker.status).toBe('running');
       tracker.onHook('Stop', codex('Stop'));
       expect(tracker.status).toBe('waiting_input');
     });

@@ -1,5 +1,6 @@
 // 審核卡：按「允許」之前先確認呼號（STYLE.md 邏輯 2、6）。收件匣展開一列、全尺寸終端機旁都用這一張。
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { CODEX_PERMISSION_WAIT_MS } from '@agent-board/protocol';
 import type { Approval, Machine, Project, Session, User } from '@agent-board/protocol';
 import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
@@ -72,23 +73,47 @@ function RequiredField({
  * 一般權限請求與危險指令的動作列。拒絕和收件匣列、手機同一套（GM Q3）：灰色「拒絕」→ 原因框 →
  * 紅框「拒絕」＋「取消」（DenyForm）；展開時「允許」那排收起，同一時間只有一顆「拒絕」。
  */
+/**
+ * Codex 的權限請求：終端機要等網頁逾時才會出現 Codex 原生確認（CONTRACTS §19.4），顯示還剩多久。
+ */
+function CodexCountdown({ approval, now }: { approval: Approval; now: number }) {
+  const t = useT();
+  const left = Math.max(
+    0,
+    Math.ceil((Date.parse(approval.createdAt) + CODEX_PERMISSION_WAIT_MS - now) / 1000),
+  );
+  return (
+    <p className="hint num" data-testid="codex-countdown">
+      {left > 0
+        ? t('flows.review.codexCountdown', { n: left })
+        : t('flows.review.codexCountdownDone')}
+    </p>
+  );
+}
+
 function PermissionActions({
   approval,
   disabled,
   decide,
   canDecide,
+  codex = false,
+  now,
 }: {
   approval: Approval;
   disabled: boolean;
   /** false：這個使用者不能決定，拒絕也展不開。 */
   canDecide: boolean;
   decide: ReturnType<typeof useDecide>;
+  /** Codex session：沒有「記住」（Codex 不收規則），一般權限請求顯示倒數。 */
+  codex?: boolean;
+  now: number;
 }) {
   const t = useT();
   const danger = approval.kind === 'danger';
   const twoStep = useTwoStep();
   const [denying, setDenying] = useState(false);
   const canRemember = approval.suggestions.length > 0;
+  const showRemember = !danger && !codex;
   const view = summarizeTool(approval.toolName, approval.toolInput);
   const fullText = view.kind === 'command' || view.kind === 'raw' ? view.text : null;
   const mask = useMaskText();
@@ -116,7 +141,7 @@ function PermissionActions({
         >
           {twoStep.armed ? t('flows.review.confirmAgain') : t('flows.review.allowOnce')}
         </button>
-        {!danger && (
+        {showRemember && (
           <button
             type="button"
             disabled={disabled || !canRemember}
@@ -146,7 +171,8 @@ function PermissionActions({
           {fullText !== null && <pre className="command">{mask(fullText)}</pre>}
         </div>
       )}
-      {!danger && !canRemember && <p className="hint">{t('flows.review.noSuggestions')}</p>}
+      {showRemember && !canRemember && <p className="hint">{t('flows.review.noSuggestions')}</p>}
+      {codex && !danger && <CodexCountdown approval={approval} now={now} />}
     </div>
   );
 }
@@ -470,6 +496,8 @@ function ReviewCard({
           disabled={disabled}
           decide={decide}
           canDecide={!danger || context.me.data?.role === 'owner'}
+          codex={session?.agent === 'codex'}
+          now={context.now}
         />
       )}
       {approval?.kind === 'plan' && <PlanActions disabled={disabled} decide={decide} />}

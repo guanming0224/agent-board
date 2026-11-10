@@ -28,6 +28,14 @@ describe('commandPreview', () => {
     ]);
   });
 
+  it('Codex：acceptEdits、auto 也是唯讀沙盒（0.167.0 沒有「改檔自動、指令要問」）', () => {
+    for (const permissionMode of ['acceptEdits', 'auto'] as const) {
+      expect(commandPreview({ ...base, agent: 'codex', permissionMode })[1]).toBe(
+        'codex -s read-only -a on-request --dangerously-bypass-hook-trust -c <hooks>',
+      );
+    }
+  });
+
   it('Codex 接續與 bypass', () => {
     const id = '0199a3c2-1111-7000-8000-000000000abc';
     expect(

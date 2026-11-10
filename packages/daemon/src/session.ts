@@ -10,7 +10,7 @@ import type {
   SessionRuntime,
   SessionStatus,
 } from '@agent-board/protocol';
-import { READ_ONLY_DISALLOWED_TOOLS } from '@agent-board/protocol';
+import { ClaudeSessionId, READ_ONLY_DISALLOWED_TOOLS } from '@agent-board/protocol';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import type { Terminal as TerminalType } from '@xterm/headless';
 import { spawn as spawnPty, type IPty } from 'node-pty';
@@ -252,6 +252,7 @@ export class ManagedSession {
   private endedAt: string | null = null;
   private exitCode: number | null = null;
   private claudeSessionId: string | null;
+  private rejectedSessionId: string | null = null;
   private pendingFirstPrompt: string | null;
 
   constructor(private readonly options: ManagedSessionOptions) {
@@ -610,6 +611,14 @@ export class ManagedSession {
   private syncClaudeSessionId(): boolean {
     const reported = this.trackerDisposed ? null : this.tracker.claudeSessionId;
     if (!reported || reported === this.claudeSessionId) return false;
+    // runtime 的 claudeSessionId 只收 UUID：不合格的送出去，hub 會整則拒收（tracker 已先擋，這裡再保險一次）。
+    if (!ClaudeSessionId.safeParse(reported).success) {
+      if (reported !== this.rejectedSessionId) {
+        this.rejectedSessionId = reported;
+        log.warn(`session ${this.options.id} 回報的對話 id 不是 UUID，忽略`);
+      }
+      return false;
+    }
     this.claudeSessionId = reported;
     this.options.onClaudeSessionId(reported);
     return true;

@@ -14,6 +14,12 @@ export const HOOK_ENV = {
 export const HOOK_COMMAND = 'agent-board-hook';
 /** `agent-board-hook --agent codex <Event>`：Codex 開的 hook。沒帶就是 Claude Code。 */
 export const HOOK_AGENT_FLAG = '--agent';
+/**
+ * Codex 的 hook 指令直接帶 session id 與 socket 路徑（不靠繼承環境變數，§19.2）。
+ * hook CLI 優先用這兩個參數，沒有才看環境變數。
+ */
+export const HOOK_SESSION_FLAG = '--session';
+export const HOOK_SOCKET_FLAG = '--socket';
 
 /** 需要安裝的 hook 事件。 */
 export const HookEventName = z.enum([

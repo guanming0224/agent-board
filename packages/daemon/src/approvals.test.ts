@@ -405,6 +405,18 @@ describe('PermissionRequest', () => {
     expect(manager.pending()).toEqual([]);
   });
 
+  it('permissionWaitMs（Codex）比預設短：照它逾時', async () => {
+    const { manager, signal, sent } = setup(10_000);
+    const started = Date.now();
+    expect(
+      await manager.handleHook('PermissionRequest', 's1', request, signal, {
+        permissionWaitMs: 20,
+      }),
+    ).toBeNull();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(sent.at(-1)).toMatchObject({ type: 'approval.resolved', by: 'timeout' });
+  });
+
   it('hook 連線斷掉（使用者在終端機回答了）：收掉 approval 並送 by:terminal', async () => {
     const { manager, sent } = setup();
     const abort = new AbortController();

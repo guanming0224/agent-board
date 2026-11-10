@@ -2,9 +2,11 @@
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, statSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, delimiter, dirname, extname, resolve, sep } from 'node:path';
 import {
   agentOf,
+  CODEX_PERMISSION_WAIT_MS,
   DEFAULT_DANGER_RULES,
   DEFAULT_STUCK_MINUTES,
   HOOK_COMMAND,
@@ -22,7 +24,13 @@ import {
 } from '@agent-board/protocol';
 import pkg from '../package.json' with { type: 'json' };
 import { ApprovalManager } from './approvals';
-import { buildCodexArgs, codexHome, codexHookOutput, codexThreadExists } from './codex';
+import {
+  buildCodexArgs,
+  codexHome,
+  codexHookOutput,
+  codexProjectHookFiles,
+  codexThreadIds,
+} from './codex';
 import type { DaemonConfig } from './config';
 import { DeepSearcher } from './deepSearch';
 import { listDirectory, makeDirectory } from './fsList';
@@ -692,8 +700,9 @@ export class Daemon {
       this.assertCanLaunch(agent);
       assertDirectory(spec.cwd);
       if (spec.useWorktree) worktree = await createWorktree(spec.cwd, spec.name, sessionId);
-      // Codex 的 hook 用 -c 在啟動時帶入，不寫任何設定檔（§19.1）。
+      // Codex 的 hook 用 -c 在啟動時帶入，不寫任何設定檔（§19.2）。
       if (agent === 'claude') await this.installHooksOrThrow(worktree?.cwd ?? spec.cwd);
+      else this.assertNoCodexProjectHooks(worktree?.cwd ?? spec.cwd);
       const persisted: PersistedSession = {
         sessionId,
         spec: { ...spec, firstPrompt: null },
@@ -719,6 +728,7 @@ export class Daemon {
           ? { resumeId: spec.resumeClaudeSessionId }
           : { newSessionId: persisted.claudeSessionId },
       );
+      if (this.codexPromptDelivered.delete(sessionId)) persisted.pendingFirstPrompt = null;
       this.store.upsert(persisted);
       this.send({ type: 'session.created', requestId, session: session.runtime() });
     } catch (error) {
@@ -729,6 +739,7 @@ export class Daemon {
       }
       // 沒開起來：不留登記（同 id 還留著已結束的畫面時，它本來就不算活著）。
       if (!this.sessions.get(sessionId)?.isAlive) this.sessionDirs.delete(sessionId);
+      this.codexPromptDelivered.delete(sessionId);
       this.send({ type: 'session.createFailed', requestId, error: errorMessage(error) });
     }
   }
@@ -743,8 +754,33 @@ export class Daemon {
     findHook(this.deps.config.hookBin, env);
   }
 
+  /**
+   * 專案自己有 Codex hook 設定就不開（§19.2）：`--dangerously-bypass-hook-trust` 會讓它們不經確認就執行。
+   * 只看檔案在不在，不讀內容。
+   */
+  private assertNoCodexProjectHooks(cwd: string): void {
+    const env = this.childEnv();
+    const found = codexProjectHookFiles(cwd, env.HOME || homedir());
+    if (found.length === 0) return;
+    throw new Error(
+      `這個資料夾有專案自己的 Codex 設定（${found.join('、')}），中控台開 Codex 會略過 hook 信任確認、` +
+        '讓裡面的 hook 不經你確認就執行。請先在終端機用 codex 手動信任，或移除這些檔案再開。',
+    );
+  }
+
   private async resumePersistedSessions(): Promise<void> {
     if (this.store.sessions.length === 0) return;
+    try {
+      await this.resumeEach();
+    } finally {
+      this.codexThreads = null;
+    }
+  }
+
+  /** 重啟時 Codex 有對話紀錄的 thread id：只掃一次 `sessions/` 的檔名，所有 Codex session 共用。 */
+  private codexThreads: Promise<Set<string>> | null = null;
+
+  private async resumeEach(): Promise<void> {
     for (const entry of [...this.store.sessions]) {
       try {
         this.assertCanLaunch(agentOf(entry.spec));
@@ -763,6 +799,7 @@ export class Daemon {
       }
       try {
         if (agentOf(entry.spec) === 'claude') await this.installHooksOrThrow(entry.cwd);
+        else this.assertNoCodexProjectHooks(entry.cwd);
       } catch (error) {
         // 使用者修好設定檔就能接回，清單留著；沒裝上 hook 不可開 PTY。
         log.error(`這次不接回 session ${entry.sessionId}：${errorMessage(error)}`);
@@ -788,7 +825,8 @@ export class Daemon {
     if (agentOf(entry.spec) === 'codex') {
       // Codex：知道 thread id 而且有對話紀錄才 `codex resume <id>`，否則重新開始（沒送出的第一句照常帶）。
       const id = entry.claudeSessionId;
-      if (id && (await codexThreadExists(codexHome(this.childEnv()), id))) return { resumeId: id };
+      this.codexThreads ??= codexThreadIds(codexHome(this.childEnv()));
+      if (id && (await this.codexThreads).has(id.toLowerCase())) return { resumeId: id };
       log.warn(`Codex session ${entry.sessionId} 沒有對話紀錄，改為重新開始`);
       return { newSessionId: null };
     }
@@ -829,6 +867,7 @@ export class Daemon {
     let launchEntry = entry;
     if (agent === 'codex') {
       // 第一句用官方的 `codex [PROMPT]` 帶入（不必等 SessionStart 再打字）；派工工具第一版不給 Codex。
+      // 本機清單裡的第一句等 Codex 回報 UserPromptSubmit 才清（handleHook）：開起來就崩潰的話，重啟會再帶一次。
       const resumeId = 'resumeId' in how ? how.resumeId : null;
       args = buildCodexArgs({
         resumeId,
@@ -836,10 +875,10 @@ export class Daemon {
         readOnly: spec.readOnly,
         model: spec.model,
         firstPrompt: resumeId ? null : entry.pendingFirstPrompt,
+        hookTarget: { sessionId, socketPath: this.hookServer.path },
       });
-      if (!resumeId && entry.pendingFirstPrompt !== null) {
-        launchEntry = { ...entry, pendingFirstPrompt: null };
-      }
+      // 已經在參數裡了，不要再用送字佇列打一次。
+      if (entry.pendingFirstPrompt !== null) launchEntry = { ...entry, pendingFirstPrompt: null };
     } else {
       const claudeHow =
         'resumeId' in how ? how : { newSessionId: how.newSessionId ?? randomUUID() };
@@ -862,13 +901,6 @@ export class Daemon {
     let session: ManagedSession;
     try {
       session = this.newManagedSession(launchEntry, args, repo);
-      // Codex 的第一句已經在參數裡，算送出了：重啟時不能再送一次。
-      if (launchEntry.pendingFirstPrompt !== entry.pendingFirstPrompt) {
-        entry.pendingFirstPrompt = null;
-        if (this.store.sessions.some((s) => s.sessionId === sessionId)) {
-          this.store.patch(sessionId, { pendingFirstPrompt: null });
-        }
-      }
     } catch (error) {
       this.dropMcp(sessionId);
       throw error;
@@ -1071,11 +1103,26 @@ export class Daemon {
 
   // ── hook ─────────────────────────────────────────────────
 
+  /** 新建的 Codex session 還沒寫進本機清單前就送出了第一句：寫入時不要再留著（createSessionOnce）。 */
+  private readonly codexPromptDelivered = new Set<string>();
+
+  private clearPendingFirstPrompt(sessionId: string): void {
+    const entry = this.store.sessions.find((s) => s.sessionId === sessionId);
+    if (!entry) this.codexPromptDelivered.add(sessionId);
+    else if (entry.pendingFirstPrompt !== null) {
+      this.store.patch(sessionId, { pendingFirstPrompt: null });
+    }
+  }
+
   private async handleHook(request: HookRequest, signal: AbortSignal): Promise<HookOutput> {
     const { event, sessionId, payload } = request;
     const session = this.sessions.get(sessionId);
     if (session) {
       session.onHook(event, payload);
+      // Codex 的第一句在啟動參數裡：真的送進去了（UserPromptSubmit）才從本機清單清掉。
+      if (session.agent === 'codex' && event === 'UserPromptSubmit') {
+        this.clearPendingFirstPrompt(sessionId);
+      }
       // 每次工具呼叫都有，太吵；狀態變化另有 status 事件。
       if (event !== 'PostToolUse' && event !== 'PostToolUseFailure') {
         this.emitEvent(sessionId, 'hook', summarizeHook(event, payload));
@@ -1086,10 +1133,13 @@ export class Daemon {
       return null;
     }
     this.approvals.settleAnsweredInTerminal(event, sessionId, payload);
-    // 不認得的 session 也照樣比對危險指令，往安全的方向。
-    const output = await this.approvals.handleHook(event, sessionId, payload, signal);
     // Codex 收的格式不同（§19.4）：hook CLI 說了是 codex，或這個 session 是 Codex 開的。
     const codex = request.agent === 'codex' || session?.agent === 'codex';
+    // 不認得的 session 也照樣比對危險指令，往安全的方向。
+    // Codex 的 PermissionRequest 會卡住終端機等 hook，所以等網頁的時間短很多（§19.4）。
+    const output = await this.approvals.handleHook(event, sessionId, payload, signal, {
+      ...(codex ? { permissionWaitMs: CODEX_PERMISSION_WAIT_MS } : {}),
+    });
     return codex ? codexHookOutput(event, output) : output;
   }
 

@@ -10,13 +10,16 @@ import {
   AGENT_FLAG,
   AGENTS,
   BLOCKING_EVENTS,
+  CODEX_PERMISSION_HOOK_WAIT_MS,
   CODEX_SHELL_TOOLS,
   CONNECT_DEADLINE_MS,
   HOOK_EVENTS,
   HOOK_WAIT_MS,
   SEND_DEADLINE_MS,
+  SESSION_FLAG,
   SESSION_ID_ENV,
   SOCKET_ENV,
+  SOCKET_FLAG,
   STDIN_DEADLINE_MS,
   WAIT_OVERRIDE_ENV,
 } from './cli-constants.ts';
@@ -24,6 +27,11 @@ import {
 type Output = Record<string, unknown> | null;
 
 let finished = false;
+/**
+ * 意外失敗（stdin 不是 JSON、未捕捉的例外）時的輸出。Codex 的 PreToolUse 不輸出＝放行，所以設成 deny；
+ * 其他情況維持安靜結束。
+ */
+let failOutput: Output = null;
 
 function finish(output: Output = null): void {
   if (finished) return;
@@ -46,9 +54,9 @@ function preToolUseDecision(decision: 'ask' | 'deny', reason: string): Output {
   };
 }
 
-function waitMs(): number {
+function waitMs(limit: number): number {
   const override = Number(process.env[WAIT_OVERRIDE_ENV]);
-  return override > 0 && override < HOOK_WAIT_MS ? override : HOOK_WAIT_MS;
+  return override > 0 && override < limit ? override : limit;
 }
 
 function readStdin(): Promise<string> {
@@ -83,8 +91,9 @@ function sendAndWait(
   requestId: string,
   unreachable: Output,
   timeoutOutput: Output,
+  limit: number,
 ): void {
-  setTimeout(() => finish(timeoutOutput), waitMs());
+  setTimeout(() => finish(timeoutOutput), waitMs(limit));
   const connectDeadline = setTimeout(() => finish(unreachable), CONNECT_DEADLINE_MS);
   const socket: Socket = connect(socketPath);
   let buffer = '';
@@ -124,41 +133,86 @@ function handleReply(line: string, requestId: string, unreachable: Output): void
   else finish(unreachable);
 }
 
-/** `[--agent <claude|codex>] <EventName>`；認不得就回 null（安靜結束）。 */
-function parseArgs(argv: readonly string[]): { agent: string; event: string } | null {
+interface ParsedArgs {
+  agent: string;
+  event: string;
+  sessionId: string | null;
+  socketPath: string | null;
+}
+
+/**
+ * `[--agent <claude|codex>] [--session <id>] [--socket <path>] <EventName>`（選項順序不拘）；
+ * 認不得就回 null（安靜結束）。
+ */
+function parseArgs(argv: readonly string[]): ParsedArgs | null {
   let agent = 'claude';
-  let rest = argv;
-  if (rest[0] === AGENT_FLAG) {
-    agent = rest[1] ?? '';
-    rest = rest.slice(2);
+  let sessionId: string | null = null;
+  let socketPath: string | null = null;
+  let i = 0;
+  for (; i < argv.length; i += 2) {
+    const flag = argv[i];
+    const value = argv[i + 1];
+    if (flag === AGENT_FLAG) agent = value ?? '';
+    else if (flag === SESSION_FLAG) sessionId = value || null;
+    else if (flag === SOCKET_FLAG) socketPath = value || null;
+    else break;
   }
-  const event = rest[0];
+  const event = argv[i];
   if (!AGENTS.includes(agent) || event === undefined || !HOOK_EVENTS.includes(event)) return null;
-  return { agent, event };
+  return { agent, event, sessionId, socketPath };
+}
+
+/** POSIX shell 的單引號：陣列指令接成字串後，daemon 解析出來的還是同樣的幾個參數。 */
+function shellQuote(value: string): string {
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
  * Codex 的 shell 工具統一成 Bash、指令統一成字串，daemon 的危險指令比對才認得（§19）。
- * 陣列形式（`["bash","-lc","…"]`）用空白接起來：比對的是實際會執行的那段文字。
+ * 陣列形式（`["bash","-lc","git push --force"]`）每個參數加引號再接起來：只用空白接的話
+ * `bash -lc git push --force` 的腳本只剩 `git`，daemon 解不開 `bash -c` 裡的指令。
  */
 function normalizeCodexPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const tool = payload.tool_name;
-  if (typeof tool !== 'string' || !CODEX_SHELL_TOOLS.includes(tool)) return payload;
   const input = isRecord(payload.tool_input) ? payload.tool_input : {};
   const command = input.command ?? input.cmd;
+  // 名稱不在清單裡（Codex 改了工具名），但看得出是在跑指令：一樣當成 Bash 檢查，不只看名稱。
+  const looksLikeShell =
+    typeof command === 'string' ||
+    (Array.isArray(command) && command.some((part) => typeof part === 'string'));
+  if (!(typeof tool === 'string' && CODEX_SHELL_TOOLS.includes(tool)) && !looksLikeShell) {
+    return payload;
+  }
   const text = Array.isArray(command)
-    ? command.filter((part): part is string => typeof part === 'string').join(' ')
+    ? command
+        .filter((part): part is string => typeof part === 'string')
+        .map(shellQuote)
+        .join(' ')
     : command;
   return { ...payload, tool_name: 'Bash', tool_input: { ...input, command: text } };
 }
 
+const CODEX_BLOCKED_PREFIX =
+  'Agent Board: dangerous-command check could not run, so this command was blocked';
+
 async function main(): Promise<void> {
-  const sessionId = process.env[SESSION_ID_ENV];
-  if (!sessionId) return finish();
   const parsed = parseArgs(process.argv.slice(2));
   if (parsed === null) return finish();
   const { agent, event } = parsed;
   const codex = agent === 'codex';
+  // Codex 的 PreToolUse 不輸出＝放行、不支援 ask：任何意外都往安全的方向（deny）。
+  if (codex && event === 'PreToolUse') {
+    failOutput = preToolUseDecision('deny', `${CODEX_BLOCKED_PREFIX} (hook error).`);
+  }
+  // Codex 的 hook 指令直接帶 --session／--socket（§19.2）；沒有才看環境變數（Claude 一直是環境變數）。
+  const sessionId = parsed.sessionId ?? process.env[SESSION_ID_ENV];
+  if (!sessionId) {
+    return finish(
+      codex && event === 'PreToolUse'
+        ? preToolUseDecision('deny', `${CODEX_BLOCKED_PREFIX} (no Agent Board session).`)
+        : null,
+    );
+  }
 
   const raw: unknown = JSON.parse(await readStdin());
   if (!isRecord(raw)) return finish();
@@ -182,7 +236,7 @@ async function main(): Promise<void> {
     ? preToolUseDecision('deny', 'Agent Board: no decision received before the time limit.')
     : null;
 
-  const socketPath = process.env[SOCKET_ENV];
+  const socketPath = parsed.socketPath ?? process.env[SOCKET_ENV];
   // daemon 用 zod 驗 HookPayload，缺這兩個欄位送過去也只會被丟掉。
   if (
     !socketPath ||
@@ -203,7 +257,9 @@ async function main(): Promise<void> {
   };
   const line = `${JSON.stringify(request)}\n`;
   if (BLOCKING_EVENTS.includes(event)) {
-    sendAndWait(socketPath, line, requestId, unreachable, timeoutOutput);
+    const limit =
+      codex && event === 'PermissionRequest' ? CODEX_PERMISSION_HOOK_WAIT_MS : HOOK_WAIT_MS;
+    sendAndWait(socketPath, line, requestId, unreachable, timeoutOutput, limit);
   } else {
     sendAndLeave(socketPath, line);
   }
@@ -213,7 +269,12 @@ async function main(): Promise<void> {
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
   process.on(signal, () => process.exit(0));
 }
-process.on('uncaughtException', () => process.exit(0));
-process.on('unhandledRejection', () => process.exit(0));
+/** 意外失敗：Codex 的 PreToolUse 回 deny（failOutput），其他安靜結束。已經在輸出就直接離開。 */
+function fail(): void {
+  if (finished || failOutput === null) process.exit(0);
+  finish(failOutput);
+}
+process.on('uncaughtException', fail);
+process.on('unhandledRejection', fail);
 process.stdout.on('error', () => process.exit(0));
-main().catch(() => process.exit(0));
+main().catch(fail);

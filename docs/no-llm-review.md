@@ -148,14 +148,16 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
 - 參數：`buildCodexArgs`（`packages/daemon/src/codex.ts`）只會產生 `resume <thread id>`（接回使用者自己的對話）、
   權限換算的 `-s <sandbox> -a <approval>` 或 `--dangerously-bypass-approvals-and-sandbox`（使用者選了 bypass）、
   可選的 `-m <model>`、`--dangerously-bypass-hook-trust`（只讓這次啟動跳過 hook 信任確認）、每個 hook 事件一個
-  `-c hooks.<Event>=[{hooks=[{type="command",command="agent-board-hook --agent codex <Event>",…}]}]`，以及新對話時
+  `-c hooks.<Event>=[{hooks=[{type="command",command="agent-board-hook --agent codex --session <id> --socket <path> <Event>",…}]}]`，以及新對話時
   `--` 後面使用者填的第一個指令。沒有 `exec`，所以永遠是互動式 TUI，等使用者輸入。`codex.test.ts` 有測試。
 - hook：只有 `type = "command"`，不用 `prompt`／`agent`／`mcp_tool` 型別（`prompt`／`agent` 會讓 CLI 另外呼叫模型）。
   hook 的輸出只有權限決定（`codexHookOutput`），不輸出 `additionalContext`、`systemMessage`，Stop 不回 `decision: block`
   （那會把 reason 當新的使用者 prompt 送進去）。
 - 環境：同 claude（拿掉 session 標記與機器 token），不設 `CLAUDE_CONFIG_DIR`，也不設 `OPENAI_API_KEY`、
   `OPENAI_BASE_URL`、`CODEX_API_KEY`，模型呼叫由使用者自己登入的 `codex` 決定。daemon 不寫 `~/.codex`、不建專案 `.codex`、
-  不讀 `auth.json`；重啟接回時只列 `$CODEX_HOME/sessions` 底下的檔名找 thread 的對話紀錄是否存在。
+  不讀 `auth.json`；重啟接回時只列出 `$CODEX_HOME/sessions`（預設 `~/.codex/sessions`）底下的檔名、掃一次，找 thread 的
+  對話紀錄是否存在（不讀檔案內容）。開 Codex 前只檢查 cwd 到 repo 根目錄的 `.codex/hooks.json`、`.codex/config.toml`
+  在不在（不讀內容），有就不開。
 
 ## 送進 `claude` 的字從哪裡來（全部）
 

@@ -4,11 +4,19 @@ import { join } from 'node:path';
 import {
   CODEX_HOOK_EVENTS,
   DAEMON_FEATURES,
+  DEFAULT_DANGER_RULES,
   codexHookOverrides,
   type PermissionMode,
 } from '@agent-board/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildCodexArgs, codexHookOutput, codexThreadExists } from './codex';
+import { matchDangerRule } from './approvals';
+import {
+  buildCodexArgs,
+  codexHookOutput,
+  codexProjectHookFiles,
+  codexThreadIds,
+  type CodexArgsInput,
+} from './codex';
 import {
   FAKE_CAPABILITIES,
   Harness,
@@ -19,11 +27,15 @@ import {
 
 const THREAD = '0199a3c2-1111-7000-8000-000000000abc';
 
+const TARGET = { sessionId: 's-1', socketPath: '/tmp/ab test/daemon.sock' };
+const build = (input: Omit<CodexArgsInput, 'hookTarget'>) =>
+  buildCodexArgs({ ...input, hookTarget: TARGET });
+
 describe('buildCodexArgs', () => {
-  const hooks = codexHookOverrides().flatMap((value) => ['-c', value]);
+  const hooks = codexHookOverrides(TARGET).flatMap((value) => ['-c', value]);
 
   it('新對話：權限、--dangerously-bypass-hook-trust、每個 hook 一個 -c', () => {
-    expect(buildCodexArgs({ permissionMode: 'default', model: null })).toEqual([
+    expect(build({ permissionMode: 'default', model: null })).toEqual([
       '-s',
       'read-only',
       '-a',
@@ -34,34 +46,27 @@ describe('buildCodexArgs', () => {
   });
 
   it('接續：resume <id> 在最前面，不帶第一句', () => {
-    const args = buildCodexArgs({
+    const args = build({
       resumeId: THREAD,
       permissionMode: 'acceptEdits',
       model: 'gpt-test',
       firstPrompt: '不該出現',
     });
     expect(args.slice(0, 2)).toEqual(['resume', THREAD]);
-    expect(args.slice(2, 8)).toEqual([
-      '-s',
-      'workspace-write',
-      '-a',
-      'on-request',
-      '-m',
-      'gpt-test',
-    ]);
+    expect(args.slice(2, 8)).toEqual(['-s', 'read-only', '-a', 'on-request', '-m', 'gpt-test']);
     expect(args).not.toContain('不該出現');
   });
 
   it('第一句放在 -- 之後（以 - 開頭也不會被當成參數）', () => {
-    const args = buildCodexArgs({ permissionMode: 'plan', model: null, firstPrompt: '-v 回答 ok' });
+    const args = build({ permissionMode: 'plan', model: null, firstPrompt: '-v 回答 ok' });
     expect(args.slice(-2)).toEqual(['--', '-v 回答 ok']);
   });
 
   it('bypassPermissions 用 --dangerously-bypass-approvals-and-sandbox；唯讀時改成 read-only＋never', () => {
-    expect(buildCodexArgs({ permissionMode: 'bypassPermissions', model: null })[0]).toBe(
+    expect(build({ permissionMode: 'bypassPermissions', model: null })[0]).toBe(
       '--dangerously-bypass-approvals-and-sandbox',
     );
-    const readOnly = buildCodexArgs({
+    const readOnly = build({
       permissionMode: 'bypassPermissions',
       model: null,
       readOnly: true,
@@ -70,44 +75,59 @@ describe('buildCodexArgs', () => {
     expect(readOnly).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
-  it('權限對應表（不比 Claude 的模式寬）', () => {
+  it('權限對應表（不比 Claude 的模式寬：0.167.0 沒有 untrusted，沙盒內指令不問就跑的 workspace-write 不用）', () => {
     const table: Record<PermissionMode, string[]> = {
       plan: ['-s', 'read-only', '-a', 'on-request'],
       default: ['-s', 'read-only', '-a', 'on-request'],
-      acceptEdits: ['-s', 'workspace-write', '-a', 'on-request'],
-      auto: ['-s', 'workspace-write', '-a', 'on-request'],
+      acceptEdits: ['-s', 'read-only', '-a', 'on-request'],
+      auto: ['-s', 'read-only', '-a', 'on-request'],
       dontAsk: ['-s', 'read-only', '-a', 'never'],
       bypassPermissions: ['--dangerously-bypass-approvals-and-sandbox'],
     };
     for (const [mode, expected] of Object.entries(table)) {
-      const args = buildCodexArgs({ permissionMode: mode as PermissionMode, model: null });
+      const args = build({ permissionMode: mode as PermissionMode, model: null });
       expect(args.slice(0, expected.length)).toEqual(expected);
     }
-    // 唯讀 session：可寫的模式也降成 read-only 沙盒。
+    // 只用 codex-cli 0.167.0 收的 -a 值（on-request、never）。
+    for (const mode of Object.keys(table) as PermissionMode[]) {
+      const args = build({ permissionMode: mode, model: null });
+      const approval = args[args.indexOf('-a') + 1];
+      if (args.includes('-a')) expect(['on-request', 'never']).toContain(approval);
+      expect(args).not.toContain('workspace-write');
+    }
+    // 唯讀 session：一律 read-only 沙盒。
     expect(
-      buildCodexArgs({ permissionMode: 'acceptEdits', model: null, readOnly: true }).slice(0, 2),
+      build({ permissionMode: 'acceptEdits', model: null, readOnly: true }).slice(0, 2),
     ).toEqual(['-s', 'read-only']);
   });
 
   it('只用互動模式：沒有 exec、review、--json', () => {
-    const args = buildCodexArgs({ resumeId: THREAD, permissionMode: 'auto', model: 'm' });
+    const args = build({ resumeId: THREAD, permissionMode: 'auto', model: 'm' });
     for (const banned of ['exec', 'e', 'review', '--json']) expect(args).not.toContain(banned);
   });
 
-  it('hook 設定：每個事件一行 TOML，command 是 agent-board-hook --agent codex <Event>', () => {
-    const overrides = codexHookOverrides();
+  it('hook 設定：每個事件一行 TOML，command 直接帶 session 與 socket（不靠環境變數）', () => {
+    const overrides = codexHookOverrides(TARGET);
     expect(overrides).toHaveLength(CODEX_HOOK_EVENTS.length);
     for (const [i, event] of CODEX_HOOK_EVENTS.entries()) {
       expect(overrides[i]).toBe(
-        `hooks.${event}=[{hooks=[{type="command",command="agent-board-hook --agent codex ${event}",timeout=${
-          event === 'PreToolUse' || event === 'PermissionRequest'
+        `hooks.${event}=[{hooks=[{type="command",command="agent-board-hook --agent codex --session s-1 --socket '/tmp/ab test/daemon.sock' ${event}",timeout=${
+          event === 'PreToolUse'
             ? 600
-            : event === 'SessionEnd' || event === 'Interrupt'
-              ? 3
-              : 30
+            : event === 'PermissionRequest'
+              ? 100
+              : event === 'SessionEnd' || event === 'Interrupt'
+                ? 3
+                : 30
         }}]}]`,
       );
     }
+  });
+
+  it('hook 指令的跳脫：shell 單引號、TOML 的反斜線與雙引號', () => {
+    const [first] = codexHookOverrides({ sessionId: 's-2', socketPath: `/tmp/a'b"c\\d.sock` });
+    // shell：'/tmp/a'\''b"c\d.sock'；TOML 再把 \ 與 " 跳脫成 \\、\"。
+    expect(first).toContain(`--socket '/tmp/a'\\\\''b\\"c\\\\d.sock' SessionStart"`);
   });
 });
 
@@ -158,16 +178,61 @@ describe('codexHookOutput', () => {
   });
 });
 
-describe('codexThreadExists', () => {
-  it('只比對 sessions 底下的檔名', async () => {
+describe('Codex 的陣列指令（hook CLI 加引號接成字串）', () => {
+  it('bash -lc 包起來的危險指令照樣比對得到；只用空白接就會漏掉', () => {
+    expect(matchDangerRule("bash -lc 'git push --force origin main'", DEFAULT_DANGER_RULES)).toBe(
+      'git push --force',
+    );
+    expect(matchDangerRule('bash -lc git push --force origin main', DEFAULT_DANGER_RULES)).toBe(
+      null,
+    );
+  });
+});
+
+describe('codexThreadIds', () => {
+  it('只列出 sessions 底下的檔名，id 一律小寫', async () => {
     const home = makeTempDir();
-    expect(await codexThreadExists(home, THREAD)).toBe(false);
+    expect(await codexThreadIds(home)).toEqual(new Set());
     const day = join(home, 'sessions', '2026', '11', '10');
     mkdirSync(day, { recursive: true });
-    writeFileSync(join(day, `rollout-2026-11-10T07-00-00-${THREAD}.jsonl`), '{}\n');
-    expect(await codexThreadExists(home, THREAD)).toBe(true);
-    expect(await codexThreadExists(home, THREAD.toUpperCase())).toBe(true);
-    expect(await codexThreadExists(home, '0199a3c2-1111-7000-8000-000000000000')).toBe(false);
+    writeFileSync(join(day, `rollout-2026-11-10T07-00-00-${THREAD.toUpperCase()}.jsonl`), '{}\n');
+    writeFileSync(join(day, 'notes.txt'), 'x');
+    expect(await codexThreadIds(home)).toEqual(new Set([THREAD]));
+  });
+});
+
+describe('codexProjectHookFiles', () => {
+  it('cwd 到 repo 根目錄之間有 .codex/hooks.json 或 config.toml 就列出來；不看 repo 外、不看家目錄', () => {
+    const home = makeTempDir();
+    const repo = join(home, 'repo');
+    const sub = join(repo, 'packages', 'a');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    mkdirSync(sub, { recursive: true });
+    // 家目錄自己的 ~/.codex 是使用者的設定，不算。
+    mkdirSync(join(home, '.codex'), { recursive: true });
+    writeFileSync(join(home, '.codex', 'config.toml'), '');
+    expect(codexProjectHookFiles(sub, home)).toEqual([]);
+    expect(codexProjectHookFiles(home, home)).toEqual([]);
+
+    mkdirSync(join(repo, '.codex'), { recursive: true });
+    writeFileSync(join(repo, '.codex', 'hooks.json'), '{}');
+    expect(codexProjectHookFiles(sub, home)).toEqual([join(repo, '.codex', 'hooks.json')]);
+    mkdirSync(join(sub, '.codex'), { recursive: true });
+    writeFileSync(join(sub, '.codex', 'config.toml'), '');
+    expect(codexProjectHookFiles(sub, home)).toEqual([
+      join(sub, '.codex', 'config.toml'),
+      join(repo, '.codex', 'hooks.json'),
+    ]);
+  });
+
+  it('不在 repo 裡：只看 cwd 自己', () => {
+    const home = makeTempDir();
+    const outer = join(home, 'outer');
+    const cwd = join(outer, 'plain');
+    mkdirSync(join(outer, '.codex'), { recursive: true });
+    writeFileSync(join(outer, '.codex', 'hooks.json'), '{}');
+    mkdirSync(cwd, { recursive: true });
+    expect(codexProjectHookFiles(cwd, home)).toEqual([]);
   });
 });
 
@@ -212,7 +277,7 @@ describe('daemon 開 Codex', () => {
     const run = h.runs().at(-1);
     expect(run?.argv.slice(0, 7)).toEqual([
       '-s',
-      'workspace-write',
+      'read-only',
       '-a',
       'on-request',
       '-m',
@@ -222,19 +287,86 @@ describe('daemon 開 Codex', () => {
     expect(run?.argv.slice(-2)).toEqual(['--', '回答 ok']);
     expect(run?.env.CLAUDE_CONFIG_DIR).toBeNull();
     expect(run?.env.AGENT_BOARD_SESSION_ID).toBe('x1');
+    // hook 指令直接帶 session 與 socket（Codex 不一定把環境變數傳給 hook）。
+    const socket = h.daemons.at(-1)!.hookSocketPath;
+    const hookArg = run?.argv.find((arg) => arg.startsWith('hooks.PreToolUse='));
+    expect(hookArg).toContain('--session x1 --socket');
+    expect(hookArg).toContain(socket.replace(/\\/g, '\\\\'));
     expect(h.installHookCalls).toEqual([]);
     const created = await h.hub.waitFor('session.created', (m) => m.requestId === 'req-x1');
     expect(created.session.claudeSessionId).toBeNull();
-    // 第一句已經在參數裡：重啟不能再送一次。
+    // 第一句在參數裡，但 Codex 還沒回報 UserPromptSubmit：先留著（開起來就崩潰時重啟會再帶）。
     expect(persisted().sessions[0]).toMatchObject({
       claudeSessionId: null,
-      pendingFirstPrompt: null,
+      pendingFirstPrompt: '回答 ok',
     });
 
-    const client = await HookClient.connect(h.daemons.at(-1)!.hookSocketPath);
+    const client = await HookClient.connect(socket);
     await client.request('x1', 'SessionStart', { session_id: THREAD, source: 'startup' }, 'codex');
-    client.close();
     await waitUntil(() => persisted().sessions[0]?.claudeSessionId === THREAD, 'thread id 存檔');
+    expect(persisted().sessions[0]?.pendingFirstPrompt).toBe('回答 ok');
+    await client.request(
+      'x1',
+      'UserPromptSubmit',
+      { session_id: THREAD, prompt: '回答 ok' },
+      'codex',
+    );
+    client.close();
+    // 送進去了才清：重啟不能再送一次。
+    await waitUntil(() => persisted().sessions[0]?.pendingFirstPrompt === null, '第一句清掉');
+  });
+
+  it('還沒送出第一句就重啟：重新開始時再帶一次', async () => {
+    await h.start();
+    await h.restartDaemon({ capabilities: codexCaps });
+    await h.createAndSubscribe('x5', { agent: 'codex', firstPrompt: '回答 ok' });
+    await h.restartDaemon({ capabilities: codexCaps });
+    await waitUntil(() => h.runs().length === 2, '重新開始');
+    expect(h.runs().at(-1)?.argv.slice(-2)).toEqual(['--', '回答 ok']);
+  });
+
+  it('thread id 不是 UUID：不存、runtime 仍然合法（hub 不會整則拒收）', async () => {
+    await h.start();
+    await h.restartDaemon({ capabilities: codexCaps });
+    await h.createAndSubscribe('x6', { agent: 'codex' });
+    const client = await HookClient.connect(h.daemons.at(-1)!.hookSocketPath);
+    await client.request(
+      'x6',
+      'SessionStart',
+      { session_id: 'thread_abc', source: 'startup' },
+      'codex',
+    );
+    await client.request(
+      'x6',
+      'UserPromptSubmit',
+      { session_id: 'thread_abc', prompt: 'x' },
+      'codex',
+    );
+    client.close();
+    await waitUntil(
+      () => h.hub.received.some((m) => m.type === 'session.runtime' && m.session.id === 'x6'),
+      'runtime',
+    );
+    expect(persisted().sessions[0]?.claudeSessionId).toBeNull();
+    // afterEach 檢查 h.hub.invalid 是空的。
+  });
+
+  it('專案有自己的 .codex hook 設定：不開，session.createFailed 說明原因', async () => {
+    await h.start();
+    await h.restartDaemon({ capabilities: codexCaps });
+    mkdirSync(join(h.workDir, '.codex'), { recursive: true });
+    writeFileSync(join(h.workDir, '.codex', 'hooks.json'), '{}');
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'req-x7',
+      sessionId: 'x7',
+      spec: h.spec({ agent: 'codex' }),
+    });
+    const failed = await h.hub.waitFor('session.createFailed', (m) => m.requestId === 'req-x7');
+    expect(failed.error).toContain('hooks.json');
+    expect(h.runs()).toEqual([]);
+    // Claude 不受影響。
+    await h.createAndSubscribe('x8');
   });
 
   it('daemon 重啟：有對話紀錄用 codex resume <id>，沒有就重新開始', async () => {

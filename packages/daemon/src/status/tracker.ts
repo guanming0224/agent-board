@@ -87,6 +87,8 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
   let hasWorked = false;
   /** Codex：這一輪最後一次模型請求失敗的訊息；成功或新的一輪就清掉。Stop 時還在就是 error。 */
   let modelError: string | null = null;
+  /** Codex：這一輪 PostModelRequest 已經判定額度用完（rate_limited），這一輪的 Stop 不能蓋掉。 */
+  let quotaHit = false;
   /** PTY 結束或 dispose 之後，遲到的事件一律忽略。 */
   let closed = false;
 
@@ -196,12 +198,14 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
   function onHook(event: HookEventName, payload: HookPayload): void {
     if (closed) return;
     const sessionId = stringField(payload, 'session_id');
+    // 格式（UUID）由 ManagedSession.syncClaudeSessionId 把關，不合格的不會進 runtime。
     if (sessionId !== null) claudeSessionId = sessionId;
 
     const reason = `hook:${event}`;
     switch (event) {
       case 'UserPromptSubmit':
         modelError = null;
+        quotaHit = false;
         hasWorked = true;
         lastActivityAt = now().getTime();
         transition('running', reason, null);
@@ -233,9 +237,13 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
       case 'Stop':
         // 計畫是用 ExitPlanMode 的權限請求送出的（實測 2.1.316）。plan 模式下的 Stop 可能只是提問
         // 或計畫剛被拒絕，當成審計畫會誤報。
-        // Codex：這一輪最後一次模型請求失敗就結束了＝錯誤（額度用完的已經是 rate_limited，不蓋掉）。
-        if (modelError !== null) {
-          if (status !== 'rate_limited') transition('error', `${reason}:model-error`, modelError);
+        // Codex：額度用完（這一輪 PostModelRequest 已標 rate_limited）就維持 QUOTA，hub 才排得到隊（§8-5）；
+        // 這一輪最後一次模型請求失敗就結束了＝錯誤。只有 Codex 的事件會設這兩個值，Claude 不受影響。
+        if (quotaHit) {
+          quotaHit = false;
+          modelError = null;
+        } else if (modelError !== null) {
+          transition('error', `${reason}:model-error`, modelError);
           modelError = null;
         } else {
           transition('waiting_input', reason, null);
@@ -244,6 +252,7 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
       case 'Interrupt':
         // Codex：使用者按 Esc 中斷這一輪，回到輸入框（和 Claude 中斷後一樣是等你）。
         modelError = null;
+        quotaHit = false;
         transition('waiting_input', reason, null);
         break;
       case 'PostModelRequest': {
@@ -252,10 +261,12 @@ export const createStatusTracker: CreateStatusTracker = (options) => {
         lastActivityAt = now().getTime();
         if (error === null) {
           modelError = null;
+          quotaHit = false;
           // Codex 自己重試成功（例如暫時的 429）：回到工作中。
           if (status === 'stuck' || status === 'rate_limited') transition('running', reason, null);
         } else if (CODEX_QUOTA_ERROR.test(error)) {
           modelError = null;
+          quotaHit = true;
           transition('rate_limited', `${reason}:quota`, error);
         } else {
           modelError = error;
