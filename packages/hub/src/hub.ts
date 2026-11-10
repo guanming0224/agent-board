@@ -8,6 +8,8 @@ import {
   agentOf,
   PROTOCOL_VERSION,
   rollbackSupported,
+  UPDATE_IN_PROGRESS,
+  UPDATE_STALE_MS,
   type UpdateState,
   ClientToHub,
   DAEMON_FEATURES,
@@ -881,6 +883,19 @@ export class Hub {
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     const conn = this.daemonFor(machineId);
     if (!conn) throw new HttpError(409, 'machine_offline', 'Machine is offline');
+    // 更新程式還在跑（最近一小時內的進行中狀態）：不再送第二個（N2）。
+    const running = this.release.record(machineId).update;
+    if (
+      running &&
+      UPDATE_IN_PROGRESS.includes(running.phase) &&
+      this.deps.now().getTime() - Date.parse(running.at) < UPDATE_STALE_MS
+    ) {
+      throw new HttpError(
+        409,
+        'update_in_progress',
+        'An update is already running on this machine',
+      );
+    }
     const target = this.release.targetFor(machineId);
     if (!target) throw new HttpError(409, 'no_target', 'No release for this machine');
     this.audit(
@@ -897,6 +912,19 @@ export class Hub {
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     const conn = this.daemonFor(machineId);
     if (!conn) throw new HttpError(409, 'machine_offline', 'Machine is offline');
+    // 更新程式還在跑（最近一小時內的進行中狀態）：不再送第二個（N2）。
+    const running = this.release.record(machineId).update;
+    if (
+      running &&
+      UPDATE_IN_PROGRESS.includes(running.phase) &&
+      this.deps.now().getTime() - Date.parse(running.at) < UPDATE_STALE_MS
+    ) {
+      throw new HttpError(
+        409,
+        'update_in_progress',
+        'An update is already running on this machine',
+      );
+    }
     const previous = this.release.record(machineId).previousVersion;
     if (!previous) throw new HttpError(409, 'no_previous', 'No previous version on this machine');
     // 0.0.0-legacy 或比第一個有更新程式的版本舊：舊 daemon 不寫健康狀態檔，自動回滾一定失敗（W6）。

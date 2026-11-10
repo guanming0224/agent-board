@@ -58,6 +58,8 @@ const KEY = {
   stats: 'release.canaryStats',
   lastCheck: 'release.lastCheck',
   fetchFailure: 'release.fetchFailure',
+  /** 最後一次 hello 說自己有 hub 的那台（N1）：只認這一台，舊紀錄會被取代或清掉。 */
+  hubMachine: 'release.hubMachine',
   channel: (id: string) => `machineChannel:${id}`,
   machine: (id: string) => `machineRelease:${id}`,
 };
@@ -249,6 +251,7 @@ export class ReleaseManager {
 
   /** 刪機器時一起清。 */
   forgetMachine(machineId: string): void {
+    if (this.str(KEY.hubMachine) === machineId) this.deps.store.setRawJson(KEY.hubMachine, null);
     this.deps.store.setRawJson(KEY.channel(machineId), null);
     this.deps.store.setRawJson(KEY.machine(machineId), null);
   }
@@ -285,8 +288,15 @@ export class ReleaseManager {
     };
     this.saveRecord(machineId, record);
     this.afterUpdateState(machineId, record);
-    // hub 那台換了版本：其他機器在等它先升級（hub_first），換完再把目標送出去（等 welcome 送完）。
-    if (record.hostsHub && prev.version !== record.version) {
+    // 哪一台是 hub：最後一次 hello 說自己有 hub 的那台；原本是 hub 的機器改說沒有就清掉（N1）。
+    const hubMachine = this.str(KEY.hubMachine);
+    if (record.hostsHub && hubMachine !== machineId) {
+      this.deps.store.setRawJson(KEY.hubMachine, machineId);
+    } else if (!record.hostsHub && hubMachine === machineId) {
+      this.deps.store.setRawJson(KEY.hubMachine, null);
+    }
+    // hub 那台上線或換了版本：其他機器可能在等它（hub_first），重新送目標（等 welcome 送完）。
+    if (record.hostsHub || hubMachine === machineId) {
       queueMicrotask(() => this.deps.onTargetsChanged());
     }
     return protocolCompat(PROTOCOL_VERSION, record.protocolVersion ?? LEGACY_PROTOCOL_VERSION);
@@ -324,6 +334,10 @@ export class ReleaseManager {
    * 狀態停在進行中太久不算（S1：卡住的狀態不能讓之後的崩潰都被當成預期的）。
    */
   onDisconnect(machineId: string): void {
+    // hub 那台離線：其他機器不用再等它（N1）。
+    if (this.str(KEY.hubMachine) === machineId) {
+      queueMicrotask(() => this.deps.onTargetsChanged());
+    }
     if (this.channelOf(machineId) !== 'canary') return;
     const update = this.record(machineId).update;
     const recent =
@@ -376,8 +390,13 @@ export class ReleaseManager {
    * - 還沒實機驗證的平台（win-x64，W8）：platform_unverified。hub 照樣下載成品，只是不發。
    * - 成品附的原生模組 ABI 和這台 daemon 的 Node 不合（B5）：abi_mismatch（不在更新中跑 npm ci）。
    * - hub 那台也要升到同一版但還沒升（S3a）：hub_first。先升 hub，其他機器才不會在 hub 重啟時健康檢查失敗。
+   *   只在 hub 那台真的拿得到這個目標（它自己沒被平台、ABI 擋住）而且在線時才擋（N1）。
+   *   hub 那台這一版更新失敗（rolled_back／rollback_failed）：繼續擋，說明改成 hub_update_failed（不管在不在線）。
    */
-  resolveTarget(machineId: string): { target: ReleaseTarget | null; note: TargetNote | null } {
+  resolveTarget(
+    machineId: string,
+    options: { skipHubCheck?: boolean } = {},
+  ): { target: ReleaseTarget | null; note: TargetNote | null } {
     const none = { target: null, note: null };
     const record = this.record(machineId);
     const version = this.channelVersion(machineId);
@@ -393,17 +412,20 @@ export class ReleaseManager {
     if (entry.abi && record.nodeAbi && entry.abi !== record.nodeAbi) {
       return { target: null, note: 'abi_mismatch' };
     }
-    if (!record.hostsHub) {
-      for (const machine of this.deps.store.listMachines()) {
-        if (machine.id === machineId) continue;
-        const hub = this.record(machine.id);
-        if (
-          hub.hostsHub &&
-          hub.version !== version &&
-          this.channelVersion(machine.id) === version
-        ) {
-          return { target: null, note: 'hub_first' };
-        }
+    const hubId = this.str(KEY.hubMachine);
+    if (!options.skipHubCheck && hubId && hubId !== machineId) {
+      const hubMachine = this.deps.store.getMachine(hubId);
+      const hub = this.record(hubId);
+      const hubTarget = hubMachine
+        ? this.resolveTarget(hubId, { skipHubCheck: true }).target
+        : null;
+      if (hubTarget?.version === version && hub.version !== version) {
+        const failed =
+          hub.update !== null &&
+          hub.update.toVersion === version &&
+          (hub.update.phase === 'rolled_back' || hub.update.phase === 'rollback_failed');
+        if (failed) return { target: null, note: 'hub_update_failed' };
+        if (hubMachine?.online) return { target: null, note: 'hub_first' };
       }
     }
     return {

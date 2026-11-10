@@ -479,6 +479,117 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
     expect((next.target as { version: string }).version).toBe('0.2.0');
   });
 
+  /** stable 0.2.0；hub 那台與一台一般機器。 */
+  async function hubAndLaptop(hubHello: object) {
+    const ctx = await ready([release('0.2.0')]);
+    const { hub, cookie } = ctx;
+    await hub.api('POST', '/api/releases/check', { cookie });
+    await hub.api('POST', '/api/releases/promote', {
+      cookie,
+      body: { version: '0.2.0', confirm: true },
+    });
+    const hubMachine = await hub.pair(cookie, 'mac mini');
+    const hubDaemon = await hub.daemon(hubMachine.token);
+    hubDaemon.send(macHello({ hostsHub: true, ...hubHello }));
+    await hubDaemon.next('hub.welcome');
+    const laptop = await hub.pair(cookie, 'laptop');
+    return { ...ctx, hubMachine, hubDaemon, laptop };
+  }
+
+  const laptopTarget = async (hub: TestHub, token: string) => {
+    const daemon = await hub.daemon(token);
+    daemon.send(macHello());
+    return { daemon, version: releaseOf(await daemon.next('hub.welcome')) };
+  };
+
+  it('hub 那台自己拿不到這個目標（ABI 不合、Windows）：其他機器照常拿到（N1）', async () => {
+    const r = release('0.2.0');
+    r.files[releaseAssetName('0.2.0', 'darwin-arm64')] = archiveWithAbi('137');
+    const ctx = await ready([r]);
+    await ctx.hub.api('POST', '/api/releases/check', { cookie: ctx.cookie });
+    await ctx.hub.api('POST', '/api/releases/promote', {
+      cookie: ctx.cookie,
+      body: { version: '0.2.0', confirm: true },
+    });
+    await ctx.hub.onlineDaemon(ctx.cookie, macHello({ hostsHub: true, nodeAbi: '127' }) as never);
+    const laptop = await ctx.hub.pair(ctx.cookie, 'laptop');
+    const daemon = await ctx.hub.daemon(laptop.token);
+    daemon.send(macHello({ nodeAbi: '137' }));
+    expect(releaseOf(await daemon.next('hub.welcome'))).toBe('0.2.0');
+  });
+
+  it('hub 那台是 Windows（還沒驗證、拿不到目標）：其他機器照常拿到（N1）', async () => {
+    const { hub, laptop } = await hubAndLaptop({ os: 'win32', platform: 'win-x64' });
+    expect((await laptopTarget(hub, laptop.token)).version).toBe('0.2.0');
+  });
+
+  it('hub 那台離線：其他機器不等它；它上線後又開始擋（N1）', async () => {
+    const { hub, hubDaemon, hubMachine, laptop } = await hubAndLaptop({});
+    hubDaemon.close();
+    await until(() => !hub.running.store.getMachine(hubMachine.machineId)!.online, 'offline');
+    const { daemon, version } = await laptopTarget(hub, laptop.token);
+    expect(version).toBe('0.2.0');
+    const again = await hub.daemon(hubMachine.token);
+    again.send(macHello({ hostsHub: true }));
+    await again.next('hub.welcome');
+    expect((await daemon.next('release.target', (m) => m.target === null)).target).toBeNull();
+  });
+
+  it('hub 那台這一版更新失敗（rolled_back）：其他機器繼續暫停，說明是 hub_update_failed', async () => {
+    const { hub, cookie, hubDaemon, laptop } = await hubAndLaptop({});
+    hubDaemon.send({
+      type: 'update.status',
+      state: {
+        phase: 'rolled_back',
+        fromVersion: '0.1.0',
+        toVersion: '0.2.0',
+        reason: 'health_timeout',
+        detail: null,
+        at: new Date().toISOString(),
+      },
+    });
+    await until(
+      () =>
+        hub.running.hub.release.record(
+          hub.running.store.listMachines().find((m) => m.name === 'mac mini')!.id,
+        ).update?.phase === 'rolled_back',
+    );
+    expect((await laptopTarget(hub, laptop.token)).version).toBeUndefined();
+    const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
+    expect(overview.body.machines.find((m) => m.machineId === laptop.machineId)).toMatchObject({
+      targetNote: 'hub_update_failed',
+    });
+  });
+
+  it('不再自稱 hub 的機器（舊的 hostsHub 紀錄）不會繼續擋別人（N1）', async () => {
+    const { hub, hubDaemon, hubMachine, laptop } = await hubAndLaptop({});
+    hubDaemon.close();
+    const again = await hub.daemon(hubMachine.token);
+    again.send(macHello({ hostsHub: false }));
+    await again.next('hub.welcome');
+    expect((await laptopTarget(hub, laptop.token)).version).toBe('0.2.0');
+  });
+
+  it('更新還在進行：「立即更新」「回滾」回 409 update_in_progress（N2）', async () => {
+    const { hub, cookie } = await ready([release('0.2.0')]);
+    await hub.api('POST', '/api/releases/check', { cookie });
+    const { daemon, machineId } = await hub.onlineDaemon(
+      cookie,
+      macHello({ previousVersion: '0.1.0' }) as never,
+    );
+    await hub.api('PUT', `/api/machines/${machineId}/channel`, {
+      cookie,
+      body: { channel: 'canary' },
+    });
+    daemon.send({ type: 'update.status', state: inProgressState(new Date()) });
+    await until(() => hub.running.hub.release.record(machineId).update?.phase === 'checking');
+    for (const action of ['update', 'rollback']) {
+      const res = await hub.api('POST', `/api/machines/${machineId}/${action}`, { cookie });
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('update_in_progress');
+    }
+  });
+
   it('canary 版本和 hub 那台（stable）不同：不用等 hub', async () => {
     const { hub, cookie } = await ready([release('0.2.0')]);
     await hub.api('POST', '/api/releases/check', { cookie });
@@ -567,7 +678,7 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
     let stats = (await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie })).body
       .canaryStats;
     expect(stats.disconnects).toBe(0); // 更新中的斷線：預期的
-    now = new Date(now.getTime() + 20 * 60_000);
+    now = new Date(now.getTime() + 70 * 60_000);
     const again = await hub.daemon(token);
     again.send(macHello({ update: undefined }));
     await again.next('hub.welcome');

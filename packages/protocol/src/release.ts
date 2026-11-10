@@ -179,6 +179,8 @@ export const UpdateReason = z.enum([
   'interrupted',
   /** 啟動不了更新程式（spawn 失敗）。 */
   'spawn_failed',
+  /** 延後中的回滾被「立即更新」取代。 */
+  'superseded',
   'unknown',
 ]);
 export type UpdateReason = z.infer<typeof UpdateReason>;
@@ -198,8 +200,11 @@ export const UpdateState = z.object({
 });
 export type UpdateState = z.infer<typeof UpdateState>;
 
-/** 進行中的狀態最久多久算正常（更新程式：下載後安裝、60 秒健康檢查、最多 5 分鐘等連上 hub、回滾）。 */
-export const UPDATE_STALE_MS = 15 * 60 * 1000;
+/**
+ * 進行中的狀態的硬上限：更新程式還拿著鎖也一樣，超過就當作卡住（N2）。正常的更新（安裝、60 秒健康檢查、
+ * 最多 5 分鐘等連上 hub、回滾）遠低於這個時間。
+ */
+export const UPDATE_STALE_MS = 60 * 60 * 1000;
 
 /** 第一個有自動更新（scripts/updater.mjs、installer switch、daemon-status.json）的版本：更早的不能自動回滾過去。 */
 export const FIRST_UPDATER_VERSION = '0.1.0';
@@ -213,9 +218,15 @@ export function rollbackSupported(previousVersion: string | null): boolean {
   );
 }
 
-/** 沒有發目標的原因（面板顯示）：hub_first＝等 hub 那台先升到這版；platform_unverified＝這個平台還沒實機驗證
+/** 沒有發目標的原因（面板顯示）：hub_first＝等 hub 那台先升到這版；hub_update_failed＝hub 那台這版更新失敗，
+ * 其他機器暫停；platform_unverified＝這個平台還沒實機驗證
  *（win-x64）；abi_mismatch＝成品附的原生模組和這台的 Node 版本不合。 */
-export const TargetNote = z.enum(['hub_first', 'platform_unverified', 'abi_mismatch']);
+export const TargetNote = z.enum([
+  'hub_first',
+  'hub_update_failed',
+  'platform_unverified',
+  'abi_mismatch',
+]);
 export type TargetNote = z.infer<typeof TargetNote>;
 
 /** 還沒在實機驗證過安裝與更新的平台：hub 照樣下載成品，但不發給這些平台的機器（W8）。 */
