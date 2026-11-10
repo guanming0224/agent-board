@@ -121,6 +121,8 @@ export interface DaemonDeps {
   revokedGraceMs?: number;
   /** 叫服務管理程式拉起 session host 之後，等它能連的上限（毫秒）。 */
   sessionHostLaunchWaitMs?: number;
+  /** 拉起 session host 的方法；不給＝叫服務管理程式（launchctl kickstart 等）。測試用。 */
+  launchSessionHost?: (service: string) => Promise<boolean>;
 }
 
 /** 拉起 session host 之後等它能連的時間。 */
@@ -432,14 +434,14 @@ export class Daemon {
       result instanceof HostConnectError &&
       ['unreachable', 'no_token', 'timeout', 'unauthorized'].includes(result.reason);
     if (result instanceof Error && launchable && config.sessionHostService) {
-      // host 沒在跑：叫服務管理程式拉起來（macOS launchctl kickstart），等它能連。
-      if (await launchSessionHost(config.sessionHostService)) {
-        const deadline =
-          Date.now() + (this.deps.sessionHostLaunchWaitMs ?? SESSION_HOST_LAUNCH_WAIT_MS);
-        while (result instanceof Error && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, SESSION_HOST_RETRY_MS));
-          result = await this.tryConnectHost();
-        }
+      // host 沒在跑：叫服務管理程式拉起來（macOS launchctl kickstart），等它能連。kickstart 失敗也等：
+      // 安裝程式換版時 host 正在 bootout／bootstrap，過一下就會回來。
+      await (this.deps.launchSessionHost ?? launchSessionHost)(config.sessionHostService);
+      const deadline =
+        Date.now() + (this.deps.sessionHostLaunchWaitMs ?? SESSION_HOST_LAUNCH_WAIT_MS);
+      while (result instanceof Error && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, SESSION_HOST_RETRY_MS));
+        result = await this.tryConnectHost();
       }
     }
     if (result instanceof Error) {

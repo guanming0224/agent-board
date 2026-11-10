@@ -254,3 +254,54 @@ describe('退回舊模式（host 連不上或不相容時絕不能開不了 sess
     expect(host!.sessionCount).toBe(0);
   });
 });
+
+describe('host 沒在跑：daemon 自己拉起來', () => {
+  const configWithService = () => ({
+    hubUrl: h.hub.url,
+    token: 'test-machine-token',
+    dataDir: h.dataDir,
+    claudeBin: h.bin,
+    hookBin: h.hookBin,
+    machineName: 'test-machine',
+    claudeConfigDir: h.claudeDir,
+    sessionHostService: 'com.agent-board.session-host',
+  });
+
+  it('叫服務管理程式拉起（launchctl kickstart 的替身），等它能連就用 host 模式', async () => {
+    await host!.close();
+    host = null;
+    mkdirSync(h.workDir, { recursive: true });
+    await h.hub.start();
+    const launched: string[] = [];
+    await h.startDaemon({
+      config: configWithService(),
+      launchSessionHost: async (service) => {
+        launched.push(service);
+        // 像 launchd 一樣過一下才起來。
+        setTimeout(() => {
+          host = new SessionHostServer({ dataDir: h.dataDir, log: quiet });
+          void host.start();
+        }, 300);
+        return true;
+      },
+    });
+    expect(launched).toEqual(['com.agent-board.session-host']);
+    expect(h.daemons[0]!['backend'].kind).toBe('host');
+    await h.createAndSubscribe('s1');
+    expect(host!.sessionCount).toBe(1);
+  });
+
+  it('拉不起來：等到上限就退回舊模式，session 照樣能開', async () => {
+    await host!.close();
+    host = null;
+    mkdirSync(h.workDir, { recursive: true });
+    await h.hub.start();
+    await h.startDaemon({
+      config: configWithService(),
+      launchSessionHost: async () => false,
+      sessionHostLaunchWaitMs: 300,
+    });
+    expect(h.daemons[0]!['backend'].kind).toBe('local');
+    await h.createAndSubscribe('s1');
+  });
+});
