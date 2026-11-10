@@ -13,9 +13,9 @@ import type {
 import { ClaudeSessionId, READ_ONLY_DISALLOWED_TOOLS } from '@agent-board/protocol';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import type { Terminal as TerminalType } from '@xterm/headless';
-import { spawn as spawnPty, type IPty } from 'node-pty';
 import { readLastTurn, resolveContextWindow } from './contextWindow';
 import { errorMessage, log } from './log';
+import { localPtyBackend, type PtyBackend, type PtyProcess } from './pty';
 import type { CreateStatusTracker, StatusChange, StatusTracker } from './status/types';
 
 // 這兩個套件是 CJS，在 ESM 下沒有具名匯出。
@@ -42,7 +42,6 @@ const SHUTDOWN_GRACE_MS = 2_000;
 const IDLE_RESIZE_MS = 30_000;
 /** prompt 和 Enter 分開送，黏在一起 TUI 可能當成貼上而不送出（未驗證，Phase 2 接真 claude 確認）。 */
 const FIRST_PROMPT_ENTER_DELAY_MS = 100;
-const SIGKILL = 9;
 
 type TerminalMessage = Extract<DaemonToHub, { type: 'terminal.output' | 'terminal.snapshot' }>;
 
@@ -202,6 +201,8 @@ export interface ManagedSessionOptions {
   terminateGraceMs?: number;
   /** 沒人看之後多久回到預設尺寸；測試用。 */
   idleResizeMs?: number;
+  /** 開 agent 用哪個 PTY 後端；不給＝daemon 自己開（舊模式）。 */
+  backend?: PtyBackend;
   onRuntime: (runtime: SessionRuntime) => void;
   onStatusChange: (change: StatusChange) => void;
   onTerminal: (message: TerminalMessage) => void;
@@ -212,7 +213,7 @@ export interface ManagedSessionOptions {
 
 export class ManagedSession {
   readonly id: string;
-  private readonly pty: IPty;
+  private readonly pty: PtyProcess;
   private readonly term: TerminalType;
   private readonly serializer: SerializeAddonType;
   private readonly tracker: StatusTracker;
@@ -283,12 +284,14 @@ export class ManagedSession {
     this.status = this.tracker.status;
 
     try {
-      this.pty = spawnPty(options.bin, options.args, {
-        name: 'xterm-256color',
+      this.pty = (options.backend ?? localPtyBackend).spawn({
+        id: options.id,
+        bin: options.bin,
+        args: options.args,
+        env: options.env,
+        cwd: options.cwd,
         cols: DEFAULT_COLS,
         rows: DEFAULT_ROWS,
-        cwd: options.cwd,
-        env: options.env,
       });
     } catch (error) {
       this.tracker.dispose();
@@ -296,7 +299,7 @@ export class ManagedSession {
       throw error;
     }
     this.pty.onData((data) => this.handleData(data));
-    this.pty.onExit(({ exitCode, signal }) => this.handleExit(exitCode, signal ?? 0));
+    this.pty.onExit(({ exitCode, signal }) => this.handleExit(exitCode, signal));
   }
 
   get agent(): AgentKind {
@@ -572,9 +575,7 @@ export class ManagedSession {
 
   private sendKill(signal: 'SIGTERM' | 'SIGHUP'): void {
     try {
-      // Windows 的 node-pty 不接受指定訊號。
-      if (process.platform === 'win32') this.pty.kill();
-      else this.pty.kill(signal);
+      this.pty.kill(signal);
     } catch (error) {
       log.warn(`送 ${signal} 失敗（session ${this.id}）：${errorMessage(error)}`);
     }
@@ -583,12 +584,7 @@ export class ManagedSession {
   private forceKill(): void {
     if (!this.alive) return;
     try {
-      if (process.platform === 'win32') {
-        this.pty.kill();
-      } else {
-        // PTY 子程序是 session leader，pid 即 process group，連子程序一起收。
-        process.kill(-this.pty.pid, SIGKILL);
-      }
+      this.pty.kill('SIGKILL');
     } catch (error) {
       log.warn(`強制結束失敗（session ${this.id}）：${errorMessage(error)}`);
     }
