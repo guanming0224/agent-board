@@ -161,6 +161,10 @@ test('安裝程式：daemon 角色連 session host 一起裝、順序在 daemon 
   assert.match(source, /role === 'daemon' \? \[SESSION_HOST, 'daemon'\]/);
   assert.match(source, /AGENT_BOARD_SESSION_HOST_SERVICE = serviceName\(SESSION_HOST\)/);
   assert.match(source, /'session-host': \['session-host', 'dist', 'main\.mjs'\]/);
+  // host 跑自己資料夾裡那份（換 app 時不動），協定變了才強制重啟、有 session 在工作就中止（S1、W1）。
+  assert.match(source, /role === SESSION_HOST\s*\? runningHostFiles\(paths\)\.main/);
+  assert.match(source, /protocolChanged \|\| Boolean\(options\['restart-session-host'\]\)/);
+  assert.match(source, /const busy = busySessions\(paths\);/);
   // 解除安裝也要移除 session host 的服務。
   assert.match(source, /for \(const role of servicesFor\(ROLES\)\) removeService\(role, paths\)/);
 });

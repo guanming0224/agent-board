@@ -689,7 +689,7 @@ codex [resume <thread id>] <權限參數> [-m <model>] --dangerously-bypass-hook
 | session host | 開 agent、轉送輸入與 resize、送訊號、回報結束碼；每個 session 保留最近 **2 MB** 原始輸出（環狀緩衝、位元組序號，`SESSION_HOST_BUFFER_BYTES`），**只在記憶體**、不落地                                                |
 | daemon       | 同以前（hub 連線、headless xterm 與狀態機、hook／MCP socket、審批、派工、搜尋、用量）；開 agent 改走 `PtyBackend`（`daemon/src/pty.ts`）：`HostPtyBackend`（host 模式）或 `LocalPtyBackend`（舊模式，daemon 自己開） |
 
-- 傳輸（`session-host/src/endpoint.ts`）：Mac／Linux 是 Unix socket `<dataDir>/session-host.sock`（檔案 600、資料夾 700；路徑超過 100 bytes 時改放 `tmpdir()/ab-host-<資料夾雜湊>/`，固定名稱、只有自己能進）；Windows 是 named pipe `\\.\pipe\agent-board-session-host-<使用者名稱>`（非預設資料夾再接 `-<資料夾雜湊>`；**未在 Windows 實測**；pipe 的存取權限沒有另外設定，靠 token 擋）。
+- 傳輸（`session-host/src/endpoint.ts`）：Mac／Linux 是 Unix socket `<dataDir>/session-host.sock`（檔案 600、資料夾 700；路徑超過 100 bytes 時改放 `tmpdir()/ab-host-<資料夾雜湊>/`，固定名稱、只有自己能進）；Windows 是 named pipe `\\.\pipe\agent-board-session-host-<使用者名稱>-<installId>`（`installId`＝每份安裝的隨機亂數，存在 `<dataDir>/install-id`，600；別的使用者猜不到名稱、搶不了先開同名 pipe。**未在 Windows 實測**；pipe 的存取權限沒有另外設定，靠名稱與 token 擋）。
 - 驗證：host 每次啟動產生隨機 token 寫進 `<dataDir>/session-host.token`（600，socket 開好才寫），daemon 讀檔放進 `hello`。第一則不是 hello、5 秒內沒有 hello、token 不符 → 斷線。
 - 同一個資料夾已有 host 在跑（socket 連得上）：第二個正常結束（exit 0，launchd 不會一直重啟）。
 - host 收到 SIGTERM／SIGINT（換版、停服務）：先送 `shutdown` 給已連上的 daemon，SIGHUP 所有 agent、2 秒後 SIGKILL 整個程序群組，再結束。SIGHUP 不理（沒有終端機）。
@@ -704,24 +704,32 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 - 序號以位元組計：`output.seq`＝這塊第一個位元組的序號。緩衝超過上限整塊丟最舊的（單一塊超過上限才切），`seqStart` 往前推。
 - `attach`：同一個同步區段依序送 `attached` →（要的位置已丟掉時）`replay.gap` → 緩衝裡 `fromSeq` 之後的 `output` → `replay.done`；已結束的再送 `exit`。之後這個 session 的即時輸出只送給最後 attach（或 spawn）的連線；daemon 斷線時 agent 照跑、輸出只進緩衝。
 - 結束了但沒人 release 的 session 最多留 100 個（丟最舊的）。
+- 背壓：送給 daemon 的連線積著還沒送出的超過 8 MB（daemon 卡住讀不完）就斷線，輸出照樣進環狀緩衝，daemon 重新 attach 補回。還沒 hello 的連線一行上限 4 KB。
+- host 開好之後的未預期例外記錄後繼續跑（host 一掛所有 agent 都會結束）。
 
 ### 20.3 daemon 的模式與接回規則
 
-**模式**：`AGENT_BOARD_SESSION_HOST`（預設 `auto`）。啟動時連 host：連上＝host 模式；連不上（沒在跑、沒有 token）且有 `AGENT_BOARD_SESSION_HOST_SERVICE`（安裝程式設定）→ 叫服務管理程式拉起（macOS `launchctl kickstart gui/<uid>/<label>`、Linux `systemctl --user start`、Windows `schtasks /Run`），最多等 5 秒；還是不行、token 不符或協定不相容 → **退回舊模式**（daemon 自己開 PTY，行為同 §3.2）並記 warn。**絕不能因此開不了 session**。`off`＝一律舊模式。hub 上沒有顯示警告（只在 daemon 紀錄裡）。
+**模式**：`AGENT_BOARD_SESSION_HOST`（預設 `auto`）。啟動時連 host，結果三種（`daemon.ts` 的 `connectSessionHost`）：
+
+- **連上**＝host 模式。
+- **確定沒有 host**（socket 不存在或連線被拒；有 `AGENT_BOARD_SESSION_HOST_SERVICE` 時先叫服務管理程式拉起——macOS `launchctl kickstart gui/<uid>/<label>`、Linux `systemctl --user start`、Windows `schtasks /Run`——最多等 5 秒還是沒有）→ **舊模式**（daemon 自己開 PTY，行為同 §3.2），上一輪的 session 照舊 `--resume`。
+- **host 可能還活著但不能用**（協定不相容、token 不符、逾時，或 `off` 但 host 還在跑）→ 新的 session 用舊模式開（**絕不能因此開不了 session**），但**上一輪的 session 不自動重開**（同一個對話不能有兩個 agent）：它們留在本機清單，hello 回報 `status: 'error'`、`endedAt: null`、`statusDetail` 寫原因（例如「舊的 session host 還在跑（協定不相容）…重新安裝並加 --restart-session-host」）。`off` 而且連得上 host 時只擋還在 host 裡的。使用者在網頁上停止它才從清單移除；下次 daemon 啟動會重新判斷。
+
+另外，快照記著 agent 的 pid 與啟動時間：任何模式要 `--resume` 重開前，pid 還在而且啟動時間對得上（`ps -o lstart=`，誤差 15 秒內；讀不到啟動時間時當成還在）就不重開，同樣標成錯誤（`daemon/src/processCheck.ts`）。
 
 **daemon 停止（host 模式）**：
 
 1. 不殺 agent。每個活著的 session 寫狀態快照 `<dataDir>/state/<id>.json`（600、資料夾 700；`daemon/src/sessionState.ts`）：`status, statusDetail, statusSince, claudeSessionId, contextTokens, hookModel, transcriptModel, lastOutputAt, pendingApprovalIds`。不含終端機內容、prompt、工具輸入。**狀態每次變化時也寫**，daemon 被 kill -9 時也有最近的一份。
-2. 等待中的審批交回終端機（`ApprovalManager.handOffToTerminal`）：hub 收到 `approval.resolved by: 'terminal'`，hook 拿到放棄的答案（PermissionRequest 不輸出→Claude 原生對話框；危險指令 deny）。畫布上那筆就是現有的「請在終端機回答」退路；session 狀態（等你允許）保留。
+2. 等待中的審批交回終端機（`ApprovalManager.handOffToTerminal`）：hub 收到 `approval.resolved by: 'terminal'`，hook 拿到放棄的答案（PermissionRequest 不輸出→Claude 原生對話框；危險指令 deny）。畫布上那筆就是現有的「請在終端機回答」退路；session 狀態（等你允許）保留。快照記 `approvalsHandedOff: true`。daemon 崩潰（沒跑到 stop）時快照裡的審批（`pendingApprovals`：id、kind、toolName、matchedRule、createdAt，不含工具輸入）在接回時放進 hello 讓 hub 對上帳，welcome 後送 `by: 'terminal'`。
 3. MCP 設定檔與密鑰檔（`<dataDir>/mcp/<id>.json|.key`）**不刪**：MCP server 還拿著它們。
 4. hook socket 旁邊寫停止記號 `<hook socket>.down`（600，§20.4 用）。不是 host 開的 session（例如 host 斷線後用舊模式開的）照舊 SIGHUP 結束、下次 `--resume`。
 
 **daemon 啟動**（先開 hook socket：另一個 daemon 在跑時在這裡就失敗，不會去搶 host；接回完成前進來的 hook 與 MCP 請求先等著）：
 
-1. 連 host、取 `hello.ok` 的清單。本機清單上有、host 裡也有的 session：建 headless xterm（尺寸用 host 那邊 PTY 目前的尺寸），`attach{fromSeq: 0}` 從緩衝開頭重播（只餵 headless 與限流偵測、不轉送、不算進度）；有缺口時畫面最上面插一行「[Agent Board] 重新接上前有 N KB 輸出未保留」。重播完載入快照（`StatusTracker.restore`，不觸發狀態事件），再看畫面補正（下面）。**不 `--resume`**。MCP 密鑰從檔案讀回。
+1. 連 host、取 `hello.ok` 的清單。本機清單上有、host 裡也有的 session：建 headless xterm（尺寸用 host 那邊 PTY 目前的尺寸），`attach{fromSeq: 0}` 從緩衝開頭重播（只餵 headless 與限流偵測、不轉送、不算進度）；有缺口時畫面最上面插一行「[Agent Board] 重新接上前有 N KB 輸出未保留」。重播完載入快照（`StatusTracker.restore`，不觸發狀態事件），再對 agent 的 PTY 做一次尺寸微調（cols-1、等 100ms、改回）觸發 TUI 整個重畫，等畫完（有輸出後安靜 150ms，最多 800ms）才看畫面補正（下面）。**不 `--resume`**。MCP 密鑰從檔案讀回。
 2. 停機期間已結束的（`alive: false`）：重播完再照一般的結束處理（exit 0→done、其他→error，結果送 hub、移出本機清單、刪快照與 MCP 檔、`release`）。
-3. host 裡有、本機清單沒有的：SIGKILL 並 release（沒人管的 agent 不留）。接回失敗（重播 15 秒逾時等）：SIGKILL 舊 agent，改用 `--resume` 重開（同一個對話不能有兩個 claude）。
-4. 本機清單上有、host 裡沒有的（整台重開機、host 換版、第一次升級前由舊 daemon 開的）：照 §3.2／§19.2 的規則 `--resume` 或重新開始，新程序交給 host。
+3. host 裡有、本機清單沒有的：SIGKILL 並 release（沒人管的 agent 不留；沒收到結束就留著，下次再處理）。**接回失敗**（重播逾時：15 秒＋每 MB 緩衝 10 秒）：重試一次（逾時加倍）；還是不行就**不殺、不重開**，標成錯誤留在清單（同上，hub 看得到原因），下次 daemon 啟動再試。
+4. 本機清單上有、host 裡沒有的（整台重開機、host 換版、第一次升級前由舊 daemon 開的）：照 §3.2／§19.2 的規則 `--resume` 或重新開始，新程序交給 host（先做上面的 pid 檢查）。host 回 `session_exists`（同一個 id 還活著）：不從清單刪掉，標成錯誤。host 回覆 spawn 逾時：補送 SIGKILL，不留孤兒 agent。
 5. 刪掉不在本機清單上的快照、不是活著的 session 的 MCP 檔、停止記號。
 
 **畫面補正**（停機期間漏掉的 hook；`session.ts` 的 `screenCorrection`，只認 Claude Code 的畫面，Codex 維持快照的狀態）：看畫面最下面 15 行。
@@ -735,22 +743,24 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 
 認不出來就維持快照的狀態（不誤報）。補正和之後重試送到的 hook 照一般規則疊加。`esc to interrupt` 在使用者設了 statusLine 時會被收起（只在 claude 2.1.x 看過，**未驗證**其他版本）。
 
-**host 連線中斷**（host 崩潰、被停掉；收到 `shutdown` 也走這條）：host 開的 session 不算結束、不回報，留在本機清單；daemon 重新連（拉起）host，接回還活著的，其他的用 `--resume` 重開；host 連不上就改用舊模式開。
+**host 連線中斷**（host 崩潰、被停掉、背壓斷線；收到 `shutdown` 也走這條）：host 開的 session 不算結束、不回報，留在本機清單；daemon 重新連（拉起）host，接回還活著的，其他的照上面的規則重開（確定沒有 host 才用舊模式）。接回途中又斷一次：這一輪做完再跑一輪。
 
-**hook socket 位置固定**：agent 的環境變數（`AGENT_BOARD_SOCKET`、Codex 的 `--socket`、MCP 設定檔）會活過 daemon 重啟，所以位置由資料夾決定：Mac／Linux `<dataDir>/hook.sock`（太長時 `tmpdir()/ab-hook-<雜湊>/hook.sock`）；Windows `\\.\pipe\agent-board-<使用者＋資料夾的雜湊>`（以前是每次隨機）。
+**hook socket 位置固定**：agent 的環境變數（`AGENT_BOARD_SOCKET`、Codex 的 `--socket`、MCP 設定檔）會活過 daemon 重啟，所以位置由資料夾決定：Mac／Linux `<dataDir>/hook.sock`（太長時 `tmpdir()/ab-hook-<雜湊>/hook.sock`）；Windows `\\.\pipe\agent-board-hook-<installId>`（以前是每次隨機）。
 
 ### 20.4 hook CLI 重試（GM 2026-11-10）
 
 連不上 daemon（連線錯誤）時每 200ms 重試：非阻擋事件最多 10 秒（`RETRY_WINDOW_MS`；Codex 的 SessionEnd、Interrupt 只有 3 秒 timeout，最多 2 秒）；阻擋事件也最多 10 秒，而且算在原本的等待上限裡。重試到上限的結果同 §4.2／§4.3（連不上）。agent 在重試期間會等這個 hook。
 
 - 停止記號 `<socket>.down` 超過 60 秒：daemon 是停了不是在重啟，**不重試**（不然每個 hook 都讓 agent 卡 10 秒）。沒有記號（daemon 崩潰、Windows）照樣重試。
+- hook CLI 重試到上限還是連不上：自己把記號寫成 `gave-up <時間>`，15 秒內的下一個 hook 不再重試（daemon 崩潰沒留記號時，不會每個 hook 都卡 10 秒）。daemon 啟動成功時清掉記號。
 - 已經連上、等待中才斷（daemon 在等審批時重啟）：不重送，照舊交回原生流程（§20.3 停止的第 2 點）。
 - `AGENT_BOARD_HOOK_RETRY_MS` 只給測試縮短。
 
 ### 20.5 安裝、更新與上架
 
-- `scripts/installer.mjs`：daemon 角色一起裝 session host 服務，順序在 daemon 前面：macOS LaunchAgent `com.agent-board.session-host`（同一份模板：RunAtLoad、失敗才重啟、不需要 `AbandonProcessGroup`）、Linux `agent-board-session-host.service`、Windows 工作排程器「登入時」工作 `AgentBoard-session-host`（未實測）。入口 `session-host/dist/main.mjs`，node-pty 用發布檔根目錄的 `node_modules`。daemon 服務多帶 `AGENT_BOARD_SESSION_HOST_SERVICE`。解除安裝一起移除。紀錄 `<dataDir>/logs/session-host.log`。
-- **只更新 daemon／hub**：不必等 session 停下（agent 不中斷）。安裝程式更新 app 時**不重啟 session host**（會結束所有 agent）；host 的程式有變時印提醒，要確認沒有在跑（RUN／PERM／PLAN／starting）的 session 後加 `--restart-session-host` 再跑一次，之後照 §3.2 `--resume` 接回。Windows 換程式檔前一定要停掉所有服務（node-pty 被鎖），所以 Windows 每次更新 agent 都會結束、用 `--resume` 接回。
+- `scripts/installer.mjs`：daemon 角色一起裝 session host 服務，順序在 daemon 前面：macOS LaunchAgent `com.agent-board.session-host`（同一份模板：RunAtLoad、失敗才重啟、不需要 `AbandonProcessGroup`）、Linux `agent-board-session-host.service`、Windows 工作排程器「登入時」工作 `AgentBoard-session-host`（未實測）。**host 跑自己資料夾裡那份**：`~/.local/share/agent-board/session-host/`（Windows `%LOCALAPPDATA%\agent-board\session-host\`），內含 `dist/main.mjs`、`dist/meta.json`（協定版本）與複製來的 `node_modules/node-pty`；只在 host 要（重新）啟動時才從 app 複製（確認 node-pty 載得起來才換上），換 app 時完全不動。daemon 服務多帶 `AGENT_BOARD_SESSION_HOST_SERVICE`。解除安裝一起移除。紀錄 `<dataDir>/logs/session-host.log`。
+- **只更新 daemon／hub**：不必等 session 停下（agent 不中斷）。安裝程式**不重啟 session host**（會結束所有 agent），除非：(1) **協定版本變了**（`meta.json` 和 `install.json` 的 `sessionHostProtocol` 不同，新 daemon 連不上舊 host）一定要重啟；(2) 加了 `--restart-session-host`。這兩種情況下快照（`<dataDir>/state/*.json`）裡還有 agent 在、狀態是 RUN／PERM／PLAN／starting 的 session 就**中止安裝、什麼都不改**，說明要等它們停下。其他情況 host 的版本雜湊（程式＋node-pty 版本＋這個平台的 `pty.node`／`spawn-helper`）變了只印提醒。重啟後照 §3.2 `--resume` 接回。Windows 換 app 時只停 hub／daemon（host 的 node-pty 在自己的資料夾，不被鎖）。
+- **回滾到沒有 session host 的版本**：先 `launchctl bootout gui/$UID/com.agent-board.session-host`（會結束所有 agent）→ 用舊版發布檔安裝 → 刪 `~/Library/LaunchAgents/com.agent-board.session-host.plist` 與 `~/.local/share/agent-board/session-host/`。不先停 host 的話，舊 daemon 不會去接、host 也不會走，agent 留著沒人管。
 - **第一次上架（從沒有 host 的版本升級）**：現有 session 是舊 daemon 直接開的，舊 daemon 停止時照舊 SIGHUP 結束它們；新 daemon 連上剛啟動的 host 後，依 §3.2 用 `--resume` 接回、交給 host。從這次之後的 daemon 重啟才不中斷。
 - 整台重開機：host 與 agent 都沒了，行為同 §3.2（`--resume`）。
 

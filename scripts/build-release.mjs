@@ -3,7 +3,8 @@
 //   hub/dist/main.mjs    → ../../web/dist（server.ts 找前端）
 //   daemon/dist/index.mjs → ../node_modules/.bin/agent-board-hook（useBundledHook 找 hook）
 //   daemon/dist/deepSearchWorker.mjs（深層搜尋的 worker_threads 入口，和 index.mjs 同資料夾）
-//   session-host/dist/main.mjs（session host 服務，CONTRACTS §20；node-pty 從根目錄的 node_modules 載入）
+//   session-host/dist/main.mjs、meta.json（session host 服務與協定版本，CONTRACTS §20；安裝時連同 node-pty
+//   複製到自己的資料夾跑，換 app 時不動它）
 // 那個 .bin 只放 hook：daemon 會把它所在資料夾加進 PTY 的 PATH，不能混進別的執行檔。
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -67,6 +68,17 @@ async function bundleAll() {
   // 派工 MCP server 也只能有 node 內建模組（claude 每開一個 session 就啟動一次）。
   const mcp = readFileSync(bundleOptions(root, stage).mcp.outfile, 'utf8');
   if (mcp.includes('zod')) throw new Error('派工 MCP server 打包結果不該含有 zod');
+  // 安裝程式比對協定版本決定要不要重啟 host（協定變了，新 daemon 連不上舊 host）。
+  const protocol = Number(
+    /SESSION_HOST_PROTOCOL = (\d+)/.exec(
+      readFileSync(join(root, 'packages/protocol/src/sessionHost.ts'), 'utf8'),
+    )?.[1],
+  );
+  if (!Number.isInteger(protocol)) throw new Error('讀不到 SESSION_HOST_PROTOCOL');
+  writeFileSync(
+    join(dirname(bundleOptions(root, stage).sessionHost.outfile), 'meta.json'),
+    `${JSON.stringify({ protocol })}\n`,
+  );
   // session host 不懂畫面、不連網路：不該打包進 xterm 或 ws。
   const host = readFileSync(bundleOptions(root, stage).sessionHost.outfile, 'utf8');
   // 只看模組名稱（帶引號）：protocol 的註解裡有提到 @xterm 的字樣。

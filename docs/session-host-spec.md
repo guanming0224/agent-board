@@ -76,3 +76,13 @@ session host **不懂** claude／codex、不解析畫面、不連網路、不呼
 | daemon 重啟時漏掉的 hook | hook CLI 重試（非阻擋最多 10 秒）＋接回後看畫面補正；session host 不代收 hook |
 | 每個 session 的輸出緩衝 | 2 MB，只在記憶體 |
 | 上線方式 | 先用假 claude 的 e2e 驗證「跑到一半重啟 daemon」，全過就上架；上架後挑一個閒置 session 實際重啟 daemon 再驗一次 |
+
+## 6. 回滾（審查後補，2026-11-10）
+
+session host 和 daemon 是兩個服務。回滾到沒有 session host 的版本時，**一定要先停 host**，否則舊 daemon 不會去接、host 也不會自己走，agent 留著沒人管（也可能和舊 daemon 用 `--resume` 開的那個同時跑）：
+
+1. `launchctl bootout gui/$UID/com.agent-board.session-host`（會結束 host 養的所有 agent；之後舊 daemon 照舊用 `--resume` 接回）。
+2. 用舊版發布檔重新安裝（`sh install.sh daemon --from <舊版.tar.gz>`）。
+3. 刪掉 `~/Library/LaunchAgents/com.agent-board.session-host.plist` 與 `~/.local/share/agent-board/session-host/`。
+
+只換 daemon（host 保留）時不必停 host；但若新舊 daemon 的協定版本不同，daemon 會把上一輪的 session 標成錯誤、不自動重開（CONTRACTS §20.3），要等沒有 session 在跑時用 `--restart-session-host` 重裝。

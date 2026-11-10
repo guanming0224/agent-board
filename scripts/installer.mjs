@@ -13,6 +13,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
@@ -79,6 +80,8 @@ function layout() {
     app: join(root, 'app'),
     state: join(root, 'install.json'),
     services: join(root, 'services'),
+    // session host 跑的那一份（W1）：和 app 分開，換 app 時不動正在跑的 host 載入的檔案（node-pty、spawn-helper）。
+    host: join(root, 'session-host'),
     bin: isWindows ? join(root, 'bin') : join(home, '.local', 'bin'),
   };
 }
@@ -361,15 +364,95 @@ const serviceName = (role) =>
       ? systemdName(role)
       : taskName(role);
 
-/** session host 程式的雜湊：變了才需要重啟它（重啟會結束所有 agent）。 */
-function sessionHostBuild(paths) {
+/** 某一份 session host 的檔案：app 裡的新版，或 host 資料夾裡正在跑的那份。 */
+const appHostFiles = (base) => ({
+  main: join(base, ...ENTRY[SESSION_HOST]),
+  meta: join(base, 'session-host', 'dist', 'meta.json'),
+  nodePty: join(base, 'node_modules', 'node-pty'),
+});
+const runningHostFiles = (paths) => ({
+  main: join(paths.host, 'dist', 'main.mjs'),
+  meta: join(paths.host, 'dist', 'meta.json'),
+  nodePty: join(paths.host, 'node_modules', 'node-pty'),
+});
+
+/**
+ * session host 的版本雜湊（W1）：程式本身、node-pty 的版本、這個平台的原生檔與 spawn-helper。
+ * 任何一個變了都要重啟 host 才生效（重啟會結束所有 agent）。
+ */
+function sessionHostBuild(files) {
   try {
-    return createHash('sha256')
-      .update(readFileSync(join(paths.app, ...ENTRY[SESSION_HOST])))
-      .digest('hex');
+    const hash = createHash('sha256').update(readFileSync(files.main));
+    hash.update(JSON.parse(readFileSync(join(files.nodePty, 'package.json'), 'utf8')).version);
+    const prebuild = join(files.nodePty, 'prebuilds', `${process.platform}-${process.arch}`);
+    for (const name of ['pty.node', 'spawn-helper', 'conpty.node']) {
+      const file = join(prebuild, name);
+      if (existsSync(file)) hash.update(name).update(readFileSync(file));
+    }
+    return hash.digest('hex');
   } catch {
     return null;
   }
+}
+
+/** session host 的協定版本（build-release 寫的 meta.json）；讀不到回 null。 */
+function sessionHostProtocol(files) {
+  try {
+    const { protocol } = JSON.parse(readFileSync(files.meta, 'utf8'));
+    return Number.isInteger(protocol) ? protocol : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 快照記著正在工作（RUN／PERM／PLAN／starting）而且 agent 還在的 session。重啟 host 會把它們結束。 */
+const BUSY_STATUSES = ['running', 'waiting_permission', 'plan_review', 'starting'];
+function busySessions(paths) {
+  const dir = join(dataDir(paths), 'state');
+  let names = [];
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const busy = [];
+  for (const name of names) {
+    try {
+      const snapshot = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+      if (!BUSY_STATUSES.includes(snapshot.status) || !(snapshot.agentPid > 0)) continue;
+      process.kill(snapshot.agentPid, 0);
+      busy.push(snapshot.sessionId);
+    } catch {
+      // 壞檔或 agent 已經不在：不算
+    }
+  }
+  return busy;
+}
+
+/**
+ * 把 app 裡的 session host 複製到它自己的資料夾（連同 node-pty），確認載得起來再換上（W1）。
+ * 只在 host 要（重新）啟動時做：換 app 時正在跑的那份完全不動。
+ */
+function installHostRuntime(paths) {
+  const source = appHostFiles(paths.app);
+  const staging = `${paths.host}.new`;
+  rmSync(staging, { recursive: true, force: true });
+  mkdirSync(join(staging, 'node_modules'), { recursive: true });
+  cpSync(dirname(source.main), join(staging, 'dist'), { recursive: true });
+  cpSync(source.nodePty, join(staging, 'node_modules', 'node-pty'), { recursive: true });
+  const probe = run(process.execPath, ['-e', "require('node-pty')"], { cwd: staging });
+  if (probe.status !== 0) {
+    fail(
+      t(
+        `session host 的 node-pty 載入失敗：\n${probe.stderr}`,
+        `The session host could not load node-pty:\n${probe.stderr}`,
+      ),
+    );
+  }
+  const old = `${paths.host}.old-${randomBytes(4).toString('hex')}`;
+  if (existsSync(paths.host)) renameSync(paths.host, old);
+  renameSync(staging, paths.host);
+  rmSync(old, { recursive: true, force: true });
 }
 
 /** 寫服務設定，回傳有沒有變動。 */
@@ -379,7 +462,7 @@ function writeService(role, ctx) {
     label: launchdLabel(role),
     description: `Agent Board ${role}`,
     node,
-    entry: join(paths.app, ...ENTRY[role]),
+    entry: role === SESSION_HOST ? runningHostFiles(paths).main : join(paths.app, ...ENTRY[role]),
     env: serviceEnv(role, ctx),
     workdir: paths.home,
     log: logPath(paths, role),
@@ -668,6 +751,7 @@ async function install(argv) {
     name: previous.name,
     claudeBin: previous.claudeBin,
     sessionHostBuild: previous.sessionHostBuild,
+    sessionHostProtocol: previous.sessionHostProtocol,
   };
   if (options.port !== undefined) {
     const port = Number(options.port);
@@ -720,9 +804,30 @@ async function install(argv) {
     );
   }
 
+  // session host 要不要重啟（S1、W1）：協定變了一定要（新 daemon 連不上舊 host），或使用者明確要求。
+  // 重啟會結束所有 agent：還有 session 在工作就中止安裝（什麼都還沒動）。
+  const hostWanted = manageServices && state.roles.includes('daemon');
+  const hostInstalled = existsSync(runningHostFiles(paths).main);
+  const newProtocol = sessionHostProtocol(appHostFiles(options.source));
+  const protocolChanged =
+    hostInstalled && newProtocol !== null && newProtocol !== (state.sessionHostProtocol ?? null);
+  const restartHost =
+    hostWanted && hostInstalled && (protocolChanged || Boolean(options['restart-session-host']));
+  if (restartHost && activate) {
+    const busy = busySessions(paths);
+    if (busy.length > 0) {
+      fail(
+        t(
+          `session host 需要重啟（${protocolChanged ? `協定從 ${state.sessionHostProtocol ?? '舊版'} 變成 ${newProtocol}` : '加了 --restart-session-host'}），重啟會結束所有 agent，但還有 ${busy.length} 個 session 在工作（RUN／PERM／PLAN／starting）。等它們停下來再執行一次同樣的指令。這次什麼都沒有改。`,
+          `The session host must restart (${protocolChanged ? `protocol ${state.sessionHostProtocol ?? 'old'} → ${newProtocol}` : '--restart-session-host'}), which ends every agent, but ${busy.length} session(s) are still working. Run the same command again once they stop. Nothing was changed.`,
+        ),
+      );
+    }
+  }
+
   const appChanged = installApp(paths, options.source, () => {
-    // Windows 換程式檔前要停掉所有服務（含 session host：它載入了 node-pty，agent 會一起結束）。
-    if (activate) for (const r of servicesFor(previous.roles)) stopService(r);
+    // Windows 換程式檔前要停掉服務（.node 檔被鎖）。session host 跑的是自己資料夾裡那份，不用停（W1）。
+    if (activate) for (const r of previous.roles) stopService(r);
   });
   installShims(paths, node);
   if (role === 'daemon') pairDaemon(options, ctx);
@@ -732,15 +837,30 @@ async function install(argv) {
   for (const r of servicesFor(state.roles)) {
     if (!manageServices) break;
     const serviceChanged = writeService(r, ctx);
-    if (!activate) continue;
+    // --no-start：服務設定寫好，host 的程式也要在（第一次裝），只是不啟動。
+    if (!activate) {
+      if (r === SESSION_HOST && !existsSync(runningHostFiles(paths).main)) {
+        installHostRuntime(paths);
+        state.sessionHostBuild = sessionHostBuild(runningHostFiles(paths));
+        state.sessionHostProtocol = sessionHostProtocol(runningHostFiles(paths));
+      }
+      continue;
+    }
     if (r === SESSION_HOST) {
-      // session host 不跟著 app 重啟：重啟會結束所有 agent。沒在跑就啟動；換版要明確加 --restart-session-host
-      // （Windows 換程式檔時已經停掉了，一定要重新啟動）。
-      const build = sessionHostBuild(paths);
-      const restart = Boolean(options['restart-session-host']) || (isWindows && appChanged);
-      started[r] = startService(r, ctx, { restart });
-      if (restart || state.sessionHostBuild === undefined) state.sessionHostBuild = build;
-      else if (build !== state.sessionHostBuild || serviceChanged) hostUpdatePending = true;
+      // session host 不跟著 app 重啟（會結束所有 agent），跑的是自己資料夾裡那份。第一次裝、協定變了、
+      // 或加了 --restart-session-host 才換上新版並（重新）啟動；其他時候只確定它在跑。
+      if (!hostInstalled || restartHost) {
+        if (hostInstalled) stopService(SESSION_HOST);
+        installHostRuntime(paths);
+        state.sessionHostBuild = sessionHostBuild(runningHostFiles(paths));
+        state.sessionHostProtocol = sessionHostProtocol(runningHostFiles(paths));
+      } else if (
+        sessionHostBuild(appHostFiles(paths.app)) !== state.sessionHostBuild ||
+        serviceChanged
+      ) {
+        hostUpdatePending = true;
+      }
+      started[r] = startService(r, ctx, { restart: false });
       continue;
     }
     const restart = appChanged || serviceChanged || (r === 'daemon' && Boolean(ctx.justPaired));

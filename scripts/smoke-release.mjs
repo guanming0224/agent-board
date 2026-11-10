@@ -397,6 +397,38 @@ async function main() {
   assert.ok(readlinkSync(join(home, '.local/bin/agent-board-hook')).includes('agent-board-hook'));
   step('啟動流程呼叫 launchctl bootstrap（假程式記錄），hook 捷徑補回');
 
+  // ── session host 跑自己資料夾裡那份；協定變了要重啟，還有 session 在工作就中止（S1、W1）──
+  const statePath = join(home, '.local/share/agent-board/install.json');
+  const installState = JSON.parse(readFileSync(statePath, 'utf8'));
+  assert.ok(Number.isInteger(installState.sessionHostProtocol), JSON.stringify(installState));
+  const hostDir = join(home, '.local/share/agent-board/session-host');
+  assert.ok(existsSync(join(hostDir, 'node_modules/node-pty/package.json')));
+  assert.ok(existsSync(join(hostDir, 'dist/main.mjs')));
+  writeFileSync(statePath, JSON.stringify({ ...installState, sessionHostProtocol: 0 }));
+  mkdirSync(join(home, '.agent-board/state'), { recursive: true });
+  const busyFile = join(home, '.agent-board/state/busy-session.json');
+  writeFileSync(
+    busyFile,
+    JSON.stringify({ sessionId: 'busy-session', status: 'running', agentPid: process.pid }),
+  );
+  const refused = installer(['daemon', ...from]);
+  assert.notEqual(refused.status, 0, refused.output);
+  assert.match(refused.output, /協定從 0 變成 \d+/);
+  assert.match(refused.output, /還有 1 個 session 在工作/);
+  rmSync(busyFile);
+  const callsBefore = readFileSync(callLog, 'utf8').length;
+  mustInstall(['daemon', ...from]);
+  const hostCalls = readFileSync(callLog, 'utf8').slice(callsBefore);
+  assert.ok(
+    hostCalls.includes(`launchctl bootout gui/${process.getuid()}/com.agent-board.session-host`),
+    hostCalls,
+  );
+  assert.equal(
+    JSON.parse(readFileSync(statePath, 'utf8')).sessionHostProtocol,
+    installState.sessionHostProtocol,
+  );
+  step('session host 協定變了：有 session 在工作就中止安裝；沒有就重新裝到自己的資料夾並重啟');
+
   // ── 埠被占用 ──
   const fresh = join(base, 'home2');
   mkdirSync(fresh);
