@@ -14,13 +14,25 @@ export const isIdleStart = (session: Pick<Session, 'status' | 'statusDetail'>): 
   session.status === 'waiting_input' && session.statusDetail === IDLE_START_DETAIL;
 
 /**
+ * `waiting_input` 但在等隊長或等成員結果（派工，GM 2026-11-11）：結果會自動送進去，不是在等你。
+ * 畫面上是 NEW；不算等你、不進收件匣與待處理、不推播。PERM／PLAN／ERR 等其他狀態不受影響。
+ */
+export const isAwaitingTeam = (session: Pick<Session, 'status' | 'awaiting'>): boolean =>
+  session.status === 'waiting_input' && session.awaiting !== undefined;
+
+/**
  * session 本身的狀態是否在等你：收件匣的範圍（等你允許、回覆、審計畫、錯誤、卡住），
- * 去掉封存的與剛開好就閒著的。
+ * 去掉封存的、剛開好就閒著的，與在等隊長／等成員結果的（isAwaitingTeam）。
  */
 export function sessionWaitsForUser(
-  session: Pick<Session, 'status' | 'statusDetail' | 'archived'>,
+  session: Pick<Session, 'status' | 'statusDetail' | 'archived' | 'awaiting'>,
 ): boolean {
-  return !session.archived && needsAttention(session.status) && !isIdleStart(session);
+  return (
+    !session.archived &&
+    needsAttention(session.status) &&
+    !isIdleStart(session) &&
+    !isAwaitingTeam(session)
+  );
 }
 
 /**

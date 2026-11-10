@@ -225,8 +225,16 @@ export const Session = z.object({
    * thread id（`codex resume <id>` 用）。
    */
   agent: AgentKind.optional(),
+  /**
+   * `waiting_input` 時其實在等誰（GM 2026-11-11，CONTRACTS §11.4）：只有 hub 算，不存資料庫欄位。
+   * `lead`：派工成員的結果已送回隊長（或正要送回），在等隊長下一步；`members`：隊長手上還有派出去、
+   * 結果還沒回來的工作。畫面上是 NEW（等隊長／等成員結果），不算「等你」、不推播。
+   * 不是 `waiting_input` 時不送；舊 hub 不送＝照舊（ASK）。
+   */
+  awaiting: z.enum(['lead', 'members']).optional(),
 });
 export type Session = z.infer<typeof Session>;
+export type SessionAwaiting = NonNullable<Session['awaiting']>;
 
 // ── session 派工（MCP 工具，GM 2026-11-06，CONTRACTS §11） ──────────────
 

@@ -171,7 +171,11 @@ export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
                   useViewsUi.getState().focusSession(session.id);
                 }}
               >
-                <Lamp status={session.status} detail={session.statusDetail} />
+                <Lamp
+                  status={session.status}
+                  detail={session.statusDetail}
+                  awaiting={session.awaiting}
+                />
                 <button
                   type="button"
                   className="roster-name sm"

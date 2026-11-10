@@ -1,6 +1,7 @@
 // 收件匣（#/inbox，原本的待處理與審核中心合併）的列、分組、排序。純函式，畫面只負責畫。
 // 「等你」的數量一律用 protocol attention.ts 的 waitingSessions，和頁首同一份定義。
 import {
+  isAwaitingTeam,
   isIdleStart,
   waitingSessions,
   type Approval,
@@ -105,6 +106,8 @@ export function triageItems(
     if (session.archived) continue;
     const approval = leadApproval(approvals, session.id);
     if (!approval && !LISTED.includes(session.status)) continue;
+    // 等隊長／等成員結果（派工，GM 2026-11-11）：結果會自動送進去，不是要你處理的事，不列。
+    if (!approval && isAwaitingTeam(session)) continue;
     const kind = kindOf(session, approval);
     if (!kind) continue;
     items.push({

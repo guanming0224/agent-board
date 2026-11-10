@@ -1,5 +1,6 @@
 // 狀態的視覺語意（STYLE.md 規則一、規則二）。整個前端只從這裡取，不各寫一份。
 import {
+  isAwaitingTeam,
   isIdleStart,
   type PermissionMode,
   type Session,
@@ -68,13 +69,20 @@ const CODE_OF: Record<SessionStatus, StatusCode> = {
   offline: 'OFF',
 };
 
+/** 狀態代碼與說明要看的欄位（awaiting 是 hub 算的，舊 hub 不送）。 */
+type StatusFields = Pick<Session, 'status' | 'statusDetail' | 'awaiting'>;
+
+/** waiting_input 但不是在等你：剛開好（idle:start），或在等隊長／等成員結果（派工，GM 2026-11-11）。 */
+const isIdleWaiting = (session: StatusFields): boolean =>
+  isIdleStart(session) || isAwaitingTeam(session);
+
 /**
  * session 的狀態代碼。整個前端只用這一個判斷，不各寫一份。
  * waiting_input 且 statusDetail 是 idle:start（daemon 在 SessionStart startup 時標的：剛開好、還沒下指令）
- * 是 NEW，不是 ASK。
+ * 是 NEW，不是 ASK。在等隊長（成員的結果已送回）或等成員結果（隊長還有派出去沒回來的工作）也是 NEW。
  */
-export function statusCode(session: Pick<Session, 'status' | 'statusDetail'>): StatusCode {
-  return isIdleStart(session) ? 'NEW' : CODE_OF[session.status];
+export function statusCode(session: StatusFields): StatusCode {
+  return isIdleWaiting(session) ? 'NEW' : CODE_OF[session.status];
 }
 
 /**
@@ -94,17 +102,22 @@ export const codeWaits = (code: StatusCode): boolean => WAIT_RANK[code] !== unde
 export const codeRank = (code: StatusCode): number => WAIT_RANK[code] ?? 9;
 
 /** 這個 session 的狀態算不算「等你」（ASK、PERM、PLAN、ERR）。 */
-export const waitsForYou = (session: Pick<Session, 'status' | 'statusDetail'>): boolean =>
-  codeWaits(statusCode(session));
+export const waitsForYou = (session: StatusFields): boolean => codeWaits(statusCode(session));
 
-/** 這個 session 的符號：剛開好（NEW）的 waiting_input 用啟動中的符號，其餘照 STATUS_VISUAL。 */
-export function statusGlyph(session: Pick<Session, 'status' | 'statusDetail'>): string {
-  return isIdleStart(session) ? STATUS_VISUAL.starting.glyph : STATUS_VISUAL[session.status].glyph;
+/** 這個 session 的符號：NEW 的 waiting_input（剛開好、等隊長、等成員結果）用啟動中的符號，其餘照 STATUS_VISUAL。 */
+export function statusGlyph(session: StatusFields): string {
+  return isIdleWaiting(session)
+    ? STATUS_VISUAL.starting.glyph
+    : STATUS_VISUAL[session.status].glyph;
 }
 
-/** 這個 session 的完整中文（英文）說明的字串 key：分得出錯誤與卡住、啟動中與剛開好。 */
-export function statusLabelKey(session: Pick<Session, 'status' | 'statusDetail'>): string {
-  return isIdleStart(session) ? 'status.idle_start' : STATUS_VISUAL[session.status].labelKey;
+/** 這個 session 的完整中文（英文）說明的字串 key：分得出錯誤與卡住、啟動中與剛開好、等隊長與等成員結果。 */
+export function statusLabelKey(session: StatusFields): string {
+  if (isIdleStart(session)) return 'status.idle_start';
+  if (isAwaitingTeam(session)) {
+    return session.awaiting === 'members' ? 'status.awaiting_members' : 'status.awaiting_lead';
+  }
+  return STATUS_VISUAL[session.status].labelKey;
 }
 
 /** 代碼本身的說明（側欄圖例用），例如 ERR 是「錯誤或卡住」。 */

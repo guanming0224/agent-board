@@ -120,7 +120,7 @@ export function ArchiveConfirm() {
           const note = stopNote(s, t);
           return (
             <li key={s.id}>
-              <Lamp status={s.status} detail={s.statusDetail} />
+              <Lamp status={s.status} detail={s.statusDetail} awaiting={s.awaiting} />
               <span className="name">{s.name}</span>
               {note && <span className="you-text">{note}</span>}
             </li>

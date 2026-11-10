@@ -64,6 +64,11 @@ const TEAM_ACTIVITY_KEY = 'teamActivity';
  * 只有 Codex 才寫；沒有這個鍵＝Claude Code（舊資料都是）。
  */
 const SESSION_AGENT_PREFIX = 'sessionAgent:';
+/**
+ * 派工成員的結果已送回隊長、在等隊長下一步（GM 2026-11-11，§11.4）：settings 表
+ * `awaitingLead:<成員 id>`，值是隊長的 session id，不升 schema。成員離開 waiting_input（新回合、結束、封存）時清掉。
+ */
+const AWAITING_LEAD_PREFIX = 'awaitingLead:';
 
 const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   listenAddress,
@@ -446,6 +451,12 @@ export class Store {
   private addedCache: Map<string, MemberAdded> | null = null;
   /** `sessionAgent:*` 的快取（session 清單在熱路徑上）。setSessionAgent、deleteSession 時清掉。 */
   private agentCache: Map<string, AgentKind> | null = null;
+  /** `awaitingLead:*` 的快取（成員 id → 隊長 id）。setAwaitingLead、deleteSession 時清掉。 */
+  private awaitingLeadCache: Map<string, string> | null = null;
+  /** `dispatch_work` 的快取：成員 id → 派工的隊長 id，以及有派出工作的隊長。setDispatchWork 時清掉。 */
+  private workFromCache: { byMember: Map<string, string>; leads: Set<string> } | null = null;
+  /** 正要送進隊長的結果（隊長 id → 送字佇列 key），只在記憶體。 */
+  private readonly resultsPending = new Map<string, Set<string>>();
 
   constructor(
     readonly db: Db,
@@ -699,11 +710,11 @@ export class Store {
     return row ? this.toSession(row) : null;
   }
 
-  /** 資料列轉成 Session，補上存在 settings 表的 agent（只有 Codex 有）。 */
+  /** 資料列轉成 Session，補上存在 settings 表的 agent（只有 Codex 有）與 awaiting（等隊長／等成員結果）。 */
   private toSession = (row: SessionRow): Session => {
     const session = toSession(row);
     const agent = this.allAgents().get(row.id);
-    return agent ? { ...session, agent } : session;
+    return this.withAwaiting(agent ? { ...session, agent } : session);
   };
 
   private allAgents(): Map<string, AgentKind> {
@@ -762,6 +773,9 @@ export class Store {
       this.addedCache = null;
       this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${SESSION_AGENT_PREFIX}${id}`);
       this.agentCache = null;
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${AWAITING_LEAD_PREFIX}${id}`);
+      this.awaitingLeadCache = null;
+      this.workFromCache = null;
       return this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes === 1;
     })();
   }
@@ -868,6 +882,104 @@ export class Store {
     this.db
       .prepare('UPDATE sessions SET dispatch_work = ? WHERE id = ?')
       .run(work ? JSON.stringify(work) : null, id);
+    this.workFromCache = null;
+  }
+
+  // ── 等隊長／等成員結果（GM 2026-11-11，CONTRACTS §11.4） ──────────────
+
+  /**
+   * 重新算 `session.awaiting`（只有 `waiting_input` 才有）。傳進來的 Session 可能是舊的（hub 用 `{ ...prev, status }`
+   * 組出下一個狀態），所以廣播、推播前都要過這一道。
+   * - `members`：有成員手上還有它派的工作（`dispatch_work.from` 是它），或有成員的結果正要送進它（記憶體）。
+   * - `lead`：它的結果已送回隊長（`awaitingLead:<id>`），或手上的工作已做完、`Stop` 還沒到（`dispatch_work`
+   *   還在、已經 `waiting_input`：daemon 的狀態常比 `Stop` 事件早到，不先算進來會先推一則 ASK）。
+   *   隊長已經結束或封存就不算（沒有人會接手，照常 ASK）。
+   */
+  withAwaiting(session: Session): Session {
+    const rest: Session = { ...session };
+    delete rest.awaiting;
+    if (session.status !== 'waiting_input' || session.archived || session.endedAt !== null) {
+      return rest;
+    }
+    if (this.workFrom().has(session.id) || (this.resultsPending.get(session.id)?.size ?? 0) > 0) {
+      return { ...rest, awaiting: 'members' };
+    }
+    const lead = this.allAwaitingLead().get(session.id) ?? this.workFrom().memberOf(session.id);
+    return lead !== undefined && this.leadAlive(lead) ? { ...rest, awaiting: 'lead' } : rest;
+  }
+
+  /** 每個成員手上的工作是誰派的（`dispatch_work.from`）；快取，setDispatchWork、deleteSession 時清掉。 */
+  private workFrom(): { has(leadId: string): boolean; memberOf(id: string): string | undefined } {
+    if (!this.workFromCache) {
+      const byMember = new Map<string, string>();
+      const rows = this.db
+        .prepare('SELECT id, dispatch_work FROM sessions WHERE dispatch_work IS NOT NULL')
+        .all() as { id: string; dispatch_work: string }[];
+      for (const row of rows) {
+        const parsed = DispatchWork.safeParse(safeJson(row.dispatch_work));
+        if (parsed.success) byMember.set(row.id, parsed.data.from);
+      }
+      this.workFromCache = { byMember, leads: new Set(byMember.values()) };
+    }
+    const { byMember, leads } = this.workFromCache;
+    return { has: (id) => leads.has(id), memberOf: (id) => byMember.get(id) };
+  }
+
+  /** 隊長還在（同 dispatch.ts 送結果前的判斷：沒結束、沒封存、不是 done）。 */
+  private leadAlive(id: string): boolean {
+    const row = this.db
+      .prepare('SELECT ended_at, archived, status FROM sessions WHERE id = ?')
+      .get(id) as { ended_at: string | null; archived: number; status: string } | undefined;
+    return (
+      row !== undefined && row.ended_at === null && row.archived === 0 && row.status !== 'done'
+    );
+  }
+
+  private allAwaitingLead(): Map<string, string> {
+    if (this.awaitingLeadCache) return this.awaitingLeadCache;
+    const out = new Map<string, string>();
+    const rows = this.db
+      .prepare(`SELECT key, value FROM settings WHERE key LIKE '${AWAITING_LEAD_PREFIX}%'`)
+      .all() as { key: string; value: string }[];
+    for (const row of rows) {
+      const lead = safeJson(row.value);
+      if (typeof lead === 'string') out.set(row.key.slice(AWAITING_LEAD_PREFIX.length), lead);
+    }
+    this.awaitingLeadCache = out;
+    return out;
+  }
+
+  /** 成員的結果已送回（排進送字佇列）`leadId`：成員在 waiting_input 時顯示「等隊長」。null 清掉。 */
+  setAwaitingLead(memberId: string, leadId: string | null): void {
+    if (leadId === null) {
+      this.db
+        .prepare('DELETE FROM settings WHERE key = ?')
+        .run(`${AWAITING_LEAD_PREFIX}${memberId}`);
+    } else {
+      this.setRaw(`${AWAITING_LEAD_PREFIX}${memberId}`, leadId);
+    }
+    this.awaitingLeadCache = null;
+  }
+
+  awaitingLeadOf(memberId: string): string | null {
+    return this.allAwaitingLead().get(memberId) ?? null;
+  }
+
+  /** 在等 `leadId` 的成員（結果送回後還沒開始下一個回合的）。 */
+  membersAwaiting(leadId: string): string[] {
+    return [...this.allAwaitingLead()].filter(([, lead]) => lead === leadId).map(([id]) => id);
+  }
+
+  /**
+   * 正要送進 `leadId` 的結果（只在記憶體，和送字佇列一樣 hub 重啟就沒有）：最後一位成員的工作已清掉、
+   * 結果還沒打進隊長之前，隊長還是「等成員結果」，不會先閃一下 ASK。
+   */
+  setResultPending(leadId: string, key: string, pending: boolean): void {
+    const keys = this.resultsPending.get(leadId) ?? new Set<string>();
+    if (pending) keys.add(key);
+    else keys.delete(key);
+    if (keys.size > 0) this.resultsPending.set(leadId, keys);
+    else this.resultsPending.delete(leadId);
   }
 
   /** 由 callerId 用 spawn_member 開的 session（含已結束、已封存的；呼叫端自己篩）。 */
@@ -1580,12 +1692,12 @@ export class Store {
 
   // ── 設定與 VAPID ──────────────────────────────────────
   getSettings(): Settings {
-    // 用量細項（`usage:<機器>`）、成員新增記錄、團隊動態不是設定，不讀。
+    // 用量細項（`usage:<機器>`）、成員新增記錄、團隊動態、等隊長記錄不是設定，不讀。
     const rows = this.db
       .prepare(
         `SELECT key, value FROM settings WHERE key NOT LIKE '${USAGE_KEY_PREFIX}%'
            AND key NOT LIKE '${MEMBER_ADDED_PREFIX}%' AND key != '${TEAM_ACTIVITY_KEY}'
-           AND key NOT LIKE '${SESSION_AGENT_PREFIX}%'`,
+           AND key NOT LIKE '${SESSION_AGENT_PREFIX}%' AND key NOT LIKE '${AWAITING_LEAD_PREFIX}%'`,
       )
       .all() as {
       key: string;

@@ -330,6 +330,7 @@ hub 用資料庫裡的路徑組 `SessionLocator` 送 `session.inspect`，等 `se
 `packages/protocol/src/attention.ts`，hub 與 web 共用：
 
 - `sessionWaitsForUser`：沒封存、狀態是收件匣的範圍（`ATTENTION_STATUSES`：等你允許、回覆、審計畫、錯誤、卡住），**但不含 `statusDetail === 'idle:start'` 的 `waiting_input`**（daemon 在 `SessionStart` startup 時標的：剛開好，沒有新回覆；畫面上的代碼是 NEW。resume 重新接回不標，算「等你」，GM 2026-11-08）。做完一回合（`Stop`）detail 就變回 null，算「等你」；`idle_prompt` 不改 detail。信任對話框（detail `trust`）算。舊版 daemon 不標，照舊算。
+- **等隊長／等成員結果**（GM 2026-11-11，§11.4）：`waiting_input` 且 hub 算出的 `Session.awaiting` 有值（`isAwaitingTeam`）也不算，畫面是 NEW。只管 `waiting_input`：PERM、PLAN、ERR、QUOTA 不受影響。
 - `waitingSessions(sessions, approvals)`：上面這些，加上有還沒決定的 approval 的 session（危險指令命中時常常還是 `running`），每個 session 只算一次。
 - 收件匣、「下一個等我的」、待處理順序（web `shared/status.ts` 的 `attentionQueue`）也只算 ASK、PERM、PLAN、ERR，剛開好（NEW）不列（GM 2026-11-08）；剛開好的 session 只出現在待處理頁的「其他」組（triage kind `idle`）。數量、上限與推播用上面這個定義。
 - `rate_limited` 不在範圍裡（和收件匣一樣）。
@@ -414,6 +415,10 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 - **一次一份**：成員手上的工作還沒回報（還沒 Stop）時，新的 `send_task` 留在佇列（`DeliveryItem.ready` 要求沒有 `dispatch_work`），Stop 處理完立刻 `SafeDelivery.retry`。這是因為 daemon 的 `session.runtime`（回到等輸入）常比 `Stop` 事件早到，不等的話新工作會在舊結果之前送進去、兩份混在一起。
 - **沒有 Stop 的情況**：使用者在成員回合進行中（running／stuck／waiting_permission）按 Esc 或 Ctrl+C（`terminal.input` 剛好是 `\x1b`／`\x03`，或 `terminal.signal` escape／ctrl_c）→ 清掉工作，事件 `dispatch.blocked` reason `interrupted`；成員結束或封存 → 清掉，reason `member_ended`。呼叫者已結束或封存、設定關掉 → 結果不送（`target_ended`／`dispatch_disabled`）。
 - 使用者自己在成員終端機裡打字**不**清掉工作（例如 GM 回答了成員的問題，成員接著把工作做完，結果照樣送回）。
+- **等隊長／等成員結果**（GM 2026-11-11）：hub 在送給網頁的 `Session` 上算 `awaiting?: 'lead' | 'members'`（protocol optional，只有 `waiting_input` 才帶；舊網頁忽略、舊 hub 不送＝照舊 ASK）。不存資料庫欄位，由 `store.withAwaiting` 每次讀的時候算（廣播、快照、REST、推播與「等你」計數都用同一份）。畫面是 **NEW**（灰），說明文字「等隊長」（Awaiting lead）／「等成員結果」（Awaiting members）；狀態代碼仍是 10 種。**不算等你**：不進頁首「等你 N」、收件匣與待處理（`triageItems` 不列，除非同時有 approval）、「下一個等我的」、合併通知總表，hub 不推播（`afterChange` 擋 `isAwaitingTeam`）。
+  - `lead`（成員）：結果排進送字佇列送回呼叫者時記 settings 表 `awaitingLead:<成員 id>`＝呼叫者 id（不升 schema，hub 重啟照樣在）；成員開始下一個回合（狀態變成 `running`、`starting`、`waiting_permission`、`plan_review`）、結束、封存時清掉。另外成員手上還有 `dispatch_work`、狀態已經是 `waiting_input`（daemon 的狀態常比 `Stop` 早到）時也先算 `lead`，不先推一則 ASK。結果被擋下（`target_ended`、`dispatch_disabled`、`rate_limit`）不標，照常 ASK（變回等你時照常推播）。呼叫者結束、封存或 done 後不再算（在等它的成員清掉記錄、重新廣播，不推播）。GM 之後直接對成員下指令：新回合清掉，下次停下照常 ASK。
+  - `members`（隊長）：有任何成員的 `dispatch_work.from` 是它，或有成員的結果正在送進它（只在記憶體，同送字佇列，hub 重啟就沒有）。最後一則結果打進去後就不算（它接著讀結果，自己做完停下才是 ASK）；結果沒送成（`dropped`／`aborted`）照常推播。
+  - 派工資料變了（工作送達、Stop、中斷、成員結束、結果送達）hub 重新廣播受影響的成員與隊長（`DispatchDeps.awaitingChanged`），畫面馬上更新。
 
 ### 11.5 紀錄與畫面
 

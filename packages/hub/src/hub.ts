@@ -10,7 +10,9 @@ import {
   SEARCH_DEEP_GRACE_MS,
   isMemoryTool,
   DaemonToHub,
+  isAwaitingTeam,
   needsAttention,
+  sessionWaitsForUser,
   QUEUE_DETAIL_RATE_LIMITED,
   WaitingThreshold,
   waitingSessions,
@@ -470,6 +472,7 @@ export class Hub {
         const current = this.store.getTeam(team.id);
         if (current) this.broadcast({ type: 'team.updated', team: current });
       },
+      awaitingChanged: (ids, change, notify) => this.awaitingChanged(ids, change, notify),
     });
     this.broadcasts = new BroadcastEngine({
       store: deps.store,
@@ -1734,7 +1737,9 @@ export class Hub {
     return next;
   }
 
-  private afterChange(prev: Session, next: Session, mayNotify: boolean): void {
+  private afterChange(prev: Session, rawNext: Session, mayNotify: boolean): void {
+    // 等隊長／等成員結果是讀的時候算的（store.withAwaiting）：組出來的 next 可能帶著舊值，先重算。
+    const next = this.store.withAwaiting(rawNext);
     this.broadcast({ type: 'session.updated', session: next });
     // QUE 數、會放出的 QUE 數（名額、限流、機器在線都看狀態）都可能變了；沒變的不會推。
     if (prev.status !== next.status) this.pauseCountsChanged();
@@ -1742,7 +1747,8 @@ export class Hub {
     const outcomeLearned =
       prev.statusDetail === SESSION_DETAIL_LOST && next.statusDetail !== SESSION_DETAIL_LOST;
     const entered = prev.status !== next.status || outcomeLearned;
-    if (mayNotify && entered && needsAttention(next.status)) {
+    // 在等隊長／等成員結果的 waiting_input 不是在等你（GM 2026-11-11），不推播。
+    if (mayNotify && entered && needsAttention(next.status) && !isAwaitingTeam(next)) {
       this.notifyAttention(next);
     }
     this.guarded('delivery', () => this.delivery.onSessionChange(prev, next));
@@ -2271,6 +2277,26 @@ export class Hub {
   broadcastMachine(machineId: string): void {
     const machine = this.store.getMachine(machineId);
     if (machine) this.broadcast({ type: 'machine.updated', machine });
+  }
+
+  /**
+   * 派工改了會影響 awaiting 的資料（DispatchDeps.awaitingChanged）：前後比對 `ids`，有變的重新廣播；
+   * 從「等隊長／等成員結果」變回在等你（例如結果沒送回去）而且 `notify` 時照常推播。
+   */
+  private awaitingChanged(ids: readonly string[], change: () => void, notify: boolean): void {
+    const before = new Map(ids.map((id) => [id, this.store.getSession(id)?.awaiting]));
+    change();
+    let changed = false;
+    for (const id of ids) {
+      const session = this.store.getSession(id);
+      if (!session || session.awaiting === before.get(id)) continue;
+      changed = true;
+      this.broadcast({ type: 'session.updated', session });
+      if (notify && before.get(id) !== undefined && sessionWaitsForUser(session)) {
+        this.notifyAttention(session);
+      }
+    }
+    if (changed) this.checkWaiting(notify);
   }
 
   broadcastSession(sessionId: string): void {

@@ -103,7 +103,7 @@ function ArchivedRow({
       <div className="archived-main">
         <div className="archived-title">
           <strong>{session.name}</strong>
-          <Lamp status={session.status} detail={session.statusDetail} />
+          <Lamp status={session.status} detail={session.statusDetail} awaiting={session.awaiting} />
         </div>
         <Callsign text={callsign(session, machines, projects)} />
         <div className="sub">

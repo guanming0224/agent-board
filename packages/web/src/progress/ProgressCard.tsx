@@ -405,6 +405,8 @@ function Facts({ card }: { card: ProgressCard }) {
   const t = useT();
   const mask = useMaskText();
   const { facts } = card;
+  const sessions = useBoard((s) => s.sessions);
+  const awaitingOf = new Map(sessions.map((s) => [s.id, s.awaiting]));
   return (
     <div className="progress-facts" data-testid="progress-facts">
       <h4>{t('progress.facts.title')}</h4>
@@ -430,9 +432,14 @@ function Facts({ card }: { card: ProgressCard }) {
           <li className="progress-members">
             {t('progress.facts.members')}：
             {facts.members.map((m) => {
+              // 等隊長／等成員結果是 hub 即時算的（不在事實快照裡），從畫面上的 session 補。
               const code = m.ended
                 ? 'DONE'
-                : statusCode({ status: m.status, statusDetail: m.statusDetail } as never);
+                : statusCode({
+                    status: m.status,
+                    statusDetail: m.statusDetail,
+                    awaiting: awaitingOf.get(m.sessionId),
+                  });
               return (
                 <span key={m.sessionId} className="progress-member" title={m.name}>
                   <span className="mono">{code}</span> {m.name}

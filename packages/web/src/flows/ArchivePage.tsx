@@ -458,7 +458,7 @@ export function ArchivePage() {
       <>
         <header className="page-head archive-head">
           <h1>{session.name}</h1>
-          <Lamp status={session.status} detail={session.statusDetail} />
+          <Lamp status={session.status} detail={session.statusDetail} awaiting={session.awaiting} />
         </header>
         <Callsign text={callsign(session, machines, projects.data ?? [])} />
         {/* 主按鈕放第一個、危險放最後（報告 C4）。 */}
