@@ -407,7 +407,8 @@ export class Daemon {
     } else {
       this.approvals.dispose();
       await Promise.all(sessions.map((s) => s.detachAndKill()));
-      clearMcpDir(this.deps.config.dataDir);
+      // 被擋住的 session 的 agent 可能還在別處（舊的 host）跑、MCP server 還拿著密鑰檔：留著。
+      clearMcpDir(this.deps.config.dataDir, new Set(this.blocked.keys()));
     }
     this.sessions.clear();
     this.mcpSecrets.clear();

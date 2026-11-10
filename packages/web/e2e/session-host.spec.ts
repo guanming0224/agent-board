@@ -63,10 +63,10 @@ function startHost(): void {
   });
 }
 
-function startDaemon(): void {
+function startDaemon(extra: NodeJS.ProcessEnv = {}): void {
   daemon = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     cwd: DAEMON_DIR,
-    env: env(),
+    env: { ...env(), ...extra },
     stdio: 'ignore',
   });
 }
@@ -129,6 +129,13 @@ async function type(page: Page, sessionId: string, text: string): Promise<void> 
 /** 畫面上假 claude 回報的 pid（`whoami` 指令）。 */
 function pidsOn(screen: string): string[] {
   return [...screen.matchAll(/PID (\d+)/g)].map((match) => match[1]!);
+}
+
+/** 這台機器上跑著幾個 e2e 的假 claude（命令列含它的路徑）。 */
+function fakeClaudeCount(): number {
+  return execFileSync('ps', ['-ax', '-o', 'command='], { encoding: 'utf8' })
+    .split('\n')
+    .filter((line) => line.includes(FAKE_CLAUDE)).length;
 }
 
 function alive(pid: number): boolean {
@@ -278,6 +285,36 @@ test('daemon 被 kill -9（沒跑到 stop）：一樣接得回來，狀態從快
   for (let step = 1; step <= 12; step += 1) expect(screen).toContain(`WORK ${step}/12`);
   expect(alive(pid)).toBe(true);
   expect(screen.match(/fake claude /g)).toHaveLength(1);
+});
+
+test('host 還活著但 daemon 協定不相容：不重開第二個 agent，session 標成錯誤寫明原因；換回相容的 daemon 就接回', async ({
+  page,
+}) => {
+  await page.goto('/#/canvas');
+  const pid = Number(pidsOn(await readScreen(page, session.id))[0]);
+  expect(fakeClaudeCount()).toBe(1);
+  await stop(daemon, 'SIGTERM');
+  startDaemon({ AGENT_BOARD_SESSION_HOST_TEST_PROTOCOL: '999' });
+  await expect
+    .poll(async () => (await getSession(page.request, session.id)).statusDetail ?? '', {
+      timeout: 30_000,
+    })
+    .toContain('協定不相容');
+  const blocked = await getSession(page.request, session.id);
+  expect(blocked.status).toBe('error');
+  expect(blocked.endedAt).toBeNull();
+  // 舊的 agent 還在、沒有用 --resume 再開一個。
+  expect(alive(pid)).toBe(true);
+  expect(fakeClaudeCount()).toBe(1);
+
+  await stop(daemon, 'SIGTERM');
+  startDaemon();
+  await expectStatus(page.request, session.id, 'waiting_input');
+  expect(fakeClaudeCount()).toBe(1);
+  await type(page, session.id, 'whoami');
+  await expect
+    .poll(async () => pidsOn(await readScreen(page, session.id)).at(-1))
+    .toBe(String(pid));
 });
 
 test('agent 在 daemon 停機期間自己結束：daemon 回來後算結束（完成），結果送到 hub、最後畫面還在', async ({
