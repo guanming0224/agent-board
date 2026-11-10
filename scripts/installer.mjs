@@ -433,27 +433,56 @@ function busySessions(paths) {
  * 把 app 裡的 session host 複製到它自己的資料夾（連同 node-pty），確認載得起來再換上（W1）。
  * 只在 host 要（重新）啟動時做：換 app 時正在跑的那份完全不動。
  */
-function installHostRuntime(paths) {
+function prepareHostRuntime(paths) {
   const source = appHostFiles(paths.app);
   const staging = `${paths.host}.new`;
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(join(staging, 'node_modules'), { recursive: true });
   cpSync(dirname(source.main), join(staging, 'dist'), { recursive: true });
   cpSync(source.nodePty, join(staging, 'node_modules', 'node-pty'), { recursive: true });
-  const probe = run(process.execPath, ['-e', "require('node-pty')"], { cwd: staging });
+  // 不只載入：真的用這份 node-pty 開一個 PTY 跑 echo（spawn-helper 壞掉、權限不對都會在這裡被擋下）。
+  const probe = run(process.execPath, ['-e', PTY_PROBE], { cwd: staging, timeout: 15_000 });
   if (probe.status !== 0) {
+    rmSync(staging, { recursive: true, force: true });
     fail(
       t(
-        `session host 的 node-pty 載入失敗：\n${probe.stderr}`,
-        `The session host could not load node-pty:\n${probe.stderr}`,
+        `session host 的 node-pty 開不了 PTY，沒有換掉正在跑的 session host：\n${probe.stderr || probe.stdout}`,
+        `The session host's node-pty could not open a PTY; the running session host was left alone:\n${probe.stderr || probe.stdout}`,
       ),
     );
   }
+  return staging;
+}
+
+/** 換上準備好的那份（呼叫前 host 已停）。 */
+function swapHostRuntime(paths, staging) {
   const old = `${paths.host}.old-${randomBytes(4).toString('hex')}`;
   if (existsSync(paths.host)) renameSync(paths.host, old);
   renameSync(staging, paths.host);
   rmSync(old, { recursive: true, force: true });
 }
+
+/** 在 .new 準備好並實際開過 PTY，通過了才停 host、換資料夾（N3）；檢查失敗 host 不動、中止安裝。 */
+function installHostRuntime(paths, { stopRunning = false } = {}) {
+  const staging = prepareHostRuntime(paths);
+  if (stopRunning) stopService(SESSION_HOST);
+  swapHostRuntime(paths, staging);
+}
+
+/** 用 node-pty 開 echo，看得到輸出、結束碼 0 才算通過。 */
+const PTY_PROBE = `
+const pty = require('node-pty');
+const win = process.platform === 'win32';
+const p = pty.spawn(win ? 'cmd.exe' : '/bin/echo', win ? ['/c', 'echo', 'agent-board-pty-ok'] : ['agent-board-pty-ok'], { cols: 80, rows: 24 });
+let out = '';
+p.onData((d) => (out += d));
+p.onExit(({ exitCode }) => {
+  if (exitCode === 0 && out.includes('agent-board-pty-ok')) process.exit(0);
+  console.error('PTY 測試失敗：exit ' + exitCode + '，輸出 ' + JSON.stringify(out));
+  process.exit(1);
+});
+setTimeout(() => { console.error('PTY 測試逾時'); process.exit(2); }, 10000);
+`;
 
 /** 寫服務設定，回傳有沒有變動。 */
 function writeService(role, ctx) {
@@ -850,8 +879,7 @@ async function install(argv) {
       // session host 不跟著 app 重啟（會結束所有 agent），跑的是自己資料夾裡那份。第一次裝、協定變了、
       // 或加了 --restart-session-host 才換上新版並（重新）啟動；其他時候只確定它在跑。
       if (!hostInstalled || restartHost) {
-        if (hostInstalled) stopService(SESSION_HOST);
-        installHostRuntime(paths);
+        installHostRuntime(paths, { stopRunning: hostInstalled });
         state.sessionHostBuild = sessionHostBuild(runningHostFiles(paths));
         state.sessionHostProtocol = sessionHostProtocol(runningHostFiles(paths));
       } else if (
