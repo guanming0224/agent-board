@@ -30,6 +30,8 @@ export interface DaemonConfig {
    * macOS launchd label、Linux systemd user unit、Windows 工作排程器的工作名稱。沒有就不拉。
    */
   sessionHostService?: string | null;
+  /** 只給測試（AGENT_BOARD_SESSION_HOST_TEST_PROTOCOL）：hello 假裝成別的協定版本。 */
+  sessionHostTestProtocol?: number;
 }
 
 /** 接受 http(s) 或 ws(s)；沒寫路徑就補上 /ws/daemon。 */
@@ -81,5 +83,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     mcpServer: env.AGENT_BOARD_MCP_SERVER || null,
     sessionHost: env.AGENT_BOARD_SESSION_HOST === 'off' ? 'off' : 'auto',
     sessionHostService: env.AGENT_BOARD_SESSION_HOST_SERVICE || null,
+    ...(env.AGENT_BOARD_SESSION_HOST_TEST_PROTOCOL
+      ? { sessionHostTestProtocol: Number(env.AGENT_BOARD_SESSION_HOST_TEST_PROTOCOL) }
+      : {}),
   };
 }

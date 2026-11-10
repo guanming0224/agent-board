@@ -1,9 +1,18 @@
 // session host 模式的 PTY 後端（CONTRACTS §20）：agent 是 session host 的子程序，daemon 重啟時不會跟著結束。
-import type { SessionHostClient } from '@agent-board/session-host';
+import { HostRequestTimeoutError, type SessionHostClient } from '@agent-board/session-host';
 import type { PtyAttachInfo, PtyBackend, PtyProcess, PtySignal, PtySpawnOptions } from './pty';
 
 /** 重播 2 MB 進 headless 用不了多久；超過就當接不回來（daemon 改用 --resume）。 */
-const ATTACH_TIMEOUT_MS = 15_000;
+export const ATTACH_TIMEOUT_MS = 15_000;
+/** 重播逾時跟著緩衝大小放大：每 MB 再多給這麼久（S2）。 */
+export const ATTACH_TIMEOUT_PER_MB_MS = 10_000;
+
+/** 依要重播的位元組數算逾時。 */
+export function attachTimeoutFor(bytes: number): number {
+  return (
+    ATTACH_TIMEOUT_MS + Math.ceil(Math.max(0, bytes) / (1024 * 1024)) * ATTACH_TIMEOUT_PER_MB_MS
+  );
+}
 
 type ExitEvent = { exitCode: number; signal: number };
 
@@ -29,7 +38,7 @@ class HostPtyProcess implements PtyProcess {
   constructor(
     private readonly client: SessionHostClient,
     private readonly id: string,
-    mode: { spawn: PtySpawnOptions } | { attach: true },
+    mode: { spawn: PtySpawnOptions } | { attach: true; timeoutMs?: number },
   ) {
     let resolveReady: () => void = () => {};
     let rejectReady: (error: Error) => void = () => {};
@@ -87,13 +96,15 @@ class HostPtyProcess implements PtyProcess {
         },
         (error: unknown) => {
           client.unregister(id);
+          // 逾時：host 之後可能還是開起來了，補一個 SIGKILL（同一條連線依序處理，排在 spawn 之後），不留孤兒 agent。
+          if (error instanceof HostRequestTimeoutError) client.kill(id, 'SIGKILL');
           rejectReady(error instanceof Error ? error : new Error(String(error)));
         },
       );
     } else {
       attachTimer = setTimeout(
         () => rejectReady(new Error('session host 重播逾時')),
-        ATTACH_TIMEOUT_MS,
+        mode.timeoutMs ?? ATTACH_TIMEOUT_MS,
       );
       attachTimer.unref();
       client.attach(id, 0);
@@ -144,8 +155,8 @@ export class HostPtyBackend implements PtyBackend {
     return new HostPtyProcess(this.client, options.id, { spawn: options });
   }
 
-  attach(id: string): PtyProcess {
-    return new HostPtyProcess(this.client, id, { attach: true });
+  attach(id: string, options: { timeoutMs?: number } = {}): PtyProcess {
+    return new HostPtyProcess(this.client, id, { attach: true, timeoutMs: options.timeoutMs });
   }
 
   release(id: string): void {

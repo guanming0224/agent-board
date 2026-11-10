@@ -1,6 +1,8 @@
 // daemon 用的部分：客戶端與位置。伺服器本體（server.ts）會載入 node-pty，另外 import。
 export {
   HostConnectError,
+  HostRequestTimeoutError,
+  probeHost,
   SessionHostClient,
   type HostConnectFailure,
   type HostSessionHandlers,

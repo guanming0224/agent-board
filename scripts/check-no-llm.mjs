@@ -71,6 +71,8 @@ const CALL_SITES = new Set([
   'packages/daemon/src/session.ts pty-write',
   // 連不上 session host 時叫服務管理程式拉起它（launchctl kickstart／systemctl --user start／schtasks /Run）
   'packages/daemon/src/sessionHostLauncher.ts child-process',
+  // 重開前確認上一個 agent 還在不在：只跑 `ps -o lstart= <pid>` 讀啟動時間（2026-11-10 審查 S1）
+  'packages/daemon/src/processCheck.ts child-process',
   'packages/daemon/src/resources.ts child-process',
   'packages/daemon/src/resources.ts systeminformation',
   'packages/daemon/src/worktree.ts child-process',

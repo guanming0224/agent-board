@@ -3,10 +3,19 @@
 // 只有狀態與數字，不含終端機內容、prompt、工具輸入。狀態變化時就寫，daemon 崩潰（沒跑到 stop）也有最近的一份。
 import { readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { Id, IsoTime, SessionStatus } from '@agent-board/protocol';
+import { ApprovalKind, Id, IsoTime, SessionStatus } from '@agent-board/protocol';
 import { ensurePrivateDir, writePrivateFile } from '@agent-board/session-host';
 import { z } from 'zod';
 import { errorMessage, log } from './log';
+
+const SnapshotApproval = z.object({
+  id: Id,
+  kind: ApprovalKind,
+  toolName: z.string().nullable(),
+  matchedRule: z.string().nullable(),
+  createdAt: IsoTime,
+});
+export type SnapshotApproval = z.infer<typeof SnapshotApproval>;
 
 export const SessionSnapshot = z.object({
   version: z.literal(1),
@@ -22,8 +31,18 @@ export const SessionSnapshot = z.object({
   lastOutputAt: IsoTime.nullable(),
   /** 存檔當下還在等網頁決定的審批。接回後一律改成「請在終端機回答」（hook 連線已斷）。 */
   pendingApprovalIds: z.array(z.string()),
+  /**
+   * 同上，多存 hub 對帳需要的欄位（不含工具輸入）。daemon 崩潰沒跑到 stop 時，接回後放進 hello 再標 terminal（W6）。
+   */
+  pendingApprovals: z.array(SnapshotApproval).default([]),
+  /** daemon 正常停止時已經把審批交回終端機（hub 已記 terminal），接回時不用再處理。 */
+  approvalsHandedOff: z.boolean().default(false),
+  /** agent 的 pid 與啟動時間：重開前確認上一個還在不在，避免同一個對話有兩個 agent（S1）。 */
+  agentPid: z.number().int().positive().nullable().default(null),
+  agentStartedAt: IsoTime.nullable().default(null),
 });
 export type SessionSnapshot = z.infer<typeof SessionSnapshot>;
+export type SessionSnapshotInput = z.input<typeof SessionSnapshot>;
 
 export const stateDir = (dataDir: string): string => join(dataDir, 'state');
 
@@ -34,7 +53,8 @@ function fileFor(dataDir: string, sessionId: string): string | null {
   return SAFE_ID.test(sessionId) ? join(stateDir(dataDir), `${sessionId}.json`) : null;
 }
 
-export function writeSnapshot(dataDir: string, snapshot: SessionSnapshot): void {
+export function writeSnapshot(dataDir: string, input: SessionSnapshotInput): void {
+  const snapshot = SessionSnapshot.parse(input);
   const file = fileFor(dataDir, snapshot.sessionId);
   if (!file) return;
   try {

@@ -18,6 +18,9 @@ const REQUEST_TIMEOUT_MS = 10_000;
 export type HostConnectFailure =
   'unreachable' | 'no_token' | 'protocol_mismatch' | 'unauthorized' | 'timeout' | 'bad_reply';
 
+/** 請求逾時：host 可能之後還是會做（例如 spawn），呼叫端要自己收尾。 */
+export class HostRequestTimeoutError extends Error {}
+
 export class HostConnectError extends Error {
   constructor(
     readonly reason: HostConnectFailure,
@@ -69,7 +72,14 @@ export class SessionHostClient {
   /** 連上並完成 hello。失敗一律丟 HostConnectError。 */
   static connect(
     endpoint: HostEndpoint,
-    { timeoutMs = CONNECT_TIMEOUT_MS }: { timeoutMs?: number } = {},
+    {
+      timeoutMs = CONNECT_TIMEOUT_MS,
+      protocol = SESSION_HOST_PROTOCOL,
+    }: {
+      timeoutMs?: number;
+      /** 只給測試：假裝成別的協定版本（驗證不相容時的處理）。 */
+      protocol?: number;
+    } = {},
   ): Promise<SessionHostClient> {
     const token = readToken(endpoint.tokenPath);
     if (!token) {
@@ -91,7 +101,7 @@ export class SessionHostClient {
       socket.once('error', (error) => fail('unreachable', error.message));
       socket.once('close', () => fail('unreachable', 'session host 關閉了連線'));
       socket.once('connect', () => {
-        sendLine(socket, { type: 'hello', protocol: SESSION_HOST_PROTOCOL, token });
+        sendLine(socket, { type: 'hello', protocol, token });
       });
       let client: SessionHostClient | null = null;
       onLines(
@@ -119,7 +129,7 @@ export class SessionHostClient {
             fail('bad_reply', `session host 先送了 ${message.type}`);
             return;
           }
-          if (message.protocol !== SESSION_HOST_PROTOCOL) {
+          if (message.protocol !== protocol) {
             fail('protocol_mismatch', `session host 協定 ${message.protocol} 不相容`);
             return;
           }
@@ -227,7 +237,7 @@ export class SessionHostClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(message.reqId);
-        reject(new Error(`session host 沒有回覆 ${message.type}`));
+        reject(new HostRequestTimeoutError(`session host 沒有回覆 ${message.type}`));
       }, REQUEST_TIMEOUT_MS);
       timer.unref();
       this.pending.set(message.reqId, { resolve, reject, timer });
@@ -274,4 +284,30 @@ export class SessionHostClient {
   release(id: string): void {
     this.send({ type: 'release', id });
   }
+}
+
+/**
+ * host 的 socket 有沒有人在聽（不送任何東西）。`absent`＝確定沒有 host（socket 不存在或連線被拒），
+ * 只有這種情況 daemon 才能放心用 --resume 重開；`alive`＝連得上；`unknown`＝其他錯誤（當成可能還在）。
+ */
+export function probeHost(
+  endpoint: HostEndpoint,
+  timeoutMs = CONNECT_TIMEOUT_MS,
+): Promise<'absent' | 'alive' | 'unknown'> {
+  return new Promise((resolve) => {
+    const socket = connect(endpoint.path);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve('unknown');
+    }, timeoutMs);
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve('alive');
+    });
+    socket.once('error', (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      resolve(error.code === 'ENOENT' || error.code === 'ECONNREFUSED' ? 'absent' : 'unknown');
+    });
+  });
 }

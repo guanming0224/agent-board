@@ -34,6 +34,10 @@ else process.on('SIGTERM', () => process.exit(0));
 process.on('SIGHUP', () => process.exit(0));
 
 if (process.stdin.isTTY) process.stdin.setRawMode(true);
+// 尺寸改變（SIGWINCH）：daemon 接回後會微調尺寸讓 TUI 重畫，測試看這行。
+process.stdout.on('resize', () =>
+  process.stdout.write(`RESIZED ${process.stdout.columns}x${process.stdout.rows}\r\n`),
+);
 process.stdout.write('FAKE READY\r\n');
 const exitOnStart = process.env.FAKE_CLAUDE_EXIT_ON_START;
 if (exitOnStart) process.exit(Number(exitOnStart));

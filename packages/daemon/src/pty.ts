@@ -54,7 +54,7 @@ export interface PtyBackend {
   readonly kind: 'local' | 'host';
   spawn(options: PtySpawnOptions): PtyProcess;
   /** 接回 session host 裡還在跑（或剛結束、還沒 release）的 session，從緩衝開頭重播。 */
-  attach?(id: string): PtyProcess;
+  attach?(id: string, options?: { timeoutMs?: number }): PtyProcess;
   /** session 真的結束、daemon 處理完了：通知 host 丟掉緩衝。 */
   release?(id: string): void;
 }

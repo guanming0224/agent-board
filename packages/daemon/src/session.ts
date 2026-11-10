@@ -16,7 +16,7 @@ import type { Terminal as TerminalType } from '@xterm/headless';
 import { readLastTurn, resolveContextWindow } from './contextWindow';
 import { errorMessage, log } from './log';
 import { localPtyBackend, type PtyAttachInfo, type PtyBackend, type PtyProcess } from './pty';
-import type { SessionSnapshot } from './sessionState';
+import type { SessionSnapshot, SessionSnapshotInput } from './sessionState';
 import type { CreateStatusTracker, StatusChange, StatusTracker } from './status/types';
 
 // 這兩個套件是 CJS，在 ESM 下沒有具名匯出。
@@ -41,6 +41,11 @@ const SHUTDOWN_GRACE_MS = 2_000;
  * 立刻縮回去會讓 TUI 多重畫兩次。
  */
 const IDLE_RESIZE_MS = 30_000;
+/** 接回後微調尺寸讓 TUI 重畫（W7）：等重畫的上限，與「沒有新輸出多久算畫完」。 */
+const REDRAW_MAX_WAIT_MS = 800;
+const REDRAW_QUIET_MS = 150;
+/** cols-1 之後等多久再改回（讓程式先讀到不同的尺寸）。 */
+const REDRAW_STEP_MS = 100;
 /** prompt 和 Enter 分開送，黏在一起 TUI 可能當成貼上而不送出（未驗證，Phase 2 接真 claude 確認）。 */
 const FIRST_PROMPT_ENTER_DELAY_MS = 100;
 
@@ -259,7 +264,13 @@ export interface ManagedSessionOptions {
    * 從 session host 接回還在跑的 session（CONTRACTS §20.3）：不開新程序，從緩衝開頭重播輸出重建畫面，
    * 再載入快照、用畫面補正。cols／rows 是 host 那邊 PTY 目前的尺寸。
    */
-  reattach?: { snapshot: SessionSnapshot | null; cols: number; rows: number };
+  reattach?: {
+    snapshot: SessionSnapshot | null;
+    cols: number;
+    rows: number;
+    /** 重播的逾時（daemon 依緩衝大小算，S2）；不給用後端的預設值。 */
+    timeoutMs?: number;
+  };
   onRuntime: (runtime: SessionRuntime) => void;
   onStatusChange: (change: StatusChange) => void;
   onTerminal: (message: TerminalMessage) => void;
@@ -288,6 +299,10 @@ export class ManagedSession {
   private alive = true;
   /** 接回時正在重播舊輸出：只餵 headless 與限流偵測，不轉送、不算進度。 */
   private replaying = false;
+  /** 最後一次收到輸出（不含重播）的時間，等重畫用。 */
+  private lastDataAt = 0;
+  /** agent 開起來的時間（快照記，重開前比對 pid 是不是同一個程序，S1）。 */
+  private agentStartedAt: string | null = null;
   /** 重播中就收到結束（session 在 daemon 停機時結束了）：等快照載入後再處理。 */
   private pendingExit: { exitCode: number; signal: number } | null = null;
   private stopRequested = false;
@@ -360,7 +375,8 @@ export class ManagedSession {
       if (reattach) {
         if (!backend.attach) throw new Error('這個 PTY 後端不能接回 session');
         this.replaying = true;
-        this.pty = backend.attach(options.id);
+        this.pty = backend.attach(options.id, { timeoutMs: reattach.timeoutMs });
+        this.agentStartedAt = snapshot?.agentStartedAt ?? null;
       } else {
         this.pty = backend.spawn({
           id: options.id,
@@ -371,6 +387,8 @@ export class ManagedSession {
           cols: DEFAULT_COLS,
           rows: DEFAULT_ROWS,
         });
+        // 真的時間（不用注入的時鐘）：要和 ps 讀到的程序啟動時間比對。
+        this.agentStartedAt = new Date().toISOString();
       }
     } catch (error) {
       this.tracker.dispose();
@@ -562,8 +580,13 @@ export class ManagedSession {
   }
 
   /** 存檔用的狀態（不含審批，daemon 補上）。 */
-  stateSnapshot(): Omit<SessionSnapshot, 'pendingApprovalIds'> {
+  stateSnapshot(): Omit<
+    SessionSnapshotInput,
+    'pendingApprovalIds' | 'pendingApprovals' | 'approvalsHandedOff'
+  > {
     return {
+      agentPid: this.pty.pid > 0 ? this.pty.pid : null,
+      agentStartedAt: this.agentStartedAt,
       version: 1,
       sessionId: this.id,
       savedAt: this.now().toISOString(),
@@ -646,6 +669,7 @@ export class ManagedSession {
       this.guardTracker(() => this.tracker.onOutput(data));
       return;
     }
+    this.lastDataAt = Date.now();
     this.seq += 1;
     this.lastOutputAt = this.now().toISOString();
     this.safeTermWrite(data);
@@ -685,15 +709,71 @@ export class ManagedSession {
         return;
       }
       if (snapshot) this.restoreSnapshot(snapshot);
-      if (info.alive && this.pendingExit === null) this.correctFromScreen();
-      this.refreshLastLines();
-      this.fingerprint = screenFingerprint(readScreen(this.term));
-      done();
       const exit = this.pendingExit;
       this.pendingExit = null;
-      if (exit) this.handleExit(exit.exitCode, exit.signal);
-      else this.options.onRuntime(this.runtime());
+      if (exit || !info.alive) {
+        this.refreshLastLines();
+        done();
+        if (exit) this.handleExit(exit.exitCode, exit.signal);
+        return;
+      }
+      // 重播的是舊畫面：微調尺寸讓 TUI 整個重畫，等畫完再看畫面補正狀態（W7）。
+      this.nudgeRedraw(() => {
+        if (this.detached || this.termDisposed) {
+          done();
+          return;
+        }
+        if (this.alive) this.correctFromScreen();
+        this.refreshLastLines();
+        this.fingerprint = screenFingerprint(readScreen(this.term));
+        done();
+        if (this.alive) this.options.onRuntime(this.runtime());
+      });
     });
+  }
+
+  /**
+   * cols-1、等一下再改回，觸發兩次 SIGWINCH（兩次之間不等的話，程式讀到的尺寸沒變，Node／Ink 不會重畫）。
+   * 改回之後有輸出、安靜一下（或到上限）就當畫完，等 headless 吃完再往下。
+   */
+  private nudgeRedraw(then: () => void): void {
+    const cols = this.term.cols;
+    const rows = this.term.rows;
+    if (cols < 3 || !this.alive) {
+      then();
+      return;
+    }
+    const resize = (c: number): boolean => {
+      try {
+        this.pty.resize(c, rows);
+        return true;
+      } catch (error) {
+        log.warn(`接回後重畫失敗（session ${this.id}）：${errorMessage(error)}`);
+        return false;
+      }
+    };
+    if (!resize(cols - 1)) {
+      then();
+      return;
+    }
+    setTimeout(() => {
+      if (!this.alive || this.detached || !resize(cols)) {
+        this.safeTermWrite('', then);
+        return;
+      }
+      const started = Date.now();
+      const before = this.lastDataAt;
+      const check = () => {
+        const now = Date.now();
+        const redrawn = this.lastDataAt > before && now - this.lastDataAt >= REDRAW_QUIET_MS;
+        if (redrawn || now - started >= REDRAW_MAX_WAIT_MS || !this.alive || this.detached) {
+          this.safeTermWrite('', then);
+          return;
+        }
+        setTimeout(check, 30).unref();
+      };
+      setTimeout(check, 30).unref();
+    }, REDRAW_STEP_MS).unref();
   }
 
   private restoreSnapshot(snapshot: SessionSnapshot): void {

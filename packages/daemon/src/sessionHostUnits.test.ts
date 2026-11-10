@@ -14,7 +14,7 @@ import {
   removeSnapshot,
   stateDir,
   writeSnapshot,
-  type SessionSnapshot,
+  type SessionSnapshotInput,
 } from './sessionState';
 import { createStatusTracker } from './status';
 import type { StatusChange } from './status/types';
@@ -135,7 +135,7 @@ describe('狀態快照檔', () => {
   });
   afterEach(() => rmSync(dataDir, { recursive: true, force: true }));
 
-  const snapshot = (sessionId: string): SessionSnapshot => ({
+  const snapshot = (sessionId: string): SessionSnapshotInput => ({
     version: 1,
     sessionId,
     savedAt: '2026-11-10T01:00:00.000Z',
@@ -154,7 +154,13 @@ describe('狀態快照檔', () => {
     writeSnapshot(dataDir, snapshot('s1'));
     expect(statSync(stateDir(dataDir)).mode & 0o777).toBe(0o700);
     expect(statSync(join(stateDir(dataDir), 's1.json')).mode & 0o777).toBe(0o600);
-    expect(readSnapshot(dataDir, 's1')).toEqual(snapshot('s1'));
+    expect(readSnapshot(dataDir, 's1')).toEqual({
+      ...snapshot('s1'),
+      pendingApprovals: [],
+      approvalsHandedOff: false,
+      agentPid: null,
+      agentStartedAt: null,
+    });
     removeSnapshot(dataDir, 's1');
     expect(readSnapshot(dataDir, 's1')).toBeNull();
   });
