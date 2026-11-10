@@ -55,6 +55,8 @@ function actionError(e: unknown, t: T): string {
     code === 'not_cached' ||
     code === 'machine_offline' ||
     code === 'no_previous' ||
+    code === 'previous_unsupported' ||
+    code === 'no_target' ||
     code === 'schema_changed'
   ) {
     return t(`machines.err.${code}`);

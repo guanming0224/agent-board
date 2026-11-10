@@ -106,6 +106,16 @@ export const zhTW: Record<string, string> = {
   'machines.reason.no_previous': '沒有上一版',
   'machines.reason.schema_changed':
     '上一版之後 hub 資料庫升級過，回滾會丟資料，不自動做（要人處理）',
+  'machines.reason.interrupted': '上次的更新中斷了（可以再試）',
+  'machines.reason.spawn_failed': '啟動不了更新程式',
+  'machines.note.hub_first': '等 hub 那台先升到這一版',
+  'machines.note.platform_unverified': 'Windows 還沒實機驗證，暫不自動更新',
+  'machines.note.abi_mismatch': '成品的原生模組和這台的 Node 版本不合，請手動安裝',
+  'machines.block.previous_unsupported':
+    '上一版沒有自動更新功能，不能從這裡回滾（用 install.sh --from 重裝）',
+  'machines.err.previous_unsupported':
+    '上一版沒有自動更新功能，不能從這裡回滾（用 install.sh --from 重裝）',
+  'machines.err.no_target': '這台目前沒有可更新的版本',
   'machines.reason.busy': '另一個更新還在進行',
   'machines.reason.unknown': '原因不明',
   'machines.reason.none': '原因不明',
@@ -238,6 +248,18 @@ export const en: Record<string, string> = {
   'machines.reason.no_previous': 'no previous version',
   'machines.reason.schema_changed':
     'the hub database was upgraded since the previous version; rolling back would lose data, so it isn’t done automatically',
+  'machines.reason.interrupted': 'the previous update was interrupted (you can retry)',
+  'machines.reason.spawn_failed': 'could not start the updater',
+  'machines.note.hub_first': 'waiting for the hub machine to update to this version first',
+  'machines.note.platform_unverified':
+    'Windows is not verified on a real machine yet; no automatic updates',
+  'machines.note.abi_mismatch':
+    'the bundled native modules do not match this machine’s Node version; install by hand',
+  'machines.block.previous_unsupported':
+    'the previous version predates automatic updates; reinstall it with install.sh --from',
+  'machines.err.previous_unsupported':
+    'the previous version predates automatic updates; reinstall it with install.sh --from',
+  'machines.err.no_target': 'there is no version to update this machine to',
   'machines.reason.busy': 'another update is running',
   'machines.reason.unknown': 'unknown reason',
   'machines.reason.none': 'unknown reason',

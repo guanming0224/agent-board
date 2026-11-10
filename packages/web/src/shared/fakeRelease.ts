@@ -167,6 +167,8 @@ export function createFakeReleases(
         previousVersion: r.previousVersion,
         channel: r.channel,
         targetVersion: target(r),
+        targetNote: null,
+        canRollback: r.previousVersion !== null,
         compat: 'ok',
         hasHub: r.hasHub,
         update: r.update,

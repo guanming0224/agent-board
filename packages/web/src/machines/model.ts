@@ -1,6 +1,7 @@
 // 機器面板（發版與自動更新，docs/release-update-spec.md §7）的純函式：把 hub 給的 MachineRelease 轉成畫面要顯示的狀態、
 // 哪些按鈕不能按與為什麼、canary 跑了多久。不碰 React、不碰網路，畫面與測試共用。
 import {
+  type TargetNote,
   CANARY_SOAK_MS,
   compareVersions,
   ReleaseRepo,
@@ -32,7 +33,7 @@ export type ReleaseStatus =
   /** 手動回滾成功（hub 收到 succeeded＋rollback_requested）：停在上一版，不再自動更新回去前要人處理。 */
   | { kind: 'rolled_back'; toVersion: string | null }
   /** 沒有目標版本：沒有成品的平台（Linux）或還沒有 Release。 */
-  | { kind: 'no_target' }
+  | { kind: 'no_target'; note: TargetNote | null }
   | { kind: 'latest' }
   /** 有新版但還沒開始（離線、下次連上才更新）。 */
   | { kind: 'pending'; toVersion: string };
@@ -65,7 +66,7 @@ export function releaseStatus(m: MachineRelease): ReleaseStatus {
     return { kind: 'rolled_back', toVersion: update.toVersion ?? m.version };
   }
   if (!m.version) return { kind: 'unknown' };
-  if (!m.targetVersion) return { kind: 'no_target' };
+  if (!m.targetVersion) return { kind: 'no_target', note: m.targetNote ?? null };
   if (m.version === m.targetVersion) return { kind: 'latest' };
   return { kind: 'pending', toVersion: m.targetVersion };
 }
@@ -105,9 +106,11 @@ export function updateBlock(
 /** 「回滾到上一版」不能按的原因；可以按回 null。 */
 export function rollbackBlock(
   m: MachineRelease,
-): 'dev' | 'offline' | 'busy' | 'no_previous' | null {
+): 'dev' | 'offline' | 'busy' | 'no_previous' | 'previous_unsupported' | null {
   if (isDev(m)) return 'dev';
   if (!m.previousVersion) return 'no_previous';
+  // 0.0.0-legacy 或比第一個有自動更新的版本舊：hub 也會擋（W6）。
+  if (m.canRollback === false) return 'previous_unsupported';
   if (!m.online) return 'offline';
   if (m.update && UPDATE_IN_PROGRESS.includes(m.update.phase)) return 'busy';
   return null;
@@ -195,6 +198,8 @@ export function statusText(status: ReleaseStatus, t: Translate): string {
       return t('machines.status.rolledBackTo', { version: status.toVersion ?? '?' });
     case 'pending':
       return t('machines.status.pending', { version: status.toVersion });
+    case 'no_target':
+      return status.note ? t(`machines.note.${status.note}`) : t('machines.status.no_target');
     default:
       return t(`machines.status.${status.kind}`);
   }

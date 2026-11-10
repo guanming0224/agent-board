@@ -51,6 +51,8 @@ const machine = (over: Partial<MachineRelease> = {}): MachineRelease => ({
   compat: 'ok',
   hasHub: false,
   update: null,
+  targetNote: null,
+  canRollback: true,
   ...over,
 });
 
@@ -61,7 +63,21 @@ describe('更新狀態（MachineRelease → 畫面）', () => {
       kind: 'pending',
       toVersion: '0.1.1',
     });
-    expect(releaseStatus(machine({ targetVersion: null }))).toEqual({ kind: 'no_target' });
+    expect(releaseStatus(machine({ targetVersion: null }))).toEqual({
+      kind: 'no_target',
+      note: null,
+    });
+    // 沒有目標的原因（W8、S3a、B5）。
+    const t = (key: string) => key;
+    expect(
+      statusText(
+        releaseStatus(machine({ targetVersion: null, targetNote: 'platform_unverified' })),
+        t,
+      ),
+    ).toBe('machines.note.platform_unverified');
+    expect(
+      statusText(releaseStatus(machine({ targetVersion: null, targetNote: 'hub_first' })), t),
+    ).toBe('machines.note.hub_first');
     expect(releaseStatus(machine({ version: null }))).toEqual({ kind: 'unknown' });
     // 成功過也是最新
     expect(releaseStatus(machine({ update: update('succeeded', { toVersion: '0.1.0' }) }))).toEqual(
@@ -287,5 +303,14 @@ describe('其他小工具', () => {
     expect(isRepo('agent-board')).toBe(false);
     expect(isRepo('a/b/c')).toBe(false);
     expect(isRepo('')).toBe(false);
+  });
+});
+
+describe('回滾到不支援的上一版（W6）', () => {
+  it('上一版是 0.0.0-legacy：不能按，說明原因', () => {
+    expect(rollbackBlock(machine({ previousVersion: '0.0.0-legacy', canRollback: false }))).toBe(
+      'previous_unsupported',
+    );
+    expect(rollbackBlock(machine({ previousVersion: '0.1.0', canRollback: true }))).toBeNull();
   });
 });
