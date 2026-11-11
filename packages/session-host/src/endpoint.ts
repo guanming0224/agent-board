@@ -98,13 +98,24 @@ export function hostEndpoint(
 /** 執行外部指令（測試換成假的）：回 stdout，失敗丟例外。extraEnv 會加進子程序的環境變數。 */
 export type RunSync = (file: string, args: string[], extraEnv?: Record<string, string>) => string;
 
+/**
+ * 啟動 Windows PowerShell 5.1 用的環境：拿掉繼承來的 PSModulePath。從 PowerShell 7（pwsh）開出來的程序會帶著
+ * pwsh 的模組路徑，5.1 依它找模組就載不到內建的 Get-Acl／Get-Process（2026-11-12 第一次 Windows CI 實際遇到）。
+ * 拿掉之後 5.1 會用自己的預設路徑。Windows 的環境變數名稱不分大小寫，所以比對不分大小寫。
+ */
+export function withoutPSModulePath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'),
+  );
+}
+
 const defaultRunSync: RunSync = (file, args, extraEnv) =>
   execFileSync(file, args, {
     encoding: 'utf8',
     timeout: 15_000,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+    env: { ...withoutPSModulePath(process.env), ...extraEnv },
   });
 
 /**

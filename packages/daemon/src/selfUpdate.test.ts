@@ -134,6 +134,14 @@ const inProgress = (over: Partial<UpdateState>): UpdateState => ({
 });
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+/**
+ * 等到條件成立（下載、算 SHA-256、解壓在慢的 CI 機器上超過 50ms；2026-11-12 Linux CI 停在 downloading）。
+ * 最多 10 秒，逾時就照樣往下讓斷言報錯。
+ */
+const until = async (check: () => boolean) => {
+  const deadline = Date.now() + 10_000;
+  while (!check() && Date.now() < deadline) await settle();
+};
 
 describe('SelfUpdater', () => {
   it('hub 的 ws 網址換成 http 下載位址', () => {
@@ -144,7 +152,7 @@ describe('SelfUpdater', () => {
   it('新版：用機器 token 下載、驗 SHA-256、解壓，再從新版裡啟動更新程式', async () => {
     const h = harness({ healthTimeoutMs: 5000 });
     h.updater.onTarget(target(), false);
-    await settle();
+    await until(() => h.spawned.length > 0);
     expect(h.fetches).toEqual([
       {
         url: 'https://hub.example:8443/api/releases/0.2.0/darwin-arm64',
@@ -180,7 +188,7 @@ describe('SelfUpdater', () => {
   it('SHA-256 不符：失敗、不啟動更新程式、下載檔刪掉', async () => {
     const h = harness();
     h.updater.onTarget(target({ sha256: 'f'.repeat(64) }), false);
-    await settle();
+    await until(() => h.reports.at(-1)?.phase === 'failed');
     expect(h.spawned).toEqual([]);
     expect(h.reports.at(-1)).toMatchObject({ phase: 'failed', reason: 'checksum_mismatch' });
     expect(() =>
@@ -193,7 +201,7 @@ describe('SelfUpdater', () => {
       fetch: (async () => new Response('nope', { status: 404 })) as typeof fetch,
     });
     h.updater.onTarget(target(), false);
-    await settle();
+    await until(() => h.reports.at(-1)?.phase === 'failed');
     expect(h.reports.at(-1)).toMatchObject({
       phase: 'failed',
       reason: 'download_failed',

@@ -11,6 +11,7 @@ import {
   installId,
   parseWhoamiSid,
   type RunSync,
+  withoutPSModulePath,
 } from './endpoint';
 
 describe('位置', () => {
@@ -99,6 +100,15 @@ describe('位置', () => {
       forgetLockedDirs();
     },
   );
+
+  it('啟動 Windows PowerShell 時拿掉繼承來的 PSModulePath（不分大小寫），其他照留', () => {
+    const env = withoutPSModulePath({
+      PSModulePath: 'C:\\pwsh\\Modules',
+      psmodulepath: 'x',
+      Path: 'C:\\bin',
+    });
+    expect(env).toEqual({ Path: 'C:\\bin' });
+  });
 
   it('R2 Windows：失敗也記住，這次啟動不再重跑 whoami／icacls，照樣丟同一個錯', () => {
     forgetLockedDirs();

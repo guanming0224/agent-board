@@ -28,7 +28,7 @@ const defaultRun: RunCommand = (file, args, timeoutMs) =>
         encoding: 'utf8',
         timeout: timeoutMs,
         windowsHide: true,
-        env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+        env: { ...withoutPSModulePath(process.env), LC_ALL: 'C', LANG: 'C' },
       },
       (error, stdout) => {
         // ps 對不在的 pid 回非 0，但在的那幾個照樣印出來：有輸出就用。
@@ -37,6 +37,17 @@ const defaultRun: RunCommand = (file, args, timeoutMs) =>
       },
     );
   });
+
+/**
+ * 啟動 Windows PowerShell 5.1 用的環境：拿掉繼承來的 PSModulePath。從 PowerShell 7（pwsh）開出來的程序會帶著
+ * pwsh 的模組路徑，5.1 依它找模組就載不到內建的 Get-Acl／Get-Process（2026-11-12 第一次 Windows CI 實際遇到）。
+ * 拿掉之後 5.1 會用自己的預設路徑。Windows 的環境變數名稱不分大小寫，所以比對不分大小寫。
+ */
+export function withoutPSModulePath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'),
+  );
+}
 
 /** Windows 的 PowerShell：用絕對路徑（不靠 PATH，別人放在 PATH 前面的同名程式不會被執行）。 */
 export function windowsPowerShell(env: NodeJS.ProcessEnv = process.env): string {

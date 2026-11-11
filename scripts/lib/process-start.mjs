@@ -18,9 +18,19 @@ function defaultRun(file, args, timeoutMs) {
     timeout: timeoutMs,
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true,
-    env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+    env: { ...withoutPSModulePath(process.env), LC_ALL: 'C', LANG: 'C' },
   });
   return result.error || !result.stdout ? null : result.stdout;
+}
+
+/**
+ * 啟動 Windows PowerShell 5.1 用的環境：拿掉繼承來的 PSModulePath（從 pwsh 7 開出來時 5.1 會載不到內建的
+ * Get-Process；2026-11-12 第一次 Windows CI 實際遇到）。名稱不分大小寫。
+ */
+export function withoutPSModulePath(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'),
+  );
 }
 
 /** Windows 的 PowerShell 絕對路徑（不靠 PATH）。 */
