@@ -144,7 +144,13 @@ agent-board-hook <EventName>   stdin：Claude Code 的 JSON
 - 連不上 socket：exit 0 不輸出。唯一例外見 4.3。連不上時先重試（daemon 重啟中，非阻擋最多 10 秒），見 §20.4。
 - 只有 `BLOCKING_HOOK_EVENTS` 會等回答，上限 `HOOK_WAIT_MS`；超時 exit 0 不輸出，交回原生流程。其他事件送出就走，總耗時目標 < 100ms。
 
-傳輸：NDJSON（`HookRequest` → `HookReply`），`AGENT_BOARD_SOCKET` 是 unix socket 或 Windows named pipe（`\\.\pipe\agent-board-<id>`）。
+傳輸：NDJSON（`HookRequest` → `HookReply`），`AGENT_BOARD_SOCKET` 是 unix socket 或 Windows named pipe（`\\.\pipe\agent-board-hook-<installId>`，§20.3）。
+
+**先確認對方是 daemon（W5，2026-11-12，§20.7）**：daemon 啟動時建 `<dataDir>/hook.key`（600，有就沿用：活過 daemon 重啟的 agent 還拿著同一個路徑），路徑經 agent 的環境變數 `AGENT_BOARD_HOOK_KEY_FILE`、Codex hook 指令的 `--key-file`、派工 MCP 設定檔的 env 傳下（接回 host 裡的 session 時，舊設定檔缺這個 env 就補上，同 §21.10 的 `repointMcpConfig`）。hook CLI 與 MCP server 連上後先送 `auth.challenge{nonce}`，daemon 回 `auth.proof{proof}`（HMAC-SHA256(密鑰, hook 角色前綴＋nonce)，`@agent-board/protocol/local-auth`），驗過才送請求；密鑰本身不經過 socket、不在環境變數裡。
+
+- 給了密鑰檔卻讀不到、證明不對、或 2 秒內沒回（0.1.6 以前的舊 daemon 不認得 `auth.challenge`）：hook 當成**連不上、不重試**（Bash 的 PreToolUse 照 §4.3 回 ask，Codex 回 deny）；MCP 讀不到密鑰回 `not_configured`、驗不過回 `daemon_unreachable`。
+- 沒給密鑰檔：Unix socket 照舊不驗證（0.1.6 以前的 daemon 開的 agent 升級後還活著；socket 在 700 的資料夾裡，別的使用者進不去）；Windows named pipe 一律當成連不上（pipe 沒有資料夾權限保護）。
+- daemon 照樣接受不先驗證的舊客戶端（舊版 hook、已經在跑的舊 MCP server）。nonce 格式不對或最近 4096 個裡用過：直接斷線。
 
 ### 4.3 危險指令
 
@@ -695,17 +701,19 @@ codex [resume <thread id>] <權限參數> [-m <model>] --dangerously-bypass-hook
 | session host | 開 agent、轉送輸入與 resize、送訊號、回報結束碼；每個 session 保留最近 **2 MB** 原始輸出（環狀緩衝、位元組序號，`SESSION_HOST_BUFFER_BYTES`），**只在記憶體**、不落地                                                |
 | daemon       | 同以前（hub 連線、headless xterm 與狀態機、hook／MCP socket、審批、派工、搜尋、用量）；開 agent 改走 `PtyBackend`（`daemon/src/pty.ts`）：`HostPtyBackend`（host 模式）或 `LocalPtyBackend`（舊模式，daemon 自己開） |
 
-- 傳輸（`session-host/src/endpoint.ts`）：Mac／Linux 是 Unix socket `<dataDir>/session-host.sock`（檔案 600、資料夾 700；路徑超過 100 bytes 時改放 `tmpdir()/ab-host-<資料夾雜湊>/`，固定名稱、只有自己能進）；Windows 是 named pipe `\\.\pipe\agent-board-session-host-<使用者名稱>-<installId>`（`installId`＝每份安裝的隨機亂數，存在 `<dataDir>/install-id`，600；別的使用者猜不到名稱、搶不了先開同名 pipe。**未在 Windows 實測**；pipe 的存取權限沒有另外設定，靠名稱與 token 擋）。
-- 驗證：host 每次啟動產生隨機 token 寫進 `<dataDir>/session-host.token`（600，socket 開好才寫），daemon 讀檔放進 `hello`。第一則不是 hello、5 秒內沒有 hello、token 不符 → 斷線。
-- 同一個資料夾已有 host 在跑（socket 連得上）：第二個正常結束（exit 0，launchd 不會一直重啟）。
+- 傳輸（`session-host/src/endpoint.ts`）：Mac／Linux 是 Unix socket `<dataDir>/session-host.sock`（檔案 600、資料夾 700；路徑超過 100 bytes 時改放 `tmpdir()/ab-host-<資料夾雜湊>/`，固定名稱、只有自己能進）；Windows 是 named pipe `\\.\pipe\agent-board-session-host-<使用者名稱>-<installId>`（`installId`＝每份安裝的隨機亂數，存在 `<dataDir>/install-id`，600；別的使用者猜不到名稱、搶不了先開同名 pipe。**未在 Windows 實機測過**（Windows CI 跑 session host 的單元測試）；pipe 的存取權限見 §20.7）。
+- 驗證（協定 2，W5，2026-11-12）：host 每次啟動產生隨機 token 寫進 `<dataDir>/session-host.token`（600，socket 開好才寫）。**token 不經過 socket**：daemon 讀檔後只送 nonce，**host 先證明自己拿得到 token**，daemon 驗過才回自己的證明（§20.2）。第一則不是 hello、5 秒內沒驗完、證明不對、nonce 重送 → 斷線。
+- 同一個資料夾已有 host 在跑（socket 連得上；Windows 是同名 pipe 已開＝`EADDRINUSE`）：第二個正常結束（exit 0，launchd／工作排程器不會一直重啟）。
 - host 收到 SIGTERM／SIGINT（換版、停服務）：先送 `shutdown` 給已連上的 daemon，SIGHUP 所有 agent、2 秒後 SIGKILL 整個程序群組，再結束。SIGHUP 不理（沒有終端機）。
 
 ### 20.2 協定（`protocol/src/sessionHost.ts`，子路徑 `@agent-board/protocol/session-host`）
 
-NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容的改動才加一。
+NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 從 1 升：hello 改成挑戰／回應，W5）；不相容的改動才加一。
 
-- daemon → host：`hello{protocol, token}`、`spawn{reqId, id, bin, args, env, cwd, cols, rows}`、`attach{id, fromSeq}`、`write{id, data}`、`resize{id, cols, rows}`、`kill{id, signal}`（`SIGTERM|SIGHUP|SIGINT|SIGKILL`；SIGKILL＝整個程序群組；Windows 一律直接結束）、`list{reqId}`、`release{id}`（session 結束、daemon 處理完才送；還活著的不理）。
-- host → daemon：`hello.ok{protocol, hostVersion, sessions}`／`hello.error{protocol, error: protocol_mismatch|unauthorized}`、`result{reqId, ok, error, pid?, sessions?}`（spawn、list 的回覆）、`attached{session}`、`output{id, seq, data(base64)}`、`replay.gap{id, lostBytes}`、`replay.done{id, seq}`、`exit{id, code, signal}`、`error{id, error}`（`unknown_session` 等）、`shutdown`。
+- 握手（協定 2）：daemon `hello{protocol, nonce}` → host `hello.challenge{protocol, proof, nonce}`（proof＝HMAC-SHA256(token, host 角色前綴＋daemon 的 nonce)，nonce＝host 出的）→ daemon 驗過才送 `hello.auth{proof}`（HMAC(token, daemon 角色前綴＋host 的 nonce)）；驗不過什麼都不送、斷線（`unauthorized`，照 §20.3「host 可能還活著但不能用」處理）→ host 驗過才回 `hello.ok`（含清單），不對回 `hello.error unauthorized` 後斷線。共用 `protocol/src/localAuth.ts`（子路徑 `@agent-board/protocol/local-auth`，只用 `node:crypto`，不從 index 匯出）：三個角色前綴（host、daemon、hook 伺服器）分開、常數時間比對；伺服器記最近 4096 個用過的 nonce，重送拒絕。
+- 舊版相容：協定 1 的舊 daemon（`hello{protocol:1, token}`）連新 host → `hello.error protocol_mismatch`（不比對它送來的 token）；新 daemon 連協定 1 的舊 host → 舊 host 看不懂沒有 token 的 hello、回 `error bad_message` → daemon 當 `protocol_mismatch`。兩種都照 §20.3 的「不能用」處理，安裝程式照 §20.5 換 host。
+- daemon → host：`hello{protocol, nonce}`、`hello.auth{proof}`、`spawn{reqId, id, bin, args, env, cwd, cols, rows}`、`attach{id, fromSeq}`、`write{id, data}`、`resize{id, cols, rows}`、`kill{id, signal}`（`SIGTERM|SIGHUP|SIGINT|SIGKILL`；SIGKILL＝整個程序群組；Windows 一律直接結束）、`list{reqId}`、`release{id}`（session 結束、daemon 處理完才送；還活著的不理）。
+- host → daemon：`hello.challenge{protocol, proof, nonce}`、`hello.ok{protocol, hostVersion, sessions}`／`hello.error{protocol, error: protocol_mismatch|unauthorized}`、`result{reqId, ok, error, pid?, sessions?}`（spawn、list 的回覆）、`attached{session}`、`output{id, seq, data(base64)}`、`replay.gap{id, lostBytes}`、`replay.done{id, seq}`、`exit{id, code, signal}`、`error{id, error}`（`unknown_session` 等）、`shutdown`。
 - `HostSessionInfo`：`id, pid, alive, exitCode, signal, seqStart（緩衝最舊的位元組序號）, seqEnd（總位元組數）, cols, rows`。
 - 序號以位元組計：`output.seq`＝這塊第一個位元組的序號。緩衝超過上限整塊丟最舊的（單一塊超過上限才切），`seqStart` 往前推。
 - `attach`：同一個同步區段依序送 `attached` →（要的位置已丟掉時）`replay.gap` → 緩衝裡 `fromSeq` 之後的 `output` → `replay.done`；已結束的再送 `exit`。之後這個 session 的即時輸出只送給最後 attach（或 spawn）的連線；daemon 斷線時 agent 照跑、輸出只進緩衝。
@@ -719,9 +727,9 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 
 - **連上**＝host 模式。
 - **確定沒有 host**（socket 不存在或連線被拒；有 `AGENT_BOARD_SESSION_HOST_SERVICE` 時先叫服務管理程式拉起——macOS `launchctl kickstart gui/<uid>/<label>`、Linux `systemctl --user start`、Windows `schtasks /Run`——最多等 5 秒還是沒有）→ **舊模式**（daemon 自己開 PTY，行為同 §3.2），上一輪的 session 照舊 `--resume`。
-- **host 可能還活著但不能用**（協定不相容、token 不符、逾時，或 `off` 但 host 還在跑）→ 新的 session 用舊模式開（**絕不能因此開不了 session**），但**上一輪的 session 不自動重開**（同一個對話不能有兩個 agent）：它們留在本機清單，hello 回報 `status: 'error'`、`endedAt: null`、`statusDetail` 寫原因（例如「舊的 session host 還在跑（協定不相容）…重新安裝並加 --restart-session-host」）。`off` 而且連得上 host 時只擋還在 host 裡的。使用者在網頁上停止它才從清單移除；下次 daemon 啟動會重新判斷。
+- **host 可能還活著但不能用**（協定不相容、token 不符或 host 證明不了自己、逾時，或 `off` 但 host 還在跑）→ 新的 session 用舊模式開（**絕不能因此開不了 session**），但**上一輪的 session 不自動重開**（同一個對話不能有兩個 agent）：它們留在本機清單，hello 回報 `status: 'error'`、`endedAt: null`、`statusDetail` 寫原因（例如「舊的 session host 還在跑（協定不相容）…重新安裝並加 --restart-session-host」）。`off` 而且連得上 host 時只擋還在 host 裡的。使用者在網頁上停止它才從清單移除；下次 daemon 啟動會重新判斷。
 
-另外，快照記著 agent 的 pid 與啟動時間：任何模式要 `--resume` 重開前，pid 還在而且啟動時間對得上（`ps -o lstart=`，誤差 15 秒內；讀不到啟動時間時當成還在）就不重開，同樣標成錯誤（`daemon/src/processCheck.ts`）。
+另外，快照記著 agent 的 pid 與啟動時間：任何模式要 `--resume` 重開前，pid 還在而且啟動時間對得上（誤差 15 秒內；讀不到啟動時間時當成還在）就不重開，同樣標成錯誤（`daemon/src/processCheck.ts`）。啟動時間：Mac／Linux `ps -o lstart=`；Windows（N2，2026-11-12）`powershell.exe -NoProfile -NonInteractive` 跑 `Get-Process` 取 UTC 的 `o` 格式，逾時 10 秒、只認含時區的 ISO 8601，失敗當成還在；讀到的值快取 60 秒。安裝程式判斷「session 還在工作」（`busySessions`，§20.5）用同一套規則（`scripts/lib/process-start.mjs`）。
 
 **daemon 停止（host 模式）**：
 
@@ -751,7 +759,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 
 **host 連線中斷**（host 崩潰、被停掉、背壓斷線；收到 `shutdown` 也走這條）：host 開的 session 不算結束、不回報，留在本機清單；daemon 重新連（拉起）host，接回還活著的，其他的照上面的規則重開（確定沒有 host 才用舊模式）。接回途中又斷一次：這一輪做完再跑一輪。
 
-**hook socket 位置固定**：agent 的環境變數（`AGENT_BOARD_SOCKET`、Codex 的 `--socket`、MCP 設定檔）會活過 daemon 重啟，所以位置由資料夾決定：Mac／Linux `<dataDir>/hook.sock`（太長時 `tmpdir()/ab-hook-<雜湊>/hook.sock`）；Windows `\\.\pipe\agent-board-hook-<installId>`（以前是每次隨機）。
+**hook socket 位置固定**：agent 的環境變數（`AGENT_BOARD_SOCKET`、Codex 的 `--socket`、MCP 設定檔）會活過 daemon 重啟，所以位置由資料夾決定：Mac／Linux `<dataDir>/hook.sock`（太長時 `tmpdir()/ab-hook-<雜湊>/hook.sock`）；Windows `\\.\pipe\agent-board-hook-<installId>`（以前是每次隨機）。hook 密鑰 `<dataDir>/hook.key` 同理固定沿用（§4.2）。Windows 同名 pipe 已經有人開著（`EADDRINUSE`）：daemon 啟動失敗並說明（另一個 daemon 在跑，或別的程式占了名稱），不搶。
 
 ### 20.4 hook CLI 重試（GM 2026-11-10）
 
@@ -765,7 +773,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 ### 20.5 安裝、更新與上架
 
 - `scripts/installer.mjs`：daemon 角色一起裝 session host 服務，順序在 daemon 前面：macOS LaunchAgent `com.agent-board.session-host`（同一份模板：RunAtLoad、失敗才重啟、不需要 `AbandonProcessGroup`）、Linux `agent-board-session-host.service`、Windows 工作排程器「登入時」工作 `AgentBoard-session-host`（未實測）。**host 跑自己資料夾裡那份**：`~/.local/share/agent-board/session-host/`（Windows `%LOCALAPPDATA%\agent-board\session-host\`），內含 `dist/main.mjs`、`dist/meta.json`（協定版本）與複製來的 `node_modules/node-pty`（0.1.1 曾經多一份 `runtime/node`，沒人用時由安裝程式清掉，§21.10）；只在 host 要（重新）啟動時才從 app 複製（確認 node-pty 載得起來才換上），換 app 時完全不動。daemon 服務多帶 `AGENT_BOARD_SESSION_HOST_SERVICE`。解除安裝一起移除。紀錄 `<dataDir>/logs/session-host.log`。
-- **只更新 daemon／hub**：不必等 session 停下（agent 不中斷）。安裝程式**不重啟 session host**（會結束所有 agent），除非：(1) **協定版本變了**（`meta.json` 和 `install.json` 的 `sessionHostProtocol` 不同，新 daemon 連不上舊 host）一定要重啟；(2) 加了 `--restart-session-host`。這兩種情況下快照（`<dataDir>/state/*.json`）裡還有 agent 在、狀態是 RUN／PERM／PLAN／starting 的 session 就**中止安裝、什麼都不改**，說明要等它們停下。其他情況 host 的版本雜湊（程式＋node-pty 版本＋這個平台的 `pty.node`／`spawn-helper`）變了只印提醒。重啟後照 §3.2 `--resume` 接回。Windows 換 app 時只停 hub／daemon（host 的 node-pty 在自己的資料夾，不被鎖）。
+- **只更新 daemon／hub**：不必等 session 停下（agent 不中斷）。安裝程式**不重啟 session host**（會結束所有 agent），除非：(1) **協定版本變了**（`meta.json` 和 `install.json` 的 `sessionHostProtocol` 不同，新 daemon 連不上舊 host）一定要重啟；(2) 加了 `--restart-session-host`。這兩種情況下快照（`<dataDir>/state/*.json`）裡還有 agent 在（pid 在而且啟動時間對得上，§20.3 的同一套規則）、狀態是 RUN／PERM／PLAN／starting 的 session 就**中止安裝、什麼都不改**，說明要等它們停下。其他情況 host 的版本雜湊（程式＋node-pty 版本＋這個平台的 `pty.node`／`spawn-helper`）變了只印提醒。重啟後照 §3.2 `--resume` 接回。Windows 換 app 時只停 hub／daemon（host 的 node-pty 在自己的資料夾，不被鎖）。
 - **回滾到沒有 session host 的版本**：先 `launchctl bootout gui/$UID/com.agent-board.session-host`（會結束所有 agent）→ 用舊版發布檔安裝 → 刪 `~/Library/LaunchAgents/com.agent-board.session-host.plist` 與 `~/.local/share/agent-board/session-host/`。不先停 host 的話，舊 daemon 不會去接、host 也不會走，agent 留著沒人管。
 - **第一次上架（從沒有 host 的版本升級）**：現有 session 是舊 daemon 直接開的，舊 daemon 停止時照舊 SIGHUP 結束它們；新 daemon 連上剛啟動的 host 後，依 §3.2 用 `--resume` 接回、交給 host。從這次之後的 daemon 重啟才不中斷。
 - 整台重開機：host 與 agent 都沒了，行為同 §3.2（`--resume`）。
@@ -778,6 +786,19 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 - daemon 停機期間使用者在終端機回答了權限對話框、或 agent 在這段時間結束一輪：hook 重試送得到就正確；送不到時靠畫面補正。
 - session host 本身崩潰：agent 收到 SIGHUP 跟著結束（PTY 主端關閉），daemon 收到連線中斷 → `--resume` 重開；崩潰前的緩衝與停機期間的輸出都會遺失。
 
+### 20.7 Windows 上線前必修（2026-11-12）
+
+目標：原生 Windows、PowerShell 7、工作排程器「登入時」啟動（`AgentBoard-session-host`、`AgentBoard-daemon`，優先順序 5＝一般；預設 7 會讓 agent 跟著變慢）。各機用自己的系統 Node（≥22.18），原生模組都是 N-API。
+
+- **W5 伺服器先證明身分**：session host（§20.1、§20.2，協定 2）與 hook／MCP socket（§4.2）都是伺服器先證明自己拿得到密鑰，客戶端驗過才送任何秘密或請求。別的程序搶先開了同名 pipe 也騙不到 token、請求內容，也不能冒充 daemon 回答危險指令檢查。
+- **pipe 只允許目前使用者：做不到**。Node 的 `net.Server.listen(pipe)` 沒有設定安全描述元（DACL）的 API；libuv 建 named pipe 用預設的安全描述元，同一台機器的其他帳號（含 Everyone 的唯讀）可能看得到、連得上。目前靠三層擋：名稱含每份安裝的隨機 `installId`（猜不到）、同名 pipe 已開時不搶（host 當成已在跑而正常結束；daemon 的 hook pipe 啟動失敗並說明）、連上之後的挑戰／回應（拿不到密鑰什麼都做不了）。之後要更嚴就得用原生模組設 DACL（未做）。
+- **N2 程序啟動時間**：見 §20.3（PowerShell `Get-Process`，逾時 10 秒、只認含時區 ISO 8601、失敗當成還在、快取 60 秒）。
+- **安裝路徑**：`current`／`app` 是 junction（不需要系統管理員或開發人員模式），先拿掉再建，拿掉只拿連結本身；清舊版先改名成 `releases\.trash-<名稱>-<亂數>` 再刪（被鎖住改不了名就整份留著，原本名稱的版本要嘛完整、要嘛整個不見），`scripts/lib/release-dirs.mjs`。hook 的 `.cmd` 包裝用 cmd.exe 跑：參數、stdin、結束碼原樣傳；`AGENT_BOARD_NODE` 失效退回 PATH 上的 node；node 或 `.cjs` 都找不到 exit 2（§21.10）。
+- **install.ps1**：建議 `pwsh -NoProfile -ExecutionPolicy Bypass -File <解開的資料夾>\agent-board\scripts\install.ps1 daemon --hub … --code … --name …`；找不到 git 只提醒不中止（worktree、repo 狀態、Claude Code 的 Bash 工具要它）。README 有完整步驟（下載、驗 SHA256、tar 解壓、配對、schtasks 確認、實測、最後在面板允許自動更新）。
+- **CI**：`ci.yml` 的 `windows` job（push 到 main、PR、手動）與 `release.yml` 的 Windows 建置跑同一組：protocol、web、session-host、hook 全部，daemon 的 processCheck／hookServer／codex，安裝的 `windows-paths`（junction、檔案鎖住時的清理、cmd.exe 跑 hook 包裝，只在 Windows 跑）、`process-start`（真的 PowerShell）、`service-templates`。跑不了的測試 `skipIf(win32)` 並寫原因（daemon 整套的假 claude／hook 是 sh 腳本；Unix 檔案權限；ConPTY 沒有 SIGWINCH）；測試用的假 daemon／假 host 在 Windows 改用 pipe。
+- **自動更新**：win-x64 照舊預設不發，owner 對單一機器打開（§21.3）。
+- **未驗證**：以上全部沒在 Windows 實機跑過；Windows CI 也還沒實際跑過（只在 Mac 跑過其中不限 Windows 的部分）。
+
 ## 21. 發版與自動更新（GM 2026-11-11）
 
 規格與 GM 決定見 `docs/release-update-spec.md`。型別在 `protocol/src/release.ts`。**只從 tag 的 Release 更新正式版**；`install.sh --from` 留給第一次安裝與緊急修復；不從畫布裡的 session 部署自己。
@@ -786,7 +807,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 
 - 版本號＝根目錄 `package.json` 的 `version`（從 0.1.0 起），tag `v<版本>`；`BUILD_ID`（內容雜湊）保留。hub 與 daemon 在執行期讀 `<發布檔>/package.json` 與 `BUILD_ID`（`hub|daemon/src/version.ts`；開發模式是 repo 的版本、buildId `dev`），hello 與 `GET /api/health`（public，`HealthInfo { ok, version, buildId, protocolVersion }`）回報。`agent-board-hub schema-version` 印出這版 hub 的 schema 版本。
 - `corepack pnpm build:release` → `release/agent-board-<版本>-<平台>.tar.gz`（Windows `.zip`，`tar -a`）與 `SHA256SUMS`（sha256sum 格式）。平台＝建置那台（`platformKey`：`darwin-arm64`、`win-x64`）。發布檔**附這個平台的 `node_modules`**（`npm ci --omit=dev`，含 node-pty／better-sqlite3／argon2 原生檔，三個都是 N-API，prebuilds 不分 Node 版本），**不自帶 Node**（§21.10）。`.node-modules-platform` 記平台、建置用的 Node 與 ABI（只供參考）、`napi: true` 與 `minNode`（package.json 的 engines，目前 `22.18`）；安裝時平台相同而且原生模組用這台的系統 node 載得起來就直接用；手動安裝（`install.sh --from`）載不起來時退回 `npm ci`，**自動更新中不跑 `npm ci`**（直接失敗）。workflow 建置用的 Node 是 repo 變數 `RELEASE_NODE_VERSION`（預設 24），只要符合 engines。BUILD_ID 在裝依賴前算，兩個平台同一個值。
-- `.github/workflows/release.yml`：`push: tags: ['v*']`；`macos-14`、`windows-latest` 各跑 install → typecheck → 單元測試（Windows 只跑 protocol、web；其他套件的測試未在 Windows 驗證）→ `build:release`，並檢查 tag 和 `package.json` 版本一致；`publish` job 合併兩份 `SHA256SUMS`、`sha256sum -c`，用 `GITHUB_TOKEN` `gh release create/upload`。ubuntu CI 不變。
+- `.github/workflows/release.yml`：`push: tags: ['v*']`；`macos-14`、`windows-latest` 各跑 install → typecheck → 單元測試（Windows 跑的那一組見 §20.7，和 `ci.yml` 的 windows job 相同）→ `build:release`，並檢查 tag 和 `package.json` 版本一致；`publish` job 合併兩份 `SHA256SUMS`、`sha256sum -c`，用 `GITHUB_TOKEN` `gh release create/upload`。ubuntu CI 不變。
 
 ### 21.2 安裝配置
 
@@ -815,7 +836,8 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 - **gh**：`AGENT_BOARD_GH_BIN` 或 PATH 上的 `gh`；子程序環境拿掉 `GH_TOKEN`、`GITHUB_TOKEN`、`GH_ENTERPRISE_TOKEN`、`GITHUB_ENTERPRISE_TOKEN`，加 `GH_PROMPT_DISABLED=1`。hub 不讀任何權杖檔。找不到 gh → `gh.state: missing`；沒登入 → `not_logged_in`（帶 gh 的第一行訊息）；沒設 repo → `no_repo`。都只影響這個功能。
 - 目標：`channelTarget`（canary 跟 canary 與 stable 較新的那個，stable 只跟 stable），而且這台回報的平台在 cache 裡有成品才有（`ReleaseTarget { version, platform, asset, sha256, size }`），放在 `hub.welcome.release`；canary／stable／通道變了送 `release.target { target, force: false }` 給每台連著的 daemon。
 - `GET /api/releases/:version/:platform`：**機器 token**（`Authorization: Bearer`），只回 cache 裡驗過的檔（`x-agent-board-sha256`），audit `release.download`。瀏覽器 cookie 不行。
-- REST（`protocol/src/rest.ts`）：`GET /api/releases`（user，`ReleaseOverview`）；以下 owner：`POST /api/releases/check`、`POST /api/releases/promote { version, confirm }`（canary 不到 24 小時 `CANARY_SOAK_MS` 而沒 `confirm` → 409 `canary_too_new`；不在 cache → 409 `not_cached`）、`PATCH /api/releases/config { repo }`、`PUT /api/machines/:id/channel { channel }`、`POST /api/machines/:id/update`（送 `release.target { force: true }`；離線 409 `machine_offline`、沒目標 409 `no_target`）、`POST /api/machines/:id/rollback`（送 `release.rollback`；不知道上一版 409 `no_previous`）。audit：`release.repo`、`release.channel`、`release.promote`（`early` 標不到 24 小時）、`release.update_now`、`release.rollback`、`release.update_failed`。
+- REST（`protocol/src/rest.ts`）：`GET /api/releases`（user，`ReleaseOverview`）；以下 owner：`POST /api/releases/check`、`POST /api/releases/promote { version, confirm }`（canary 不到 24 小時 `CANARY_SOAK_MS` 而沒 `confirm` → 409 `canary_too_new`；不在 cache → 409 `not_cached`）、`PATCH /api/releases/config { repo }`、`PUT /api/machines/:id/channel { channel }`、`POST /api/machines/:id/update`（送 `release.target { force: true }`；離線 409 `machine_offline`、沒目標 409 `no_target`）、`POST /api/machines/:id/rollback`（送 `release.rollback`；不知道上一版 409 `no_previous`）、`PUT /api/machines/:id/allow-unverified { allow, confirm }`（2026-11-12，見下）。audit：`release.repo`、`release.channel`、`release.promote`（`early` 標不到 24 小時）、`release.update_now`、`release.rollback`、`release.update_failed`、`release.allow_unverified`。
+- **未驗證平台逐台允許（2026-11-12，§20.7）**：settings `machineAllowUnverified:<機器 id>`（`true` 或沒有）。`PUT /api/machines/:id/allow-unverified`：owner 才能改；打開沒帶 `confirm: true` 回 400 `confirm_required`；這台回報的平台不在 `UNVERIFIED_PLATFORMS`（或還沒回報）回 409 `platform_verified`；關掉不用 confirm；audit `release.allow_unverified`（machineId、platform、allow）；改了就重送目標；刪機器一起刪。預設照舊不發 win-x64（`platform_unverified`）。`MachineRelease` 多 `unverifiedPlatform`、`allowUnverified`（舊 hub 不送＝false）。面板對未驗證平台的機器顯示說明與「允許自動更新」（打開要再確認一次）／「停止自動更新」（不用確認），中英文；demo 的 demo-gpu（Windows）是已允許的。
 - 「升為 stable」旁的統計（`CanaryStats`）：canary 開始時間、期間 canary 機器 session 進入 error 的狀態事件數、daemon 非預期斷線數（更新中的斷線不算）、更新失敗數。
 - 更新失敗（`UPDATE_FAILED`：failed、rolled_back、rollback_failed；同一次只算一次）：audit、canary 統計、推播 `{ kind: 'update_failed', machineId, machine, version, phase, reason, at }`（只有機器名稱、版本、原因代碼，**不帶 `detail`、不帶任何 Claude 寫的內容**；遵守通知開關與勿擾時段）。
 
@@ -871,7 +893,7 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
 - **解壓（W2）**：解到 `.incoming/<版本>.partial`，檢查內容（名稱、版本、BUILD_ID、updater.mjs）後寫 `.extracted` 標記再改名成 `.incoming/<版本>`；沒有標記的一律重下載。
 - **成品檢查（B2–B4）**：daemon 只接受 `asset === releaseAssetName(version, platform)`；hub 的下載端點同樣比對檔名。解壓前 `tar -tf` 檢查：每一項都要在 `agent-board/` 底下、沒有絕對路徑或 `..`；symlink 的目標在解開後檢查（§21.9 N3）。
 - **原生模組 ABI（B5）**：hub 驗證成品時讀 `.node-modules-platform` 的 `modules`（Node ABI）記在 `verified.json`；daemon hello 帶 `nodeAbi`（`process.versions.modules`）。不合 → 不發目標（`targetNote: abi_mismatch`），面板請人手動安裝。**0.1.2 起拿掉**：原生模組是 N-API，不比 ABI；改成 Node 主版本低於成品 `minNode` 時 `node_too_old`（§21.10）。
-- **win-x64（W8）**：`UNVERIFIED_PLATFORMS`（目前 `win-x64`）：hub 照樣下載、驗證成品，但不發目標（`targetNote: platform_unverified`）；實機驗證後從清單拿掉（測試用 `AGENT_BOARD_ALLOW_UNVERIFIED_PLATFORMS=1`）。workflow 照樣建 win-x64 成品。
+- **win-x64（W8）**：`UNVERIFIED_PLATFORMS`（目前 `win-x64`）：hub 照樣下載、驗證成品，但預設不發目標（`targetNote: platform_unverified`）；owner 可以在面板對單一機器打開「允許自動更新」（2026-11-12，§21.3 的 `machineAllowUnverified`）；實機驗證後從清單拿掉（測試用 `AGENT_BOARD_ALLOW_UNVERIFIED_PLATFORMS=1`）。workflow 照樣建 win-x64 成品，Windows 建置跑的單元測試見 §20.7。
 - **延後（W5、W6）**：安裝程式因為 session 忙碌（要換 session host）中止時以 **75** 結束（什麼都沒改）；更新程式寫 `deferred/host_busy`（不算失敗、不推播），daemon 5 分鐘後再試。手動回滾套用同樣的延後條件（上一版的 session host 協定不同就看 RUN／PERM／PLAN／starting）。上一版是 `0.0.0-legacy` 或比 `FIRST_UPDATER_VERSION`（0.1.0）舊：hub 回 409 `previous_unsupported`，面板不給按並說明（要用 `install.sh --from` 重裝）。
 - **schema 判斷（W3）**：回滾時用舊版的 better-sqlite3 讀現在的 schema；和更新前不同（或讀更新前時讀不到、改用舊版 hub 的 `schema-version` 比對 `user_version >` 它）就帶 `--restore-db`。
 - **保留舊版（W4）**：清舊版失敗（例如 Windows 檔案被鎖）吞掉、下次再清。**已知限制**：agent 的 PATH 與 MCP 設定檔寫的是 `current`／`app`，但 node 啟動時會把 symlink 解開，長時間跑的 agent 底下的 MCP server 其實是從 `releases/<當時的版本>` 載入的；那一版被清掉後，已經載入記憶體的部分照常運作，之後才要讀的檔會失敗（重開 session 即可）。只留 3 版、current 與上一版一定留，要連續換三版以上才會遇到。沒有用 session host 快照的 agentPid 判斷要不要留。
@@ -907,7 +929,7 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
   - **服務沒起來就非 0 結束**（W3）：hub、daemon 沒起來、或換了 host 卻沒起來，安裝程式說明後以 1 結束（程式已裝好，處理後再跑一次）。同一台有 hub 時，不論裝的是哪個角色，hub 重啟了都等 `/api/auth/status` 回應。`switch`（回滾）同樣。
   - 測試用的假 launchctl 照真的語意：載入和在跑分開；bootstrap 時存 plist 快照，kickstart 用快照；bootout 不等程式結束、照 `ExitTimeOut`（預設 20 秒）才 SIGKILL；bootstrap 已載入的回 5、正在卸載時再 bootout 回 36、kickstart 沒載入的回 113；print 印 program、arguments、state、pid。回歸測試含「host 不理 SIGTERM」（靠 ExitTimeOut 收掉）與「host 沒開 socket → 非 0」。
 - **換了 node 執行檔要注意 macOS 隱私權限**：TCC 照實際執行的路徑（與檔案）認，`brew upgrade node`、重裝 Node 之類換掉 node 執行檔之後，可能要重新允許取用「桌面」「文件」等資料夾。症狀同 2026-11-11 的事故：agent 開了沒有畫面輸出、幾乎不用 CPU、MCP 沒起來、session 卡在 starting。處理：系統設定 → 隱私權與安全性 →「檔案和資料夾」／「完整磁碟取用權限」允許那支 node（或從終端機用同一支 node 存取一次專案資料夾觸發詢問），再 `launchctl kickstart -k gui/$UID/com.agent-board.session-host`（會結束 agent，之後 `--resume`）。**未驗證**確切規則。
-- **Windows**（未實測）：清舊版先把資料夾改名成 `releases\.trash-<名稱>` 再刪（檔案被鎖住改不了名就整個留著，下次再清）。install.ps1 用系統 node。
+- **Windows**（未在實機測過；Windows CI 的 `scripts/windows-paths.test.mjs` 實測 junction、檔案鎖、cmd.exe 跑 hook 包裝，§20.7）：清舊版先把資料夾改名成 `releases\.trash-<名稱>-<亂數>` 再刪（亂數：上次沒刪完的同名 trash 不衝突；檔案被鎖住改不了名就整個留著，下次再清），連結與清理在 `scripts/lib/release-dirs.mjs`。install.ps1 用系統 node。
 - **install.sh**：線上下載驗 SHA-256 用 `shasum -a 256`／`sha256sum`，不需要 node。
 
 **2026-11-11 的事故（0.1.1 自帶 Node，從沒打 tag）**：0.1.1 讓發布檔自帶 Node 24.22.2（以為原生模組綁 ABI，要讓 MacBook 的 Node 26 也拿得到更新）。在 Mac mini 手動上架時出了兩個問題，GM 決定改回系統 Node：

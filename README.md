@@ -17,11 +17,11 @@ A self-hosted web console for all your Claude Code sessions, across all your com
 
 ## Platform status
 
-| OS      | Status                                                                         |
-| ------- | ------------------------------------------------------------------------------ |
-| macOS   | Tested                                                                         |
-| Linux   | **Untested.** Install scripts and systemd units exist, never run on real Linux |
-| Windows | **Untested.** Install scripts and scheduled tasks exist, never run on Windows  |
+| OS      | Status                                                                                                                                                    |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS   | Tested                                                                                                                                                    |
+| Linux   | **Untested.** Install scripts and systemd units exist, never run on real Linux                                                                            |
+| Windows | **Not yet tried on a real machine.** Unit tests run on Windows in CI; automatic updates are off until you allow them per machine. See [Windows](#windows) |
 
 ## Before you start
 
@@ -120,6 +120,43 @@ sh install.sh hub --host 100.64.0.1   # use this machine's own private IP
 
 Traffic is plain HTTP, so only do this on a network that already encrypts it, such as Tailscale. When `--host` is set, it overrides the listen address in Settings.
 
+## Windows
+
+Native Windows (not WSL), PowerShell 7, services as Task Scheduler tasks that start when you log in. This has not been tried on a real machine yet, so the hub does not send automatic updates to Windows machines until you allow it for that machine (last step).
+
+**Before you start**, on the Windows machine:
+
+1. [Node.js](https://nodejs.org) LTS, 22.18 or newer, with npm. Check with `node -v` in a new terminal.
+2. [Git for Windows](https://git-scm.com/download/win). Claude Code's Bash tool uses its bash, and worktrees need git.
+3. [Claude Code](https://code.claude.com). Run `claude` once in PowerShell and finish the login.
+4. [Tailscale](https://tailscale.com), logged in to the same tailnet as the hub. `tailscale status` should list the hub machine, and the hub's public origin (`https://your-hub.your-tailnet.ts.net`) should open in a browser.
+5. PowerShell 7 (`pwsh`).
+
+**Install:**
+
+1. From the release page, download `agent-board-<version>-win-x64.zip` and `SHA256SUMS`.
+2. Check the file: `(Get-FileHash -Algorithm SHA256 .\agent-board-<version>-win-x64.zip).Hash.ToLower()` must equal the `win-x64` line of `SHA256SUMS` (`Select-String win-x64 .\SHA256SUMS`). Don't continue if it differs.
+3. Extract with the built-in tar: `New-Item -ItemType Directory $env:TEMP\agent-board-<version>; tar -xf .\agent-board-<version>-win-x64.zip -C $env:TEMP\agent-board-<version>`.
+4. In the web console, open **Settings → Machines** and create a pairing code.
+5. Run, with your hub address, the code, and a name for this machine:
+
+   ```powershell
+   pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\agent-board-<version>\agent-board\scripts\install.ps1" daemon --hub https://your-hub.your-tailnet.ts.net --code YOUR-CODE --name your-windows-pc
+   ```
+
+6. Check the tasks: `schtasks /Query /TN AgentBoard-session-host /V /FO LIST` and `schtasks /Query /TN AgentBoard-daemon /V /FO LIST` should show them running. The machine shows up online in the console.
+
+**Try it before allowing automatic updates:**
+
+1. Start a session, run a harmless command, and approve one permission request from the web.
+2. In a test repository, ask it to run `git push --force`: the dangerous-command approval must appear on the web.
+3. Restart the daemon with `schtasks /End /TN AgentBoard-daemon` then `schtasks /Run /TN AgentBoard-daemon`: the session keeps running and reconnects.
+4. Sign out of Windows and back in: all tasks start again by themselves.
+5. Install the next version by hand the same way (steps 1–5 with the new zip): running sessions keep going.
+6. If everything worked, open **Machines** in the console and press **Allow automatic updates** for this machine, then confirm. From then on it updates like the Macs. If anything goes wrong, press **Stop automatic updates** and install by hand.
+
+Logs are in `%USERPROFILE%\.agent-board\logs\`. Programs are in `%LOCALAPPDATA%\agent-board\`.
+
 ## Everyday commands
 
 Data lives in `~/.agent-board` (`hub.db`, `machine.json`, `sessions.json`, `logs/`). Programs live in `~/.local/share/agent-board`, or `%LOCALAPPDATA%\agent-board` on Windows.
@@ -183,14 +220,16 @@ More about auto-start, including why Windows uses a scheduled task: [docs/instal
 ## Uninstall
 
 ```sh
-sh ~/.local/share/agent-board/app/scripts/install.sh --uninstall
+sh ~/.local/share/agent-board/current/scripts/install.sh --uninstall
 ```
 
 On Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\agent-board\app\scripts\install.ps1" --uninstall
+pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\agent-board\current\scripts\install.ps1" --uninstall
 ```
+
+Installs from before 0.1.0 have `app` instead of `current` in these paths.
 
 This removes the programs, services, and shortcuts. Your data stays in `~/.agent-board`. Add `--purge` to delete that too, including the hub database and the machine's credentials.
 

@@ -17,11 +17,11 @@
 
 ## 各平台狀態
 
-| 作業系統 | 狀態                                                            |
-| -------- | --------------------------------------------------------------- |
-| macOS    | 已測試                                                          |
-| Linux    | **未測試。** 安裝腳本與 systemd 設定已備妥，沒在真 Linux 上跑過 |
-| Windows  | **未測試。** 安裝腳本與排程工作已備妥，沒在 Windows 上跑過      |
+| 作業系統 | 狀態                                                                                                      |
+| -------- | --------------------------------------------------------------------------------------------------------- |
+| macOS    | 已測試                                                                                                    |
+| Linux    | **未測試。** 安裝腳本與 systemd 設定已備妥，沒在真 Linux 上跑過                                           |
+| Windows  | **還沒在實機上試過。** CI 會在 Windows 上跑單元測試；自動更新預設關閉，要逐台允許。見 [Windows](#windows) |
 
 ## 開始之前
 
@@ -120,6 +120,43 @@ sh install.sh hub --host 100.64.0.1   # 換成這台機器自己的私有 IP
 
 傳輸是未加密的 HTTP，只適合本來就有加密的網路（例如 Tailscale）。設了 `--host` 後，它會蓋過設定頁的監聽位址。
 
+## Windows
+
+原生 Windows（不是 WSL）、PowerShell 7，服務是工作排程器裡「登入時」啟動的工作。還沒在實機上試過，所以 hub 預設不發自動更新給 Windows 機器，要在最後一步逐台允許。
+
+**開始之前**（在 Windows 那台）：
+
+1. [Node.js](https://nodejs.org) LTS，22.18 以上（含 npm）。開新的終端機用 `node -v` 確認。
+2. [Git for Windows](https://git-scm.com/download/win)。Claude Code 的 Bash 工具用它的 bash，worktree 也要 git。
+3. [Claude Code](https://code.claude.com)。在 PowerShell 執行一次 `claude`，完成登入。
+4. [Tailscale](https://tailscale.com)，登入和 hub 同一個 tailnet。`tailscale status` 要看得到 hub 那台，瀏覽器打得開 hub 的公開來源（`https://your-hub.your-tailnet.ts.net`）。
+5. PowerShell 7（`pwsh`）。
+
+**安裝：**
+
+1. 從 Release 頁下載 `agent-board-<版本>-win-x64.zip` 與 `SHA256SUMS`。
+2. 驗檔：`(Get-FileHash -Algorithm SHA256 .\agent-board-<版本>-win-x64.zip).Hash.ToLower()` 要和 `SHA256SUMS` 裡 `win-x64` 那一行（`Select-String win-x64 .\SHA256SUMS`）一樣，不一樣就停下來。
+3. 用內建的 tar 解壓：`New-Item -ItemType Directory $env:TEMP\agent-board-<版本>; tar -xf .\agent-board-<版本>-win-x64.zip -C $env:TEMP\agent-board-<版本>`。
+4. 在網頁的 **設定 → 機器** 產生配對碼。
+5. 填入 hub 網址、配對碼與這台的名稱後執行：
+
+   ```powershell
+   pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\agent-board-<版本>\agent-board\scripts\install.ps1" daemon --hub https://your-hub.your-tailnet.ts.net --code 配對碼 --name 這台的名稱
+   ```
+
+6. 確認工作在跑：`schtasks /Query /TN AgentBoard-session-host /V /FO LIST`、`schtasks /Query /TN AgentBoard-daemon /V /FO LIST`；網頁上這台顯示上線。
+
+**允許自動更新之前先實測：**
+
+1. 開一個 session，跑一個無害的指令，在網頁核准一次權限。
+2. 在測試用的 repo 請它跑 `git push --force`：網頁要出現危險指令的核准。
+3. 重啟 daemon：`schtasks /End /TN AgentBoard-daemon` 再 `schtasks /Run /TN AgentBoard-daemon`：session 不中斷、重新接上。
+4. 登出 Windows 再登入：所有工作自己起來。
+5. 下一版用同樣的方式手動安裝（新的 zip 照第 1–5 步）：正在跑的 session 不中斷。
+6. 都沒問題，在網頁的 **機器** 頁對這台按 **允許自動更新** 並確認。之後就和 Mac 一樣自動更新；有問題按 **停止自動更新**，改回手動安裝。
+
+紀錄在 `%USERPROFILE%\.agent-board\logs\`，程式在 `%LOCALAPPDATA%\agent-board\`。
+
 ## 日常指令
 
 資料在 `~/.agent-board`（`hub.db`、`machine.json`、`sessions.json`、`logs/`）。程式在 `~/.local/share/agent-board`，Windows 在 `%LOCALAPPDATA%\agent-board`。
@@ -183,14 +220,16 @@ hub 就把 `daemon` 換成 `hub`。
 ## 解除安裝
 
 ```sh
-sh ~/.local/share/agent-board/app/scripts/install.sh --uninstall
+sh ~/.local/share/agent-board/current/scripts/install.sh --uninstall
 ```
 
 Windows：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\agent-board\app\scripts\install.ps1" --uninstall
+pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\agent-board\current\scripts\install.ps1" --uninstall
 ```
+
+0.1.0 以前的安裝，路徑裡是 `app` 而不是 `current`。
 
 這會移除程式、服務與捷徑。資料保留在 `~/.agent-board`；加 `--purge` 連資料一起刪，包含 hub 資料庫與機器憑證。
 

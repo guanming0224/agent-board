@@ -117,6 +117,8 @@ const CALL_SITES = new Set([
   'scripts/installer.mjs child-process',
   'scripts/installer.mjs fetch',
   'scripts/installer.mjs node-network',
+  // 安裝程式判斷 agent 還在不在（N2，2026-11-12）：只讀程序啟動時間（`ps -o lstart=`／Windows 的 PowerShell Get-Process）
+  'scripts/lib/process-start.mjs child-process',
   // 獨立更新程式（隨發布檔散布）：跑新版的 installer.mjs、`agent-board-hub schema-version`，
   // 健康檢查只連本機 hub 的 /api/health。
   'scripts/updater.mjs child-process',
