@@ -1,8 +1,9 @@
-import { mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HookServer, type HookHandler } from './hookServer';
+import { newNonce, verifyLocalProof } from '@agent-board/protocol/local-auth';
+import { ensureHookKey, HookServer, type HookHandler } from './hookServer';
 import { HookClient, makeTempDir, waitUntil } from './test-support/harness';
 
 describe('HookServer', () => {
@@ -23,7 +24,8 @@ describe('HookServer', () => {
 
   it('收 HookRequest、回 HookReply；socket 權限 0600', async () => {
     const { server } = await setup(async (request) => ({ got: request.event }));
-    expect(statSync(server.path).mode & 0o777).toBe(0o600);
+    // Windows 是 named pipe，沒有檔案權限（§20.7）。
+    if (process.platform !== 'win32') expect(statSync(server.path).mode & 0o777).toBe(0o600);
     const client = await HookClient.connect(server.path);
     cleanups.push(() => client.close());
     const reply = await client.request('s1', 'Stop');
@@ -145,23 +147,32 @@ describe('HookServer', () => {
     await waitUntil(() => aborted, 'abort');
   });
 
-  it('資料夾路徑太長時改用暫存資料夾，關閉後清掉', async () => {
-    const dir = join(makeTempDir(), 'x'.repeat(80), 'y'.repeat(80));
-    mkdirSync(dir, { recursive: true });
-    const server = new HookServer(dir, async () => null);
-    await server.start();
-    const { path } = server;
-    expect(Buffer.byteLength(path)).toBeLessThanOrEqual(100);
-    expect(statSync(join(path, '..')).mode & 0o777).toBe(0o700);
-    const client = await HookClient.connect(path);
-    expect((await client.request('s', 'Stop')).output).toBeNull();
-    client.close();
-    await server.close();
-    expect(() => statSync(path)).toThrow();
-  });
+  // Windows 是 named pipe，沒有路徑長度的問題。
+  it.skipIf(process.platform === 'win32')(
+    '資料夾路徑太長時改用暫存資料夾，關閉後清掉',
+    async () => {
+      const dir = join(makeTempDir(), 'x'.repeat(80), 'y'.repeat(80));
+      mkdirSync(dir, { recursive: true });
+      const server = new HookServer(dir, async () => null);
+      await server.start();
+      const { path } = server;
+      expect(Buffer.byteLength(path)).toBeLessThanOrEqual(100);
+      expect(statSync(join(path, '..')).mode & 0o777).toBe(0o700);
+      const client = await HookClient.connect(path);
+      expect((await client.request('s', 'Stop')).output).toBeNull();
+      client.close();
+      await server.close();
+      expect(() => statSync(path)).toThrow();
+    },
+  );
 
   it('另一個 daemon 還活著就拒絕啟動；殘留的 socket 檔會清掉', async () => {
     const { dir } = await setup(async () => null);
+    if (process.platform === 'win32') {
+      // 同名 pipe 已開：EADDRINUSE → 啟動失敗並說明（§20.7）。Windows 沒有殘留檔。
+      await expect(new HookServer(dir, async () => null).start()).rejects.toThrow('已經有人開著');
+      return;
+    }
     await expect(new HookServer(dir, async () => null).start()).rejects.toThrow('已有 daemon');
 
     const staleDir = makeTempDir();
@@ -171,5 +182,78 @@ describe('HookServer', () => {
     await server.start();
     cleanups.push(() => server.close());
     expect(statSync(server.path).isSocket()).toBe(true);
+  });
+
+  /** 原始連線：送幾行，收回所有行，直到對方斷線或 waitMs 到。 */
+  function exchange(path: string, lines: unknown[], waitMs = 300): Promise<unknown[]> {
+    return new Promise((resolve) => {
+      const got: unknown[] = [];
+      let buffer = '';
+      const socket = connect(path, () => {
+        for (const line of lines) socket.write(`${JSON.stringify(line)}\n`);
+      });
+      socket.setEncoding('utf8');
+      socket.on('data', (chunk: string) => {
+        buffer += chunk;
+        let index: number;
+        while ((index = buffer.indexOf('\n')) !== -1) {
+          got.push(JSON.parse(buffer.slice(0, index)));
+          buffer = buffer.slice(index + 1);
+        }
+      });
+      socket.on('error', () => {});
+      const timer = setTimeout(() => socket.destroy(), waitMs);
+      socket.on('close', () => {
+        clearTimeout(timer);
+        resolve(got);
+      });
+    });
+  }
+
+  it('W5：hook.key（600）建一次就沿用；auth.challenge 回正確的 auth.proof，之後同一條連線照常送請求', async () => {
+    const { server, dir } = await setup(async (request) => ({ got: request.event }));
+    expect(server.keyPath).toBe(join(dir, 'hook.key'));
+    const key = readFileSync(server.keyPath, 'utf8').trim();
+    expect(key.length).toBeGreaterThanOrEqual(32);
+    if (process.platform !== 'win32') expect(statSync(server.keyPath).mode & 0o777).toBe(0o600);
+    expect(ensureHookKey(dir)).toBe(key);
+
+    const nonce = newNonce();
+    const got = await exchange(server.path, [
+      { type: 'auth.challenge', nonce },
+      {
+        type: 'hook',
+        requestId: 'r1',
+        sessionId: 's',
+        event: 'Stop',
+        payload: { session_id: 'c', hook_event_name: 'Stop' },
+      },
+    ]);
+    expect(got).toHaveLength(2);
+    const proof = got[0] as { type: string; proof: string };
+    expect(proof.type).toBe('auth.proof');
+    expect(verifyLocalProof(key, 'hookServer', nonce, proof.proof)).toBe(true);
+    expect(got[1]).toEqual({ type: 'hook.reply', requestId: 'r1', output: { got: 'Stop' } });
+  });
+
+  it('W5：nonce 格式不對或重送 → 不回證明、直接斷線', async () => {
+    const { server } = await setup(async () => null);
+    expect(await exchange(server.path, [{ type: 'auth.challenge', nonce: 'bad' }])).toEqual([]);
+    const nonce = newNonce();
+    expect(await exchange(server.path, [{ type: 'auth.challenge', nonce }])).toHaveLength(1);
+    expect(await exchange(server.path, [{ type: 'auth.challenge', nonce }])).toEqual([]);
+  });
+
+  it('W5：daemon 重啟後沿用同一把密鑰（活著的 agent 還拿著同一個路徑）', async () => {
+    const dir = makeTempDir();
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const first = new HookServer(dir, async () => null);
+    await first.start();
+    const key = readFileSync(first.keyPath, 'utf8');
+    await first.close();
+    const second = new HookServer(dir, async () => null);
+    await second.start();
+    cleanups.push(() => second.close());
+    expect(readFileSync(second.keyPath, 'utf8')).toBe(key);
   });
 });

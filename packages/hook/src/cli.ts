@@ -33,6 +33,13 @@ import {
   STDIN_DEADLINE_MS,
   WAIT_OVERRIDE_ENV,
 } from './cli-constants.ts';
+import {
+  AUTH_DEADLINE_MS,
+  authenticateDaemon,
+  KEY_FILE_ENV,
+  KEY_FILE_FLAG,
+  readDaemonKey,
+} from './daemonAuth.ts';
 
 type Output = Record<string, unknown> | null;
 
@@ -129,6 +136,7 @@ function markGaveUp(socketPath: string): void {
 function connectWithRetry(
   socketPath: string,
   deadline: number,
+  key: string | null,
   onConnect: (socket: Socket) => void,
   onGiveUp: () => void,
 ): void {
@@ -149,18 +157,34 @@ function connectWithRetry(
     });
     socket.once('connect', () => {
       socket.removeAllListeners('error');
-      onConnect(socket);
+      if (key === null) {
+        onConnect(socket);
+        return;
+      }
+      // W5：對方先證明自己是 daemon 才送請求。驗不過（或舊版 daemon 不回）當成連不上，不重試。
+      socket.on('error', () => {});
+      void authenticateDaemon(socket, key).then((ok) => {
+        if (finished) return;
+        if (ok) {
+          socket.removeAllListeners('error');
+          onConnect(socket);
+          return;
+        }
+        socket.destroy();
+        onGiveUp();
+      });
     });
   };
   attempt();
 }
 
 /** 送出就走。任何失敗都安靜結束。 */
-function sendAndLeave(socketPath: string, line: string, retryMs: number): void {
-  setTimeout(finish, retryMs + SEND_DEADLINE_MS);
+function sendAndLeave(socketPath: string, line: string, retryMs: number, key: string | null): void {
+  setTimeout(finish, retryMs + SEND_DEADLINE_MS + (key === null ? 0 : AUTH_DEADLINE_MS));
   connectWithRetry(
     socketPath,
     Date.now() + retryMs,
+    key,
     (socket) => {
       socket.on('error', () => finish());
       socket.end(line, () => finish());
@@ -181,13 +205,18 @@ function sendAndWait(
   timeoutOutput: Output,
   limit: number,
   retryMs: number,
+  key: string | null,
 ): void {
   // 重試的時間也算在原本的等待上限裡。
   setTimeout(() => finish(timeoutOutput), limit);
-  const connectDeadline = setTimeout(() => finish(unreachable), retryMs + CONNECT_DEADLINE_MS);
+  const connectDeadline = setTimeout(
+    () => finish(unreachable),
+    retryMs + CONNECT_DEADLINE_MS + (key === null ? 0 : AUTH_DEADLINE_MS),
+  );
   connectWithRetry(
     socketPath,
     Date.now() + retryMs,
+    key,
     (socket) => {
       clearTimeout(connectDeadline);
       let buffer = '';
@@ -233,16 +262,18 @@ interface ParsedArgs {
   event: string;
   sessionId: string | null;
   socketPath: string | null;
+  keyFile: string | null;
 }
 
 /**
- * `[--agent <claude|codex>] [--session <id>] [--socket <path>] <EventName>`（選項順序不拘）；
+ * `[--agent <claude|codex>] [--session <id>] [--socket <path>] [--key-file <path>] <EventName>`（選項順序不拘）；
  * 認不得就回 null（安靜結束）。
  */
 function parseArgs(argv: readonly string[]): ParsedArgs | null {
   let agent = 'claude';
   let sessionId: string | null = null;
   let socketPath: string | null = null;
+  let keyFile: string | null = null;
   let i = 0;
   for (; i < argv.length; i += 2) {
     const flag = argv[i];
@@ -250,11 +281,12 @@ function parseArgs(argv: readonly string[]): ParsedArgs | null {
     if (flag === AGENT_FLAG) agent = value ?? '';
     else if (flag === SESSION_FLAG) sessionId = value || null;
     else if (flag === SOCKET_FLAG) socketPath = value || null;
+    else if (flag === KEY_FILE_FLAG) keyFile = value || null;
     else break;
   }
   const event = argv[i];
   if (!AGENTS.includes(agent) || event === undefined || !HOOK_EVENTS.includes(event)) return null;
-  return { agent, event, sessionId, socketPath };
+  return { agent, event, sessionId, socketPath, keyFile };
 }
 
 /** POSIX shell 的單引號：陣列指令接成字串後，daemon 解析出來的還是同樣的幾個參數。 */
@@ -340,6 +372,10 @@ async function main(): Promise<void> {
   ) {
     return finish(unreachable);
   }
+  // W5：拿不到 daemon 的密鑰（給了檔案卻讀不到、或 Windows pipe 沒給）就當成連不上，不重試。
+  const daemonKey = readDaemonKey(socketPath, parsed.keyFile ?? process.env[KEY_FILE_ENV]);
+  if (daemonKey.kind === 'missing') return finish(unreachable);
+  const key = daemonKey.kind === 'key' ? daemonKey.key : null;
 
   const requestId = crypto.randomUUID();
   const request: HookRequest = {
@@ -363,11 +399,12 @@ async function main(): Promise<void> {
       timeoutOutput,
       limit,
       retryWindow(socketPath, limit),
+      key,
     );
   } else {
     const limit =
       codex && CODEX_SHORT_EVENTS.includes(event) ? CODEX_SHORT_RETRY_MS : RETRY_WINDOW_MS;
-    sendAndLeave(socketPath, line, retryWindow(socketPath, limit));
+    sendAndLeave(socketPath, line, retryWindow(socketPath, limit), key);
   }
 }
 

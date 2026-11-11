@@ -675,8 +675,9 @@ export class Daemon {
     // 設定檔裡的 node 換成現在的（0.1.1 寫的自帶 node 已經不在，§21.10）：claude 重開 MCP server 才起得來。
     try {
       const node = this.deps.config.nodeBin ?? process.execPath;
-      if (repointMcpConfig(this.deps.config.dataDir, sessionId, node)) {
-        log.info(`session ${sessionId} 的 MCP 設定檔改用 ${node}`);
+      // 0.1.6 以前寫的設定檔沒有 hook 密鑰檔的 env（W5）：一起補上。
+      if (repointMcpConfig(this.deps.config.dataDir, sessionId, node, this.hookServer.keyPath)) {
+        log.info(`session ${sessionId} 的 MCP 設定檔已更新（node：${node}；補上 hook 密鑰檔）`);
       }
     } catch (error) {
       log.warn(`無法更新 session ${sessionId} 的 MCP 設定檔：${errorMessage(error)}`);
@@ -1494,7 +1495,11 @@ export class Daemon {
         readOnly: spec.readOnly,
         model: spec.model,
         firstPrompt: resumeId ? null : entry.pendingFirstPrompt,
-        hookTarget: { sessionId, socketPath: this.hookServer.path },
+        hookTarget: {
+          sessionId,
+          socketPath: this.hookServer.path,
+          keyFile: this.hookServer.keyPath,
+        },
       });
       // 已經在參數裡了，不要再用送字佇列打一次。
       if (entry.pendingFirstPrompt !== null) launchEntry = { ...entry, pendingFirstPrompt: null };
@@ -1645,6 +1650,7 @@ export class Daemon {
         { command: this.deps.config.nodeBin ?? process.execPath, args: [server] },
         this.hookServer.path,
         tools,
+        this.hookServer.keyPath,
       );
       this.mcpSecrets.set(sessionId, launch.secret);
       return { configPath: launch.configPath, allowedTools: tools.map(toolFullName) };
@@ -1725,6 +1731,8 @@ export class Daemon {
       [key]: [hookDir, env[key]].filter(Boolean).join(delimiter),
       [HOOK_ENV.sessionId]: sessionId,
       [HOOK_ENV.socket]: this.hookServer.path,
+      // W5：hook CLI 先用這把密鑰確認對方是 daemon 才送（密鑰本身不在環境變數裡）。
+      [HOOK_ENV.keyFile]: this.hookServer.keyPath,
       TERM: 'xterm-256color',
       // 帳號資料夾是 Claude Code 的設定；Codex 第一版不支援（hub 已擋），也不設 CODEX_HOME。
       ...(spec.accountProfile && agentOf(spec) === 'claude'

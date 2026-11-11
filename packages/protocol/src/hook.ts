@@ -9,7 +9,15 @@ export const HOOK_ENV = {
   sessionId: 'AGENT_BOARD_SESSION_ID',
   /** daemon 的 unix socket 路徑或 Windows named pipe。 */
   socket: 'AGENT_BOARD_SOCKET',
+  /**
+   * daemon 的 hook 密鑰檔（`<dataDir>/hook.key`，600，W5）。hook CLI 與 MCP server 先用它驗證對方是 daemon
+   * （`auth.challenge` → `auth.proof`）才送請求。密鑰本身不在環境變數裡。
+   */
+  keyFile: 'AGENT_BOARD_HOOK_KEY_FILE',
 } as const;
+
+/** hook 密鑰檔名（放在 daemon 的資料夾，固定沿用：活過 daemon 重啟的 agent 還要用同一把）。 */
+export const HOOK_KEY_FILE = 'hook.key';
 
 export const HOOK_COMMAND = 'agent-board-hook';
 /** `agent-board-hook --agent codex <Event>`：Codex 開的 hook。沒帶就是 Claude Code。 */
@@ -20,6 +28,21 @@ export const HOOK_AGENT_FLAG = '--agent';
  */
 export const HOOK_SESSION_FLAG = '--session';
 export const HOOK_SOCKET_FLAG = '--socket';
+/** Codex 的 hook 指令也直接帶密鑰檔路徑（W5）。 */
+export const HOOK_KEY_FILE_FLAG = '--key-file';
+
+/**
+ * hook socket 的驗證（W5，CONTRACTS §4.2）：hook CLI／MCP server 連上後先送 `auth.challenge`，
+ * daemon 回 `auth.proof`（HMAC(hook.key, hookServer 前綴＋nonce)，`@agent-board/protocol/local-auth`），驗過才送請求。
+ * 不先驗證的舊客戶端（0.1.6 以前）照樣接受。
+ */
+export const HookAuthChallenge = z.object({
+  type: z.literal('auth.challenge'),
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
+});
+export type HookAuthChallenge = z.infer<typeof HookAuthChallenge>;
+export const HookAuthProof = z.object({ type: z.literal('auth.proof'), proof: z.string() });
+export type HookAuthProof = z.infer<typeof HookAuthProof>;
 
 /** hook CLI 收得到的事件：Claude Code 與 Codex 的聯集。Claude 實際裝哪些見 CLAUDE_HOOK_EVENTS。 */
 export const HookEventName = z.enum([

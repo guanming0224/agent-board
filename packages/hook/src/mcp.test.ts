@@ -25,6 +25,7 @@ import {
   RELEASE_REASON_DESCRIPTION,
   SPAWN_REASON_DESCRIPTION,
 } from '@agent-board/protocol/lead-guide';
+import { localProof } from '@agent-board/protocol/local-auth';
 import {
   DISPATCH_TOOLS,
   LEGACY_DISPATCH_TOOLS,
@@ -47,6 +48,7 @@ const requests: McpRequest[] = [];
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'ab-mcp-'));
   requests.length = 0;
+  challenges = 0;
 });
 afterEach(async () => {
   child?.kill();
@@ -56,11 +58,39 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+/** 假 daemon 的 hook 密鑰（W5）。 */
+const HOOK_KEY = 'h'.repeat(43);
+let challenges = 0;
+
+/** Windows 沒有 Unix socket：假 daemon 改用 named pipe。 */
+const socketPathIn = (name: string) =>
+  process.platform === 'win32'
+    ? `\\\\.\\pipe\\agent-board-mcp-test-${name}-${crypto.randomUUID()}`
+    : join(dir, `${name}.sock`);
+
+/** 寫 hook 密鑰檔，回傳路徑。 */
+async function hookKeyFile(): Promise<string> {
+  const file = join(dir, 'hook.key');
+  await writeFile(file, `${HOOK_KEY}\n`, { mode: 0o600 });
+  return file;
+}
+
+/** auth.challenge 的回答：ok＝正確證明；wrong＝別的密鑰算的。 */
+function answerChallenge(socket: Socket, line: string, mode: 'ok' | 'wrong' = 'ok'): boolean {
+  const json = JSON.parse(line) as { type?: string; nonce?: string };
+  if (json.type !== 'auth.challenge') return false;
+  challenges += 1;
+  const proof = localProof(mode === 'ok' ? HOOK_KEY : 'x'.repeat(43), 'hookServer', json.nonce!);
+  socket.write(`${JSON.stringify({ type: 'auth.proof', proof })}\n`);
+  return true;
+}
+
 /** 假 daemon：用正式 schema 驗收到的請求，回答 answer(request)。 */
 async function startDaemon(
   answer: (request: McpRequest) => { ok: boolean; text: string } | null,
+  auth: 'ok' | 'wrong' = 'ok',
 ): Promise<string> {
-  const path = join(dir, 'd.sock');
+  const path = socketPathIn('d');
   daemon = createServer((socket: Socket) => {
     let buffer = '';
     socket.setEncoding('utf8');
@@ -69,7 +99,12 @@ async function startDaemon(
       buffer += chunk;
       let index: number;
       while ((index = buffer.indexOf('\n')) !== -1) {
-        const request = McpRequest.parse(JSON.parse(buffer.slice(0, index)));
+        const line = buffer.slice(0, index);
+        if (answerChallenge(socket, line, auth)) {
+          buffer = buffer.slice(index + 1);
+          continue;
+        }
+        const request = McpRequest.parse(JSON.parse(line));
         buffer = buffer.slice(index + 1);
         requests.push(request);
         const result = answer(request);
@@ -138,6 +173,7 @@ async function configured(
     [SESSION_ID_ENV]: 'session-1',
     [SOCKET_ENV]: socket,
     [MCP_SECRET_FILE_ENV]: secretFile,
+    [HOOK_ENV.keyFile]: await hookKeyFile(),
     ...extra,
   });
 }
@@ -328,13 +364,53 @@ describe('agent-board-mcp', () => {
     await writeFile(secretFile, SECRET, { mode: 0o600 });
     const lost = startServer({
       [SESSION_ID_ENV]: 'session-1',
-      [SOCKET_ENV]: join(dir, 'nobody.sock'),
+      [SOCKET_ENV]: socketPathIn('nobody'),
       [MCP_SECRET_FILE_ENV]: secretFile,
+      [HOOK_ENV.keyFile]: await hookKeyFile(),
     });
     lost.send({ id: 1, method: 'tools/call', params: { name: 'get_result', arguments: {} } });
     const r = (await lost.reply(1)).result as { content: { text: string }[]; isError: boolean };
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toMatch(/^daemon_unreachable:/);
+  });
+
+  it('W5：先確認對方是 daemon 才送（含密鑰）；證明不對 daemon_unreachable；密鑰檔讀不到或 pipe 沒給 not_configured', async () => {
+    const ok = await configured(() => ({ ok: true, text: '{"members":[]}' }));
+    ok.send({ id: 1, method: 'tools/call', params: { name: 'list_members', arguments: {} } });
+    expect(((await ok.reply(1)).result as { isError: boolean }).isError).toBe(false);
+    expect(challenges).toBe(1);
+    expect(requests).toHaveLength(1);
+    child!.kill();
+    await new Promise<void>((resolve) => (daemon ? daemon.close(() => resolve()) : resolve()));
+    daemon = null;
+
+    const socket = await startDaemon(() => ({ ok: true, text: '{}' }), 'wrong');
+    const secretFile = join(dir, 'k.key');
+    await writeFile(secretFile, SECRET, { mode: 0o600 });
+    const base = {
+      [SESSION_ID_ENV]: 'session-1',
+      [SOCKET_ENV]: socket,
+      [MCP_SECRET_FILE_ENV]: secretFile,
+    };
+    const fake = startServer({ ...base, [HOOK_ENV.keyFile]: await hookKeyFile() });
+    fake.send({ id: 1, method: 'tools/call', params: { name: 'list_members', arguments: {} } });
+    const r1 = (await fake.reply(1)).result as { content: { text: string }[] };
+    expect(r1.content[0]!.text).toMatch(/^daemon_unreachable:/);
+    // 冒充的一方拿不到請求（也就拿不到密鑰）。
+    expect(requests).toHaveLength(1);
+    child!.kill();
+
+    const noKey = startServer({ ...base, [HOOK_ENV.keyFile]: join(dir, 'missing.key') });
+    noKey.send({ id: 1, method: 'tools/call', params: { name: 'list_members', arguments: {} } });
+    const r2 = (await noKey.reply(1)).result as { content: { text: string }[] };
+    expect(r2.content[0]!.text).toMatch(/^not_configured:/);
+    child!.kill();
+
+    const pipe = startServer({ ...base, [SOCKET_ENV]: '\\\\.\\pipe\\agent-board-hook-none' });
+    pipe.send({ id: 1, method: 'tools/call', params: { name: 'list_members', arguments: {} } });
+    const r3 = (await pipe.reply(1)).result as { content: { text: string }[] };
+    expect(r3.content[0]!.text).toMatch(/^not_configured:/);
+    expect(requests).toHaveLength(1);
   });
 
   it('stdin 關掉時等還沒回的呼叫回完才結束', async () => {
@@ -344,6 +420,7 @@ describe('agent-board-mcp', () => {
     daemon!.on('connection', (s: Socket) => {
       s.setEncoding('utf8');
       s.on('data', (chunk: string) => {
+        if (answerChallenge(s, chunk.trim())) return;
         const request = JSON.parse(chunk.trim()) as { requestId: string };
         release = () =>
           s.write(
@@ -357,6 +434,7 @@ describe('agent-board-mcp', () => {
       [SESSION_ID_ENV]: 'session-1',
       [SOCKET_ENV]: socket,
       [MCP_SECRET_FILE_ENV]: secretFile,
+      [HOOK_ENV.keyFile]: await hookKeyFile(),
     });
     const exited = new Promise<number | null>((resolve) => child!.on('close', resolve));
     server.send({ id: 1, method: 'tools/call', params: { name: 'list_members', arguments: {} } });

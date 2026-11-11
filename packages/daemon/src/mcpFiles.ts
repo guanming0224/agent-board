@@ -68,6 +68,8 @@ export function writeMcpFiles(
   server: McpServerCommand,
   socketPath: string,
   tools: readonly AgentBoardTool[],
+  /** daemon 的 hook 密鑰檔（W5）：MCP server 先驗證對方是 daemon 才送請求。 */
+  keyFile?: string,
 ): McpLaunch {
   const dir = mcpDir(dataDir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -88,6 +90,7 @@ export function writeMcpFiles(
           [MCP_ENV.secretFile]: secretPath,
           // MCP server 的 tools/list 只列、tools/call 只接受這些（設定關著的工具不出現）。
           [MCP_ENV.tools]: tools.join(','),
+          ...(keyFile ? { [HOOK_ENV.keyFile]: keyFile } : {}),
         },
       },
     },
@@ -128,10 +131,20 @@ export function clearMcpDir(dataDir: string, keep: ReadonlySet<string> = new Set
  * current/runtime/node/bin/node）。只改 command，密鑰、env、args 不動；一樣 0600、先寫暫存檔再換名。
  * 回傳有沒有改。設定檔不在、讀不懂、現在的 node 不存在：不動。
  */
-export function repointMcpConfig(dataDir: string, sessionId: string, node: string): boolean {
-  if (!node || !existsSync(node)) return false;
+export function repointMcpConfig(
+  dataDir: string,
+  sessionId: string,
+  node: string,
+  /**
+   * daemon 的 hook 密鑰檔（W5）。0.1.6 以前寫的設定檔 env 沒有 `AGENT_BOARD_HOOK_KEY_FILE`：補上，
+   * claude 之後重開 MCP server 時才會先驗證 daemon。已經有的不動。
+   */
+  keyFile?: string,
+): boolean {
   const configPath = join(mcpDir(dataDir), `${sessionId}.json`);
-  let config: { mcpServers?: Record<string, { command?: unknown }> };
+  let config: {
+    mcpServers?: Record<string, { command?: unknown; env?: Record<string, unknown> }>;
+  };
   try {
     config = JSON.parse(readFileSync(configPath, 'utf8')) as typeof config;
   } catch {
@@ -139,8 +152,19 @@ export function repointMcpConfig(dataDir: string, sessionId: string, node: strin
   }
   const server = config.mcpServers?.[DISPATCH_MCP_SERVER];
   if (!server || typeof server.command !== 'string') return false;
-  if (server.command === node && existsSync(server.command)) return false;
-  server.command = node;
+  let changed = false;
+  if (node && existsSync(node) && !(server.command === node && existsSync(server.command))) {
+    server.command = node;
+    changed = true;
+  }
+  if (keyFile) {
+    const env = server.env && typeof server.env === 'object' ? server.env : {};
+    if (typeof env[HOOK_ENV.keyFile] !== 'string') {
+      server.env = { ...env, [HOOK_ENV.keyFile]: keyFile };
+      changed = true;
+    }
+  }
+  if (!changed) return false;
   writePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`);
   return true;
 }

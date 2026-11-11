@@ -26,6 +26,7 @@ import {
   SESSION_ID_ENV,
   SOCKET_ENV,
 } from './mcp-constants.ts';
+import { authenticateDaemon, KEY_FILE_ENV, readDaemonKey } from './daemonAuth.ts';
 
 type Json = Record<string, unknown>;
 
@@ -188,12 +189,15 @@ const secret = readSecret();
 function callDaemon(tool: string, args: Json): Promise<{ ok: boolean; text: string }> {
   const socketPath = process.env[SOCKET_ENV];
   const sessionId = process.env[SESSION_ID_ENV];
-  if (!socketPath || !sessionId || !secret) {
+  // W5：給了 daemon 的密鑰檔卻讀不到（或 Windows pipe 沒給）＝設定不完整，不送密鑰出去。
+  const daemonKey = socketPath ? readDaemonKey(socketPath, process.env[KEY_FILE_ENV]) : null;
+  if (!socketPath || !sessionId || !secret || !daemonKey || daemonKey.kind === 'missing') {
     return Promise.resolve({
       ok: false,
       text: 'not_configured: This session was not started by Agent Board with its tools.',
     });
   }
+  const key = daemonKey.kind === 'key' ? daemonKey.key : null;
   const requestId = crypto.randomUUID();
   const line = `${JSON.stringify({ type: 'mcp', requestId, sessionId, secret, tool, args })}\n`;
   return new Promise((resolve) => {
@@ -213,11 +217,25 @@ function callDaemon(tool: string, args: Json): Promise<{ ok: boolean; text: stri
       () => done({ ok: false, text: 'timeout: Agent Board did not answer in time. Try again.' }),
       MCP_TOOL_TIMEOUT_MS,
     );
-    socket.setEncoding('utf8');
-    socket.on('connect', () => socket.write(line));
     socket.on('error', unreachable);
     socket.on('close', unreachable);
-    socket.on('data', (chunk: string) => {
+    socket.on('connect', () => {
+      if (key === null) {
+        listen();
+        return;
+      }
+      // 對方先證明自己是 daemon，才送請求（含這個 session 的 MCP 密鑰）。
+      void authenticateDaemon(socket, key).then((ok) => {
+        if (ok) listen();
+        else unreachable();
+      });
+    });
+    const listen = () => {
+      socket.setEncoding('utf8');
+      socket.on('data', onData);
+      socket.write(line);
+    };
+    const onData = (chunk: string) => {
       buffer += chunk;
       let newline: number;
       while ((newline = buffer.indexOf('\n')) !== -1) {
@@ -233,7 +251,7 @@ function callDaemon(tool: string, args: Json): Promise<{ ok: boolean; text: stri
         if (r.type !== 'mcp.reply' || r.requestId !== requestId) continue;
         done({ ok: r.ok === true, text: typeof r.text === 'string' ? r.text : '' });
       }
-    });
+    };
   });
 }
 

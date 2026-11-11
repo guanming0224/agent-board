@@ -14,13 +14,16 @@ import {
   codexHookTimeout,
   HOOK_AGENT_FLAG,
   HOOK_ENV,
+  HOOK_KEY_FILE_FLAG,
   HOOK_SESSION_FLAG,
   HOOK_SOCKET_FLAG,
   HOOK_TIMEOUT_SECONDS,
   HOOK_WAIT_MS,
+  HookAuthChallenge,
   HookEventName,
   HookRequest,
 } from '@agent-board/protocol';
+import { localProof } from '@agent-board/protocol/local-auth';
 import {
   AGENT_FLAG,
   BLOCKING_EVENTS,
@@ -37,8 +40,11 @@ import {
   SOCKET_ENV,
   WAIT_OVERRIDE_ENV,
 } from './cli-constants.ts';
+import { KEY_FILE_ENV, KEY_FILE_FLAG } from './daemonAuth.ts';
 
 const CLI = fileURLToPath(new URL('./cli.ts', import.meta.url));
+/** 假 daemon 的 hook 密鑰（W5）。 */
+const TEST_KEY = 'k'.repeat(43);
 
 // 欄位取自 docs/claude-code-notes.md。
 const base = { session_id: 'claude-1', transcript_path: '/tmp/t.jsonl', cwd: '/tmp' };
@@ -107,18 +113,29 @@ interface FakeDaemon {
   /** 每個連線是否被 hook 端關閉，用來確認阻塞事件保持連線。 */
   server: Server;
   close: () => Promise<void>;
+  /** 收到幾次 auth.challenge（W5）。 */
+  readonly challenges: number;
 }
+
+/**
+ * 假 daemon 怎麼回 `auth.challenge`（W5）：ok＝用 TEST_KEY 回正確證明；wrong＝用別的密鑰；silent＝不回（像舊版 daemon）。
+ * challenges 記收到幾次挑戰。
+ */
+type AuthMode = 'ok' | 'wrong' | 'silent';
 
 async function startDaemon(
   dir: string,
   onRequest: OnRequest = () => undefined,
+  { auth = 'ok', path: fixedPath }: { auth?: AuthMode; path?: string } = {},
 ): Promise<FakeDaemon> {
   const path =
-    process.platform === 'win32'
+    fixedPath ??
+    (process.platform === 'win32'
       ? `\\\\.\\pipe\\agent-board-test-${crypto.randomUUID()}`
-      : join(dir, 'd.sock');
+      : join(dir, 'd.sock'));
   const requests: HookRequest[] = [];
   const sockets = new Set<Socket>();
+  const state = { challenges: 0 };
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on('error', () => undefined);
@@ -128,8 +145,21 @@ async function startDaemon(
       buffer += chunk;
       let index: number;
       while ((index = buffer.indexOf('\n')) !== -1) {
+        const json = JSON.parse(buffer.slice(0, index)) as { type?: string; nonce?: string };
+        if (json.type === 'auth.challenge') {
+          buffer = buffer.slice(index + 1);
+          state.challenges += 1;
+          // 用正式 schema 驗證挑戰的格式。
+          HookAuthChallenge.parse(json);
+          if (auth !== 'silent') {
+            const key = auth === 'ok' ? TEST_KEY : 'w'.repeat(43);
+            const proof = localProof(key, 'hookServer', json.nonce ?? '');
+            socket.write(`${JSON.stringify({ type: 'auth.proof', proof })}\n`);
+          }
+          continue;
+        }
         // 用正式 schema 驗證：CLI 沒載入 zod，這裡保證它送的東西 daemon 收得下。
-        const request = HookRequest.parse(JSON.parse(buffer.slice(0, index)));
+        const request = HookRequest.parse(json);
         buffer = buffer.slice(index + 1);
         requests.push(request);
         onRequest(request, socket);
@@ -141,6 +171,9 @@ async function startDaemon(
     path,
     requests,
     server,
+    get challenges() {
+      return state.challenges;
+    },
     close: () =>
       new Promise((resolve) => {
         for (const socket of sockets) socket.destroy();
@@ -167,6 +200,7 @@ describe('agent-board-hook CLI', () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'ab-hook-'));
+    await writeFile(join(dir, 'hook.key'), `${TEST_KEY}\n`, { mode: 0o600 });
   });
 
   afterEach(async () => {
@@ -179,6 +213,8 @@ describe('agent-board-hook CLI', () => {
     return {
       [HOOK_ENV.sessionId]: 'board-1',
       ...(socket ? { [HOOK_ENV.socket]: socket } : {}),
+      // W5：daemon 一律給密鑰檔（假 daemon 用 TEST_KEY 回證明）。
+      [HOOK_ENV.keyFile]: join(dir, 'hook.key'),
       ...extra,
     };
   }
@@ -227,15 +263,21 @@ describe('agent-board-hook CLI', () => {
     });
 
     it('cli.ts 與 cli-constants.ts 在 runtime 不載入 protocol 或任何第三方套件', async () => {
-      for (const file of ['./cli.ts', './cli-constants.ts']) {
+      for (const file of ['./cli.ts', './cli-constants.ts', './daemonAuth.ts']) {
         const source = await readFile(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
         const imports = [...source.matchAll(/^import (?!type )[^;]*?from '([^']+)'/gms)].map(
           (match) => match[1] ?? '',
         );
         for (const specifier of imports) {
-          expect(specifier).toMatch(/^(node:|\.\/)/);
+          // local-auth 只用 node:crypto（protocol 的 localAuth.test.ts 檢查）。
+          expect(specifier).toMatch(/^(node:|\.\/|@agent-board\/protocol\/local-auth$)/);
         }
       }
+    });
+
+    it('W5 的常數和 protocol 一致', () => {
+      expect(KEY_FILE_ENV).toBe(HOOK_ENV.keyFile);
+      expect(KEY_FILE_FLAG).toBe(HOOK_KEY_FILE_FLAG);
     });
   });
 
@@ -945,7 +987,17 @@ describe('agent-board-hook CLI', () => {
       daemon = await startDaemon(dir);
       expectSilentExit(
         await runCli({
-          args: ['--agent', 'codex', '--session', 'board-arg', '--socket', daemon.path, 'Stop'],
+          args: [
+            '--agent',
+            'codex',
+            '--session',
+            'board-arg',
+            '--socket',
+            daemon.path,
+            KEY_FILE_FLAG,
+            join(dir, 'hook.key'),
+            'Stop',
+          ],
           env: {},
           stdin: JSON.stringify({ ...codexBase, hook_event_name: 'Stop' }),
         }),
@@ -1025,5 +1077,106 @@ describe('agent-board-hook CLI', () => {
       expect(result.code).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual(output);
     });
+  });
+
+  describe('W5：先確認對方是 daemon 才送', () => {
+    it('daemon 證明對了才送請求；Codex 的 --key-file 優先於環境變數', async () => {
+      daemon = await startDaemon(dir, (request, socket) => reply(socket, request.requestId, null));
+      expectSilentExit(
+        await runCli({ args: ['Stop'], env: env(daemon.path), stdin: JSON.stringify(stopInput) }),
+      );
+      expect(daemon.challenges).toBe(1);
+      expect(daemon.requests.map((r) => r.event)).toEqual(['Stop']);
+      const result = await runCli({
+        args: [
+          '--agent',
+          'codex',
+          '--session',
+          'board-arg',
+          '--socket',
+          daemon.path,
+          KEY_FILE_FLAG,
+          join(dir, 'hook.key'),
+          'Stop',
+        ],
+        env: { [HOOK_ENV.keyFile]: join(dir, 'missing.key') },
+        stdin: JSON.stringify({ ...stopInput, hook_event_name: 'Stop' }),
+      });
+      expectSilentExit(result);
+      expect(daemon.requests.map((r) => r.sessionId)).toEqual(['board-1', 'board-arg']);
+    });
+
+    it('證明不對（別的程序冒充 daemon）：當成連不上、不重試、請求不送出', async () => {
+      daemon = await startDaemon(dir, () => undefined, { auth: 'wrong' });
+      const result = await runCli({
+        args: ['PreToolUse'],
+        env: env(daemon.path, { [RETRY_OVERRIDE_ENV]: '5000' }),
+        stdin: JSON.stringify(bashInput),
+      });
+      expect(decisionOf(result.stdout)).toBe('ask');
+      expect(result.ms).toBeLessThan(2_000);
+      expect(daemon.challenges).toBe(1);
+      expect(daemon.requests).toEqual([]);
+      expectSilentExit(
+        await runCli({ args: ['Stop'], env: env(daemon.path), stdin: JSON.stringify(stopInput) }),
+      );
+      expect(daemon.requests).toEqual([]);
+    });
+
+    it('舊版 daemon（不回 auth.proof）：等 2 秒當成連不上，不重試', async () => {
+      daemon = await startDaemon(dir, () => undefined, { auth: 'silent' });
+      const result = await runCli({
+        args: ['PreToolUse'],
+        env: env(daemon.path, { [RETRY_OVERRIDE_ENV]: '5000' }),
+        stdin: JSON.stringify(bashInput),
+      });
+      expect(decisionOf(result.stdout)).toBe('ask');
+      expect(result.ms).toBeGreaterThanOrEqual(1_900);
+      expect(result.ms).toBeLessThan(4_500);
+      expect(daemon.challenges).toBe(1);
+      expect(daemon.requests).toEqual([]);
+    });
+
+    it('給了密鑰檔卻讀不到：當成連不上，連都不連', async () => {
+      daemon = await startDaemon(dir);
+      const result = await runCli({
+        args: ['PreToolUse'],
+        env: env(daemon.path, { [HOOK_ENV.keyFile]: join(dir, 'missing.key') }),
+        stdin: JSON.stringify(bashInput),
+      });
+      expect(decisionOf(result.stdout)).toBe('ask');
+      expect(daemon.challenges).toBe(0);
+      expect(daemon.requests).toEqual([]);
+    });
+
+    it('Windows pipe 沒給密鑰檔：當成連不上（pipe 沒有資料夾權限保護，不走舊的不驗證）', async () => {
+      const result = await runCli({
+        args: ['PreToolUse'],
+        env: {
+          [HOOK_ENV.sessionId]: 'board-1',
+          [HOOK_ENV.socket]: '\\\\.\\pipe\\agent-board-hook-test-none',
+        },
+        stdin: JSON.stringify(bashInput),
+      });
+      expect(decisionOf(result.stdout)).toBe('ask');
+      expect(result.ms).toBeLessThan(2_000);
+    });
+
+    it.skipIf(process.platform === 'win32')(
+      'Unix socket 沒給密鑰檔（0.1.6 以前開的 agent，升級後還活著）：照舊不驗證直接送',
+      async () => {
+        daemon = await startDaemon(dir, (request, socket) =>
+          reply(socket, request.requestId, null),
+        );
+        const result = await runCli({
+          args: ['PreToolUse'],
+          env: { [HOOK_ENV.sessionId]: 'board-1', [HOOK_ENV.socket]: daemon.path },
+          stdin: JSON.stringify(bashInput),
+        });
+        expectSilentExit(result);
+        expect(daemon.challenges).toBe(0);
+        expect(daemon.requests.map((r) => r.event)).toEqual(['PreToolUse']);
+      },
+    );
   });
 });

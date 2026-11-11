@@ -137,6 +137,15 @@ describe('buildCodexArgs', () => {
     // shell：'/tmp/a'\''b"c\d.sock'；TOML 再把 \ 與 " 跳脫成 \\、\"。
     expect(first).toContain(`--socket '/tmp/a'\\\\''b\\"c\\\\d.sock' SessionStart"`);
   });
+
+  it('W5：有密鑰檔就帶 --key-file（在事件名稱前面）', () => {
+    const [first] = codexHookOverrides({
+      sessionId: 's-3',
+      socketPath: '/tmp/h.sock',
+      keyFile: '/data dir/hook.key',
+    });
+    expect(first).toContain(`--socket /tmp/h.sock --key-file '/data dir/hook.key' SessionStart"`);
+  });
 });
 
 describe('codexHookOutput', () => {
@@ -300,6 +309,10 @@ describe('daemon 開 Codex', () => {
     const hookArg = run?.argv.find((arg) => arg.startsWith('hooks.PreToolUse='));
     expect(hookArg).toContain('--session x1 --socket');
     expect(hookArg).toContain(socket.replace(/\\/g, '\\\\'));
+    // W5：也帶 daemon 的 hook 密鑰檔，hook CLI 先驗證對方是 daemon 才送；環境變數同樣有。
+    expect(hookArg).toContain('--key-file');
+    expect(hookArg).toContain('hook.key');
+    expect(run?.env.AGENT_BOARD_HOOK_KEY_FILE).toMatch(/hook\.key$/);
     expect(h.installHookCalls).toEqual([]);
     const created = await h.hub.waitFor('session.created', (m) => m.requestId === 'req-x1');
     expect(created.session.claudeSessionId).toBeNull();

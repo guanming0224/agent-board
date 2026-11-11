@@ -243,6 +243,42 @@ describe('MCP 密鑰檔', () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
+
+  it('repointMcpConfig：0.1.6 以前的設定檔沒有 hook 密鑰檔的 env 就補上，其他 env 不動；已經有的不改（W5）', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'ab-mcp-'));
+    try {
+      const { configPath } = writeMcpFiles(
+        dataDir,
+        's1',
+        { command: process.execPath, args: ['/x/agent-board-mcp.mjs'] },
+        '/tmp/hook.sock',
+        ['send_task'],
+      );
+      const before = JSON.parse(readFileSync(configPath, 'utf8')).mcpServers['agent-board'];
+      expect(before.env.AGENT_BOARD_HOOK_KEY_FILE).toBeUndefined();
+      expect(repointMcpConfig(dataDir, 's1', process.execPath, '/data/hook.key')).toBe(true);
+      const after = JSON.parse(readFileSync(configPath, 'utf8')).mcpServers['agent-board'];
+      expect(after.env).toEqual({ ...before.env, AGENT_BOARD_HOOK_KEY_FILE: '/data/hook.key' });
+      expect(after.command).toBe(process.execPath);
+      expect(statSync(configPath).mode & 0o777).toBe(0o600);
+      expect(repointMcpConfig(dataDir, 's1', process.execPath, '/other/hook.key')).toBe(false);
+      // 新寫的設定檔本來就有。
+      const fresh = writeMcpFiles(
+        dataDir,
+        's2',
+        { command: process.execPath, args: ['/x/agent-board-mcp.mjs'] },
+        '/tmp/hook.sock',
+        ['send_task'],
+        '/data/hook.key',
+      );
+      expect(
+        JSON.parse(readFileSync(fresh.configPath, 'utf8')).mcpServers['agent-board'].env
+          .AGENT_BOARD_HOOK_KEY_FILE,
+      ).toBe('/data/hook.key');
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('其他', () => {

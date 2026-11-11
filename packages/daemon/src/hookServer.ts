@@ -1,10 +1,17 @@
 // 本機 hook socket：unix socket 或 Windows named pipe，NDJSON（CONTRACTS §4.2）。
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { connect, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HookReply, HookRequest, McpReply, McpRequest } from '@agent-board/protocol';
-import { installId, stableShortDir } from '@agent-board/session-host';
+import { HOOK_KEY_FILE, HookReply, HookRequest, McpReply, McpRequest } from '@agent-board/protocol';
+import { isNonce, localProof, NonceMemory } from '@agent-board/protocol/local-auth';
+import {
+  ensurePrivateDir,
+  installId,
+  stableShortDir,
+  writePrivateFile,
+} from '@agent-board/session-host';
 import { errorMessage, log } from './log';
 
 /** macOS 的 sun_path 上限 104 bytes，保守一點。 */
@@ -54,6 +61,29 @@ export function downMarkerPath(socketPath: string): string | null {
   return socketPath.startsWith('\\\\.\\pipe\\') ? null : `${socketPath}.down`;
 }
 
+export const hookKeyPath = (dataDir: string): string => join(dataDir, HOOK_KEY_FILE);
+
+/**
+ * hook 密鑰（W5）：沒有就建（600），有就沿用——活過 daemon 重啟的 agent 與 MCP server 還拿著同一個路徑，
+ * 每次換掉的話它們重開時讀到的才是新的，但正在連的那一次會驗不過。
+ */
+export function ensureHookKey(dataDir: string): string {
+  const path = hookKeyPath(dataDir);
+  try {
+    const existing = readFileSync(path, 'utf8').trim();
+    if (existing.length >= 32) {
+      if (process.platform !== 'win32') chmodSync(path, 0o600);
+      return existing;
+    }
+  } catch {
+    // 還沒有
+  }
+  ensurePrivateDir(dataDir);
+  const key = randomBytes(32).toString('base64url');
+  writePrivateFile(path, `${key}\n`);
+  return key;
+}
+
 function isSocketAlive(path: string): Promise<boolean> {
   return new Promise((resolve) => {
     const probe = connect(path);
@@ -69,6 +99,9 @@ export class HookServer {
   private server: Server | null = null;
   private location: SocketLocation | null = null;
   private readonly sockets = new Set<Socket>();
+  private key = '';
+  /** hook 用過的 nonce（擋重送）。 */
+  private readonly nonces = new NonceMemory();
 
   constructor(
     private readonly dataDir: string,
@@ -79,6 +112,11 @@ export class HookServer {
   get path(): string {
     if (!this.location) throw new Error('hook server 尚未啟動');
     return this.location.path;
+  }
+
+  /** hook 密鑰檔（`<dataDir>/hook.key`，W5）：agent 的環境變數、Codex 的 `--key-file`、MCP 設定檔都指這裡。 */
+  get keyPath(): string {
+    return hookKeyPath(this.dataDir);
   }
 
   async start(): Promise<void> {
@@ -94,11 +132,23 @@ export class HookServer {
         // 沒有殘留檔
       }
     }
+    this.key = ensureHookKey(this.dataDir);
     const server = createServer((socket) => this.handleSocket(socket));
     await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
+      const onError = (error: NodeJS.ErrnoException) => {
+        // Windows：同名 pipe 已經有人開著（另一個 daemon，或別的程序搶先開了）。不搶，啟動失敗並說明（§20.7）。
+        reject(
+          error.code === 'EADDRINUSE'
+            ? new Error(
+                `${location.path} 已經有人開著（另一個 daemon 在跑？）。先停掉另一個 daemon；` +
+                  '如果沒有，可能是別的程式占用了這個名稱，重新開機後再試。',
+              )
+            : error,
+        );
+      };
+      server.once('error', onError);
       server.listen(location.path, () => {
-        server.off('error', reject);
+        server.off('error', onError);
         resolve();
       });
     });
@@ -116,6 +166,22 @@ export class HookServer {
     for (const socket of this.sockets) socket.destroy();
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
     if (location?.tempDir) rmSync(location.tempDir, { recursive: true, force: true });
+  }
+
+  /**
+   * W5：客戶端（hook CLI、MCP server）先送 `auth.challenge`，這裡用 hook.key 回 `auth.proof`，對方驗過才送請求。
+   * nonce 格式不對或最近用過：直接斷線（對方當成連不上）。
+   */
+  private handleChallenge(json: unknown, socket: Socket): void {
+    const nonce = (json as { nonce?: unknown }).nonce;
+    if (!this.key || !isNonce(nonce) || !this.nonces.remember(nonce)) {
+      log.warn('hook 驗證請求的 nonce 不對或重送，中斷連線');
+      socket.destroy();
+      return;
+    }
+    if (socket.destroyed || !socket.writable) return;
+    const reply = { type: 'auth.proof', proof: localProof(this.key, 'hookServer', nonce) };
+    socket.write(`${JSON.stringify(reply)}\n`);
   }
 
   private handleSocket(socket: Socket): void {
@@ -154,6 +220,10 @@ export class HookServer {
       json = JSON.parse(line);
     } catch {
       log.warn('hook 訊息不是合法 JSON，已丟棄');
+      return;
+    }
+    if ((json as { type?: unknown } | null)?.type === 'auth.challenge') {
+      this.handleChallenge(json, socket);
       return;
     }
     if ((json as { type?: unknown } | null)?.type === 'mcp') {

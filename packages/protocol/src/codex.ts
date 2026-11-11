@@ -3,6 +3,7 @@
 import {
   HOOK_AGENT_FLAG,
   HOOK_COMMAND,
+  HOOK_KEY_FILE_FLAG,
   HOOK_SESSION_FLAG,
   HOOK_SOCKET_FLAG,
   HOOK_TIMEOUT_SECONDS,
@@ -62,6 +63,8 @@ function tomlString(value: string): string {
 export interface CodexHookTarget {
   sessionId: string;
   socketPath: string;
+  /** daemon 的 hook 密鑰檔（W5）；hook CLI 先驗證對方是 daemon 才送。 */
+  keyFile?: string;
 }
 
 export const codexHookCommand = (event: CodexHookEvent, target: CodexHookTarget): string =>
@@ -73,6 +76,7 @@ export const codexHookCommand = (event: CodexHookEvent, target: CodexHookTarget)
     shellArg(target.sessionId),
     HOOK_SOCKET_FLAG,
     shellArg(target.socketPath),
+    ...(target.keyFile ? [HOOK_KEY_FILE_FLAG, shellArg(target.keyFile)] : []),
     event,
   ].join(' ');
 
