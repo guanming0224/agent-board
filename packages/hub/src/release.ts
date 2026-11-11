@@ -8,7 +8,7 @@
 // - 不呼叫 LLM、不送 Claude 寫的內容：推播只有機器名稱、版本、原因代碼。
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -495,7 +495,27 @@ export class ReleaseManager {
           const verified = Verified.parse(
             JSON.parse(await readFile(join(dir, name, 'verified.json'), 'utf8')),
           );
-          if (verified.version === name) index.set(name, verified);
+          if (verified.version !== name) continue;
+          // 舊 hub（沒有 bundledNode 欄位）驗過的 cache：成品還在就重讀 .node-modules-platform 補上，寫回
+          // verified.json（§21.10）。不補的話自帶 Node 的成品會被當成舊成品比 ABI。
+          let patched = false;
+          for (const entry of Object.values(verified.assets)) {
+            if (entry.bundledNode !== undefined) continue;
+            const archive = join(dir, name, entry.asset);
+            if (!existsSync(archive)) continue;
+            const modules = await modulesPlatform(archive);
+            entry.bundledNode = modules.bundledNode;
+            entry.abi ??= modules.abi;
+            patched = true;
+          }
+          if (patched) {
+            await writeFile(
+              join(dir, name, 'verified.json'),
+              `${JSON.stringify(verified, null, 2)}\n`,
+              { mode: 0o600 },
+            ).catch(() => undefined);
+          }
+          index.set(name, verified);
         } catch {
           // 沒驗完的半成品：不算
         }

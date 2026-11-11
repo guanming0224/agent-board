@@ -196,13 +196,26 @@ async function main() {
   assert.match(rerun, /略過安裝/);
   step('重跑是冪等的：內容相同不重裝，保留 --port');
 
-  const tooOld = spawnSync('sh', [installScript, 'hub'], {
-    env: { ...cleanEnv, PATH: `${stubs}:/usr/bin:/bin` },
+  // 沒自帶 Node 的舊版發布檔（把這次的拿掉 runtime/）在沒有 node 的機器上：給出清楚訊息。
+  const legacyDir = join(base, 'legacy release');
+  mkdirSync(legacyDir);
+  execFileSync('tar', ['-xzf', tarball, '-C', legacyDir]);
+  rmSync(join(legacyDir, 'agent-board/runtime'), { recursive: true });
+  const tooOld = spawnSync('sh', [installScript, 'hub', '--from', join(legacyDir, 'agent-board')], {
+    env: { ...cleanEnv, PATH: noNodePath },
     encoding: 'utf8',
   });
   assert.notEqual(tooOld.status, 0);
-  assert.match(tooOld.stderr, /node/);
-  step('沒有 node 時給出清楚訊息');
+  assert.match(tooOld.stderr, /找不到 node。這個發布檔沒有自帶 Node/);
+  // 沒給 --from 也沒有下載位址：說明要用 --from（不需要 node 就能判斷）。
+  const noUrl = spawnSync('sh', [installScript, 'hub'], {
+    env: { ...cleanEnv, PATH: noNodePath },
+    encoding: 'utf8',
+  });
+  assert.notEqual(noUrl.status, 0);
+  assert.match(noUrl.stderr, /--from/);
+  rmSync(legacyDir, { recursive: true, force: true });
+  step('沒自帶 Node 的舊版發布檔在沒有 node 的機器上、沒有下載位址時都給出清楚訊息');
 
   // ── 用服務設定的環境跑 hub ──
   const hubProc = startFromPlist('hub');

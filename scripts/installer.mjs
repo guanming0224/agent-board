@@ -40,6 +40,7 @@ import { parseArgs } from 'node:util';
 import {
   bundledNodeOf,
   hostNodeId,
+  isBundledRuntime,
   readModulesPlatform,
   runtimeNodePath,
 } from './lib/bundled-node.mjs';
@@ -148,8 +149,12 @@ const realOrSelf = (path) => {
     return path;
   }
 };
-/** path 在 Agent Board 的安裝資料夾裡（自帶的 node）。 */
+/**
+ * path 不能當系統的 node：在 Agent Board 的安裝資料夾裡，或是任何發布檔自帶的 runtime（例如 install.sh 用
+ * 暫存資料夾裡新版自帶的 node 執行安裝程式時的 process.execPath）。
+ */
 const insideInstall = (paths, path) => {
+  if (isBundledRuntime(path)) return true;
   const root = realOrSelf(paths.root);
   const real = realOrSelf(path);
   return real === root || real.startsWith(`${root}${isWindows ? '\\' : '/'}`);
@@ -547,8 +552,31 @@ function pruneReleases(paths, state) {
   // 底下的 MCP server（與 hook 之後要讀的檔）其實是從 releases/<當時的版本> 載入的。那一版被清掉之後，
   // 它還在記憶體裡的部分照常運作，之後才要讀的檔會失敗（重開 session 就好）。只留 3 版、current 與上一版一定留，
   // 所以要連續換三版以上才會遇到（CONTRACTS §21.8）。
+  // Windows：檔案被鎖住時 rmSync 會刪到一半（例如 node.exe 還在、其他檔不見了），留下半殘的版本。
+  // 先整個改名到 releases\.trash-<名稱>（被鎖的資料夾改不了名就整個留著），再刪 .trash；刪不完的下次再清。
+  if (isWindows) {
+    let all = [];
+    try {
+      all = readdirSync(paths.releases);
+    } catch {
+      // 沒有 releases
+    }
+    for (const name of all.filter((n) => n.startsWith('.trash-'))) {
+      try {
+        rmSync(join(paths.releases, name), { recursive: true, force: true });
+      } catch {
+        // 還是刪不掉：下次再清
+      }
+    }
+  }
   for (const name of others.slice(Math.max(0, KEEP_RELEASES - keep.size))) {
     try {
+      if (isWindows) {
+        const trash = join(paths.releases, `.trash-${name}`);
+        renameSync(join(paths.releases, name), trash);
+        rmSync(trash, { recursive: true, force: true });
+        continue;
+      }
       rmSync(join(paths.releases, name), { recursive: true, force: true });
     } catch (error) {
       say(
@@ -1283,6 +1311,14 @@ async function install(argv) {
   const newHostNode = hostNodeId(sourceNode);
   const nodeChanged = hostInstalled && newHostNode !== runningHostNodeId(state);
   const keepHost = Boolean(options['keep-session-host']) && !protocolChanged;
+  if (options['keep-session-host'] && protocolChanged && hostWanted) {
+    say(
+      t(
+        `--keep-session-host 這次不適用：session host 的協定從 ${state.sessionHostProtocol ?? '舊版'} 變成 ${newProtocol}，新 daemon 連不上舊的 host，一定要換。`,
+        `--keep-session-host does not apply: the session host protocol changes from ${state.sessionHostProtocol ?? 'old'} to ${newProtocol}, so the new daemon cannot talk to the old host and it must be replaced.`,
+      ),
+    );
+  }
   const restartHost =
     hostWanted &&
     hostInstalled &&

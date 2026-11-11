@@ -130,9 +130,10 @@ service worker（`packages/web/src/flows/pwa/sw.js`）只處理 `install`、`act
 ### 建置時下載 Node（2026-11-11，CONTRACTS §21.10）
 
 `scripts/fetch-node.mjs`（只在 `build:release` 與 GitHub Actions 的建置裡執行，**不進發布檔、各機執行時不會跑**）：
-`fetch` 只連 `https://nodejs.org/dist/v<版本>/`，下載 `SHASUMS256.txt` 與這個平台的官方成品（版本＝`package.json`
-的 `bundledNode`），用官方 SHASUMS256.txt 驗 SHA-256，不符就中止；用系統 `tar` 解開，只取 `node` 執行檔與
-`LICENSE` 放到 `release/agent-board/runtime/node/`。不送任何資料、不呼叫模型。build-release 接著用這支 node 跑
+`fetch` 只連 `https://nodejs.org/dist/v<版本>/`（不跟隨轉址、確認回應來源、5 分鐘逾時），下載 `SHASUMS256.txt`
+與這個平台的官方成品（版本＝`package.json` 的 `bundledNode`），以 `package.json` 釘住的 `bundledNodeSha256` 驗
+SHA-256（官方 SHASUMS256.txt 對照輔助），不符就中止；用系統 `tar` 解開，只取 `node` 執行檔與 `LICENSE` 放到
+`release/agent-board/runtime/node/`（官方成品裡的 npm 放在快取旁，只在建置時用來跑 `npm ci`）。不送任何資料、不呼叫模型。build-release 接著用這支 node 跑
 `npm ci`（同下段的安裝腳本）與原生模組載入檢查。`check-no-llm` 掃發布檔時略過 `runtime/`（未修改的官方二進位檔）。
 執行時：hub、daemon、session host、更新程式、安裝程式、hook 包裝、派工 MCP server 都用這支 node 跑我們自己的程式，
 它本身不連任何地方。

@@ -55,8 +55,12 @@ bundled_node() {
 
 data_root="$HOME/.local/share/agent-board"
 script_dir=$(dirname "$0")
-# 從已解開的發布檔裡執行時，先用它自帶的 node；否則用系統的（之後解開發布檔再換成自帶的）。
-node_bin=$(bundled_node "$script_dir/..")
+# 從已解開的發布檔裡執行時（$0 是路徑、旁邊有 BUILD_ID），先用它自帶的 node；否則用系統的
+# （之後解開發布檔再換成自帶的）。用 curl … | sh 執行時 $0 是 sh，不能拿目前目錄亂找。
+node_bin=""
+case "$0" in
+  */*) [ -f "$script_dir/../BUILD_ID" ] && node_bin=$(bundled_node "$script_dir/..") ;;
+esac
 
 # 在 Agent Board 開的 session 裡執行時（例如請畫布上的 Claude 上架），安裝程式重啟 daemon 會把
 # 這個 session 連同安裝程式一起殺掉，daemon 就起不來。這時改成脫離目前 session 在背景跑（新的
@@ -140,14 +144,17 @@ done
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-board-install.XXXXXX")
 
+# 驗 SHA-256：用系統的 shasum（macOS）或 sha256sum（Linux），不需要 node。
 verify_sha256() {
-  "$node_bin" -e "
-    const { createHash } = require('node:crypto');
-    const { readFileSync } = require('node:fs');
-    const expected = readFileSync(process.argv[2], 'utf8').trim().split(/\s+/)[0];
-    const actual = createHash('sha256').update(readFileSync(process.argv[1])).digest('hex');
-    process.exit(expected === actual ? 0 : 1);
-  " "$1" "$2"
+  expected=$(awk '{ print $1; exit }' "$2")
+  if command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 "$1" | awk '{ print $1 }')
+  elif command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$1" | awk '{ print $1 }')
+  else
+    die "$(t "找不到 shasum 或 sha256sum，無法驗證下載內容。" "Cannot find shasum or sha256sum to verify the download.")"
+  fi
+  [ -n "$expected" ] && [ "$expected" = "$actual" ]
 }
 
 if [ -z "$from" ] && [ -f "$script_dir/../BUILD_ID" ]; then
@@ -156,7 +163,6 @@ if [ -z "$from" ] && [ -f "$script_dir/../BUILD_ID" ]; then
 fi
 
 if [ -z "$from" ]; then
-  [ -n "$node_bin" ] || require_system_node
   case "$RELEASE_URL" in
     */OWNER/*) die "$(t "這份腳本沒有設定下載位址。請從原始碼建置後用 --from 指定發布檔（見 README）。" "This script has no download address set. Build from source and pass the release file with --from (see the README).")" ;;
   esac

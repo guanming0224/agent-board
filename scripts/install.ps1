@@ -77,6 +77,7 @@ if ($uninstall) {
   if (-not (Test-Path $installer)) { $installer = Join-Path $root 'app\scripts\installer.mjs' }
   if (-not (Test-Path $installer)) { Fail (T '這台機器沒有安裝 Agent Board。' 'Agent Board is not installed on this machine.') }
   $node = Node-For (Split-Path (Split-Path $installer))
+  $copy = $null
   if ($node -ne 'node') {
     # Windows 鎖住執行中的 node.exe，解除安裝刪不掉 current：先複製到暫存資料夾再跑。
     $copy = Join-Path ([System.IO.Path]::GetTempPath()) ("agent-board-node-" + [guid]::NewGuid() + ".exe")
@@ -84,7 +85,15 @@ if ($uninstall) {
     $node = $copy
   }
   & $node $installer uninstall @rest
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  $code = $LASTEXITCODE
+  if ($copy) {
+    # 用完就刪；node.exe 剛結束可能還被鎖著，刪不掉就開一個背景 cmd 約 5 秒後再刪。
+    Remove-Item -Force $copy -ErrorAction SilentlyContinue
+    if (Test-Path $copy) {
+      Start-Process -WindowStyle Hidden cmd.exe -ArgumentList '/c', "ping -n 6 127.0.0.1 >nul & del /f /q `"$copy`""
+    }
+  }
+  if ($code -ne 0) { exit $code }
   Set-UserPath { param($parts) $parts | Where-Object { $_ -ne $binDir } }
   exit 0
 }

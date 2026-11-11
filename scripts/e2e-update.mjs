@@ -64,7 +64,13 @@ const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('he
  * .node-modules-platform 當舊版（程式是新的，只驗配置與服務設定的轉換）。
  */
 function legacyTarball() {
-  if (process.env.E2E_LEGACY_TARBALL) return { path: process.env.E2E_LEGACY_TARBALL, real: true };
+  if (process.env.E2E_LEGACY_TARBALL) {
+    const path = process.env.E2E_LEGACY_TARBALL;
+    const manifest = execFileSync('tar', ['-xOzf', path, 'agent-board/package.json'], {
+      encoding: 'utf8',
+    });
+    return { path, real: true, version: JSON.parse(manifest).version };
+  }
   const work = join(base, 'pack-legacy');
   mkdirSync(work, { recursive: true });
   execFileSync('tar', ['-xzf', tarball, '-C', work]);
@@ -83,7 +89,7 @@ function legacyTarball() {
     env: { ...process.env, COPYFILE_DISABLE: '1' },
   });
   rmSync(work, { recursive: true, force: true });
-  return { path: out, real: false };
+  return { path: out, real: false, version: BASE };
 }
 
 /** 把本機成品解開、改版本號（壞版把 daemon 換成一啟動就失敗的程式）、重新打包；回傳成品路徑。 */
@@ -285,7 +291,7 @@ async function main() {
   assert.equal(install.status, 0, `${install.stdout}${install.stderr}`);
   const machine = await poll('daemon 連上 hub', async () => {
     const overview = await api('GET', '/api/releases');
-    return overview.body.machines?.find((m) => m.online && m.version === BASE);
+    return overview.body.machines?.find((m) => m.online && m.version === legacy.version);
   });
   assert.equal(machine.platform, platform);
   assert.equal(machine.protocolVersion, 1);
@@ -302,7 +308,7 @@ async function main() {
   const legacyHostPid = runningPid(launchd, 'com.agent-board.session-host');
   assert.ok(legacyHostPid, 'session host 在跑');
   step(
-    `沒自帶 Node 的舊版 ${BASE}（${legacy.real ? '真的成品' : '這次的成品拿掉 runtime/'}）從發布檔安裝並連上 hub，服務用系統的 node`,
+    `沒自帶 Node 的舊版 ${legacy.version}（${legacy.real ? '真的成品' : '這次的成品拿掉 runtime/'}）從發布檔安裝並連上 hub，服務用系統的 node`,
   );
 
   const channel = await api('PUT', `/api/machines/${machine.machineId}/channel`, {
@@ -343,7 +349,7 @@ async function main() {
     const refused = manual();
     assert.equal(refused.status, 75, `${refused.stdout}${refused.stderr}`);
     assert.match(`${refused.stdout}${refused.stderr}`, /--keep-session-host/);
-    assert.equal(basename(realpathSync(join(root, 'current'))), BASE);
+    assert.equal(basename(realpathSync(join(root, 'current'))), legacy.version);
     rmSync(busyFile);
     step(
       '手動升級時有 session 在工作：要換 session host（Node 變了），以 75 中止、什麼都沒改，提示 --keep-session-host',

@@ -479,6 +479,43 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
     expect(overview.body.machines.every((m) => m.targetNote !== 'abi_mismatch')).toBe(true);
   });
 
+  it('舊 hub 驗過的 cache（verified.json 沒有 bundledNode）：重讀成品補上、寫回，之後不比 ABI（§21.10）', async () => {
+    const gh = fakeGh({ releases: [] });
+    const dir = mkdtempSync(join(tmpdir(), 'ab-cache-'));
+    try {
+      const asset = releaseAssetName('0.2.0', 'darwin-arm64');
+      const versionDir = join(dir, 'release-cache', '0.2.0');
+      mkdirSync(versionDir, { recursive: true });
+      const bytes = archiveWithAbi('137', true);
+      writeFileSync(join(versionDir, asset), bytes);
+      const digest = sha(bytes);
+      // 0.1.0 的 hub 寫的格式：只有 abi，沒有 bundledNode。
+      writeFileSync(
+        join(versionDir, 'verified.json'),
+        JSON.stringify({
+          version: '0.2.0',
+          verifiedAt: '2026-11-11T00:00:00.000Z',
+          assets: { 'darwin-arm64': { asset, sha256: digest, size: bytes.length, abi: '137' } },
+        }),
+      );
+      hub = await startHub({ gh: gh.runner, releaseCheckIntervalMs: null, releaseDataDir: dir });
+      await hub.running.hub.release.loadCache();
+      const rewritten = JSON.parse(readFileSync(join(versionDir, 'verified.json'), 'utf8'));
+      expect(rewritten.assets['darwin-arm64']).toMatchObject({ abi: '137', bundledNode: true });
+      const cookie = await hub.setupOwner();
+      await hub.api('POST', '/api/releases/promote', {
+        cookie,
+        body: { version: '0.2.0', confirm: true },
+      });
+      const paired = await hub.pair(cookie, 'macbook');
+      const daemon = await hub.daemon(paired.token);
+      daemon.send(macHello({ nodeAbi: '147' }));
+      expect(releaseOf(await daemon.next('hub.welcome'))).toBe('0.2.0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('先升 hub：hub 那台還沒到同一版時，其他機器的目標是 null（hub_first），hub 升完才送出', async () => {
     const { hub, cookie } = await ready([release('0.2.0')]);
     await hub.api('POST', '/api/releases/check', { cookie });

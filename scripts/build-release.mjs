@@ -40,6 +40,7 @@ import {
   RUNTIME_DEPS,
 } from './release-shipped.mjs';
 import { bundledNodeVersion, extractNode, fetchNode } from './fetch-node.mjs';
+import { hookWrapperCmd, hookWrapperSh } from './lib/bundled-node.mjs';
 
 const root = join(import.meta.dirname, '..');
 const outDir = join(root, 'release');
@@ -109,32 +110,10 @@ function writeHookWrappers() {
   const bin = join(stage, 'daemon', 'node_modules', '.bin');
   mkdirSync(bin, { recursive: true });
   const sh = join(bin, 'agent-board-hook');
-  writeFileSync(
-    sh,
-    [
-      '#!/bin/sh',
-      '# Agent Board hook：用發布檔自帶的 node 執行 daemon/dist/agent-board-hook.cjs（CONTRACTS §21.10）。',
-      // 不呼叫 dirname（每次工具呼叫都會跑 hook，少開一個行程）。
-      'case $0 in */*) d=${0%/*} ;; *) d=. ;; esac',
-      'n="$d/../../../runtime/node/bin/node"',
-      '[ -x "$n" ] || n="$d/../../../runtime/node/node.exe"',
-      '[ -x "$n" ] || n=node',
-      'exec "$n" "$d/../../dist/agent-board-hook.cjs" "$@"',
-      '',
-    ].join('\n'),
-  );
+  writeFileSync(sh, hookWrapperSh());
   chmodSync(sh, 0o755);
   // Windows 上 Claude Code 可能用 cmd 或 Git Bash 跑 hook，兩個都要找得到（未在 Windows 實測）。
-  writeFileSync(
-    `${sh}.cmd`,
-    [
-      '@setlocal',
-      '@set "AB_NODE=%~dp0..\\..\\..\\runtime\\node\\node.exe"',
-      '@if not exist "%AB_NODE%" set "AB_NODE=node"',
-      '@"%AB_NODE%" "%~dp0..\\..\\dist\\agent-board-hook.cjs" %*',
-      '',
-    ].join('\r\n'),
-  );
+  writeFileSync(`${sh}.cmd`, hookWrapperCmd());
 }
 
 /**
@@ -262,7 +241,7 @@ function writeBuildId(nodeVersion) {
 const platformKey = () =>
   `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`;
 
-/** 系統 npm 的 npm-cli.js：用自帶的 node 執行它，npm ci 跑原生模組的安裝腳本時才會用自帶 node 的 ABI。 */
+/** 系統 npm 的 npm-cli.js（官方 Node 成品裡沒有 npm 時的退路）：一樣用自帶的 node 執行它。 */
 function npmCli() {
   const candidates = [
     join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
@@ -294,7 +273,9 @@ function npmCli() {
  */
 async function bundleNode(version) {
   const archive = await fetchNode(version, platformKey());
-  const node = extractNode(archive, version, platformKey(), stage);
+  // 官方成品自帶的 npm 放到快取旁（不進發布檔），npm ci 用它跑；沒有才退回系統的 npm。
+  const npmDir = join(outDir, '.node-cache', `v${version}`, `npm-${platformKey()}`);
+  const { node, npmCli: bundledNpm } = extractNode(archive, version, platformKey(), stage, npmDir);
   const reported = execFileSync(
     node,
     ['-p', 'process.versions.node + " " + process.versions.modules'],
@@ -309,7 +290,21 @@ async function bundleNode(version) {
       `建置機的系統 Node 是 ${process.versions.node}，自帶的是 ${version}：npm ci 與原生模組檢查一律用自帶的跑。`,
     );
   }
-  return { node, version, abi };
+  return { node, version, abi, npmCli: bundledNpm };
+}
+
+/** 子程序的環境：PATH 最前面放自帶 node 的資料夾。Windows 的環境變數不分大小寫，先刪掉 Path 再設 PATH。 */
+function envWithNodeFirst(node) {
+  const env = { ...process.env };
+  let current = '';
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === 'PATH') {
+      current ||= env[key] ?? '';
+      delete env[key];
+    }
+  }
+  env.PATH = `${dirname(node)}${delimiter}${current}`;
+  return env;
 }
 
 /**
@@ -322,7 +317,7 @@ function bundleDependencies(runtime) {
   execFileSync(
     runtime.node,
     [
-      npmCli(),
+      runtime.npmCli ?? npmCli(),
       'ci',
       '--omit=dev',
       '--no-audit',
@@ -334,11 +329,7 @@ function bundleDependencies(runtime) {
       cwd: stage,
       stdio: 'inherit',
       // 安裝腳本裡的 node（prebuild-install、node-gyp、postinstall）也要是自帶的那支。
-      env: {
-        ...process.env,
-        PATH: `${dirname(runtime.node)}${delimiter}${process.env.PATH ?? ''}`,
-        npm_node_execpath: runtime.node,
-      },
+      env: { ...envWithNodeFirst(runtime.node), npm_node_execpath: runtime.node },
     },
   );
   const probe = `

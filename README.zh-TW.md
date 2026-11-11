@@ -27,7 +27,8 @@
 
 每台要跑 session 的機器都需要：
 
-- 不必另外裝 Node.js：發布檔自帶固定版本的官方 Node（目前 24.22.2），hub、daemon 與 session host 都用它跑，和這台的系統 Node 版本無關。只有從原始碼建置，或用下面的一行指令下載（安裝腳本要用系統的 node 驗證下載內容）時，才需要 [Node.js](https://nodejs.org) 22.18 以上（含 npm）。
+- 不必另外裝 Node.js：發布檔自帶固定版本的官方 Node（目前 24.22.2），hub、daemon 與 session host 都用它跑，和這台的系統 Node 版本無關。只有從原始碼建置時，才需要 [Node.js](https://nodejs.org) 22.18 以上（含 npm）。
+- 磁碟空間：每個版本解開後含一份約 117 MB 的 Node，安裝程式保留最近 3 版、session host 另有一份，Node 合計約 470 MB。
 - [Claude Code](https://code.claude.com)，而且已登入。在終端機執行一次 `claude`，完成登入。
 - 僅 Linux：編譯 `node-pty` 的工具，因為它沒有 Linux 預編譯檔。Debian／Ubuntu：`sudo apt install build-essential python3`。
 
@@ -204,12 +205,14 @@ git clone https://github.com/OWNER/agent-board.git
 cd agent-board
 corepack pnpm install
 corepack pnpm build:release
-sh scripts/install.sh hub --from release/agent-board-0.1.0-darwin-arm64.tar.gz
+sh scripts/install.sh hub --from release/agent-board-0.1.1-darwin-arm64.tar.gz
 ```
 
 daemon 也用同樣的 `--from`。要裝到其他機器，把 `release/agent-board-<版本>-<平台>.tar.gz`（Windows 是 `.zip`）複製過去，那台不必裝 Node.js。之後的新版由 hub 自動更新（CONTRACTS §21）。
 
-從沒自帶 Node 的版本（0.1.0）升級時，第一個自帶 Node 的版本要用 `--from` 手動裝：session host 會換成自帶的 Node，重啟時會結束所有 agent（之後用 `--resume` 接回），所以還有 session 在工作時安裝程式會中止。等它們停下再跑一次，或加 `--keep-session-host` 先只換 hub／daemon（agent 不中斷），session host 留到之後沒有 session 在工作時再換。
+從沒自帶 Node 的版本（0.1.0）升級時，第一個自帶 Node 的版本（0.1.1）要先在 **hub 那台**用 `--from` 手動裝；hub 那台裝完之前，不要在 0.1.0 的 hub 上把這一版「升為 stable」（hub 升級後，其他機器照常自動更新）。手動安裝時session host 會換成自帶的 Node，重啟時會結束所有 agent（之後用 `--resume` 接回），所以還有 session 在工作時安裝程式會中止。等它們停下再跑一次，或加 `--keep-session-host` 先只換 hub／daemon（agent 不中斷），session host 留到之後沒有 session 在工作時再換。
+
+要退回 0.1.0 時，用面板的「回滾到上一版」；如果一定要用 0.1.0 的 `install.sh --from` 手動退回，**一定要加 `--restart-session-host`**（0.1.0 的安裝程式不認得 session host 自帶的 Node，不重啟 host 的話，下次重開機 host 會起不來）。
 
 ## 安裝腳本做了什麼
 

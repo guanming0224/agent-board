@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
+  constants,
+  copyFileSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -22,8 +24,15 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { nodeAssetName, shasumOf } from './fetch-node.mjs';
-import { bundledNodeOf, hostNodeId, runtimeNodePath } from './lib/bundled-node.mjs';
+import { createHash } from 'node:crypto';
+import { assertNodejsOrg, fetchNode, nodeAssetName, shasumOf } from './fetch-node.mjs';
+import {
+  bundledNodeOf,
+  hookWrapperSh,
+  hostNodeId,
+  isBundledRuntime,
+  runtimeNodePath,
+} from './lib/bundled-node.mjs';
 import { installFakeLaunchctl, runningPid, stopAll } from './test-support/fake-launchctl.mjs';
 
 const repo = join(import.meta.dirname, '..');
@@ -50,7 +59,7 @@ let launchd;
 let env;
 
 /** 假發布檔：真的安裝程式、更新程式、服務模板；bundled 時帶 runtime/node 與 .node-modules-platform。 */
-function makeRelease(version, { bundled = null } = {}) {
+function makeRelease(version, { bundled = null, realNode = false } = {}) {
   const dir = join(base, `src-${version}-${bundled ?? 'legacy'}`, 'agent-board');
   rmSync(dirname(dir), { recursive: true, force: true });
   mkdirSync(join(dir, 'scripts'), { recursive: true });
@@ -92,6 +101,12 @@ function makeRelease(version, { bundled = null } = {}) {
       `#!/bin/sh\nexport AB_TEST_BUNDLED_NODE=${bundled}\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
     );
     chmodSync(node, 0o755);
+    // 真的 node 執行檔（APFS 上是 clone，不佔空間）：用它跑安裝程式時 process.execPath 就是發布檔的 runtime。
+    if (realNode) {
+      rmSync(node);
+      copyFileSync(realpathSync(process.execPath), node, constants.COPYFILE_FICLONE);
+      chmodSync(node, 0o755);
+    }
   } else {
     write(
       '.node-modules-platform',
@@ -101,8 +116,8 @@ function makeRelease(version, { bundled = null } = {}) {
   return dir;
 }
 
-function installer(args, extraEnv = {}) {
-  const result = spawnSync(process.execPath, [join(repo, 'scripts/installer.mjs'), ...args], {
+function installer(args, extraEnv = {}, node = process.execPath) {
+  const result = spawnSync(node, [join(repo, 'scripts/installer.mjs'), ...args], {
     env: { ...env, ...extraEnv },
     encoding: 'utf8',
   });
@@ -205,6 +220,112 @@ describe('manifest 與官方成品', () => {
     assert.equal(shasumOf(sums, 'node-v24.22.2-darwin-arm64.tar.gz'), 'a'.repeat(64));
     assert.equal(shasumOf(sums, 'node-v24.22.2-win-x64.zip'), 'c'.repeat(64));
     assert.equal(shasumOf(sums, 'node-v24.22.2-linux-x64.tar.gz'), null);
+  });
+
+  test('fetchNode：以釘住的 SHA-256 為準；只連 nodejs.org、不跟隨轉址；錯誤頁進了快取會丟掉重抓（W4）', async () => {
+    const cacheRoot = join(base, 'node-cache');
+    const version = '24.0.0';
+    const name = nodeAssetName(version, 'darwin-arm64');
+    const archive = Buffer.from('official node archive');
+    const digest = createHash('sha256').update(archive).digest('hex');
+    const pkg = { bundledNodeSha256: { 'darwin-arm64': digest } };
+    const calls = [];
+    let sums = `${digest}  ${name}\n`;
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, redirect: init.redirect, signal: Boolean(init.signal) });
+      const body = url.endsWith('SHASUMS256.txt') ? sums : archive;
+      return new Response(body);
+    };
+    // 快取裡是錯誤頁（之前抓到的）：丟掉重抓。
+    mkdirSync(join(cacheRoot, `v${version}`), { recursive: true });
+    writeFileSync(join(cacheRoot, `v${version}`, name), '<html>503</html>');
+    writeFileSync(join(cacheRoot, `v${version}`, 'SHASUMS256.txt'), '<html>503</html>');
+    const path = await fetchNode(version, 'darwin-arm64', { fetchImpl, pkg, cacheRoot });
+    assert.equal(readFileSync(path, 'utf8'), 'official node archive');
+    assert.deepEqual(
+      calls.map((c) => c.url),
+      [
+        `https://nodejs.org/dist/v${version}/SHASUMS256.txt`,
+        `https://nodejs.org/dist/v${version}/${name}`,
+      ],
+    );
+    assert.ok(calls.every((c) => c.redirect === 'error' && c.signal));
+    // 再跑一次：快取都對，不連網。
+    calls.length = 0;
+    await fetchNode(version, 'darwin-arm64', { fetchImpl, pkg, cacheRoot });
+    assert.equal(calls.length, 0);
+    // 官方 SHASUMS256 和釘住的值不同：中止。
+    rmSync(join(cacheRoot, `v${version}`), { recursive: true });
+    sums = `${'0'.repeat(64)}  ${name}\n`;
+    await assert.rejects(
+      fetchNode(version, 'darwin-arm64', { fetchImpl, pkg, cacheRoot }),
+      /和 package.json 釘住的/,
+    );
+    // 下載內容和釘住的值不同：中止，不留在快取。
+    sums = `${digest}  ${name}\n`;
+    rmSync(join(cacheRoot, `v${version}`), { recursive: true });
+    const tampered = async (url, init) =>
+      url.endsWith('SHASUMS256.txt') ? fetchImpl(url, init) : new Response('tampered');
+    await assert.rejects(
+      fetchNode(version, 'darwin-arm64', { fetchImpl: tampered, pkg, cacheRoot }),
+      /和釘住的值不符/,
+    );
+    assert.ok(!existsSync(join(cacheRoot, `v${version}`, name)));
+    // 沒釘這個平台：不下載。
+    await assert.rejects(
+      fetchNode(version, 'win-x64', { fetchImpl, pkg, cacheRoot }),
+      /bundledNodeSha256 沒有 win-x64/,
+    );
+    assert.throws(() => assertNodejsOrg('https://nodejs.org.evil.example/dist/x'));
+    assert.throws(() => assertNodejsOrg('http://nodejs.org/dist/x'));
+  });
+
+  test('package.json 釘了 darwin-arm64 與 win-x64 的 SHA-256', () => {
+    const { bundledNodeSha256 } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+    for (const platform of ['darwin-arm64', 'win-x64']) {
+      assert.match(bundledNodeSha256[platform], /^[0-9a-f]{64}$/);
+    }
+  });
+
+  test('isBundledRuntime：任何發布檔的 runtime/node 都不算系統 node', () => {
+    assert.equal(isBundledRuntime('/tmp/x/agent-board/runtime/node/bin/node'), true);
+    assert.equal(isBundledRuntime('C:\\tmp\\agent-board\\runtime\\node\\node.exe'), true);
+    assert.equal(isBundledRuntime('/usr/local/bin/node'), false);
+  });
+
+  test('hook 包裝：用自帶的 node 跑 .cjs；node 或 .cjs 不見了就往 stderr 說明並 exit 2（擋下，W6）', () => {
+    const dir = join(base, 'hook-layout', 'agent-board');
+    const bin = join(dir, 'daemon/node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(join(dir, 'daemon/dist'), { recursive: true });
+    mkdirSync(join(dir, 'runtime/node/bin'), { recursive: true });
+    const wrapper = join(bin, 'agent-board-hook');
+    writeFileSync(wrapper, hookWrapperSh());
+    chmodSync(wrapper, 0o755);
+    const node = join(dir, 'runtime/node/bin/node');
+    writeFileSync(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`);
+    chmodSync(node, 0o755);
+    const hook = join(dir, 'daemon/dist/agent-board-hook.cjs');
+    writeFileSync(hook, "console.log('hook ran ' + process.argv[2]);\n");
+    const noNode = { PATH: '/usr/bin:/bin' };
+    const ok = spawnSync(wrapper, ['Stop'], { env: noNode, encoding: 'utf8' });
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(ok.stdout.trim(), 'hook ran Stop');
+    rmSync(hook);
+    const missingHook = spawnSync(wrapper, ['Stop'], { env: noNode, encoding: 'utf8' });
+    assert.equal(missingHook.status, 2);
+    assert.match(missingHook.stderr, /agent-board-hook/);
+    writeFileSync(hook, "console.log('hook ran');\n");
+    rmSync(node);
+    const missingNode = spawnSync(wrapper, ['Stop'], { env: noNode, encoding: 'utf8' });
+    assert.equal(missingNode.status, 2);
+    assert.match(missingNode.stderr, /擋下/);
+    // 沒有自帶的但 PATH 上有 node：用它（開發時複製出來的舊配置）。
+    const pathNode = spawnSync(wrapper, ['Stop'], {
+      env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin` },
+      encoding: 'utf8',
+    });
+    assert.equal(pathNode.status, 0, pathNode.stderr);
   });
 
   test('package.json 的 bundledNode 是完整版本號', () => {
@@ -315,6 +436,22 @@ describe('安裝程式與自帶 Node', () => {
     assert.equal(programOf('session-host'), join(root, 'session-host/runtime/node/bin/node'));
     assert.equal(hostPid(), host1);
     assert.equal(state().bundledNode, null);
+  });
+
+  test('用暫存資料夾裡新版自帶的 node 跑安裝程式、這台沒有系統 node：不會把那支記成系統 node（W2）', () => {
+    freshHome();
+    const source = makeRelease('0.1.1', { bundled: NODE_VERSION, realNode: true });
+    const bundled = join(source, 'runtime/node/bin/node');
+    const result = installer(
+      ['install', 'daemon', '--source', source, '--no-start'],
+      { PATH: `${join(home, 'stubs')}:/usr/bin:/bin` },
+      bundled,
+    );
+    assert.equal(result.status, 0, result.output);
+    const s = state();
+    assert.equal(s.systemNode, undefined, `不該記下 ${s.systemNode}`);
+    assert.equal(programOf('daemon'), join(root, 'current/runtime/node/bin/node'));
+    assert.doesNotMatch(envOf('daemon', 'PATH'), /runtime\/node/);
   });
 
   test('自帶 Node 的發布檔是別的平台：直接失敗，不跑 npm ci', () => {

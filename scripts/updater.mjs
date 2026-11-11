@@ -33,7 +33,7 @@ import {
 } from 'node:fs';
 import { basename, delimiter, dirname, isAbsolute, join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { bundledNodeOf } from './lib/bundled-node.mjs';
+import { bundledNodeOf, isBundledRuntime } from './lib/bundled-node.mjs';
 
 const HEALTH_TIMEOUT_MS = 60_000;
 const CONNECT_TIMEOUT_MS = 5 * 60_000;
@@ -122,7 +122,9 @@ export function takeLock(root) {
   }
 }
 
+/** path 不能當系統的 node：在安裝資料夾裡，或是任何發布檔自帶的 runtime（§21.10）。 */
 const isInside = (root, path) => {
+  if (isBundledRuntime(path)) return true;
   try {
     const base = realpathSync(root);
     const real = realpathSync(path);
