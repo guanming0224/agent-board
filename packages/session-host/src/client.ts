@@ -328,6 +328,50 @@ export class SessionHostClient {
 }
 
 /**
+ * 占著這個位置的是不是真的 session host（審查 W3）：讀 token 檔、送 hello（只有 nonce），對方要在時限內用 token
+ * 證明自己（hello.challenge）。只驗對方、不送自己的證明，驗完就斷。token 檔讀不到、對方不回、證明不對都回 false。
+ */
+export function proveHost(
+  endpoint: HostEndpoint,
+  timeoutMs = CONNECT_TIMEOUT_MS,
+): Promise<boolean> {
+  const token = readToken(endpoint.tokenPath);
+  if (!token) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const nonce = newNonce();
+    const socket = connect(endpoint.path);
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    socket.once('error', () => done(false));
+    socket.once('close', () => done(false));
+    socket.once('connect', () => {
+      sendLine(socket, { type: 'hello', protocol: SESSION_HOST_PROTOCOL, nonce });
+    });
+    onLines(
+      socket,
+      (line) => {
+        let message: unknown;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          return done(false);
+        }
+        const m = message as { type?: unknown; proof?: unknown };
+        done(m.type === 'hello.challenge' && verifyLocalProof(token, 'hostServer', nonce, m.proof));
+      },
+      () => done(false),
+    );
+  });
+}
+
+/**
  * host 的 socket 有沒有人在聽（不送任何東西）。`absent`＝確定沒有 host（socket 不存在或連線被拒），
  * 只有這種情況 daemon 才能放心用 --resume 重開；`alive`＝連得上；`unknown`＝其他錯誤（當成可能還在）。
  */

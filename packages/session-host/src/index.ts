@@ -3,6 +3,7 @@ export {
   HostConnectError,
   HostRequestTimeoutError,
   probeHost,
+  proveHost,
   SessionHostClient,
   type HostConnectFailure,
   type HostSessionHandlers,

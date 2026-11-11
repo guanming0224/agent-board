@@ -707,6 +707,9 @@ export class Hub {
       case 'update.status':
         this.release.onUpdateStatus(conn.machineId, msg.state);
         return;
+      case 'daemon.alert':
+        this.onDaemonAlert(conn.machineId, msg.code, msg.message);
+        return;
       case 'terminal.output':
         if (this.ownsSession(conn, msg.sessionId)) {
           this.prompts.onOutput(msg.sessionId, msg.data);
@@ -3309,6 +3312,29 @@ export class Hub {
       detail: redactSecrets(detail),
       at: this.nowIso(),
     });
+  }
+
+  /** 上次記下某台某種警示的時間（同一台同一種一小時記一次，daemon 每次重連都會再報）。 */
+  private readonly alertedAt = new Map<string, number>();
+
+  /**
+   * 機器警示（審查 W3）：session host 證明不了自己、hook pipe 被占。寫 audit `machine.alert`（面板的操作紀錄看得到），
+   * 同一台同一種一小時一次。
+   */
+  private onDaemonAlert(machineId: string, code: string, message: string): void {
+    const key = `${machineId}:${code}`;
+    const now = Date.parse(this.nowIso());
+    const last = this.alertedAt.get(key);
+    if (last !== undefined && now - last < 60 * 60_000) return;
+    this.alertedAt.set(key, now);
+    const machine = this.store.getMachine(machineId);
+    this.log.warn({ machineId, code }, 'machine alert');
+    this.audit(
+      null,
+      null,
+      'machine.alert',
+      JSON.stringify({ machineId, machine: machine?.name ?? null, code, message }),
+    );
   }
 
   private daemonFor(machineId: string): DaemonConn | null {

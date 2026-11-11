@@ -90,6 +90,13 @@ describe('S1：host 可能還活著時不自動重開（同一個對話不能有
     expect(blocked.status).toBe('error');
     expect(blocked.endedAt).toBeNull();
     expect(blocked.statusDetail).toMatch(/沒有重開/);
+    // 審查 W3：host 證明不了自己 → 報機器警示給 hub（不只寫 log）。
+    const alert = await h.hub.waitFor(
+      'daemon.alert',
+      (m) => m.code === 'session_host_unauthorized',
+    );
+    expect(alert.message).toMatch(/證明不了自己/);
+    expect(alert.message).not.toContain('sk-ant-demo-wrong-token');
     expect((await hostSessionsWithToken())[0]).toMatchObject({ id: 's1', alive: true });
 
     // 新的 session 不受影響（daemon 自己開）。

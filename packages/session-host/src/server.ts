@@ -22,6 +22,7 @@ import {
 } from '@agent-board/protocol/session-host';
 import { spawn as spawnPty, type IPty } from 'node-pty';
 import { ensurePrivateDir, hostEndpoint, writeToken, type HostEndpoint } from './endpoint';
+import { proveHost } from './client';
 import { onLines, sendLine, UNAUTHED_MAX_LINE_BYTES } from './lines';
 import { RingBuffer } from './ringBuffer';
 
@@ -61,6 +62,9 @@ export interface SessionHostServerOptions {
   maxExited?: number;
   /** owner 連線積著還沒送出的上限（測試用）。 */
   maxPendingWriteBytes?: number;
+  /** 位置被占時怎麼請對方證明（測試換成假的；預設 proveHost）。 */
+  proveExisting?: (endpoint: HostEndpoint) => Promise<boolean>;
+  proveRetryMs?: number;
 }
 
 interface Connection {
@@ -138,19 +142,26 @@ export class SessionHostServer {
       }
     }
     const server = createServer((socket) => this.handleConnection(socket));
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: NodeJS.ErrnoException) => {
-        // Windows 的 named pipe：同名 pipe 已經有人開著（另一份 host 在跑）是 EADDRINUSE → 正常結束（§20.7）。
-        reject(
-          error.code === 'EADDRINUSE' ? new HostAlreadyRunningError(this.endpoint.path) : error,
-        );
-      };
-      server.once('error', onError);
-      server.listen(this.endpoint.path, () => {
-        server.off('error', onError);
-        resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(this.endpoint.path, () => {
+          server.off('error', reject);
+          resolve();
+        });
       });
-    });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+      // Windows 的 named pipe：同名 pipe 已經有人開著（審查 W3，§20.7）。用自己資料夾的 token 請對方證明：
+      // 是真的 host（另一份在跑）→ 正常結束；證明不了（別的程序占了名稱）→ 失敗結束，讓排程器重試、問題看得到。
+      // 對方可能剛開好 pipe、還沒寫 token：試幾次。
+      const prove = this.options.proveExisting ?? ((endpoint: HostEndpoint) => proveHost(endpoint));
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (await prove(this.endpoint)) throw new HostAlreadyRunningError(this.endpoint.path);
+        await new Promise((resolve) => setTimeout(resolve, this.options.proveRetryMs ?? 1_000));
+      }
+      throw new HostImpostorError(this.endpoint.path);
+    }
     if (this.endpoint.kind === 'unix') chmodSync(this.endpoint.path, 0o600);
     server.on('error', (error) => this.log.error(`socket 錯誤：${errorMessage(error)}`));
     this.server = server;
@@ -546,5 +557,15 @@ export class SessionHostServer {
 export class HostAlreadyRunningError extends Error {
   constructor(path: string) {
     super(`已有 session host 在使用 ${path}`);
+  }
+}
+
+/** 位置被占了，但對方證明不了自己是 session host（不知道這個資料夾的 token）。 */
+export class HostImpostorError extends Error {
+  constructor(path: string) {
+    super(
+      `${path} 已經被別的程式占用，而且它證明不了自己是 Agent Board 的 session host（不知道 token）。` +
+        '不啟動；請找出占用的程式（或重新開機）後再試。',
+    );
   }
 }

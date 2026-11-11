@@ -16,6 +16,7 @@ import {
   platformKey,
   PROTOCOL_VERSION,
   type AgentKind,
+  type DaemonAlertCode,
   type DaemonToHub,
   type Approval,
   type HookRequest,
@@ -297,6 +298,8 @@ export class Daemon {
   private readonly blocked = new Map<string, { entry: PersistedSession; reason: string }>();
   /** 自動重開的規則：null＝可以；否則只擋 liveIds 裡的（liveIds 為 null＝全部擋）。 */
   private resumeBlock: { reason: string; liveIds: ReadonlySet<string> | null } | null = null;
+  /** 要報給 hub 的機器警示（審查 W3）：每次連上 hub（welcome）都送，hub 自己一小時去重。 */
+  private readonly alerts = new Map<DaemonAlertCode, string>();
   /** daemon 崩潰前還在等的審批（快照裡的）：放進 hello 讓 hub 對上帳，welcome 後標 terminal（W6）。 */
   private staleApprovals: Approval[] = [];
   /** 啟動時接回 session host 裡的 session 完成前，hook 先等著（重試中的 hook 才找得到 session）。 */
@@ -385,6 +388,12 @@ export class Daemon {
   async start(): Promise<void> {
     // 另一個 daemon 正在用同一份資料夾時在這裡就失敗，不會去搶 session host 的連線。
     await this.hookServer.start();
+    if (this.hookServer.squattedPath) {
+      this.alerts.set(
+        'hook_pipe_squatted',
+        `hook 的位置 ${this.hookServer.squattedPath} 被別的程式占用（證明不了自己是 daemon），改用 ${this.hookServer.path}。之前開的 session 的危險指令檢查會當成連不上；請找出占用的程式或重新開機。`,
+      );
+    }
     // 更新程式的健康檢查（§21.3，S3b）：程序起來了、還沒連上 hub。
     await writeDaemonStatus(this.deps.config.dataDir, { ...APP_VERSION, connected: false }).catch(
       (error: unknown) => log.warn(`寫不進 daemon 狀態檔：${errorMessage(error)}`),
@@ -568,6 +577,13 @@ export class Daemon {
       this.backend = localPtyBackend;
       const mismatch =
         failure instanceof HostConnectError && failure.reason === 'protocol_mismatch';
+      if (failure instanceof HostConnectError && failure.reason === 'unauthorized') {
+        // 審查 W3：對方證明不了自己（token 不符，可能是別的程式占了 pipe）。報給 hub，面板的操作紀錄看得到。
+        this.alerts.set(
+          'session_host_unauthorized',
+          `session host 證明不了自己（${failure.message}）。可能是別的程式占用了 ${endpoint.path}；新的 session 改由 daemon 自己開（daemon 重啟時會中斷）。`,
+        );
+      }
       return {
         kind: 'unusable',
         reason: mismatch
@@ -995,6 +1011,9 @@ export class Daemon {
         );
         for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
         this.settleStaleApprovals();
+        for (const [code, text] of this.alerts) {
+          this.send({ type: 'daemon.alert', code, message: text.slice(0, 1000) });
+        }
         // 自動更新（§21.3）：健康檢查看 daemon-status.json；目標交給 SelfUpdater 判斷。
         writeDaemonStatus(this.deps.config.dataDir, { ...APP_VERSION, connected: true }).catch(
           (error: unknown) => log.warn(`寫不進 daemon 狀態檔：${errorMessage(error)}`),

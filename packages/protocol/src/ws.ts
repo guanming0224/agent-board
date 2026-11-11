@@ -176,6 +176,10 @@ export const SessionRuntime = Session.pick({
 export type SessionRuntime = z.infer<typeof SessionRuntime>;
 
 // ── daemon → hub ─────────────────────────────────────────────
+/** daemon.alert 的種類：session host 證明不了自己；hook pipe 被別的程序占了（daemon 改用備用名稱）。 */
+export const DaemonAlertCode = z.enum(['session_host_unauthorized', 'hook_pipe_squatted']);
+export type DaemonAlertCode = z.infer<typeof DaemonAlertCode>;
+
 export const DaemonToHub = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('daemon.hello'),
@@ -214,6 +218,16 @@ export const DaemonToHub = z.discriminatedUnion('type', [
   z.object({ type: z.literal('session.event'), event: SessionEvent }),
   /** 更新狀態變了（延後、下載中、結果；CONTRACTS §21.3）。 */
   z.object({ type: z.literal('update.status'), state: UpdateState }),
+  /**
+   * 機器警示（審查 W3，CONTRACTS §20.7）：本機的 session host 證明不了自己（token 不符，可能是別的程序占了
+   * pipe）、hook pipe 被別的程序占了。hub 寫 audit `machine.alert`（同一台同一種一小時一次）。舊 hub 不認得，回 error 不斷線。
+   * message 是 daemon 產生的說明（不含 token、密鑰）。
+   */
+  z.object({
+    type: z.literal('daemon.alert'),
+    code: DaemonAlertCode,
+    message: z.string().max(1000),
+  }),
   /**
    * 帶 `onlyIfStatus` 的 `terminal.signal` 處理結果（不帶的不回）。sent＝已送出；false＝daemon 看到的狀態不符
    * 或找不到 session，沒送。status 是 daemon 當下看到的狀態（找不到 session 時為 null）。

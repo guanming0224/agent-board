@@ -5,7 +5,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pkg from '../package.json' with { type: 'json' };
-import { consoleLogger, HostAlreadyRunningError, SessionHostServer } from './server';
+import {
+  consoleLogger,
+  HostAlreadyRunningError,
+  HostImpostorError,
+  SessionHostServer,
+} from './server';
 
 async function main(): Promise<void> {
   const dataDir = process.env.AGENT_BOARD_DATA_DIR || join(homedir(), '.agent-board');
@@ -17,6 +22,11 @@ async function main(): Promise<void> {
       // 另一份已經在跑：正常結束（launchd 的 KeepAlive 只在失敗時重啟，不會一直撞）。
       consoleLogger.warn(error.message);
       process.exit(0);
+    }
+    if (error instanceof HostImpostorError) {
+      // 別的程式占了名稱（審查 W3）：失敗結束，排程器會重試，紀錄看得到。daemon 那邊連上會收到 unauthorized 並報給 hub。
+      consoleLogger.error(error.message);
+      process.exit(1);
     }
     throw error;
   }

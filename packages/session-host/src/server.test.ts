@@ -11,9 +11,14 @@ import {
   SESSION_HOST_PROTOCOL,
   type HostSessionInfo,
 } from '@agent-board/protocol/session-host';
-import { HostConnectError, SessionHostClient } from './client';
+import { HostConnectError, proveHost, SessionHostClient } from './client';
 import { hostEndpoint } from './endpoint';
-import { HostAlreadyRunningError, SessionHostServer, type HostLogger } from './server';
+import {
+  HostAlreadyRunningError,
+  HostImpostorError,
+  SessionHostServer,
+  type HostLogger,
+} from './server';
 
 const ECHO = fileURLToPath(new URL('./test-support/echoAgent.mjs', import.meta.url));
 const quiet: HostLogger = { info: () => {}, warn: () => {}, error: () => {} };
@@ -312,6 +317,39 @@ describe('session host', () => {
     const endpoint = { ...hostEndpoint(dataDir), kind: 'pipe' as const };
     const second = new SessionHostServer({ dataDir, endpoint, log: quiet });
     await expect(second.start()).rejects.toBeInstanceOf(HostAlreadyRunningError);
+  });
+
+  it('W3：位置被占、對方證明不了自己是 host（不知道 token）→ HostImpostorError（失敗結束、讓排程器重試）', async () => {
+    const fakeDir = realpathSync(mkdtempSync(join(tmpdir(), 'ab-host-squat-')));
+    const endpoint = { ...hostEndpoint(fakeDir), kind: 'pipe' as const };
+    writeFileSync(endpoint.tokenPath, 'real-token-of-this-folder\n');
+    // 占位的程式：收什麼都回一個用猜的 token 算的 challenge。
+    const squatter = createServer((socket) => {
+      socket.on('error', () => {});
+      socket.once('data', () =>
+        socket.write(
+          `${JSON.stringify({ type: 'hello.challenge', protocol: SESSION_HOST_PROTOCOL, proof: localProof('guess', 'hostServer', newNonce()), nonce: newNonce() })}\n`,
+        ),
+      );
+    });
+    await new Promise<void>((resolve) => squatter.listen(endpoint.path, resolve));
+    try {
+      const second = new SessionHostServer({
+        dataDir: fakeDir,
+        endpoint,
+        log: quiet,
+        proveRetryMs: 10,
+      });
+      await expect(second.start()).rejects.toBeInstanceOf(HostImpostorError);
+      expect(await proveHost(endpoint)).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => squatter.close(() => resolve()));
+      rmSync(fakeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('W3：真的 host 證明得了自己（proveHost）', async () => {
+    expect(await proveHost(hostEndpoint(dataDir))).toBe(true);
   });
 
   it('沒先 hello 就送指令：直接斷線', async () => {

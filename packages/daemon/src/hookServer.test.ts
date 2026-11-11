@@ -1,9 +1,9 @@
 import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { connect } from 'node:net';
+import { connect, createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { newNonce, verifyLocalProof } from '@agent-board/protocol/local-auth';
-import { ensureHookKey, HookServer, type HookHandler } from './hookServer';
+import { ensureHookKey, HookServer, proveDaemon, type HookHandler } from './hookServer';
 import { HookClient, makeTempDir, waitUntil } from './test-support/harness';
 
 describe('HookServer', () => {
@@ -170,7 +170,7 @@ describe('HookServer', () => {
     const { dir } = await setup(async () => null);
     if (process.platform === 'win32') {
       // 同名 pipe 已開：EADDRINUSE → 啟動失敗並說明（§20.7）。Windows 沒有殘留檔。
-      await expect(new HookServer(dir, async () => null).start()).rejects.toThrow('已經有人開著');
+      await expect(new HookServer(dir, async () => null).start()).rejects.toThrow('已有 daemon');
       return;
     }
     await expect(new HookServer(dir, async () => null).start()).rejects.toThrow('已有 daemon');
@@ -257,6 +257,56 @@ describe('HookServer', () => {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
     },
   );
+
+  /** 測試用的位置：Windows 用 pipe，其他用 tmp 裡的 Unix socket（指定 location 會略過殘留檔處理，模擬 Windows）。 */
+  const testLocation = (dir: string, name: string) =>
+    process.platform === 'win32'
+      ? `\\\\.\\pipe\\agent-board-hook-test-${name}-${Math.random().toString(16).slice(2)}`
+      : join(dir, `${name}.sock`);
+
+  it('W3：位置被別的程式占了（證明不了自己是 daemon）→ 改用備用名稱照常啟動、記下來報警示', async () => {
+    const dir = makeTempDir();
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const path = testLocation(dir, 'squat');
+    // 占位的程式：連得上但什麼都不回。
+    const held = new Set<Socket>();
+    const squatter = createServer((socket) => {
+      held.add(socket);
+      socket.on('error', () => {});
+    });
+    await new Promise<void>((resolve) => squatter.listen(path, resolve));
+    cleanups.push(
+      () =>
+        new Promise<void>((resolve) => {
+          for (const socket of held) socket.destroy();
+          squatter.close(() => resolve());
+        }),
+    );
+    const server = new HookServer(dir, async (request) => ({ got: request.event }), null, {
+      location: path,
+    });
+    await server.start();
+    cleanups.push(() => server.close());
+    expect(server.squattedPath).toBe(path);
+    expect(server.path).not.toBe(path);
+    expect(server.path.startsWith(`${path}-`)).toBe(true);
+    const client = await HookClient.connect(server.path);
+    cleanups.push(() => client.close());
+    expect((await client.request('s', 'Stop')).output).toEqual({ got: 'Stop' });
+  });
+
+  it('W3：位置上是另一個真的 daemon（證明得了）→ 不搶，啟動失敗', async () => {
+    const dir = makeTempDir();
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const path = testLocation(dir, 'twin');
+    const first = new HookServer(dir, async () => null, null, { location: path });
+    await first.start();
+    cleanups.push(() => first.close());
+    expect(await proveDaemon(path, readFileSync(first.keyPath, 'utf8').trim())).toBe(true);
+    expect(await proveDaemon(path, 'w'.repeat(43))).toBe(false);
+    const second = new HookServer(dir, async () => null, null, { location: path });
+    await expect(second.start()).rejects.toThrow('已有 daemon');
+  });
 
   it('W5：daemon 重啟後沿用同一把密鑰（活著的 agent 還拿著同一個路徑）', async () => {
     const dir = makeTempDir();

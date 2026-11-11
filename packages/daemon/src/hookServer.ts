@@ -5,7 +5,13 @@ import { connect, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HOOK_KEY_FILE, HookReply, HookRequest, McpReply, McpRequest } from '@agent-board/protocol';
-import { isNonce, localProof, NonceMemory } from '@agent-board/protocol/local-auth';
+import {
+  isNonce,
+  localProof,
+  newNonce,
+  NonceMemory,
+  verifyLocalProof,
+} from '@agent-board/protocol/local-auth';
 import {
   ensurePrivateDir,
   installId,
@@ -84,6 +90,46 @@ export function ensureHookKey(dataDir: string): string {
   return key;
 }
 
+/**
+ * 占著這個位置的是不是 daemon（審查 W3）：送 `auth.challenge`，對方要用同一把 hook.key 回正確的 `auth.proof`。
+ * 2 秒內沒有、證明不對、連不上都回 false。
+ */
+export function proveDaemon(path: string, key: string, timeoutMs = 2_000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const nonce = newNonce();
+    const socket = connect(path);
+    let buffer = '';
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    socket.setEncoding('utf8');
+    socket.once('error', () => done(false));
+    socket.once('close', () => done(false));
+    socket.once('connect', () =>
+      socket.write(`${JSON.stringify({ type: 'auth.challenge', nonce })}\n`),
+    );
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf('\n');
+      if (newline === -1) return;
+      try {
+        const reply = JSON.parse(buffer.slice(0, newline)) as { type?: unknown; proof?: unknown };
+        done(
+          reply.type === 'auth.proof' && verifyLocalProof(key, 'hookServer', nonce, reply.proof),
+        );
+      } catch {
+        done(false);
+      }
+    });
+  });
+}
+
 function isSocketAlive(path: string): Promise<boolean> {
   return new Promise((resolve) => {
     const probe = connect(path);
@@ -103,10 +149,15 @@ export class HookServer {
   /** hook 用過的 nonce（擋重送）。 */
   private readonly nonces = new NonceMemory();
 
+  /** 原本的位置被別的程式占了（改用了備用名稱）：daemon 連上 hub 時報警示。 */
+  squattedPath: string | null = null;
+
   constructor(
     private readonly dataDir: string,
     private readonly handler: HookHandler,
     private readonly mcpHandler: McpHandler | null = null,
+    /** location：只給測試，指定位置（略過 Unix 的殘留檔處理，模擬 Windows 的 pipe）。 */
+    private readonly options: { location?: string } = {},
   ) {}
 
   get path(): string {
@@ -123,8 +174,10 @@ export class HookServer {
     // 每次啟動都確認資料夾只有自己進得去（審查 W6／W2）：Mac／Linux chmod 700（「沒給密鑰檔的舊 agent 照舊不驗證」
     // 靠的就是 hook.sock 在 700 的資料夾裡）；Windows 用 ACL 只給自己與 SYSTEM，做不到就丟例外、daemon 不啟動。
     ensurePrivateDir(this.dataDir);
-    const location = resolveSocketLocation(this.dataDir);
-    if (process.platform !== 'win32') {
+    let location: SocketLocation = this.options.location
+      ? { path: this.options.location, tempDir: null }
+      : resolveSocketLocation(this.dataDir);
+    if (process.platform !== 'win32' && !this.options.location) {
       // 還能連上就是另一個 daemon 正在用同一份資料夾，不可搶；連不上才是殘留檔。
       if (await isSocketAlive(location.path)) {
         throw new Error(`已有 daemon 在使用 ${location.path}`);
@@ -137,24 +190,32 @@ export class HookServer {
     }
     this.key = ensureHookKey(this.dataDir);
     const server = createServer((socket) => this.handleSocket(socket));
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: NodeJS.ErrnoException) => {
-        // Windows：同名 pipe 已經有人開著（另一個 daemon，或別的程序搶先開了）。不搶，啟動失敗並說明（§20.7）。
-        reject(
-          error.code === 'EADDRINUSE'
-            ? new Error(
-                `${location.path} 已經有人開著（另一個 daemon 在跑？）。先停掉另一個 daemon；` +
-                  '如果沒有，可能是別的程式占用了這個名稱，重新開機後再試。',
-              )
-            : error,
-        );
-      };
-      server.once('error', onError);
-      server.listen(location.path, () => {
-        server.off('error', onError);
-        resolve();
+    const listen = (path: string) =>
+      new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(path, () => {
+          server.off('error', reject);
+          resolve();
+        });
       });
-    });
+    try {
+      await listen(location.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+      // 同名 pipe 已經有人開著（Windows；審查 W3，§20.7）。用 hook.key 請對方證明自己是 daemon：
+      // 是 → 另一個 daemon 在跑，不搶、啟動失敗；證明不了 → 別的程式占了名稱：改用備用名稱照常啟動（新開的 session 用它），
+      // 記下來連上 hub 時報警示（不能無聲地一直被擋）。占用期間，舊名稱上還活著的 agent 的 hook 會當成連不上。
+      if (await proveDaemon(location.path, this.key)) {
+        throw new Error(
+          `已有 daemon 在使用 ${location.path}（它證明了自己），不搶。先停掉另一個 daemon。`,
+        );
+      }
+      const original = location.path;
+      location = { path: `${original}-${randomBytes(4).toString('hex')}`, tempDir: null };
+      log.error(`${original} 被別的程式占用（證明不了自己是 daemon），改用 ${location.path}`);
+      this.squattedPath = original;
+      await listen(location.path);
+    }
     if (process.platform !== 'win32') chmodSync(location.path, 0o600);
     server.on('error', (error) => log.error(`hook socket 錯誤：${errorMessage(error)}`));
     this.server = server;
