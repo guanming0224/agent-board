@@ -427,11 +427,15 @@ async function main() {
   const reported = (await api('GET', '/api/releases')).body.machines[0];
   // 手動安裝時安裝程式把 AGENT_BOARD_TEST_NODE_VERSION 帶進 daemon 的服務設定；舊版 daemon 自動更新時
   // 它的環境沒有這個變數，回報的是真的版本。
-  assert.equal(
-    reported.nodeVersion,
-    process.env.E2E_LEGACY_AUTO === '1' ? process.versions.node : '26.1.0',
-    '新 daemon 回報的 Node 版本',
-  );
+  // 舊版 daemon 自動更新時，測試變數會不會傳進新 daemon 取決於舊版 daemon 的環境（各機不同），兩者都接受。
+  if (process.env.E2E_LEGACY_AUTO === '1') {
+    assert.ok(
+      [process.versions.node, '26.1.0'].includes(reported.nodeVersion),
+      `新 daemon 回報的 Node 版本：${reported.nodeVersion}`,
+    );
+  } else {
+    assert.equal(reported.nodeVersion, '26.1.0', '新 daemon 回報的 Node 版本');
+  }
   assert.ok(!existsSync(join(root, 'session-host/runtime')), '沒人用的 host runtime 清掉了');
   assert.ok(!existsSync(join(root, 'current/runtime')), '新版不自帶 Node');
   await poll('session 接回、沒有變成錯誤', async () => (await sessionStatus()) === 'waiting_input');
