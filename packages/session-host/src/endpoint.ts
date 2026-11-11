@@ -138,13 +138,16 @@ const describe = (error: unknown) => (error instanceof Error ? error.message : S
  * 的保護靠資料夾的 ACL。預設的使用者資料夾只有本人、SYSTEM、Administrators 讀得到，但 `AGENT_BOARD_DATA_DIR`
  * 指到別處（例如 `C:\agent-board`）時會繼承「Users 可讀」。
  * 1. `whoami /user` 取自己的 SID。
- * 2. 複查 R3：資料夾的擁有者要是自己（PowerShell `Get-Acl` 的 owner SID）。別人建的資料夾，擁有者隨時能改回權限、
- *    也可能事先放了東西，不用；拒絕啟動並說明。
+ * 2. 複查 R3、R4：資料夾的擁有者要是自己、Administrators 或 SYSTEM（PowerShell `Get-Acl` 的 owner SID）。其他使用者
+ *    建的資料夾，擁有者隨時能改回權限、也可能事先放了東西，不用；拒絕啟動並說明。
  * 3. 拿掉繼承，只給自己與 SYSTEM 完整權限（子資料夾與檔案跟著繼承）：
  *    `icacls <dir> /inheritance:r /grant:r *<自己的 SID>:(OI)(CI)F /grant:r *S-1-5-18:(OI)(CI)F`。
  * 用 SID 不用名稱：不受網域名稱、語系（「SYSTEM」的在地名稱）、引號影響；參數用陣列傳、不經過 shell。
  * whoami／icacls／PowerShell 都用 System32 的絕對路徑。任何一步失敗就丟例外（呼叫端拒絕啟動並說明）。
  */
+/** 可以當資料夾擁有者的 SID：自己、Administrators（S-1-5-32-544）、SYSTEM（S-1-5-18）。 */
+const trustedOwners = (sid: string) => new Set([sid, 'S-1-5-32-544', 'S-1-5-18']);
+
 export function restrictToCurrentUser(
   dir: string,
   { run = defaultRunSync, env = process.env }: { run?: RunSync; env?: NodeJS.ProcessEnv } = {},
@@ -170,7 +173,9 @@ export function restrictToCurrentUser(
       `讀不到 ${dir} 的擁有者（${describe(error)}），不能確定是自己的資料夾，不啟動。`,
     );
   }
-  if (owner !== sid) {
+  // 要防的是「權限比自己低的其他使用者」：Administrators 與 SYSTEM 本來就比自己權限高，擁有者是它們也接受
+  // （在系統管理員權限的 PowerShell 跑安裝程式時，資料夾擁有者預設是 Administrators；複查 R4）。
+  if (!trustedOwners(sid).has(owner)) {
     throw new Error(
       `${dir} 的擁有者（${owner || '不明'}）不是目前使用者（${sid}）。裡面要放密鑰，別人的資料夾不用：` +
         '請改用自己建立的資料夾（或預設的使用者資料夾），再重新啟動。',

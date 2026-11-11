@@ -79,15 +79,26 @@ describe('位置', () => {
     forgetLockedDirs();
   });
 
-  it('R3 Windows：資料夾的擁有者不是自己（例如 Administrators）就拒絕啟動、不改權限', () => {
+  it('R3 Windows：資料夾的擁有者是其他使用者就拒絕啟動、不改權限', () => {
     forgetLockedDirs();
-    const { calls, run } = fakeWindows('S-1-5-32-544');
+    const { calls, run } = fakeWindows('S-1-5-21-1-2-3-9999');
     expect(() => ensurePrivateDir(dataDir, { platform: 'win32', run, env })).toThrow(
-      /擁有者（S-1-5-32-544）不是目前使用者/,
+      /擁有者（S-1-5-21-1-2-3-9999）不是目前使用者/,
     );
     expect(calls.some((c) => c.file.endsWith('icacls.exe'))).toBe(false);
     forgetLockedDirs();
   });
+
+  it.each(['S-1-5-32-544', 'S-1-5-18'])(
+    'R4 Windows：擁有者是 Administrators／SYSTEM（%s，例如以系統管理員權限安裝）照樣設權限',
+    (owner) => {
+      forgetLockedDirs();
+      const { calls, run } = fakeWindows(owner);
+      expect(() => ensurePrivateDir(dataDir, { platform: 'win32', run, env })).not.toThrow();
+      expect(calls.some((c) => c.file.endsWith('icacls.exe'))).toBe(true);
+      forgetLockedDirs();
+    },
+  );
 
   it('R2 Windows：失敗也記住，這次啟動不再重跑 whoami／icacls，照樣丟同一個錯', () => {
     forgetLockedDirs();
