@@ -1,5 +1,6 @@
 // session host 伺服器＋客戶端：真的 node-pty、真的 Unix socket，agent 是假的（echoAgent.mjs）。
-import { connect } from 'node:net';
+import { connect, createServer } from 'node:net';
+import { localProof, newNonce, verifyLocalProof } from '@agent-board/protocol/local-auth';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -135,11 +136,11 @@ describe('session host', () => {
     expect((error as HostConnectError).reason).toBe('unauthorized');
   });
 
-  it('協定版本不同：hello.error protocol_mismatch', async () => {
+  it('協定 1 的舊 daemon（hello 帶 token）：hello.error protocol_mismatch，不比對 token', async () => {
     const token = readFileSync(hostEndpoint(dataDir).tokenPath, 'utf8').trim();
     const reply = await new Promise<HostToDaemon>((resolve) => {
       const socket = connect(hostEndpoint(dataDir).path, () => {
-        socket.write(`${JSON.stringify({ type: 'hello', protocol: 999, token })}\n`);
+        socket.write(`${JSON.stringify({ type: 'hello', protocol: 1, token })}\n`);
       });
       socket.setEncoding('utf8');
       socket.on('data', (chunk: string) => {
@@ -165,6 +166,147 @@ describe('session host', () => {
     } finally {
       rmSync(other, { recursive: true, force: true });
     }
+  });
+
+  /** 用原始 socket 走一段握手，收集 host 回的每一行，直到斷線。 */
+  const rawSession = (
+    path: string,
+    onLine: (message: Record<string, unknown>, write: (m: unknown) => void) => void,
+    first: unknown,
+  ) =>
+    new Promise<Record<string, unknown>[]>((resolve) => {
+      const lines: Record<string, unknown>[] = [];
+      const socket = connect(path, () => socket.write(`${JSON.stringify(first)}\n`));
+      const write = (m: unknown) => socket.write(`${JSON.stringify(m)}\n`);
+      let buffer = '';
+      socket.setEncoding('utf8');
+      socket.on('data', (chunk: string) => {
+        buffer += chunk;
+        let index: number;
+        while ((index = buffer.indexOf('\n')) !== -1) {
+          const message = JSON.parse(buffer.slice(0, index)) as Record<string, unknown>;
+          buffer = buffer.slice(index + 1);
+          lines.push(message);
+          onLine(message, write);
+          if (message.type === 'hello.ok') socket.destroy();
+        }
+      });
+      socket.on('error', () => {});
+      socket.on('close', () => resolve(lines));
+    });
+
+  it('W5：host 先證明自己拿得到 token，daemon 證明對了才給清單；token 不經過 socket', async () => {
+    const token = readFileSync(hostEndpoint(dataDir).tokenPath, 'utf8').trim();
+    const nonce = newNonce();
+    const sent: string[] = [];
+    const lines = await rawSession(
+      hostEndpoint(dataDir).path,
+      (message, write) => {
+        if (message.type !== 'hello.challenge') return;
+        expect(verifyLocalProof(token, 'hostServer', nonce, message.proof)).toBe(true);
+        const auth = {
+          type: 'hello.auth',
+          proof: localProof(token, 'hostClient', String(message.nonce)),
+        };
+        sent.push(JSON.stringify(auth));
+        write(auth);
+      },
+      { type: 'hello', protocol: SESSION_HOST_PROTOCOL, nonce },
+    );
+    expect(lines.map((l) => l.type)).toEqual(['hello.challenge', 'hello.ok']);
+    expect(sent.join('')).not.toContain(token);
+  });
+
+  it('W5：daemon 的證明不對 → unauthorized 斷線；同一個 nonce 重送 → unauthorized', async () => {
+    const nonce = newNonce();
+    const wrong = await rawSession(
+      hostEndpoint(dataDir).path,
+      (message, write) => {
+        if (message.type === 'hello.challenge') {
+          write({
+            type: 'hello.auth',
+            proof: localProof('not-the-token', 'hostClient', String(message.nonce)),
+          });
+        }
+      },
+      { type: 'hello', protocol: SESSION_HOST_PROTOCOL, nonce },
+    );
+    expect(wrong.map((l) => l.type)).toEqual(['hello.challenge', 'hello.error']);
+    expect(wrong[1]).toMatchObject({ error: 'unauthorized' });
+    const replay = await rawSession(hostEndpoint(dataDir).path, () => {}, {
+      type: 'hello',
+      protocol: SESSION_HOST_PROTOCOL,
+      nonce,
+    });
+    expect(replay).toEqual([
+      { type: 'hello.error', protocol: SESSION_HOST_PROTOCOL, error: 'unauthorized' },
+    ]);
+  });
+
+  it('W5：沒收到 challenge 就送 hello.auth → 直接斷線', async () => {
+    const lines = await rawSession(hostEndpoint(dataDir).path, () => {}, {
+      type: 'hello.auth',
+      proof: 'p'.repeat(43),
+    });
+    expect(lines).toEqual([]);
+  });
+
+  it('W5：假 host（不知道 token）先證明不了 → daemon 什麼都不送就斷（unauthorized）', async () => {
+    const fakeDir = realpathSync(mkdtempSync(join(tmpdir(), 'ab-host-fake-')));
+    const endpoint = hostEndpoint(fakeDir);
+    writeFileSync(endpoint.tokenPath, 'real-token\n');
+    const received: string[] = [];
+    const fake = createServer((socket) => {
+      socket.setEncoding('utf8');
+      socket.on('error', () => {});
+      socket.on('data', (chunk: string) => {
+        received.push(chunk);
+        socket.write(
+          `${JSON.stringify({ type: 'hello.challenge', protocol: SESSION_HOST_PROTOCOL, proof: localProof('guess', 'hostServer', newNonce()), nonce: newNonce() })}\n`,
+        );
+      });
+    });
+    await new Promise<void>((resolve) => fake.listen(endpoint.path, resolve));
+    try {
+      const error = await SessionHostClient.connect(endpoint).catch((e: unknown) => e);
+      expect((error as HostConnectError).reason).toBe('unauthorized');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      // 只收到 hello（nonce），沒有 token、沒有 hello.auth。
+      const all = received.join('');
+      expect(all).not.toContain('real-token');
+      expect(all).not.toContain('hello.auth');
+    } finally {
+      await new Promise<void>((resolve) => fake.close(() => resolve()));
+      rmSync(fakeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('新 daemon 連協定 1 的舊 host（回 error bad_message）→ protocol_mismatch', async () => {
+    const oldDir = realpathSync(mkdtempSync(join(tmpdir(), 'ab-host-old-')));
+    const endpoint = hostEndpoint(oldDir);
+    writeFileSync(endpoint.tokenPath, 'old-token\n');
+    const old = createServer((socket) => {
+      socket.on('error', () => {});
+      socket.once('data', () => {
+        socket.write(`${JSON.stringify({ type: 'error', id: null, error: 'bad_message' })}\n`);
+        socket.destroy();
+      });
+    });
+    await new Promise<void>((resolve) => old.listen(endpoint.path, resolve));
+    try {
+      const error = await SessionHostClient.connect(endpoint).catch((e: unknown) => e);
+      expect((error as HostConnectError).reason).toBe('protocol_mismatch');
+    } finally {
+      await new Promise<void>((resolve) => old.close(() => resolve()));
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+
+  it('同名 pipe／socket 已經有人開著（EADDRINUSE）→ HostAlreadyRunningError', async () => {
+    // Windows 的 named pipe 沒有「先連看看」那一步，直接 listen 撞到 EADDRINUSE；這裡用 kind: 'pipe' 跳過那一步模擬。
+    const endpoint = { ...hostEndpoint(dataDir), kind: 'pipe' as const };
+    const second = new SessionHostServer({ dataDir, endpoint, log: quiet });
+    await expect(second.start()).rejects.toBeInstanceOf(HostAlreadyRunningError);
   });
 
   it('沒先 hello 就送指令：直接斷線', async () => {

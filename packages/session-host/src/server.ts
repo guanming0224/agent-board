@@ -1,10 +1,16 @@
 // session host 本體：用 node-pty 開 agent、養著程序、保留最近的原始輸出、轉送輸入與 resize、回報結束碼。
 // daemon 重啟時 agent 不會跟著結束；daemon 回來後 attach 重播輸出（CONTRACTS §20）。
 // 不懂 claude／codex、不解析畫面、不連網路、不呼叫 LLM。執行紀錄不寫終端機內容、env、token。
-import { timingSafeEqual } from 'node:crypto';
 import { chmodSync, unlinkSync } from 'node:fs';
 import { connect, createServer, type Server, type Socket } from 'node:net';
 import { dirname } from 'node:path';
+import {
+  isNonce,
+  localProof,
+  newNonce,
+  NonceMemory,
+  verifyLocalProof,
+} from '@agent-board/protocol/local-auth';
 import {
   DaemonToHost,
   SESSION_HOST_BUFFER_BYTES,
@@ -60,6 +66,8 @@ export interface SessionHostServerOptions {
 interface Connection {
   socket: Socket;
   authed: boolean;
+  /** 送給 daemon 的 nonce（hello.challenge）；收到 hello.auth 前不是 null。 */
+  challenge: string | null;
 }
 
 interface HostSession {
@@ -80,12 +88,6 @@ interface HostSession {
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-function tokensMatch(expected: string, given: string): boolean {
-  const a = Buffer.from(expected);
-  const b = Buffer.from(given);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
 function socketAlive(path: string): Promise<boolean> {
   return new Promise((resolve) => {
     const probe = connect(path);
@@ -104,6 +106,8 @@ export class SessionHostServer {
   private readonly connections = new Set<Connection>();
   private server: Server | null = null;
   private token = '';
+  /** daemon 用過的 nonce（擋重送）。 */
+  private readonly nonces = new NonceMemory();
 
   constructor(private readonly options: SessionHostServerOptions) {
     this.endpoint = options.endpoint ?? hostEndpoint(options.dataDir);
@@ -135,9 +139,15 @@ export class SessionHostServer {
     }
     const server = createServer((socket) => this.handleConnection(socket));
     await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
+      const onError = (error: NodeJS.ErrnoException) => {
+        // Windows 的 named pipe：同名 pipe 已經有人開著（另一份 host 在跑）是 EADDRINUSE → 正常結束（§20.7）。
+        reject(
+          error.code === 'EADDRINUSE' ? new HostAlreadyRunningError(this.endpoint.path) : error,
+        );
+      };
+      server.once('error', onError);
       server.listen(this.endpoint.path, () => {
-        server.off('error', reject);
+        server.off('error', onError);
         resolve();
       });
     });
@@ -195,7 +205,7 @@ export class SessionHostServer {
   }
 
   private handleConnection(socket: Socket): void {
-    const connection: Connection = { socket, authed: false };
+    const connection: Connection = { socket, authed: false, challenge: null };
     this.connections.add(connection);
     const helloTimer = setTimeout(() => {
       if (!connection.authed) socket.destroy();
@@ -240,6 +250,10 @@ export class SessionHostServer {
       this.handleHello(connection, parsed);
       return;
     }
+    if (parsed.type === 'hello.auth') {
+      this.handleAuth(connection, parsed.proof);
+      return;
+    }
     if (!connection.authed) {
       connection.socket.destroy();
       return;
@@ -253,27 +267,53 @@ export class SessionHostServer {
     }
   }
 
+  private reject(connection: Connection, error: 'protocol_mismatch' | 'unauthorized'): void {
+    this.send(connection, { type: 'hello.error', protocol: SESSION_HOST_PROTOCOL, error });
+    connection.socket.end();
+  }
+
+  /**
+   * 協定 2（W5）：host 先證明自己拿得到 token（HMAC 回 daemon 的 nonce），再出自己的 nonce 給 daemon 證明。
+   * token 不經過 socket。協定 1 的舊 daemon（hello 帶 token）一律 protocol_mismatch，不比對它送來的 token。
+   */
   private handleHello(
     connection: Connection,
     hello: Extract<DaemonToHost, { type: 'hello' }>,
   ): void {
     if (hello.protocol !== SESSION_HOST_PROTOCOL) {
-      this.send(connection, {
-        type: 'hello.error',
-        protocol: SESSION_HOST_PROTOCOL,
-        error: 'protocol_mismatch',
-      });
-      connection.socket.end();
+      this.reject(connection, 'protocol_mismatch');
       return;
     }
-    if (!this.token || !tokensMatch(this.token, hello.token)) {
-      this.log.warn('hello 的 token 不符，拒絕連線');
-      this.send(connection, {
-        type: 'hello.error',
-        protocol: SESSION_HOST_PROTOCOL,
-        error: 'unauthorized',
-      });
-      connection.socket.end();
+    if (connection.authed || connection.challenge !== null) {
+      // 同一條連線第二次 hello：不合規矩，直接斷。
+      connection.socket.destroy();
+      return;
+    }
+    if (!this.token || !isNonce(hello.nonce) || !this.nonces.remember(hello.nonce)) {
+      this.log.warn('hello 沒有 nonce 或是重送的，拒絕連線');
+      this.reject(connection, 'unauthorized');
+      return;
+    }
+    connection.challenge = newNonce();
+    this.send(connection, {
+      type: 'hello.challenge',
+      protocol: SESSION_HOST_PROTOCOL,
+      proof: localProof(this.token, 'hostServer', hello.nonce),
+      nonce: connection.challenge,
+    });
+  }
+
+  /** daemon 回的證明：對了才給清單，不對就 unauthorized 斷線。 */
+  private handleAuth(connection: Connection, proof: string): void {
+    const challenge = connection.challenge;
+    if (connection.authed || challenge === null) {
+      connection.socket.destroy();
+      return;
+    }
+    connection.challenge = null;
+    if (!verifyLocalProof(this.token, 'hostClient', challenge, proof)) {
+      this.log.warn('daemon 的證明不符（token 不對），拒絕連線');
+      this.reject(connection, 'unauthorized');
       return;
     }
     connection.authed = true;
@@ -287,7 +327,7 @@ export class SessionHostServer {
 
   private handleCommand(
     connection: Connection,
-    command: Exclude<DaemonToHost, { type: 'hello' }>,
+    command: Exclude<DaemonToHost, { type: 'hello' | 'hello.auth' }>,
   ): void {
     switch (command.type) {
       case 'spawn':

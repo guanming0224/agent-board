@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { DaemonToHost, HostToDaemon, SESSION_HOST_BUFFER_BYTES } from './sessionHost';
+import {
+  DaemonToHost,
+  HostToDaemon,
+  SESSION_HOST_BUFFER_BYTES,
+  SESSION_HOST_PROTOCOL,
+} from './sessionHost';
 
 describe('session host 協定', () => {
   it('每個 session 的緩衝是 2 MB（GM 2026-11-10）', () => {
@@ -8,7 +13,10 @@ describe('session host 協定', () => {
 
   it('daemon → host：合法訊息都收', () => {
     const messages = [
+      { type: 'hello', protocol: 2, nonce: 'n'.repeat(43) },
+      // 協定 1 的舊 daemon：照樣收得下，host 才能回 protocol_mismatch。
       { type: 'hello', protocol: 1, token: 't' },
+      { type: 'hello.auth', proof: 'p'.repeat(43) },
       {
         type: 'spawn',
         reqId: 'r',
@@ -37,6 +45,24 @@ describe('session host 協定', () => {
     expect(DaemonToHost.safeParse({ type: 'attach', id: 's', fromSeq: -1 }).success).toBe(false);
     expect(DaemonToHost.safeParse({ type: 'hello', protocol: 1, token: '' }).success).toBe(false);
     expect(DaemonToHost.safeParse({ type: 'exec', id: 's' }).success).toBe(false);
+    expect(DaemonToHost.safeParse({ type: 'hello', protocol: 2, nonce: 'short' }).success).toBe(
+      false,
+    );
+    expect(DaemonToHost.safeParse({ type: 'hello.auth', proof: 'x'.repeat(42) }).success).toBe(
+      false,
+    );
+  });
+
+  it('協定 2：hello 改成挑戰／回應（W5）', () => {
+    expect(SESSION_HOST_PROTOCOL).toBe(2);
+    const challenge = {
+      type: 'hello.challenge',
+      protocol: 2,
+      proof: 'p'.repeat(43),
+      nonce: 'n'.repeat(43),
+    };
+    expect(HostToDaemon.parse(challenge)).toEqual(challenge);
+    expect(HostToDaemon.safeParse({ ...challenge, nonce: 'bad nonce' }).success).toBe(false);
   });
 
   it('host → daemon：重播相關訊息', () => {
@@ -52,7 +78,7 @@ describe('session host 協定', () => {
       rows: 24,
     };
     for (const message of [
-      { type: 'hello.ok', protocol: 1, hostVersion: '0.0.0', sessions: [info] },
+      { type: 'hello.ok', protocol: 2, hostVersion: '0.0.0', sessions: [info] },
       { type: 'attached', session: info },
       { type: 'replay.gap', id: 's', lostBytes: 100 },
       { type: 'output', id: 's', seq: 100, data: 'aGk=' },

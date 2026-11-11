@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./lead-guide": "./src/leadGuide.ts",
-    "./session-host": "./src/sessionHost.ts"
+    "./session-host": "./src/sessionHost.ts",
+    "./local-auth": "./src/localAuth.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",

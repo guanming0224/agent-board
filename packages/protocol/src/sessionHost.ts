@@ -3,8 +3,11 @@
 // session host 不懂 claude／codex、不解析畫面、不連網路、不呼叫 LLM。
 import { z } from 'zod';
 
-/** 協定版本。不相容的改動才加一；daemon 看到不同的值就退回自己開 PTY 的舊模式。 */
-export const SESSION_HOST_PROTOCOL = 1;
+/**
+ * 協定版本。不相容的改動才加一；daemon 看到不同的值就退回自己開 PTY 的舊模式。
+ * 2（W5，CONTRACTS §20.2）：hello 改成挑戰／回應，host 先證明自己拿得到 token，token 不再經過 socket。
+ */
+export const SESSION_HOST_PROTOCOL = 2;
 /** 每個 session 保留的原始輸出上限（GM 2026-11-10：2 MB，只在記憶體）。 */
 export const SESSION_HOST_BUFFER_BYTES = 2 * 1024 * 1024;
 /** Unix socket 與 token 檔的檔名（放在資料夾 `AGENT_BOARD_DATA_DIR`，預設 `~/.agent-board/`）。 */
@@ -37,8 +40,23 @@ export const HostSessionInfo = z.object({
 });
 export type HostSessionInfo = z.infer<typeof HostSessionInfo>;
 
+/** 驗證用的 nonce 與證明（`@agent-board/protocol/local-auth`）。 */
+const Nonce = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
+const Proof = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+
 export const DaemonToHost = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('hello'), protocol: z.number().int(), token: z.string().min(1) }),
+  /**
+   * 協定 2：只送 daemon 的 nonce，host 回 `hello.challenge`。`token` 只有協定 1 的舊 daemon 會送
+   * （新 host 一律回 protocol_mismatch，不比對）。
+   */
+  z.object({
+    type: z.literal('hello'),
+    protocol: z.number().int(),
+    nonce: Nonce.optional(),
+    token: z.string().min(1).max(512).optional(),
+  }),
+  /** daemon 驗過 host 的證明後才送：HMAC(token, hostClient 前綴＋host 的 nonce)。 */
+  z.object({ type: z.literal('hello.auth'), proof: Proof }),
   z.object({
     type: z.literal('spawn'),
     reqId: z.string().min(1),
@@ -62,6 +80,13 @@ export const DaemonToHost = z.discriminatedUnion('type', [
 export type DaemonToHost = z.infer<typeof DaemonToHost>;
 
 export const HostToDaemon = z.discriminatedUnion('type', [
+  /** host 先證明自己：proof＝HMAC(token, hostServer 前綴＋daemon 的 nonce)；nonce＝要 daemon 證明的。 */
+  z.object({
+    type: z.literal('hello.challenge'),
+    protocol: z.number().int(),
+    proof: Proof,
+    nonce: Nonce,
+  }),
   z.object({
     type: z.literal('hello.ok'),
     protocol: z.number().int(),

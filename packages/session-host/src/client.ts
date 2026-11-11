@@ -9,6 +9,7 @@ import {
   type HostSessionInfo,
   type HostSignal,
 } from '@agent-board/protocol/session-host';
+import { localProof, newNonce, verifyLocalProof } from '@agent-board/protocol/local-auth';
 import { readToken, type HostEndpoint } from './endpoint';
 import { onLines, sendLine } from './lines';
 
@@ -100,8 +101,11 @@ export class SessionHostClient {
       const timer = setTimeout(() => fail('timeout', 'session host 沒有在時限內回應'), timeoutMs);
       socket.once('error', (error) => fail('unreachable', error.message));
       socket.once('close', () => fail('unreachable', 'session host 關閉了連線'));
+      // 協定 2（W5）：只送 nonce；host 先證明自己拿得到 token，daemon 驗過才回自己的證明。token 不經過 socket。
+      const nonce = newNonce();
+      let challenged = false;
       socket.once('connect', () => {
-        sendLine(socket, { type: 'hello', protocol, token });
+        sendLine(socket, { type: 'hello', protocol, nonce });
       });
       let client: SessionHostClient | null = null;
       onLines(
@@ -111,11 +115,47 @@ export class SessionHostClient {
             client.handleLine(line);
             return;
           }
-          let message: HostToDaemon;
+          let raw: unknown;
           try {
-            message = HostToDaemon.parse(JSON.parse(line));
+            raw = JSON.parse(line);
           } catch {
             fail('bad_reply', 'session host 的回覆格式不對');
+            return;
+          }
+          // 協定 1 的舊 host 看不懂沒有 token 的 hello，回 `error bad_message` 後斷線：當成協定不相容。
+          const legacy = raw as { type?: unknown; error?: unknown } | null;
+          if (!challenged && legacy?.type === 'error' && legacy.error === 'bad_message') {
+            fail(
+              'protocol_mismatch',
+              `session host 是舊版（協定 1），看不懂協定 ${protocol} 的 hello`,
+            );
+            return;
+          }
+          const parsed = HostToDaemon.safeParse(raw);
+          if (!parsed.success) {
+            fail('bad_reply', 'session host 的回覆格式不對');
+            return;
+          }
+          const message = parsed.data;
+          if (message.type === 'hello.challenge') {
+            if (challenged) {
+              fail('bad_reply', 'session host 送了兩次 hello.challenge');
+              return;
+            }
+            challenged = true;
+            if (message.protocol !== protocol) {
+              fail('protocol_mismatch', `session host 協定 ${message.protocol} 不相容`);
+              return;
+            }
+            if (!verifyLocalProof(token, 'hostServer', nonce, message.proof)) {
+              // 對方不知道 token：可能是別的程序搶先開了同名 pipe。什麼都不送，直接斷。
+              fail('unauthorized', 'session host 無法證明身分（token 不符），不送任何東西');
+              return;
+            }
+            sendLine(socket, {
+              type: 'hello.auth',
+              proof: localProof(token, 'hostClient', message.nonce),
+            });
             return;
           }
           if (message.type === 'hello.error') {
@@ -125,7 +165,7 @@ export class SessionHostClient {
             );
             return;
           }
-          if (message.type !== 'hello.ok') {
+          if (message.type !== 'hello.ok' || !challenged) {
             fail('bad_reply', `session host 先送了 ${message.type}`);
             return;
           }
@@ -220,6 +260,7 @@ export class SessionHostClient {
         return;
       case 'hello.ok':
       case 'hello.error':
+      case 'hello.challenge':
         return;
       default:
         message satisfies never;
