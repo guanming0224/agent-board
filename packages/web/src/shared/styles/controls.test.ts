@@ -10,6 +10,8 @@ const read = (name: string) =>
 const tokens = read('tokens.css');
 const controls = read('controls.css');
 const srcDir = fileURLToPath(new URL('../../', import.meta.url));
+/** 相對於 src/ 的路徑，一律用 /（Windows 的分隔是 \\，斷言都寫 /）。 */
+const rel = (path: string) => path.slice(srcDir.length).replaceAll('\\', '/');
 
 function filesIn(dir: string, ext: RegExp): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -31,8 +33,7 @@ const allTsx = filesIn(srcDir, /\.tsx$/).map((path) => ({
 const definedIn = (selector: RegExp) =>
   allCss
     .filter((f) => selector.test(f.text))
-    // Windows 的路徑分隔是 \；斷言一律用 /。
-    .map((f) => f.path.slice(srcDir.length).replaceAll('\\', '/'));
+    .map((f) => rel(f.path));
 
 /** 找出 `selector {` 的宣告內容（只取第一個）。 */
 function block(css: string, selector: string): string {
@@ -86,7 +87,7 @@ describe('收斂重複定義', () => {
     const costColor = allCss.filter((f) =>
       /\.chip\.cost \{[^}]*color: var\(--quota\)/.test(f.text),
     );
-    expect(costColor.map((f) => f.path.slice(srcDir.length))).toEqual([
+    expect(costColor.map((f) => rel(f.path))).toEqual([
       'shared/styles/controls.css',
     ]);
   });
@@ -95,7 +96,7 @@ describe('收斂重複定義', () => {
   });
   it('模式晶片元件只有一份（views/session.tsx；flows/common.tsx 只轉出）', () => {
     const defs = allTsx.filter((f) => /function ModeChip\b/.test(f.text));
-    expect(defs.map((f) => f.path.slice(srcDir.length))).toEqual(['views/session.tsx']);
+    expect(defs.map((f) => rel(f.path))).toEqual(['views/session.tsx']);
     const common = allTsx.find((f) => f.path.endsWith('flows/common.tsx'))!;
     expect(common.text).toContain("export { ModeChip } from '../views/session';");
   });
@@ -143,7 +144,7 @@ describe('手機斷點只有一個', () => {
     expect(
       allCss
         .filter((f) => /button\.cue\b[^{}]*\{/.test(noComments(f.text)))
-        .map((f) => f.path.slice(srcDir.length)),
+        .map((f) => rel(f.path)),
     ).toEqual(['shared/styles/controls.css']);
     expect(allCss.filter((f) => /button\.cta\b/.test(f.text)).map((f) => f.path)).toEqual([]);
   });
@@ -171,7 +172,7 @@ describe('寫死的 px 字級／最小高度', () => {
   const PX = /^\s*(font-size|min-height|font)\s*:\s*([a-z0-9-]+\s+)*[0-9.]+px/gm;
   it.each(
     allCss
-      .map((f) => [f.path.slice(srcDir.length).replaceAll('\\', '/'), f.text] as const)
+      .map((f) => [rel(f.path), f.text] as const)
       .filter(([path]) => !/shared\/styles\/(tokens|controls)\.css$/.test(path)),
   )('%s 沒有新增', (path, text) => {
     expect((text.match(PX) ?? []).length).toBeLessThanOrEqual(BASELINE[path] ?? 0);
