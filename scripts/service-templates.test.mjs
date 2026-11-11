@@ -100,6 +100,8 @@ test('Windows 工作：UTF-16 LE 加 BOM，內容跳脫，不用系統管理員�
   assert.ok(text.includes('cmd.exe /c "C:\\Users\\a b\\run.cmd"'));
   assert.ok(text.includes('<RunLevel>LeastPrivilege</RunLevel>'));
   assert.ok(text.includes('<LogonType>InteractiveToken</LogonType>'));
+  // 優先順序 5（一般）：工作排程器預設 7，host 底下的 agent 會跟著被壓低。
+  assert.ok(text.includes('<Priority>5</Priority>'));
   // macOS 內建的 XML 檢查器可以再驗一次語法。
   if (spawnSync('xmllint', ['--version']).status === 0) {
     const dir = mkdtempSync(join(tmpdir(), 'ab-task-'));

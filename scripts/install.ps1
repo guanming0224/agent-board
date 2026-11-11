@@ -4,13 +4,15 @@
 #   .\install.ps1 daemon --hub 'https://hub.example' --code ABCD-1234 [--name 機器名稱]
 #   .\install.ps1 --uninstall [--purge]
 #
-# 其他選項：--from <發布檔.tar.gz 或資料夾>、--claude-bin <路徑>、--repair、--no-service、--no-start、
-#           --restart-session-host（session host 換版時才加：重啟會結束所有 session，之後用 --resume 接回）
+# 其他選項：--from <發布檔 .zip／.tar.gz 或解開的資料夾>、--claude-bin <路徑>、--repair、--no-service、
+#           --no-start、--restart-session-host（重啟會結束所有 session，之後用 --resume 接回）
 # 可重複執行：內容沒變就不重裝、不重啟服務。
+# 建議：pwsh -NoProfile -ExecutionPolicy Bypass -File <解開的資料夾>\agent-board\scripts\install.ps1 daemon --hub … --code …
 # daemon 角色會一起裝 session host：工作排程器多一個「登入時」工作 AgentBoard-session-host（設定由
-# scripts/installer.mjs 產生，和 daemon 同一份 task.xml 模板）。agent 掛在它底下，daemon 重啟時不中斷
-# （CONTRACTS §20）。Windows 換程式檔時 node-pty 被鎖住，更新一定會停掉 session host，session 會用 --resume 接回。
-# 未在 Windows 實機驗證。
+# scripts/installer.mjs 產生，和 daemon 同一份 task.xml 模板，優先順序 5）。agent 掛在它底下，daemon 重啟時不中斷
+# （CONTRACTS §20）。session host 跑自己資料夾裡複製的那份 node-pty，換版時不會被鎖住；只有協定版本變了或加了
+# --restart-session-host 才重啟它（§20.5）。發布檔與服務都用這台的系統 Node（§21.10）。
+# 未在 Windows 實機驗證（安裝流程只在 Windows CI 測過連結、清理與 hook 包裝，見 scripts/windows-paths.test.mjs）。
 $ErrorActionPreference = 'Stop'
 
 $minMajor = 22
@@ -37,6 +39,10 @@ if ($version -lt [version]"$minMajor.$minMinor.0") {
 }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
   Fail (T '找不到 npm。它通常隨 Node.js 一起安裝。' 'Cannot find npm. It normally comes with Node.js.')
+}
+# git 不是安裝必要，但開 session 用 worktree、看 repo 狀態都要它；Claude Code 在 Windows 也要 Git for Windows 的 bash。
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+  Write-Warning (T '找不到 git。安裝會繼續，但 worktree、repo 狀態與 Claude Code 的 Bash 工具需要它：請安裝 Git for Windows（https://git-scm.com/download/win）後重新開終端機。' 'Cannot find git. Installation continues, but worktrees, repo status and Claude Code''s Bash tool need it: install Git for Windows (https://git-scm.com/download/win) and open a new terminal.')
 }
 
 $root = Join-Path $env:LOCALAPPDATA 'agent-board'

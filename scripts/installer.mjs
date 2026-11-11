@@ -29,7 +29,6 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -43,6 +42,13 @@ import {
   readModulesPlatform,
   versionAtLeast,
 } from './lib/node-runtime.mjs';
+import { agentStillRunning } from './lib/process-start.mjs';
+import {
+  cleanTrash,
+  isLink,
+  pointLink as pointReleaseLink,
+  removeRelease,
+} from './lib/release-dirs.mjs';
 import {
   renderLaunchd,
   renderSystemd,
@@ -383,14 +389,6 @@ const releaseVersion = (dir) => {
   return typeof version === 'string' && version !== '0.0.0' ? version : '0.0.0-legacy';
 };
 
-function isLink(path) {
-  try {
-    return lstatSync(path).isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
-
 /** current 指向的 releases 底下的資料夾名稱；沒有回 null。 */
 function currentRelease(paths) {
   try {
@@ -401,23 +399,8 @@ function currentRelease(paths) {
   }
 }
 
-/**
- * 把 link 指向 target（資料夾）。Mac／Linux：先建暫時的 symlink 再 rename 蓋過去（原子操作，任何時刻
- * current 都指著一個完整的版本）；目標用相對路徑，整個安裝資料夾搬家也不會斷。
- * Windows：junction 不能 rename 蓋過，先刪再建（有極短的空窗；未在 Windows 實測）。
- */
-function pointLink(link, target) {
-  if (isWindows) {
-    if (existsSync(link) || isLink(link)) rmSync(link, { recursive: false, force: true });
-    symlinkSync(target, link, 'junction');
-    return;
-  }
-  const base = dirname(link);
-  const relativeTarget = target.startsWith(`${base}/`) ? target.slice(base.length + 1) : target;
-  const temp = `${link}.new-${randomBytes(4).toString('hex')}`;
-  symlinkSync(relativeTarget, temp);
-  renameSync(temp, link);
-}
+/** current／app 指向 target（lib/release-dirs.mjs：Mac／Linux 原子換 symlink；Windows junction 先拿掉再建）。 */
+const pointLink = (link, target) => pointReleaseLink(link, target, { windows: isWindows });
 
 /**
  * 舊配置（單一 app/ 資料夾）第一次遇到新安裝程式：搬成 releases/<版本或 0.0.0-legacy>/、建 current，
@@ -588,31 +571,12 @@ function pruneReleases(paths, state) {
   // 它還在記憶體裡的部分照常運作，之後才要讀的檔會失敗（重開 session 就好）。只留 3 版、current 與上一版一定留，
   // 所以要連續換三版以上才會遇到（CONTRACTS §21.8）。
   // Windows：檔案被鎖住時 rmSync 會刪到一半（例如 node.exe 還在、其他檔不見了），留下半殘的版本。
-  // 先整個改名到 releases\.trash-<名稱>（被鎖的資料夾改不了名就整個留著），再刪 .trash；刪不完的下次再清。
-  if (isWindows) {
-    let all = [];
-    try {
-      all = readdirSync(paths.releases);
-    } catch {
-      // 沒有 releases
-    }
-    for (const name of all.filter((n) => n.startsWith('.trash-'))) {
-      try {
-        rmSync(join(paths.releases, name), { recursive: true, force: true });
-      } catch {
-        // 還是刪不掉：下次再清
-      }
-    }
-  }
+  // 先整個改名到 releases\.trash-<名稱>-<亂數>（被鎖的資料夾改不了名就整個留著），再刪；刪不完的下次再清
+  // （lib/release-dirs.mjs）。
+  if (isWindows) cleanTrash(paths.releases);
   for (const name of others.slice(Math.max(0, KEEP_RELEASES - keep.size))) {
     try {
-      if (isWindows) {
-        const trash = join(paths.releases, `.trash-${name}`);
-        renameSync(join(paths.releases, name), trash);
-        rmSync(trash, { recursive: true, force: true });
-        continue;
-      }
-      rmSync(join(paths.releases, name), { recursive: true, force: true });
+      removeRelease(paths.releases, name, { windows: isWindows });
     } catch (error) {
       say(
         t(
@@ -891,7 +855,9 @@ function busySessions(paths) {
     try {
       const snapshot = JSON.parse(readFileSync(join(dir, name), 'utf8'));
       if (!BUSY_STATUSES.includes(snapshot.status) || !(snapshot.agentPid > 0)) continue;
-      process.kill(snapshot.agentPid, 0);
+      // N2：pid 還在而且啟動時間對得上才算（pid 可能被別的程序重用）；讀不到啟動時間當成還在。
+      // Windows 用 PowerShell 的 Get-Process（和 daemon 的 processCheck.ts 同一套）。
+      if (!agentStillRunning(snapshot.agentPid, snapshot.agentStartedAt ?? null)) continue;
       busy.push(snapshot.sessionId);
     } catch {
       // 壞檔或 agent 已經不在：不算

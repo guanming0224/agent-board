@@ -27,6 +27,8 @@
     <Enabled>true</Enabled>
     <Hidden>false</Hidden>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <!-- 預設 7（低於一般）會讓 agent 跟著變慢；5＝一般使用者程式的優先順序。 -->
+    <Priority>5</Priority>
     <RestartOnFailure>
       <Interval>PT1M</Interval>
       <Count>999</Count>
