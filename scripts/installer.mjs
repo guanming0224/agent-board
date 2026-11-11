@@ -33,8 +33,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { createServer, isIP } from 'node:net';
-import { homedir, userInfo } from 'node:os';
+import { createConnection, createServer, isIP } from 'node:net';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
@@ -171,6 +171,12 @@ function systemNode(paths, state) {
   const found = onPath('node');
   if (usable(process.execPath)) {
     if (usable(found) && realOrSelf(found) === realOrSelf(process.execPath)) return found;
+    // 執行這支的是 Homebrew Cellar 之類的實際路徑（PATH 上找不到同一個檔案）：常見的穩定路徑指到同一個檔案就用它，
+    // 升級 node 後服務還找得到。
+    for (const stable of ['/opt/homebrew/bin/node', '/usr/local/bin/node']) {
+      if (!isWindows && usable(stable) && realOrSelf(stable) === realOrSelf(process.execPath))
+        return stable;
+    }
     return process.execPath;
   }
   if (usable(found)) return found;
@@ -238,17 +244,40 @@ function nodeInServiceFile(paths, role) {
   return null;
 }
 
-/** 有沒有程序正在用這個資料夾裡的執行檔（`ps` 的指令列以它開頭）。查不了當成有（不刪）。 */
+/**
+ * 這個資料夾裡的執行檔還有人在用嗎：`ps` 的指令列以它開頭，或 launchd 載入中的 session host 的 program／
+ * arguments 第一個在它底下（launchd 的 kickstart、KeepAlive 用的是**載入當下**的設定，不重讀 plist）。
+ * 查不了當成有（不刪）。
+ */
 function processRunsFrom(dir) {
   if (isWindows) return true;
-  const result = run('ps', ['-axww', '-o', 'args=']);
-  if (result.status !== 0) return true;
   const prefix = dir.endsWith('/') ? dir : `${dir}/`;
   const real = realOrSelf(dir);
   const realPrefix = real.endsWith('/') ? real : `${real}/`;
-  return result.stdout
-    .split('\n')
-    .some((line) => line.startsWith(prefix) || line.startsWith(realPrefix));
+  const under = (path) => path.startsWith(prefix) || path.startsWith(realPrefix);
+  if (platform === 'darwin') {
+    const loaded = launchdPrograms(SESSION_HOST);
+    if (loaded === null || loaded.some(under)) return true;
+  }
+  const result = run('ps', ['-axww', '-o', 'args=']);
+  if (result.status !== 0) return true;
+  return result.stdout.split('\n').some((line) => under(line.trim()));
+}
+
+/**
+ * launchd 載入中的 job 用的執行檔（`launchctl print` 的 `program =` 與 `arguments` 的第一個）；
+ * 沒載入回 []，launchctl 跑不起來回 null。
+ */
+function launchdPrograms(role) {
+  const result = run('launchctl', ['print', `${guiDomain()}/${launchdLabel(role)}`]);
+  if (result.error) return null;
+  if (result.status !== 0) return [];
+  const programs = [];
+  const program = /^\s*program = (.+)$/m.exec(result.stdout);
+  if (program) programs.push(program[1].trim());
+  const args = /^\s*arguments = \{\s*\n\s*(.+)$/m.exec(result.stdout);
+  if (args) programs.push(args[1].trim());
+  return programs;
 }
 
 /**
@@ -261,8 +290,8 @@ function cleanHostRuntime(paths) {
   if (processRunsFrom(dir)) {
     say(
       t(
-        `session host 還在用 ${dir} 裡的 node，先留著；下次 session host 重啟後再安裝一次就會清掉。`,
-        `The session host still runs the node in ${dir}; it is kept and removed by the next install after the session host restarts.`,
+        `session host 還在用 ${dir} 裡的 node（launchd 載入的設定或執行中的程序），先留著；session host 重新載入（重開機或 --restart-session-host）之後再安裝一次就會清掉。`,
+        `The session host still uses the node in ${dir} (the configuration launchd loaded, or a running process); it is kept and removed by the next install after the session host is reloaded (reboot or --restart-session-host).`,
       ),
     );
     return;
@@ -973,7 +1002,10 @@ const launchdLoaded = (role) =>
  * 2 秒結束 agent），這時 `print` 照樣成功、`bootstrap` 會回 5。等到 `print` 失敗（真的卸載了）才算停好。
  * 2026-11-11 事故：沒等就判斷「已載入」而略過 bootstrap，session host 被停掉後沒再載入。
  */
-function waitLaunchdUnloaded(role, timeoutMs = 20_000) {
+/** 等卸載的上限：要比 plist 的 ExitTimeOut（15 秒，之後 launchd 送 SIGKILL）長。 */
+const LAUNCHD_UNLOAD_TIMEOUT_MS = 45_000;
+
+function waitLaunchdUnloaded(role, timeoutMs = LAUNCHD_UNLOAD_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   while (launchdLoaded(role)) {
     if (Date.now() > deadline) return false;
@@ -982,33 +1014,78 @@ function waitLaunchdUnloaded(role, timeoutMs = 20_000) {
   return true;
 }
 
-function startService(role, ctx, { restart }) {
+/**
+ * bootstrap 之後確認 job 真的在跑（`launchctl print` 有 `pid =` 或 `state = running`），最多 10 秒（W4）。
+ */
+function waitLaunchdRunning(role, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = run('launchctl', ['print', `${guiDomain()}/${launchdLabel(role)}`]);
+    if (result.status === 0 && /^\s*(pid = \d+|state = running)\s*$/m.test(result.stdout))
+      return true;
+    if (Date.now() > deadline) return false;
+    sleepMs(200);
+  }
+}
+
+/**
+ * 啟動服務。restart：已載入就先停（等卸載完）再載入。mustBootstrap：一定要由這次 bootstrap 載入
+ * （換了 session host 之後），不走「已載入就當成在跑」的捷徑；已載入就是沒停乾淨，回 false。
+ * checkRunning：bootstrap 之後確認程式真的在跑（沒配對的 daemon 會馬上結束，不檢查）。
+ */
+function startService(role, ctx, { restart, mustBootstrap = false, checkRunning = true }) {
   const { paths } = ctx;
   if (platform === 'darwin') {
     const target = `${guiDomain()}/${launchdLabel(role)}`;
     const loaded = launchdLoaded(role);
-    if (loaded && !restart) return true;
+    if (loaded && !restart && !mustBootstrap) return true;
+    if (loaded && mustBootstrap && !restart) {
+      say(
+        t(
+          `${launchdLabel(role)} 還在載入中（沒停乾淨），沒辦法重新載入。`,
+          `${launchdLabel(role)} is still loaded (it did not stop cleanly), so it cannot be reloaded.`,
+        ),
+      );
+      return false;
+    }
     if (loaded) {
       run('launchctl', ['bootout', target]);
-      waitLaunchdUnloaded(role);
+      if (!waitLaunchdUnloaded(role)) {
+        say(
+          t(
+            `${launchdLabel(role)} 停了 ${LAUNCHD_UNLOAD_TIMEOUT_MS / 1000} 秒還沒卸載，沒辦法重新載入。`,
+            `${launchdLabel(role)} was still loaded ${LAUNCHD_UNLOAD_TIMEOUT_MS / 1000} seconds after bootout, so it cannot be reloaded.`,
+          ),
+        );
+        return false;
+      }
     }
     run('launchctl', ['enable', target]);
     let boot = run('launchctl', ['bootstrap', guiDomain(), launchdFile(paths, role)]);
     // 還沒收乾淨時會回 5: Input/output error；等一下再試。
     for (let retry = 0; boot.status !== 0 && retry < 5; retry++) {
       sleepMs(1_000);
-      if (launchdLoaded(role) && !loaded) break; // 別人已經載入了（例如 daemon 拉起 host）
+      if (launchdLoaded(role) && !loaded && !mustBootstrap) break; // 別人已經載入了
       boot = run('launchctl', ['bootstrap', guiDomain(), launchdFile(paths, role)]);
     }
     if (boot.status === 0 && !launchdLoaded(role)) {
       boot = { status: 1, stderr: 'bootstrap 回報成功，但 launchctl print 找不到這個服務' };
     }
-    if (boot.status !== 0 && launchdLoaded(role) && !loaded) boot = { status: 0 };
+    if (boot.status !== 0 && launchdLoaded(role) && !loaded && !mustBootstrap) boot = { status: 0 };
     if (boot.status !== 0) {
       say(
         t(
           `launchctl bootstrap 失敗（${boot.stderr.trim()}）。常見原因是透過 SSH 執行、沒有圖形登入；設定檔已寫好，下次登入桌面會自動啟動。`,
           `launchctl bootstrap failed (${boot.stderr.trim()}). This usually means you ran this over SSH with no desktop login. The service file is written and starts at the next desktop login.`,
+        ),
+      );
+      return false;
+    }
+    if (checkRunning && !waitLaunchdRunning(role)) {
+      say(
+        t(
+          `${launchdLabel(role)} 載入了，但 10 秒內沒有在跑（看紀錄：${logPath(paths, role)}）。`,
+          `${launchdLabel(role)} was loaded but was not running within 10 seconds (see the log: ${logPath(paths, role)}).`,
         ),
       );
       return false;
@@ -1096,15 +1173,19 @@ function startWindowsTask(role, ctx, { restart }) {
   return true;
 }
 
-function stopService(role) {
+/**
+ * 停服務。macOS 等到 launchd 真的卸載（最多 45 秒，比 plist 的 ExitTimeOut 15 秒長）；
+ * mustUnload 時逾時就中止安裝（例如換 session host 前：還沒換資料夾，什麼都沒改）。
+ */
+function stopService(role, { mustUnload = true } = {}) {
   if (platform === 'darwin') {
     if (!launchdLoaded(role)) return;
     run('launchctl', ['bootout', `${guiDomain()}/${launchdLabel(role)}`]);
-    if (!waitLaunchdUnloaded(role)) {
-      say(
+    if (!waitLaunchdUnloaded(role) && mustUnload) {
+      fail(
         t(
-          `${launchdLabel(role)} 停了 20 秒還沒卸載，接著重新載入可能失敗。`,
-          `${launchdLabel(role)} was still loaded 20 seconds after bootout; reloading it may fail.`,
+          `${launchdLabel(role)} 停了 ${LAUNCHD_UNLOAD_TIMEOUT_MS / 1000} 秒還沒卸載，中止安裝（還沒換掉任何檔案）。請確認它停下來後再執行一次。`,
+          `${launchdLabel(role)} was still loaded ${LAUNCHD_UNLOAD_TIMEOUT_MS / 1000} seconds after bootout; the install is aborted (no files were replaced). Run it again once it has stopped.`,
         ),
       );
     }
@@ -1116,7 +1197,7 @@ function stopService(role) {
 }
 
 function removeService(role, paths) {
-  stopService(role);
+  stopService(role, { mustUnload: false });
   if (platform === 'darwin') {
     rmSync(launchdFile(paths, role), { force: true });
   } else if (platform === 'linux') {
@@ -1216,6 +1297,59 @@ function pairDaemon(options, ctx) {
       ),
     );
   ctx.justPaired = true;
+}
+
+/**
+ * session host 換了之後確認它真的能用（W4）：這次啟動後寫了新的 token（host 在 socket 開好之後才寫），
+ * 而且 socket 連得上，最多 10 秒。socket 的位置同 session-host/src/endpoint.ts：`<dataDir>/session-host.sock`，
+ * 路徑太長時改放 `<tmpdir>/ab-host-<資料夾雜湊>/`（服務的 tmpdir 可能和這裡不同，兩個都試）。Windows 只看 token。
+ */
+async function waitHostReady(paths, since, timeoutMs = 10_000) {
+  const data = resolve(dataDir(paths));
+  const token = join(data, 'session-host.token');
+  const preferred = join(data, 'session-host.sock');
+  const hashed = createHash('sha256').update(data).digest('hex').slice(0, 12);
+  const sockets =
+    Buffer.byteLength(preferred) <= 100
+      ? [preferred]
+      : [...new Set([tmpdir(), '/tmp'])].map((dir) =>
+          join(dir, `ab-host-${hashed}`, 'session-host.sock'),
+        );
+  const connects = (path) =>
+    new Promise((done) => {
+      const socket = createConnection(path);
+      const finish = (ok) => {
+        socket.destroy();
+        done(ok);
+      };
+      socket.once('connect', () => finish(true));
+      socket.once('error', () => finish(false));
+      setTimeout(() => finish(false), 1_000);
+    });
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let fresh = false;
+    try {
+      fresh = lstatSync(token).mtimeMs >= since - 1_000;
+    } catch {
+      fresh = false;
+    }
+    if (fresh) {
+      if (isWindows) return true;
+      for (const path of sockets) {
+        if (existsSync(path) && (await connects(path))) return true;
+      }
+    }
+    if (Date.now() > deadline) break;
+    await new Promise((done) => setTimeout(done, 200));
+  }
+  say(
+    t(
+      `session host 啟動後 ${timeoutMs / 1000} 秒內 socket 連不上（看紀錄：${logPath(paths, SESSION_HOST)}）。`,
+      `The session host socket was not reachable within ${timeoutMs / 1000} seconds after start (see the log: ${logPath(paths, SESSION_HOST)}).`,
+    ),
+  );
+  return false;
 }
 
 // ── 指令 ─────────────────────────────────────────────────
@@ -1394,7 +1528,8 @@ async function install(argv) {
     if (r === SESSION_HOST) {
       // session host 不跟著 app 重啟（會結束所有 agent），跑的是自己資料夾裡那份。第一次裝、協定變了、
       // 或加了 --restart-session-host 才換上新版並（重新）啟動；其他時候只確定它在跑。
-      if (!hostInstalled || restartHost) {
+      const hostReloaded = !hostInstalled || restartHost;
+      if (hostReloaded) {
         installHostRuntime(paths, ctx, { stopRunning: hostInstalled });
         writeService(r, ctx);
       } else if (sessionHostBuild(appHostFiles(paths.current)) !== state.sessionHostBuild) {
@@ -1403,27 +1538,25 @@ async function install(argv) {
         // 只換了 node（例如 0.1.1 的自帶 node → 系統 node）：設定改好，下次 host 重啟才生效，不必重啟。
         say(
           t(
-            `session host 的服務設定改成用 ${ctx.node}（原本 ${hostNodeBefore}），下次 session host 重啟時生效；現在跑的 agent 不受影響。`,
-            `The session host service now uses ${ctx.node} (was ${hostNodeBefore}); it takes effect the next time the session host restarts. Running agents are not affected.`,
+            `session host 的服務設定改成用 ${ctx.node}（原本 ${hostNodeBefore}），下次 session host 重新載入（重開機或 --restart-session-host）時生效；launchd 載入中的設定不會變，現在跑的 agent 不受影響。`,
+            `The session host service now uses ${ctx.node} (was ${hostNodeBefore}); it takes effect the next time the session host is reloaded (reboot or --restart-session-host). launchd keeps the loaded configuration, and running agents are not affected.`,
           ),
         );
       }
       cleanHostRuntime(paths);
-      started[r] = startService(r, ctx, { restart: false });
-      if (!started[r] && (restartHost || !hostInstalled)) {
-        say(
-          t(
-            `注意：session host 沒有載入成功。daemon 會退回舊模式（自己開 agent）；請確認服務 ${serviceName(r)} 已啟動（macOS：launchctl print gui/$UID/${serviceName(r)}）。`,
-            `Warning: the session host did not load. The daemon falls back to the old mode (it opens agents itself); make sure the ${serviceName(r)} service is running (macOS: launchctl print gui/$UID/${serviceName(r)}).`,
-          ),
-        );
-      }
+      // 換了 host 之後一定要由這次 bootstrap 載入（不走「已載入」的捷徑），再等它的 socket 連得上（W4）。
+      const hostSince = Date.now();
+      started[r] = startService(r, ctx, { restart: false, mustBootstrap: hostReloaded });
+      if (started[r] && hostReloaded) started[r] = await waitHostReady(paths, hostSince);
+      if (!hostReloaded && started[r] === false) started[r] = undefined; // 沒換 host：照舊只提醒
       continue;
     }
     const restart = appChanged || serviceChanged || (r === 'daemon' && Boolean(ctx.justPaired));
     if (r === 'hub' && restart && options['backup-db'])
       backupHubDb(paths, options['backup-db'], ctx);
-    started[r] = startService(r, ctx, { restart });
+    // 沒配對的 daemon 一啟動就結束（launchd 會重試），不檢查有沒有在跑。
+    const checkRunning = r !== 'daemon' || existsSync(join(dataDir(paths), 'machine.json'));
+    started[r] = startService(r, ctx, { restart, checkRunning });
   }
   if (hostUpdatePending) {
     say(
@@ -1434,6 +1567,32 @@ async function install(argv) {
     );
   }
   writeFileSync(paths.state, `${JSON.stringify(state, null, 2)}\n`);
+
+  // 服務沒起來就不能回報成功（W3；2026-11-11 事故：session host 沒載入，安裝程式卻結束碼 0）。
+  const notStarted = Object.entries(started)
+    .filter(([, ok]) => ok === false)
+    .map(([name]) => serviceName(name));
+  if (notStarted.length > 0) {
+    fail(
+      t(
+        `這些服務沒有起來：${notStarted.join('、')}。程式已經裝好；請看上面的訊息與 ${dirname(logPath(paths, 'hub'))} 的紀錄，處理後再執行一次同樣的指令。session host 沒起來時 daemon 會退回舊模式（自己開 agent）。`,
+        `These services did not start: ${notStarted.join(', ')}. The programs are installed; see the messages above and the logs in ${dirname(logPath(paths, 'hub'))}, then run the same command again. Without the session host the daemon falls back to the old mode (it opens agents itself).`,
+      ),
+    );
+  }
+  const urlHost = hubHost.includes(':') ? `[${hubHost}]` : hubHost;
+  const url = `http://${urlHost}:${hubPort}`;
+  // 同一台有 hub（不論這次裝的是哪個角色）：hub 重啟了就確認它回應。
+  if (state.roles.includes('hub') && started.hub) {
+    if (!(await waitForHub(url))) {
+      fail(
+        t(
+          `hub 沒有在 ${HEALTH_TIMEOUT_MS / 1000} 秒內回應。請看紀錄：${logPath(paths, 'hub')}`,
+          `The hub did not respond within ${HEALTH_TIMEOUT_MS / 1000} seconds. See the log: ${logPath(paths, 'hub')}`,
+        ),
+      );
+    }
+  }
 
   say('');
   if (!(process.env.PATH || '').split(delimiter).includes(paths.bin)) {
@@ -1460,20 +1619,7 @@ async function install(argv) {
     );
   }
   if (role === 'hub') {
-    const urlHost = hubHost.includes(':') ? `[${hubHost}]` : hubHost;
-    const url = `http://${urlHost}:${hubPort}`;
-    if (started.hub) {
-      const healthy = await waitForHub(url);
-      if (!healthy) {
-        fail(
-          t(
-            `hub 沒有在 ${HEALTH_TIMEOUT_MS / 1000} 秒內回應。請看紀錄：${logPath(paths, 'hub')}`,
-            `The hub did not respond within ${HEALTH_TIMEOUT_MS / 1000} seconds. See the log: ${logPath(paths, 'hub')}`,
-          ),
-        );
-      }
-      say(t(`hub 已啟動：${url}`, `Hub started: ${url}`));
-    }
+    if (started.hub) say(t(`hub 已啟動：${url}`, `Hub started: ${url}`));
     say(
       t(
         `用瀏覽器打開 ${url} 建立管理員帳號。`,
@@ -1593,6 +1739,7 @@ async function switchRelease(argv) {
   };
   const roles = state.roles.filter((r) => ROLES.includes(r));
   const activate = !options['no-start'];
+  const failedSwitch = [];
 
   const restore = options['restore-db'];
   if (restore) {
@@ -1621,15 +1768,30 @@ async function switchRelease(argv) {
     if (wanted !== null && wanted !== (state.sessionHostProtocol ?? null)) {
       installHostRuntime(paths, ctx, { stopRunning: activate });
       writeService(SESSION_HOST, ctx);
-      if (activate) startService(SESSION_HOST, ctx, { restart: false });
+      if (activate) {
+        const since = Date.now();
+        const ok =
+          startService(SESSION_HOST, ctx, { restart: false, mustBootstrap: true }) &&
+          (await waitHostReady(paths, since));
+        if (!ok) failedSwitch.push(serviceName(SESSION_HOST));
+      }
     }
   }
   installShims(paths, ctx.node);
   for (const role of roles) {
     writeService(role, ctx);
-    if (activate) startService(role, ctx, { restart: true });
+    if (activate && !startService(role, ctx, { restart: true }))
+      failedSwitch.push(serviceName(role));
   }
   writeFileSync(paths.state, `${JSON.stringify(state, null, 2)}\n`);
+  if (failedSwitch.length > 0) {
+    fail(
+      t(
+        `current 已指向 ${name}，但這些服務沒有起來：${failedSwitch.join('、')}。`,
+        `current now points to ${name}, but these services did not start: ${failedSwitch.join(', ')}.`,
+      ),
+    );
+  }
   say(t(`current 已指向 ${name}。`, `current now points to ${name}.`));
 }
 

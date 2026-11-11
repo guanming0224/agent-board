@@ -24,6 +24,7 @@ import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { stopAll } from './test-support/fake-launchctl.mjs';
 
 const repo = join(import.meta.dirname, '..');
 const { version } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
@@ -49,15 +50,21 @@ const listAgents = () =>
     : [];
 const agentsBefore = listAgents();
 
-// launchctl：只記錄、不跑程式，但照真的語意記著哪些 job 載入了（bootstrap 載入、bootout 卸載、print 沒載入回 113、
-// bootstrap 已載入的回 5），安裝程式會在 bootstrap 後用 print 確認。服務程式由測試照 plist 自己啟動。
+// launchctl：hub、daemon 只記錄、不跑程式（由測試照 plist 自己啟動），但照真的語意記著哪些 job 載入了
+// （bootstrap 載入、bootout 卸載、print 沒載入回 113、載入中印 pid、bootstrap 已載入的回 5）。
+// session host 交給 test-support/fake-launchctl.mjs 真的跑起來：安裝程式換 host 後要等它的 socket 連得上（W4）。
 const loadedDir = join(base, 'launchd-loaded');
 mkdirSync(loadedDir);
+const hostLaunchd = join(base, 'launchd-host');
+mkdirSync(hostLaunchd);
 for (const name of ['launchctl', 'systemctl', 'loginctl']) {
   const stub = join(stubs, name);
   const launchd = [
+    'case "$*" in',
+    `  *com.agent-board.session-host*) exec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(repo, 'scripts/test-support/fake-launchctl.mjs'))} "${hostLaunchd}" "$@" ;;`,
+    'esac',
     'case "$1" in',
-    `  print) [ -f "${loadedDir}/\${2##*/}" ] && exit 0; exit 113 ;;`,
+    `  print) [ -f "${loadedDir}/\${2##*/}" ] && { printf '\\tstate = running\\n\\tpid = 1\\n'; exit 0; }; exit 113 ;;`,
     `  bootstrap) l=$(basename "$3" .plist); [ -f "${loadedDir}/$l" ] && exit 5; : > "${loadedDir}/$l"; exit 0 ;;`,
     `  bootout) l=\${2##*/}; [ -f "${loadedDir}/$l" ] || exit 3; rm -f "${loadedDir}/$l"; exit 0 ;;`,
     'esac',
@@ -575,4 +582,5 @@ try {
   process.exitCode = 1;
 } finally {
   for (const child of children) if (child.exitCode === null) child.kill('SIGKILL');
+  stopAll(hostLaunchd, ['com.agent-board.session-host']);
 }

@@ -27,11 +27,13 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import {
   hookWrapperSh,
+  modulesPlatformManifest,
   isBundledRuntime,
   minNodeFromEngines,
   nodeMajor,
   versionAtLeast,
 } from './lib/node-runtime.mjs';
+import { fakeHostCode } from './test-support/fake-host.mjs';
 import {
   installFakeLaunchctl,
   isLoaded,
@@ -54,7 +56,7 @@ setInterval(() => {}, 1000);
 process.on('SIGTERM', () => process.exit(0));
 `;
 // 真的 session host 收到 SIGTERM 要 2 秒才結束（先結束 agent）：假的也拖一下，launchd 收 job 才會是非同步的。
-const FAKE_HOST = `setInterval(() => {}, 1000); process.on('SIGTERM', () => setTimeout(() => process.exit(0), 800));`;
+const FAKE_HOST = fakeHostCode({ termDelayMs: 800 });
 
 let base;
 let home;
@@ -296,14 +298,53 @@ describe('launchd 與 session host', () => {
     assert.ok(isLoaded(launchd, 'com.agent-board.daemon'));
   });
 
+  test('host 不理 SIGTERM（超過 launchd 預設的 20 秒）：靠 plist 的 ExitTimeOut 15 秒被收掉，安裝程式等得到並重新載入（S1）', async () => {
+    freshHome();
+    mustInstall([
+      'install',
+      'daemon',
+      '--source',
+      makeRelease('0.1.2', { hostCode: fakeHostCode({ ignoreTerm: true }) }),
+    ]);
+    assert.match(plist('session-host'), /<key>ExitTimeOut<\/key>\s*<integer>15<\/integer>/);
+    const host0 = await waitFor('session host 起來', () => hostPid());
+    const started = Date.now();
+    const output = mustInstall([
+      'install',
+      'daemon',
+      '--source',
+      makeRelease('0.1.3', { protocol: 2 }),
+    ]);
+    assert.ok(Date.now() - started >= 14_000, '要等到 ExitTimeOut 收掉舊的 host');
+    const host1 = hostPid();
+    assert.ok(host1 && host1 !== host0, `新的 host 在跑：\n${output}`);
+    assert.ok(isLoaded(launchd, HOST));
+  });
+
+  test('安裝程式結束碼：換了 host 卻沒起來（socket 沒開）就非 0', () => {
+    freshHome();
+    mustInstall(['install', 'daemon', '--source', makeRelease('0.1.2')]);
+    const result = installer([
+      'install',
+      'daemon',
+      '--source',
+      makeRelease('0.1.3', { protocol: 2, hostCode: 'setInterval(() => {}, 1000);' }),
+    ]);
+    assert.notEqual(result.status, 0, result.output);
+    assert.match(result.output, /socket 連不上/);
+    assert.match(result.output, /這些服務沒有起來：com\.agent-board\.session-host/);
+  });
+
   test('假 launchctl 照真的語意：bootstrap 已載入的回 5、kickstart 沒載入的回 113、bootout 不等程式結束', async () => {
     freshHome();
     mustInstall(['install', 'daemon', '--source', makeRelease('0.1.2')]);
     await waitFor('session host 起來', () => hostPid());
     assert.equal(launchctl('bootstrap', 'gui/501', plistFile(HOST)).status, 5);
+    assert.match(launchctl('print', `gui/501/${HOST}`).stdout, /pid = \d+/);
     assert.equal(launchctl('bootout', `gui/501/${HOST}`).status, 0);
-    // 剛 bootout：程式還沒結束，job 還算載入中。
+    // 剛 bootout：程式還沒結束，job 還算載入中；再 bootout 一次回 36。
     assert.equal(launchctl('print', `gui/501/${HOST}`).status, 0);
+    assert.equal(launchctl('bootout', `gui/501/${HOST}`).status, 36);
     await waitFor('卸載完', () => launchctl('print', `gui/501/${HOST}`).status === 113);
     assert.equal(launchctl('kickstart', `gui/501/${HOST}`).status, 113);
     assert.equal(launchctl('bootout', `gui/501/${HOST}`).status, 3);
@@ -349,7 +390,44 @@ describe('launchd 與 session host', () => {
     assert.equal(hostPid(), host0, 'session host 沒重啟');
     assert.equal(programOf('session-host'), nodeLink, '下次重啟改用系統 node');
     assert.ok(existsSync(runtime), '還在用的 runtime 不刪');
-    assert.match(output, /下次 session host 重啟時生效/);
+    assert.match(output, /重新載入（重開機或 --restart-session-host）時生效/);
     assert.match(output, /先留著/);
+    // 程式結束了（例如當掉），但 launchd 載入的設定還是 runtime 那支（KeepAlive／kickstart 用載入當下的設定）：照樣不刪。
+    process.kill(host0, 'SIGKILL');
+    await waitFor('host 結束', () => !hostPid());
+    assert.match(
+      launchctl('print', `gui/501/${HOST}`).stdout,
+      /program = .*runtime\/node\/bin\/node/,
+    );
+    mustInstall(['install', 'daemon', '--source', makeRelease('0.1.2')]);
+    assert.ok(existsSync(runtime), 'launchd 載入的設定還指著它，不刪');
+    // kickstart 用的是載入當下的快照（runtime），不是改過的 plist。
+    assert.equal(launchctl('kickstart', `gui/501/${HOST}`).status, 0);
+    const restarted = await waitFor('kickstart 之後', () => hostPid());
+    const args = spawnSync('ps', ['-o', 'args=', '-p', String(restarted)], { encoding: 'utf8' });
+    assert.match(args.stdout, /runtime\/node\/bin\/node/);
+  });
+});
+
+describe('舊 hub 看 0.1.2 的成品（W1）', () => {
+  test('.node-modules-platform 把建置的 ABI 記成 buildModules：0.1.0／0.1.1 的 hub 讀不到 modules，不會對 Node 26 回 abi_mismatch', () => {
+    const manifest = modulesPlatformManifest({
+      platform: 'darwin-arm64',
+      node: '24.17.0',
+      buildModules: '137',
+      engines: '>=22.18',
+    });
+    assert.equal(manifest.modules, undefined);
+    assert.equal(manifest.buildModules, '137');
+    assert.equal(manifest.minNode, '22.18');
+    // 0.1.0 hub 的 bundledAbi()：讀 modules 字串；resolveTarget：entry.abi && record.nodeAbi && 不同 → abi_mismatch。
+    const oldHubAbi = typeof manifest.modules === 'string' ? manifest.modules : null;
+    const blocks010 = (nodeAbi) => Boolean(oldHubAbi && nodeAbi && oldHubAbi !== nodeAbi);
+    // 0.1.1 hub 另外看 bundledNode（0.1.2 沒有）。
+    const blocks011 = (nodeAbi) => !manifest.bundledNode && blocks010(nodeAbi);
+    for (const abi of ['147', '137', '127']) {
+      assert.equal(blocks010(abi), false, `0.1.0 hub 對 ABI ${abi}`);
+      assert.equal(blocks011(abi), false, `0.1.1 hub 對 ABI ${abi}`);
+    }
   });
 });

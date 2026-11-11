@@ -149,14 +149,15 @@ function nodeOnPath(root) {
 }
 
 /**
- * 跑安裝程式、讀 schema 用的系統 node（§21.10）：install.json 記的 systemNode、daemon 給的 AGENT_BOARD_NODE、
- * 執行這支的 node、PATH 上的 node，依序取第一個存在而且不是自帶 runtime（0.1.1 的殘留）的。
+ * 跑安裝程式、讀 schema 用的系統 node（§21.10）：daemon 給的 AGENT_BOARD_NODE（安裝時記下、服務正在用的）、
+ * install.json 記的 systemNode、執行這支的 node、PATH 上的 node，依序取第一個存在而且不是自帶 runtime
+ * （0.1.1 的殘留）的。
  * 不做 realpath（安裝程式照 0.1.0 的寫法決定服務的路徑）。releaseDir 不影響結果（保留參數給呼叫端看得懂）。
  */
 export function nodeFor(_releaseDir, root) {
   for (const candidate of [
-    installState(root).systemNode,
     process.env.AGENT_BOARD_NODE,
+    installState(root).systemNode,
     process.execPath,
   ]) {
     if (candidate && existsSync(candidate) && !isInside(root, candidate)) return candidate;

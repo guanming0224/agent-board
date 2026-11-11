@@ -25,6 +25,9 @@
   </dict>
   <key>ThrottleInterval</key>
   <integer>10</integer>
+  <!-- 停服務時 SIGTERM 之後最多等 15 秒才 SIGKILL（launchd 預設 20 秒）；安裝程式等卸載的上限要比它長（CONTRACTS §21.10）。 -->
+  <key>ExitTimeOut</key>
+  <integer>15</integer>
   <key>StandardOutPath</key>
   <string>{{LOG}}</string>
   <key>StandardErrorPath</key>

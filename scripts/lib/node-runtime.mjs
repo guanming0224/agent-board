@@ -19,6 +19,22 @@ export function readModulesPlatform(dir) {
 }
 
 /**
+ * `.node-modules-platform` 的內容（build-release 寫）。建置用 Node 的 ABI 記成 **buildModules**（只供參考），
+ * 不用 0.1.1 以前的 `modules` 這個名字：0.1.0／0.1.1 的 hub 讀 `modules` 跟 daemon 的 ABI 比，不合就不發目標
+ * （abi_mismatch）；讀不到就不擋，所以舊 hub 也會把 0.1.2 發給 Node 26 的機器（§21.10）。
+ */
+export function modulesPlatformManifest({ platform, node, buildModules, engines }) {
+  return {
+    platform,
+    node,
+    buildModules,
+    // 原生模組都是 N-API：不同 Node 版本也載得起來。hub 只擋低於 minNode 的機器。
+    napi: true,
+    minNode: minNodeFromEngines(engines),
+  };
+}
+
+/**
  * package.json 的 engines.node（例如 `>=22.18`）裡的最低版本（`22.18`）；讀不懂回預設的 `22`。
  * hub 用它的主版本擋 Node 太舊的機器（node_too_old）。
  */

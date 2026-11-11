@@ -35,7 +35,7 @@ import {
   missingNotices,
   RUNTIME_DEPS,
 } from './release-shipped.mjs';
-import { hookWrapperCmd, hookWrapperSh, minNodeFromEngines } from './lib/node-runtime.mjs';
+import { hookWrapperCmd, hookWrapperSh, modulesPlatformManifest } from './lib/node-runtime.mjs';
 
 const root = join(import.meta.dirname, '..');
 const outDir = join(root, 'release');
@@ -262,14 +262,14 @@ setTimeout(() => process.exit(3), 10000);
   const { engines } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   writeFileSync(
     join(stage, '.node-modules-platform'),
-    `${JSON.stringify({
-      platform: platformKey(),
-      node: process.versions.node,
-      modules: process.versions.modules,
-      // 原生模組都是 N-API：不同 Node 版本也載得起來（§21.10）。hub 只擋低於 minNode 的機器。
-      napi: true,
-      minNode: minNodeFromEngines(engines?.node),
-    })}\n`,
+    `${JSON.stringify(
+      modulesPlatformManifest({
+        platform: platformKey(),
+        node: process.versions.node,
+        buildModules: process.versions.modules,
+        engines: engines?.node,
+      }),
+    )}\n`,
   );
 }
 

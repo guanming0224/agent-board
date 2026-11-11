@@ -26,6 +26,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
+import { fakeHostCode } from './test-support/fake-host.mjs';
 import { installFakeLaunchctl, runningPid, stopAll } from './test-support/fake-launchctl.mjs';
 
 const repo = join(import.meta.dirname, '..');
@@ -67,7 +68,7 @@ setInterval(() => {}, 1000);
 process.on('SIGTERM', () => process.exit(0));
 `;
 
-const FAKE_HOST = `setInterval(() => {}, 1000); process.on('SIGTERM', () => process.exit(0));`;
+const FAKE_HOST = fakeHostCode();
 
 let base;
 let home;

@@ -534,13 +534,18 @@ async function main() {
   );
   const elapsed = Date.now() - badStarted;
   assert.equal(failed.version, HUB_DOWN);
-  assert.equal(failed.update.reason, 'health_timeout');
+  // 新 daemon 一啟動就結束：安裝程式 bootstrap 後 10 秒內看不到它在跑就以非 0 結束（install_failed，W4）；
+  // 剛好在那之前看到它還活著，就由健康檢查抓到（health_timeout）。兩種都要回滾。
+  assert.ok(
+    ['install_failed', 'health_timeout'].includes(failed.update.reason),
+    failed.update.reason,
+  );
   assert.equal(failed.update.toVersion, BAD);
   assert.equal(basename(realpathSync(join(root, 'current'))), HUB_DOWN);
   const failures = await api('GET', '/api/audit?action=release.update_failed');
   assert.match(JSON.stringify(failures.body), /rolled_back/);
   step(
-    `壞版 ${BAD}（新 daemon 起不來）：${HEALTH_MS / 1000} 秒健康檢查沒過，自動回滾到 ${HUB_DOWN}，hub 面板標失敗並記 audit（共 ${Math.round(elapsed / 1000)} 秒）`,
+    `壞版 ${BAD}（新 daemon 起不來）：安裝程式確認服務沒起來（${failed.update.reason}），自動回滾到 ${HUB_DOWN}，hub 面板標失敗並記 audit（共 ${Math.round(elapsed / 1000)} 秒）`,
   );
 
   // 同一個壞版不會自動重試。
