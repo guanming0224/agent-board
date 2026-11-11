@@ -372,14 +372,31 @@ async function main() {
     (await api('GET', '/api/sessions')).body.find((s) => s.id === sessionId)?.status;
   await poll('session 進 waiting_input', async () => (await sessionStatus()) === 'waiting_input');
   const snapshot = join(data, 'state', `${sessionId}.json`);
-  const agentPid = await poll('host 開的 agent', () => {
+  let agentPid = await poll('host 開的 agent', () => {
     try {
       return JSON.parse(readFileSync(snapshot, 'utf8')).agentPid;
     } catch {
       return null;
     }
   });
-  const hostPid = runningPid(launchd, HOST);
+  let hostPid = runningPid(launchd, HOST);
+  // 舊版的 session host 協定和這一版不同（例如真的 0.1.6 是協定 1，這一版是 2，W5）：升級一定要換 host，
+  // 換 host 會結束 agent、新 daemon 用 --resume 接回（CONTRACTS §20.5）。session 停在 waiting_input（不算忙），
+  // 所以安裝不會因為 host_busy 中止。
+  const hostProtocolOf = (archive) =>
+    JSON.parse(
+      execFileSync('tar', ['-xOzf', archive, 'agent-board/session-host/dist/meta.json'], {
+        encoding: 'utf8',
+      }),
+    ).protocol;
+  const legacyHostProtocol = hostProtocolOf(bundled ?? legacy.path);
+  const newHostProtocol = hostProtocolOf(tarball);
+  const hostSwap = legacyHostProtocol !== newHostProtocol;
+  if (hostSwap) {
+    console.log(
+      `  （session host 協定 ${legacyHostProtocol} → ${newHostProtocol}：這次升級會換 host、agent 用 --resume 接回）`,
+    );
+  }
   // 派工 MCP 設定檔寫的 node：0.1.1 期間開的 session 是自帶的 node（升級後就不在了）。
   const mcpConfig = join(data, 'mcp', `${sessionId}.json`);
   const mcpCommand = () =>
@@ -419,11 +436,39 @@ async function main() {
   for (const label of ['com.agent-board.daemon', HOST]) {
     assert.equal(plistNode(label), systemNodePath, `${label} 用系統 node`);
   }
-  assert.equal(runningPid(launchd, HOST), hostPid, 'session host 沒重啟');
-  assert.ok(alive(agentPid), 'agent 沒中斷');
+  if (hostSwap) {
+    // 協定變了：host 換新、舊 agent 結束，新 daemon 用 --resume 開新的 agent（交給新 host）。
+    const newHost = await poll('新的 session host', () => {
+      const pid = runningPid(launchd, HOST);
+      return pid && pid !== hostPid ? pid : null;
+    });
+    await poll('舊 agent 結束', () => !alive(agentPid));
+    const resumedPid = await poll('--resume 接回的 agent', () => {
+      try {
+        const pid = JSON.parse(readFileSync(snapshot, 'utf8')).agentPid;
+        return pid && pid !== agentPid && alive(pid) ? pid : null;
+      } catch {
+        return null;
+      }
+    });
+    hostPid = newHost;
+    agentPid = resumedPid;
+  } else {
+    assert.equal(runningPid(launchd, HOST), hostPid, 'session host 沒重啟');
+    assert.ok(alive(agentPid), 'agent 沒中斷');
+  }
   // 新 daemon 接回時把 MCP 設定檔的 node 改成系統 node（claude 之後重開 MCP server 才起得來）。
   await poll('MCP 設定檔改用系統 node', () => mcpCommand() === systemNodePath);
   assert.equal(lstatSync(mcpConfig).mode & 0o777, 0o600);
+  // W5：MCP 設定檔帶 hook 密鑰檔（接回時補上；換 host 重開時新寫的本來就有），密鑰檔 600。
+  const keyFile = await poll(
+    'MCP 設定檔有 hook 密鑰檔',
+    () =>
+      JSON.parse(readFileSync(mcpConfig, 'utf8')).mcpServers['agent-board'].env
+        .AGENT_BOARD_HOOK_KEY_FILE ?? null,
+  );
+  assert.equal(keyFile, join(data, 'hook.key'));
+  assert.equal(lstatSync(keyFile).mode & 0o777, 0o600);
   const reported = (await api('GET', '/api/releases')).body.machines[0];
   // 手動安裝時安裝程式把 AGENT_BOARD_TEST_NODE_VERSION 帶進 daemon 的服務設定；舊版 daemon 自動更新時
   // 它的環境沒有這個變數，回報的是真的版本。
@@ -445,7 +490,7 @@ async function main() {
   });
   assert.ok(command.startsWith(systemNodePath), `daemon 用系統 node 跑：${command}`);
   step(
-    `${process.env.E2E_LEGACY_AUTO === '1' ? '舊版 daemon 自動更新' : '手動 install.sh --from'}升到 ${FIRST}：session host 沒重啟、agent 不中斷、三個服務都用系統 node（${systemNodePath}）`,
+    `${process.env.E2E_LEGACY_AUTO === '1' ? '舊版 daemon 自動更新' : '手動 install.sh --from'}升到 ${FIRST}：${hostSwap ? `session host 協定 ${legacyHostProtocol}→${newHostProtocol} 換了 host、agent 用 --resume 接回` : 'session host 沒重啟、agent 不中斷'}、三個服務都用系統 node（${systemNodePath}）、MCP 設定檔帶 hook 密鑰檔`,
   );
 
   // ── 好的新版 ─────────────────────────────────────────────
