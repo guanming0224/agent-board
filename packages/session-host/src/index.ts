@@ -10,6 +10,10 @@ export {
 } from './client';
 export {
   ensurePrivateDir,
+  forgetLockedDirs,
+  parseWhoamiSid,
+  restrictToCurrentUser,
+  type RunSync,
   installId,
   hostEndpoint,
   readToken,

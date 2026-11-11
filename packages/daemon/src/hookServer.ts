@@ -120,6 +120,9 @@ export class HookServer {
   }
 
   async start(): Promise<void> {
+    // 每次啟動都確認資料夾只有自己進得去（審查 W6／W2）：Mac／Linux chmod 700（「沒給密鑰檔的舊 agent 照舊不驗證」
+    // 靠的就是 hook.sock 在 700 的資料夾裡）；Windows 用 ACL 只給自己與 SYSTEM，做不到就丟例外、daemon 不啟動。
+    ensurePrivateDir(this.dataDir);
     const location = resolveSocketLocation(this.dataDir);
     if (process.platform !== 'win32') {
       // 還能連上就是另一個 daemon 正在用同一份資料夾，不可搶；連不上才是殘留檔。

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -243,6 +243,20 @@ describe('HookServer', () => {
     expect(await exchange(server.path, [{ type: 'auth.challenge', nonce }])).toHaveLength(1);
     expect(await exchange(server.path, [{ type: 'auth.challenge', nonce }])).toEqual([]);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'W6：每次啟動都把資料夾改回 700（「沒給密鑰檔的舊 agent 不驗證」靠的是這一層）',
+    async () => {
+      const dir = makeTempDir();
+      cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+      writeFileSync(join(dir, 'hook.key'), `${'k'.repeat(43)}\n`, { mode: 0o600 });
+      chmodSync(dir, 0o755);
+      const server = new HookServer(dir, async () => null);
+      await server.start();
+      cleanups.push(() => server.close());
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+    },
+  );
 
   it('W5：daemon 重啟後沿用同一把密鑰（活著的 agent 還拿著同一個路徑）', async () => {
     const dir = makeTempDir();
