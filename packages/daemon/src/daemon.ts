@@ -55,6 +55,7 @@ import {
   clearMcpDir,
   enabledTools,
   readMcpSecret,
+  repointMcpConfig,
   removeMcpFiles,
   toolFullName,
   secretMatches,
@@ -671,6 +672,15 @@ export class Daemon {
     // MCP server 還拿著上一個 daemon 寫的密鑰檔：讀回來，派工工具才繼續能用。
     const secret = readMcpSecret(this.deps.config.dataDir, sessionId);
     if (secret) this.mcpSecrets.set(sessionId, secret);
+    // 設定檔裡的 node 換成現在的（0.1.1 寫的自帶 node 已經不在，§21.10）：claude 重開 MCP server 才起得來。
+    try {
+      const node = this.deps.config.nodeBin ?? process.execPath;
+      if (repointMcpConfig(this.deps.config.dataDir, sessionId, node)) {
+        log.info(`session ${sessionId} 的 MCP 設定檔改用 ${node}`);
+      }
+    } catch (error) {
+      log.warn(`無法更新 session ${sessionId} 的 MCP 設定檔：${errorMessage(error)}`);
+    }
     await session.ready;
     this.blocked.delete(sessionId);
     // daemon 崩潰（沒跑到 stop）時還在等的審批：hook 連線已斷，改成請在終端機回答（W6）。

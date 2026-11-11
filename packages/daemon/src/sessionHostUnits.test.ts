@@ -1,11 +1,19 @@
 // session host 相關的純函式與小模組：畫面補正、狀態機載入快照、快照檔、MCP 密鑰保留、拉起 host 的指令。
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { gapNotice } from './hostPty';
 import { downMarkerPath } from './hookServer';
-import { clearMcpDir, readMcpSecret } from './mcpFiles';
+import { clearMcpDir, readMcpSecret, repointMcpConfig, writeMcpFiles } from './mcpFiles';
 import { screenCorrection } from './session';
 import { launchCommand } from './sessionHostLauncher';
 import {
@@ -199,6 +207,38 @@ describe('MCP 密鑰檔', () => {
       expect(readMcpSecret(dataDir, 'b')).toBeNull();
       clearMcpDir(dataDir);
       expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('repointMcpConfig：設定檔的 node 不存在或和現在的不同就改成現在的；密鑰、env 不變、0600（§21.10）', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'ab-mcp-'));
+    try {
+      // 0.1.1 期間開的 session：command 是已經不存在的自帶 node。
+      const gone = join(dataDir, 'releases', '0.1.1', 'runtime', 'node', 'bin', 'node');
+      const { configPath, secret } = writeMcpFiles(
+        dataDir,
+        's1',
+        { command: gone, args: ['/x/agent-board-mcp.mjs'] },
+        '/tmp/hook.sock',
+        ['send_task'],
+      );
+      const before = JSON.parse(readFileSync(configPath, 'utf8'));
+      expect(repointMcpConfig(dataDir, 's1', process.execPath)).toBe(true);
+      const after = JSON.parse(readFileSync(configPath, 'utf8'));
+      const server = after.mcpServers['agent-board'];
+      expect(server.command).toBe(process.execPath);
+      expect(server.args).toEqual(before.mcpServers['agent-board'].args);
+      expect(server.env).toEqual(before.mcpServers['agent-board'].env);
+      expect(readMcpSecret(dataDir, 's1')).toBe(secret);
+      expect(statSync(configPath).mode & 0o777).toBe(0o600);
+      expect(readdirSync(join(dataDir, 'mcp')).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+      // 已經是現在的 node：不動。
+      expect(repointMcpConfig(dataDir, 's1', process.execPath)).toBe(false);
+      // 現在的 node 不存在、設定檔不在：不動。
+      expect(repointMcpConfig(dataDir, 's1', join(dataDir, 'no-node'))).toBe(false);
+      expect(repointMcpConfig(dataDir, 'missing', process.execPath)).toBe(false);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

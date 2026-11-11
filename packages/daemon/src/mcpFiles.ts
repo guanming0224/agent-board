@@ -4,6 +4,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -39,7 +40,7 @@ export function enabledTools(settings: { dispatch: boolean; memory: boolean }): 
 }
 
 export interface McpServerCommand {
-  /** node 執行檔（發布檔自帶的那支，經過 current；開發時是 daemon 自己的 process.execPath）。 */
+  /** node 執行檔（安裝時記下的系統 node，AGENT_BOARD_NODE；開發時是 daemon 自己的 process.execPath）。 */
   command: string;
   /** MCP server 程式的路徑（發布檔的 daemon/dist/agent-board-mcp.mjs，開發時 packages/hook/src/mcp.ts）。 */
   args: string[];
@@ -119,6 +120,29 @@ export function clearMcpDir(dataDir: string, keep: ReadonlySet<string> = new Set
     const match = /^(.+)\.(json|key)$/.exec(name);
     if (match && !keep.has(match[1]!)) rmSync(join(dir, name), { force: true });
   }
+}
+
+/**
+ * 接回 host 裡還活著的 session 時：MCP 設定檔裡的 node 和現在的不同（或那個路徑已經不在）就改成現在的 node，
+ * claude 之後重開 MCP server 才起得來（CONTRACTS §21.10：0.1.1 期間開的 session 寫的是已經不存在的
+ * current/runtime/node/bin/node）。只改 command，密鑰、env、args 不動；一樣 0600、先寫暫存檔再換名。
+ * 回傳有沒有改。設定檔不在、讀不懂、現在的 node 不存在：不動。
+ */
+export function repointMcpConfig(dataDir: string, sessionId: string, node: string): boolean {
+  if (!node || !existsSync(node)) return false;
+  const configPath = join(mcpDir(dataDir), `${sessionId}.json`);
+  let config: { mcpServers?: Record<string, { command?: unknown }> };
+  try {
+    config = JSON.parse(readFileSync(configPath, 'utf8')) as typeof config;
+  } catch {
+    return false;
+  }
+  const server = config.mcpServers?.[DISPATCH_MCP_SERVER];
+  if (!server || typeof server.command !== 'string') return false;
+  if (server.command === node && existsSync(server.command)) return false;
+  server.command = node;
+  writePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  return true;
 }
 
 /** 接回時從檔案拿回這次 PTY 的密鑰（記憶體裡的已隨上一個 daemon 消失）。沒有回 null。 */

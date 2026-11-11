@@ -15,6 +15,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -379,6 +380,12 @@ async function main() {
     }
   });
   const hostPid = runningPid(launchd, HOST);
+  // 派工 MCP 設定檔寫的 node：0.1.1 期間開的 session 是自帶的 node（升級後就不在了）。
+  const mcpConfig = join(data, 'mcp', `${sessionId}.json`);
+  const mcpCommand = () =>
+    JSON.parse(readFileSync(mcpConfig, 'utf8')).mcpServers['agent-board'].command;
+  assert.ok(existsSync(mcpConfig), '開 session 時寫了 MCP 設定檔');
+  if (bundled) assert.match(mcpCommand(), /runtime\/node\/bin\/node$/);
   const alive = (pid) => {
     try {
       process.kill(pid, 0);
@@ -414,6 +421,9 @@ async function main() {
   }
   assert.equal(runningPid(launchd, HOST), hostPid, 'session host 沒重啟');
   assert.ok(alive(agentPid), 'agent 沒中斷');
+  // 新 daemon 接回時把 MCP 設定檔的 node 改成系統 node（claude 之後重開 MCP server 才起得來）。
+  await poll('MCP 設定檔改用系統 node', () => mcpCommand() === systemNodePath);
+  assert.equal(lstatSync(mcpConfig).mode & 0o777, 0o600);
   const reported = (await api('GET', '/api/releases')).body.machines[0];
   // 手動安裝時安裝程式把 AGENT_BOARD_TEST_NODE_VERSION 帶進 daemon 的服務設定；舊版 daemon 自動更新時
   // 它的環境沒有這個變數，回報的是真的版本。
