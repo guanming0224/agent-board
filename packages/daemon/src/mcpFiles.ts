@@ -39,7 +39,7 @@ export function enabledTools(settings: { dispatch: boolean; memory: boolean }): 
 }
 
 export interface McpServerCommand {
-  /** node 執行檔（daemon 自己的 process.execPath）。 */
+  /** node 執行檔（發布檔自帶的那支，經過 current；開發時是 daemon 自己的 process.execPath）。 */
   command: string;
   /** MCP server 程式的路徑（發布檔的 daemon/dist/agent-board-mcp.mjs，開發時 packages/hook/src/mcp.ts）。 */
   args: string[];

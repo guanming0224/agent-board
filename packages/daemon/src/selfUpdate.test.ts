@@ -49,7 +49,9 @@ const target = (over: Partial<ReleaseTarget> = {}): ReleaseTarget => ({
   ...over,
 });
 
-function harness(over: Partial<SelfUpdaterDeps> & { hostProtocol?: number } = {}) {
+function harness(
+  over: Partial<SelfUpdaterDeps> & { hostProtocol?: number; bundledNode?: string } = {},
+) {
   const reports: UpdateState[] = [];
   const spawned: SpawnRequest[] = [];
   const fetches: { url: string; auth: string | null }[] = [];
@@ -90,6 +92,20 @@ function harness(over: Partial<SelfUpdaterDeps> & { hostProtocol?: number } = {}
         join(dir, 'session-host', 'dist', 'meta.json'),
         JSON.stringify({ protocol: over.hostProtocol ?? 1 }),
       );
+      // 自帶 Node 的成品（§21.10）：.node-modules-platform 記 bundledNode，runtime/node 裡有執行檔。
+      if (over.bundledNode) {
+        writeFileSync(
+          join(dir, '.node-modules-platform'),
+          JSON.stringify({
+            platform: 'darwin-arm64',
+            node: over.bundledNode,
+            modules: '137',
+            bundledNode: true,
+          }),
+        );
+        mkdirSync(join(dir, 'runtime', 'node', 'bin'), { recursive: true });
+        writeFileSync(join(dir, 'runtime', 'node', 'bin', 'node'), '');
+      }
     },
     deferRetryMs: 60_000,
     ...over,
@@ -215,6 +231,46 @@ describe('SelfUpdater', () => {
     await settle();
     expect(same.spawned).toHaveLength(1);
     same.updater.dispose();
+  });
+
+  it('自帶 Node（§21.10）：更新程式用新版自帶的 node 跑；host 用的 Node 不同而有 RUN 時延後', async () => {
+    // 0.1.0 的 install.json 沒記 sessionHostNode（host 用系統 node）：新版自帶 Node → 要換 host。
+    const busy = harness({ bundledNode: '24.22.2' });
+    busy.setStatuses(['running']);
+    busy.updater.onTarget(target(), false);
+    await settle();
+    expect(busy.reports.at(-1)).toMatchObject({ phase: 'deferred', reason: 'host_busy' });
+    expect(busy.spawned).toEqual([]);
+    busy.updater.dispose();
+
+    // host 已經用同一版自帶的 Node：不用換 host，RUN 不擋；更新程式用新版裡的 runtime/node/bin/node 啟動。
+    rmSync(join(root, 'releases', '.incoming'), { recursive: true, force: true });
+    writeFileSync(
+      join(root, 'install.json'),
+      JSON.stringify({
+        roles: ['daemon'],
+        previousVersion: '0.0.9',
+        sessionHostProtocol: 1,
+        sessionHostNode: 'bundled:24.22.2',
+      }),
+    );
+    const same = harness({ bundledNode: '24.22.2' });
+    same.setStatuses(['running']);
+    same.updater.onTarget(target(), false);
+    await settle();
+    expect(same.spawned).toHaveLength(1);
+    const source = join(root, 'releases', '.incoming', '0.2.0', 'agent-board');
+    expect(same.spawned[0]!.node).toBe(join(source, 'runtime', 'node', 'bin', 'node'));
+    same.updater.dispose();
+
+    // 舊版成品（沒自帶 Node）：不指定 node（daemon 自己的）。
+    rmSync(join(root, 'releases', '.incoming'), { recursive: true, force: true });
+    rmSync(join(data, 'update-state.json'), { force: true });
+    const legacy = harness();
+    legacy.updater.onTarget(target(), false);
+    await settle();
+    expect(legacy.spawned[0]!.node).toBeUndefined();
+    legacy.updater.dispose();
   });
 
   it('同版、降級、別的平台、目標 null：什麼都不做（降級要 force）', async () => {

@@ -220,7 +220,7 @@ export function rollbackSupported(previousVersion: string | null): boolean {
 
 /** 沒有發目標的原因（面板顯示）：hub_first＝等 hub 那台先升到這版；hub_update_failed＝hub 那台這版更新失敗，
  * 其他機器暫停；platform_unverified＝這個平台還沒實機驗證
- *（win-x64）；abi_mismatch＝成品附的原生模組和這台的 Node 版本不合。 */
+ *（win-x64）；abi_mismatch＝成品附的原生模組和這台的 Node 版本不合（只有沒自帶 Node 的舊成品會有，§21.10）。 */
 export const TargetNote = z.enum([
   'hub_first',
   'hub_update_failed',

@@ -25,6 +25,8 @@
   發版與自動更新（2026-11-11，CONTRACTS §21）：hub 用已登入的 `gh`（子程序）查／下載 GitHub Release，daemon 只向
   已配對的 hub 下載成品、啟動獨立的更新程式（裝新版、重啟服務、健康檢查、回滾）。不送任何字進 PTY、不呼叫模型；
   更新失敗的推播只帶機器名稱、版本與原因代碼。
+  發布檔自帶 Node（2026-11-11，CONTRACTS §21.10）：**建置時**（`build:release`、GitHub Actions）從 nodejs.org
+  下載官方 Node、用官方 SHASUMS256 驗證後放進發布檔；各機執行時不下載任何東西，只用發布檔裡那支執行我們自己的程式。
 
 ## 重跑
 
@@ -124,6 +126,16 @@ hub 的 CSP 限制網頁只能連自己（`packages/hub/src/server.ts:76-87`：`
 `connect-src 'self'` 加上同主機的 ws/wss），網頁就算被注入也連不到外部 LLM。
 service worker（`packages/web/src/flows/pwa/sw.js`）只處理 `install`、`activate`、`push`、
 `notificationclick`，沒有 `fetch`。
+
+### 建置時下載 Node（2026-11-11，CONTRACTS §21.10）
+
+`scripts/fetch-node.mjs`（只在 `build:release` 與 GitHub Actions 的建置裡執行，**不進發布檔、各機執行時不會跑**）：
+`fetch` 只連 `https://nodejs.org/dist/v<版本>/`，下載 `SHASUMS256.txt` 與這個平台的官方成品（版本＝`package.json`
+的 `bundledNode`），用官方 SHASUMS256.txt 驗 SHA-256，不符就中止；用系統 `tar` 解開，只取 `node` 執行檔與
+`LICENSE` 放到 `release/agent-board/runtime/node/`。不送任何資料、不呼叫模型。build-release 接著用這支 node 跑
+`npm ci`（同下段的安裝腳本）與原生模組載入檢查。`check-no-llm` 掃發布檔時略過 `runtime/`（未修改的官方二進位檔）。
+執行時：hub、daemon、session host、更新程式、安裝程式、hook 包裝、派工 MCP server 都用這支 node 跑我們自己的程式，
+它本身不連任何地方。
 
 安裝時 `npm ci` 會跑原生模組的安裝腳本（`argon2`：`node-gyp-build`；`node-pty`：
 `scripts/prebuild.js || node-gyp rebuild`），沒有預編譯檔時 node-gyp 會從 nodejs.org 下載

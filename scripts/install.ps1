@@ -10,6 +10,8 @@
 # daemon 角色會一起裝 session host：工作排程器多一個「登入時」工作 AgentBoard-session-host（設定由
 # scripts/installer.mjs 產生，和 daemon 同一份 task.xml 模板）。agent 掛在它底下，daemon 重啟時不中斷
 # （CONTRACTS §20）。Windows 換程式檔時 node-pty 被鎖住，更新一定會停掉 session host，session 會用 --resume 接回。
+# 發布檔自帶 Node（runtime\node\node.exe，CONTRACTS §21.10）：有的話安裝程式與服務都用它，這台不必裝 Node.js；
+# 只有舊版（沒自帶 Node）的發布檔才需要系統的 node 與 npm。
 # 未在 Windows 實機驗證。
 $ErrorActionPreference = 'Stop'
 
@@ -28,15 +30,25 @@ function Fail([string] $message) {
   exit 1
 }
 
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  Fail (T "找不到 node。請先安裝 Node.js $minMajor.$minMinor 以上（https://nodejs.org）。" "Cannot find node. Install Node.js $minMajor.$minMinor or newer (https://nodejs.org).")
+# 系統的 node：只有沒自帶 Node 的發布檔才需要。
+function Require-SystemNode {
+  if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    Fail (T "找不到 node。這個發布檔沒有自帶 Node，請先安裝 Node.js $minMajor.$minMinor 以上（https://nodejs.org）。" "Cannot find node. This release has no bundled Node: install Node.js $minMajor.$minMinor or newer (https://nodejs.org).")
+  }
+  $version = [version](node -p "process.versions.node")
+  if ($version -lt [version]"$minMajor.$minMinor.0") {
+    Fail (T "Node.js 版本太舊（目前 $version），需要 $minMajor.$minMinor 以上。" "Node.js is too old ($version). $minMajor.$minMinor or newer is required.")
+  }
+  if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    Fail (T '找不到 npm。它通常隨 Node.js 一起安裝。' 'Cannot find npm. It normally comes with Node.js.')
+  }
+  'node'
 }
-$version = [version](node -p "process.versions.node")
-if ($version -lt [version]"$minMajor.$minMinor.0") {
-  Fail (T "Node.js 版本太舊（目前 $version），需要 $minMajor.$minMinor 以上。" "Node.js is too old ($version). $minMajor.$minMinor or newer is required.")
-}
-if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-  Fail (T '找不到 npm。它通常隨 Node.js 一起安裝。' 'Cannot find npm. It normally comes with Node.js.')
+
+# 發布檔資料夾裡自帶的 node.exe；沒有就用系統的。
+function Node-For([string] $dir) {
+  $bundled = Join-Path $dir 'runtime\node\node.exe'
+  if (Test-Path $bundled) { $bundled } else { Require-SystemNode }
 }
 
 $root = Join-Path $env:LOCALAPPDATA 'agent-board'
@@ -64,7 +76,14 @@ if ($uninstall) {
   $installer = Join-Path $root 'current\scripts\installer.mjs'
   if (-not (Test-Path $installer)) { $installer = Join-Path $root 'app\scripts\installer.mjs' }
   if (-not (Test-Path $installer)) { Fail (T '這台機器沒有安裝 Agent Board。' 'Agent Board is not installed on this machine.') }
-  node $installer uninstall @rest
+  $node = Node-For (Split-Path (Split-Path $installer))
+  if ($node -ne 'node') {
+    # Windows 鎖住執行中的 node.exe，解除安裝刪不掉 current：先複製到暫存資料夾再跑。
+    $copy = Join-Path ([System.IO.Path]::GetTempPath()) ("agent-board-node-" + [guid]::NewGuid() + ".exe")
+    Copy-Item $node $copy
+    $node = $copy
+  }
+  & $node $installer uninstall @rest
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   Set-UserPath { param($parts) $parts | Where-Object { $_ -ne $binDir } }
   exit 0
@@ -101,7 +120,8 @@ try {
   }
   if (-not (Test-Path (Join-Path $source 'BUILD_ID'))) { Fail (T "$source 不是 Agent Board 發布檔。" "$source is not an Agent Board release.") }
 
-  node (Join-Path $source 'scripts\installer.mjs') install --source $source @rest
+  $node = Node-For $source
+  & $node (Join-Path $source 'scripts\installer.mjs') install --source $source @rest
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   Set-UserPath { param($parts) if ($parts -contains $binDir) { $parts } else { $parts + $binDir } }
   Write-Host (T "已把 $binDir 加進使用者 PATH，新開的終端機才會生效。" "Added $binDir to your user PATH. It takes effect in new terminals.")

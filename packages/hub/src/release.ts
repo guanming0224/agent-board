@@ -156,6 +156,11 @@ const Verified = z.object({
       size: z.number().int().nonnegative(),
       /** 成品附的 node_modules 是哪個 Node ABI 建的（`.node-modules-platform`）；讀不到為 null（不擋）。 */
       abi: z.string().nullable().optional(),
+      /**
+       * 成品自帶 Node（`.node-modules-platform` 的 bundledNode，CONTRACTS §21.10）：各機用它跑，原生模組 ABI
+       * 一定相同，**不和 daemon 的 nodeAbi 比**。沒有這個欄位＝舊成品（或舊 hub 驗的），照舊比 ABI。
+       */
+      bundledNode: z.boolean().optional(),
     }),
   ),
 });
@@ -402,6 +407,7 @@ export class ReleaseManager {
    * - 平台沒有成品、版本不在 cache 裡：null（沒有說明）。
    * - 還沒實機驗證的平台（win-x64，W8）：platform_unverified。hub 照樣下載成品，只是不發。
    * - 成品附的原生模組 ABI 和這台 daemon 的 Node 不合（B5）：abi_mismatch（不在更新中跑 npm ci）。
+   *   只適用沒自帶 Node 的舊成品；自帶 Node 的成品（bundledNode）不比（§21.10），hello 的 nodeAbi 只供顯示。
    * - hub 那台也要升到同一版但還沒升（S3a）：hub_first。先升 hub，其他機器才不會在 hub 重啟時健康檢查失敗。
    *   只在 hub 那台真的拿得到這個目標（它自己沒被平台、ABI 擋住）而且在線時才擋（N1）。
    *   hub 那台這一版更新失敗（rolled_back／rollback_failed）：繼續擋，說明改成 hub_update_failed（不管在不在線）。
@@ -429,7 +435,7 @@ export class ReleaseManager {
     }
     const entry = this.cacheIndex.get(version)?.assets[record.platform];
     if (!entry || entry.asset !== releaseAssetName(version, record.platform)) return none;
-    if (entry.abi && record.nodeAbi && entry.abi !== record.nodeAbi) {
+    if (!entry.bundledNode && entry.abi && record.nodeAbi && entry.abi !== record.nodeAbi) {
       return { target: null, note: 'abi_mismatch' };
     }
     const hubId = this.str(KEY.hubMachine);
@@ -671,7 +677,8 @@ export class ReleaseManager {
         if (!expected) return `${asset} not listed in SHA256SUMS`;
         const actual = await sha256File(path);
         if (actual !== expected) return `${asset} SHA-256 mismatch`;
-        assets[platform] = { asset, sha256: actual, size, abi: await bundledAbi(path) };
+        const modules = await modulesPlatform(path);
+        assets[platform] = { asset, sha256: actual, size, ...modules };
       }
       if (Object.keys(assets).length === 0) return 'no release assets';
       const verified: Verified = { version, verifiedAt: this.nowIso(), assets };
@@ -781,20 +788,28 @@ export class ReleaseManager {
   }
 }
 
-/** 成品裡 `.node-modules-platform` 記的 Node ABI（用系統 tar 讀，tar.gz 與 zip 都行）；讀不到回 null。 */
-function bundledAbi(archive: string): Promise<string | null> {
+/**
+ * 成品裡 `.node-modules-platform` 記的 Node ABI 與有沒有自帶 Node（用系統 tar 讀，tar.gz 與 zip 都行）；
+ * 讀不到 ABI 為 null、bundledNode 為 false。
+ */
+export function modulesPlatform(
+  archive: string,
+): Promise<{ abi: string | null; bundledNode: boolean }> {
   return new Promise((resolve) => {
     execFile(
       'tar',
       ['-xOf', archive, 'agent-board/.node-modules-platform'],
       { encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true },
       (error, stdout) => {
-        if (error) return resolve(null);
+        if (error) return resolve({ abi: null, bundledNode: false });
         try {
-          const modules = (JSON.parse(stdout) as { modules?: unknown }).modules;
-          resolve(typeof modules === 'string' ? modules : null);
+          const info = JSON.parse(stdout) as { modules?: unknown; bundledNode?: unknown };
+          resolve({
+            abi: typeof info.modules === 'string' ? info.modules : null,
+            bundledNode: info.bundledNode === true,
+          });
         } catch {
-          resolve(null);
+          resolve({ abi: null, bundledNode: false });
         }
       },
     );

@@ -201,7 +201,10 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     previousVersion: z.string().nullable().optional(),
     /** 這台也裝了 hub（安裝程式的 roles 有 hub）：hub 自己的更新走這台 daemon。 */
     hostsHub: z.boolean().optional(),
-    /** `process.versions.modules`（Node 原生模組 ABI）：成品附的原生模組要合才發目標。舊 daemon 不送。 */
+    /**
+     * `process.versions.modules`（Node 原生模組 ABI）。只對沒自帶 Node 的舊成品比對（不合不發目標）；
+     * 自帶 Node 的成品不比，只供顯示（CONTRACTS §21.10）。舊 daemon 不送。
+     */
     nodeAbi: z.string().optional(),
     /** `<dataDir>/update-state.json` 的內容（上次更新的結果）。壞掉當沒送。 */
     update: UpdateState.nullable().optional().catch(undefined),

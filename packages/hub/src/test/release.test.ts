@@ -386,12 +386,17 @@ describe('通道、目標與 daemon', () => {
 
 describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
   /** 真的 tar.gz，帶 .node-modules-platform（hub 讀出成品的 Node ABI）。 */
-  function archiveWithAbi(abi: string): Buffer {
+  function archiveWithAbi(abi: string, bundledNode = false): Buffer {
     const dir = mkdtempSync(join(tmpdir(), 'ab-abi-'));
     mkdirSync(join(dir, 'agent-board'));
     writeFileSync(
       join(dir, 'agent-board', '.node-modules-platform'),
-      JSON.stringify({ platform: 'darwin-arm64', node: '24.0.0', modules: abi }),
+      JSON.stringify({
+        platform: 'darwin-arm64',
+        node: '24.0.0',
+        modules: abi,
+        ...(bundledNode ? { bundledNode: true } : {}),
+      }),
     );
     const out = join(dir, 'a.tar.gz');
     execFileSync('tar', ['-czf', out, '-C', dir, 'agent-board']);
@@ -449,6 +454,29 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
     const daemon = await hub.daemon(same.token);
     daemon.send(macHello({ nodeAbi: '137' }));
     expect(releaseOf(await daemon.next('hub.welcome'))).toBe('0.2.0');
+  });
+
+  it('自帶 Node 的成品（bundledNode）不比 ABI：daemon 的 Node 是別的版本也發目標（§21.10）', async () => {
+    const r = release('0.2.0');
+    r.files[releaseAssetName('0.2.0', 'darwin-arm64')] = archiveWithAbi('137', true);
+    const { hub, cookie } = await ready([r]);
+    await hub.api('POST', '/api/releases/check', { cookie });
+    await hub.api('POST', '/api/releases/promote', {
+      cookie,
+      body: { version: '0.2.0', confirm: true },
+    });
+    // MacBook 的系統 Node 26（ABI 147）、Mac mini 的 Node 24（ABI 137）、沒送 nodeAbi 的都拿得到。
+    for (const [name, nodeAbi] of [
+      ['macbook', '147'],
+      ['mac mini', '137'],
+    ] as const) {
+      const paired = await hub.pair(cookie, name);
+      const daemon = await hub.daemon(paired.token);
+      daemon.send(macHello({ nodeAbi }));
+      expect(releaseOf(await daemon.next('hub.welcome'))).toBe('0.2.0');
+    }
+    const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
+    expect(overview.body.machines.every((m) => m.targetNote !== 'abi_mismatch')).toBe(true);
   });
 
   it('先升 hub：hub 那台還沒到同一版時，其他機器的目標是 null（hub_first），hub 升完才送出', async () => {

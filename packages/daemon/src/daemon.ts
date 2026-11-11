@@ -1629,7 +1629,7 @@ export class Daemon {
       const launch = writeMcpFiles(
         this.deps.config.dataDir,
         sessionId,
-        { command: process.execPath, args: [server] },
+        { command: this.deps.config.nodeBin ?? process.execPath, args: [server] },
         this.hookServer.path,
         tools,
       );

@@ -64,6 +64,8 @@ export function bundleOptions(root, stage) {
       external: RUNTIME_DEPS['session-host'],
     },
     // hook 跑在每次工具呼叫的路徑上：CJS、不帶 banner、只有 node 內建模組。
+    // 放在 daemon/dist；daemon/node_modules/.bin/agent-board-hook 是 build-release 寫的小包裝，
+    // 用發布檔自帶的 node 執行它（CONTRACTS §21.10），不靠 agent PATH 上的 node。
     hook: {
       bundle: true,
       platform: 'node',
@@ -73,7 +75,7 @@ export function bundleOptions(root, stage) {
       minify: true,
       logLevel: 'warning',
       entryPoints: [join(root, 'packages/hook/src/cli.ts')],
-      outfile: join(stage, 'daemon/node_modules/.bin/agent-board-hook'),
+      outfile: join(stage, 'daemon/dist/agent-board-hook.cjs'),
     },
     // 派工工具的 MCP server（CONTRACTS §11）：claude 用 daemon 的 node 執行。只有 node 內建模組。
     // 放在 daemon/dist、不放 .bin：.bin 會加進 PTY 的 PATH，只能有 hook。

@@ -27,11 +27,11 @@ A self-hosted web console for all your Claude Code sessions, across all your com
 
 You need these on every machine that will run sessions:
 
-- [Node.js](https://nodejs.org) 22.18 or newer, with npm. Check with `node -v`.
+- Nothing for Node.js: releases bundle a pinned official Node (currently 24.22.2), and the hub, daemon and session host all run on it, whatever Node version the machine has. You only need [Node.js](https://nodejs.org) 22.18 or newer, with npm, to build from source or to use the one-line download below (the install script verifies the download with the system node).
 - [Claude Code](https://code.claude.com), logged in. Run `claude` once in a terminal and finish the login.
 - Linux only: tools to build `node-pty`, because it has no Linux prebuilt binary. On Debian or Ubuntu: `sudo apt install build-essential python3`.
 
-The machine that only runs the hub needs Node.js alone. One computer can be both.
+The machine that only runs the hub needs nothing else. One computer can be both.
 
 ## Set it up
 
@@ -164,7 +164,7 @@ More about auto-start, including why Windows uses a scheduled task: [docs/instal
 | Linux: `npm ci` fails on `node-pty`                          | Install the build tools listed in [Before you start](#before-you-start).                                                                                                                      |
 | Linux: `systemctl --user` unavailable (some containers, WSL) | Start by hand: `~/.local/bin/agent-board-daemon`.                                                                                                                                             |
 | Linux: doesn't start after reboot until you log in           | Run `loginctl enable-linger $USER`. The installer tries this for you.                                                                                                                         |
-| Services stopped after removing a Node version (nvm etc.)    | Run the install command again with the new Node version.                                                                                                                                      |
+| Services stopped after removing a Node version (nvm etc.)    | Only releases without bundled Node (0.1.0) are affected. Run the install command again with the new Node version, or install a release that bundles Node.                                     |
 | Log files are large                                          | Logs aren't rotated yet. Deleting them is safe; restart the service afterwards.                                                                                                               |
 | Forgot your password                                         | See [Forgot your password](#forgot-your-password) below.                                                                                                                                      |
 
@@ -197,7 +197,7 @@ One thing has to be cleaned by hand. Each project that had a session keeps Agent
 
 ## Install from source
 
-Needed until a release is published, or for development. Requires `git` and network access for dependencies.
+Needed until a release is published, or for development. Requires `git`, Node.js 22.18 or newer, and network access for dependencies and the official Node (`build:release` downloads the `bundledNode` version from `package.json` from nodejs.org, checks it against the official SHASUMS256 and puts it in the release; it is cached in `release/.node-cache/`).
 
 ```sh
 git clone https://github.com/OWNER/agent-board.git
@@ -207,11 +207,13 @@ corepack pnpm build:release
 sh scripts/install.sh hub --from release/agent-board-0.1.0-darwin-arm64.tar.gz
 ```
 
-Then use the same `--from` for the daemon. To set up other machines, copy `release/agent-board-<version>-<platform>.tar.gz` (`.zip` on Windows) to them. After that, new versions arrive through the hub (CONTRACTS §21).
+Then use the same `--from` for the daemon. To set up other machines, copy `release/agent-board-<version>-<platform>.tar.gz` (`.zip` on Windows) to them; they don't need Node.js. After that, new versions arrive through the hub (CONTRACTS §21).
+
+When upgrading from a release without bundled Node (0.1.0), install the first release with bundled Node by hand with `--from`. The session host switches to the bundled Node, and restarting it ends every agent (they come back with `--resume`), so the installer stops if a session is still working. Run it again once they stop, or add `--keep-session-host` to update only the hub and daemon now (agents keep running) and switch the session host later, when nothing is running.
 
 ## What the installer does
 
-- Downloads only this project's release file and its npm dependencies. It sends no data anywhere, and `npm audit` is turned off.
+- Downloads only this project's release file (and, for old releases without bundled Node, its npm dependencies). It sends no data anywhere, and `npm audit` is turned off.
 - Writes only under your home directory and needs no root.
 - Won't overwrite files in `~/.local/bin` that it didn't create. It doesn't edit your shell configuration.
 - Stores the machine token only in `~/.agent-board/machine.json` (mode 0600), never in service files.

@@ -764,7 +764,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 
 ### 20.5 安裝、更新與上架
 
-- `scripts/installer.mjs`：daemon 角色一起裝 session host 服務，順序在 daemon 前面：macOS LaunchAgent `com.agent-board.session-host`（同一份模板：RunAtLoad、失敗才重啟、不需要 `AbandonProcessGroup`）、Linux `agent-board-session-host.service`、Windows 工作排程器「登入時」工作 `AgentBoard-session-host`（未實測）。**host 跑自己資料夾裡那份**：`~/.local/share/agent-board/session-host/`（Windows `%LOCALAPPDATA%\agent-board\session-host\`），內含 `dist/main.mjs`、`dist/meta.json`（協定版本）與複製來的 `node_modules/node-pty`；只在 host 要（重新）啟動時才從 app 複製（確認 node-pty 載得起來才換上），換 app 時完全不動。daemon 服務多帶 `AGENT_BOARD_SESSION_HOST_SERVICE`。解除安裝一起移除。紀錄 `<dataDir>/logs/session-host.log`。
+- `scripts/installer.mjs`：daemon 角色一起裝 session host 服務，順序在 daemon 前面：macOS LaunchAgent `com.agent-board.session-host`（同一份模板：RunAtLoad、失敗才重啟、不需要 `AbandonProcessGroup`）、Linux `agent-board-session-host.service`、Windows 工作排程器「登入時」工作 `AgentBoard-session-host`（未實測）。**host 跑自己資料夾裡那份**：`~/.local/share/agent-board/session-host/`（Windows `%LOCALAPPDATA%\agent-board\session-host\`），內含 `dist/main.mjs`、`dist/meta.json`（協定版本）、複製來的 `node_modules/node-pty` 與自帶的 `runtime/node`（§21.10）；只在 host 要（重新）啟動時才從 app 複製（確認 node-pty 載得起來才換上），換 app 時完全不動。daemon 服務多帶 `AGENT_BOARD_SESSION_HOST_SERVICE`。解除安裝一起移除。紀錄 `<dataDir>/logs/session-host.log`。
 - **只更新 daemon／hub**：不必等 session 停下（agent 不中斷）。安裝程式**不重啟 session host**（會結束所有 agent），除非：(1) **協定版本變了**（`meta.json` 和 `install.json` 的 `sessionHostProtocol` 不同，新 daemon 連不上舊 host）一定要重啟；(2) 加了 `--restart-session-host`。這兩種情況下快照（`<dataDir>/state/*.json`）裡還有 agent 在、狀態是 RUN／PERM／PLAN／starting 的 session 就**中止安裝、什麼都不改**，說明要等它們停下。其他情況 host 的版本雜湊（程式＋node-pty 版本＋這個平台的 `pty.node`／`spawn-helper`）變了只印提醒。重啟後照 §3.2 `--resume` 接回。Windows 換 app 時只停 hub／daemon（host 的 node-pty 在自己的資料夾，不被鎖）。
 - **回滾到沒有 session host 的版本**：先 `launchctl bootout gui/$UID/com.agent-board.session-host`（會結束所有 agent）→ 用舊版發布檔安裝 → 刪 `~/Library/LaunchAgents/com.agent-board.session-host.plist` 與 `~/.local/share/agent-board/session-host/`。不先停 host 的話，舊 daemon 不會去接、host 也不會走，agent 留著沒人管。
 - **第一次上架（從沒有 host 的版本升級）**：現有 session 是舊 daemon 直接開的，舊 daemon 停止時照舊 SIGHUP 結束它們；新 daemon 連上剛啟動的 host 後，依 §3.2 用 `--resume` 接回、交給 host。從這次之後的 daemon 重啟才不中斷。
@@ -785,8 +785,8 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 ### 21.1 版本與成品
 
 - 版本號＝根目錄 `package.json` 的 `version`（從 0.1.0 起），tag `v<版本>`；`BUILD_ID`（內容雜湊）保留。hub 與 daemon 在執行期讀 `<發布檔>/package.json` 與 `BUILD_ID`（`hub|daemon/src/version.ts`；開發模式是 repo 的版本、buildId `dev`），hello 與 `GET /api/health`（public，`HealthInfo { ok, version, buildId, protocolVersion }`）回報。`agent-board-hub schema-version` 印出這版 hub 的 schema 版本。
-- `corepack pnpm build:release` → `release/agent-board-<版本>-<平台>.tar.gz`（Windows `.zip`，`tar -a`）與 `SHA256SUMS`（sha256sum 格式）。平台＝建置那台（`platformKey`：`darwin-arm64`、`win-x64`）。發布檔**附這個平台的 `node_modules`**（`npm ci --omit=dev`，含 node-pty／better-sqlite3／argon2 原生檔），`.node-modules-platform` 記平台與 Node ABI；安裝時平台相同而且原生模組載得起來就直接用；手動安裝（`install.sh --from`）載不起來時退回 `npm ci`，**自動更新中不跑 `npm ci`**（直接失敗；hub 本來就不發 ABI 不合的目標，§21.8）。workflow 的 Node 版本用 repo 變數 `RELEASE_NODE_VERSION`（預設 24），要和各機的 Node 主版本一致。BUILD_ID 在裝依賴前算，兩個平台同一個值。
-- `.github/workflows/release.yml`：`push: tags: ['v*']`；`macos-14`、`windows-latest` 各跑 install → typecheck → 單元測試（Windows 只跑 protocol、web；其他套件的測試未在 Windows 驗證）→ `build:release`，並檢查 tag 和 `package.json` 版本一致；`publish` job 合併兩份 `SHA256SUMS`、`sha256sum -c`，用 `GITHUB_TOKEN` `gh release create/upload`。ubuntu CI 不變。
+- `corepack pnpm build:release` → `release/agent-board-<版本>-<平台>.tar.gz`（Windows `.zip`，`tar -a`）與 `SHA256SUMS`（sha256sum 格式）。平台＝建置那台（`platformKey`：`darwin-arm64`、`win-x64`）。發布檔**自帶固定版本的官方 Node**（`runtime/node`，§21.10），並**附這個平台的 `node_modules`**（用自帶的 node 跑 `npm ci --omit=dev`，含 node-pty／better-sqlite3／argon2 原生檔），`.node-modules-platform` 記平台、Node 版本、ABI 與 `bundledNode: true`；安裝時用自帶的 node 檢查原生模組，載不起來就是成品壞了（直接失敗，不跑 `npm ci`）。沒自帶 Node 的舊成品（0.1.0）照舊：平台相同而且原生模組載得起來就直接用，手動安裝載不起來退回 `npm ci`，自動更新中不跑。Node 版本＝根目錄 `package.json` 的 `bundledNode`（完整版本號；**不再用 repo 變數 `RELEASE_NODE_VERSION`**）。BUILD_ID 在裝依賴、放 Node 之前算（另外算進 `bundledNode` 的版本號），兩個平台同一個值。
+- `.github/workflows/release.yml`：`push: tags: ['v*']`；`macos-14`、`windows-latest` 各用 `bundledNode` 那一版的 Node（setup-node，並確認版本一致）跑 install → typecheck → 單元測試（Windows 只跑 protocol、web；其他套件的測試未在 Windows 驗證）→ `build:release`，並檢查 tag 和 `package.json` 版本一致；`publish` job 合併兩份 `SHA256SUMS`、`sha256sum -c`，用 `GITHUB_TOKEN` `gh release create/upload`。ubuntu CI 不變。
 
 ### 21.2 安裝配置
 
@@ -801,7 +801,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
   update.lock             更新程式執行中（pid）
 ```
 
-- launchd plist、systemd unit、Windows 工作排程器、`~/.local/bin` 捷徑一律指 `current/…`，換版只換 `current`（服務設定不變）再重啟 hub／daemon。daemon 服務多帶 `AGENT_BOARD_INSTALL_ROOT`（自動更新用）、`AGENT_BOARD_HOOK_BIN`、`AGENT_BOARD_MCP_SERVER`（指 `current/…`：node 會把入口的 symlink 解開，不指定的話 agent 的 PATH 與 MCP 設定檔會寫 `releases/<版本>/…`，舊版清掉後還活著的 agent 就找不到）。
+- launchd plist、systemd unit、Windows 工作排程器、`~/.local/bin` 捷徑一律指 `current/…`，換版只換 `current`（服務設定不變）再重啟 hub／daemon。執行檔是 `current/runtime/node/bin/node`（Windows `current\runtime\node\node.exe`；session host 用 `session-host/runtime/node/…`，§21.10）；current 是沒自帶 Node 的舊版時用系統的 node。daemon 服務多帶 `AGENT_BOARD_INSTALL_ROOT`（自動更新用）、`AGENT_BOARD_HOOK_BIN`、`AGENT_BOARD_MCP_SERVER`（指 `current/…`：node 會把入口的 symlink 解開，不指定的話 agent 的 PATH 與 MCP 設定檔會寫 `releases/<版本>/…`，舊版清掉後還活著的 agent 就找不到）。
 - 保留最近 3 版（依 `.installed` 時間），`current` 與上一版一定留。
 - **第一次（從單一 `app/`）**：安裝程式把 `app/` 搬成 `releases/<app 的版本；0.0.0 或沒有記成 0.0.0-legacy>/`、建 `current`、`app` 留成指向 `current` 的連結，再照常裝新版。正在跑的程式不受影響（檔案沒變只是換名字），換 current 後重啟 hub／daemon；session host 照 §20.5 的規則（協定沒變就不重啟），agent 不中斷。
 - `installer.mjs switch --to <releases 底下的資料夾> [--restore-db <備份>] [--no-start]`：current 指回已裝好的某一版、重寫服務設定、重啟 hub／daemon；`--restore-db` 先停 hub、用備份蓋回 `hub.db`（刪 -wal／-shm）；目標版的 session host 協定和現在跑的不同時連 host 一起換回（會結束 agent，之後 `--resume`）。
@@ -824,10 +824,10 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 1`；不相容�
 1. 收到目標（welcome、`release.target`、`daemon.rejected.release`）：平台不同、同版、比目前舊（沒 force）、上次在這版失敗過（沒 force）、更新程式還在跑 → 不動。沒有 `AGENT_BOARD_INSTALL_ROOT`（開發模式、dev 實例）→ 只回報 `phase: idle, reason: not_installed`。
 2. 延後（`updateDeferReason`）：有 PERM 就延後；下載解壓後看新版 `session-host/dist/meta.json` 的協定和 `install.json` 的 `sessionHostProtocol` 不同（要換 host）而有 RUN／PERM／PLAN／starting 也延後。`phase: deferred, reason`，每 5 分鐘再看（解好的新版留著不重下載）。
 3. 下載：`GET <hub>/api/releases/<版本>/<平台>`（機器 token），邊下載邊算 SHA-256，和目標的 `sha256` 不同 → `failed/checksum_mismatch`；系統 `tar -xf` 解到 `releases/.incoming/<版本>/`，確認 `package.json` 名稱與版本、`BUILD_ID`、`scripts/updater.mjs` 都在。
-4. 寫 `phase: installing`，用 daemon 的 node 以 **detached**（`setsid`，新的 session 與 process group）、stdio 接 `<dataDir>/logs/updater.log`、`unref` 啟動**新版裡的** `scripts/updater.mjs update --source … --to … --from … --data … --root …`。launchd 停 daemon 只對 daemon 的 process group 送訊號，收不到它（`scripts/updater.test.mjs` 用「停服務時殺整個 process group」的假 launchctl 驗證；**未用真的 launchd 驗證**）。
+4. 寫 `phase: installing`，用**新版自帶的 node**（`<新版>/runtime/node/…`；新版沒自帶 Node 才用 daemon 自己的 node，§21.10）以 **detached**（`setsid`，新的 session 與 process group）、stdio 接 `<dataDir>/logs/updater.log`、`unref` 啟動**新版裡的** `scripts/updater.mjs update --source … --to … --from … --data … --root …`。launchd 停 daemon 只對 daemon 的 process group 送訊號，收不到它（`scripts/updater.test.mjs` 用「停服務時殺整個 process group」的假 launchctl 驗證；**未用真的 launchd 驗證**）。
 5. 每次連上 hub 寫 `<dataDir>/daemon-status.json`（pid、version、buildId、connectedAt；600）；`update-state.json` 放進 hello 的 `update`，還在進行中時每 2 秒讀一次、變了送 `update.status`（最多 10 分鐘）。
 
-**更新程式**（`scripts/updater.mjs`，只用 node 內建模組＋current 的 better-sqlite3）：
+**更新程式**（`scripts/updater.mjs`，只用 node 內建模組；讀 schema、hub 的 `schema-version`、安裝程式都用「那一版」的 node 另開程序跑，§21.10）：
 
 1. `update.lock`（原子取得，見 §21.8 W1；拿不到 → `failed/busy`）。有 hub 的機器用舊版的 better-sqlite3 先讀 schema 版本，並帶 `--backup-db` 給安裝程式：安裝程式在**停 hub 前一刻**線上備份 `hub.db` 到 `hub.db.pre-update-<舊版>-<時間>`（600，只留最近 5 份）；備份失敗 → 中止（hub 沒重啟、資料庫沒變）。
 2. 跑新版的 `installer.mjs install <hub 或 daemon> --source …`（`AGENT_BOARD_UPDATER=1`）：裝到 `releases/<版本>`、換 current（隨即寫 install.json）、重啟 hub／daemon；session host 只在協定變了才換（§20.5，有工作中的 session 就中止、什麼都不改）。安裝程式失敗而 current 沒換 → `failed/install_failed`。
@@ -870,7 +870,7 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
 - **鎖（W1）**：先寫 `update.lock.<pid>`，再 `link` 成 `update.lock`（已存在就失敗，原子）；已有的鎖內容是空的或 10 秒內建立的一律當作有人拿著；pid 不在了才清掉重試；結束時只刪自己的鎖。
 - **解壓（W2）**：解到 `.incoming/<版本>.partial`，檢查內容（名稱、版本、BUILD_ID、updater.mjs）後寫 `.extracted` 標記再改名成 `.incoming/<版本>`；沒有標記的一律重下載。
 - **成品檢查（B2–B4）**：daemon 只接受 `asset === releaseAssetName(version, platform)`；hub 的下載端點同樣比對檔名。解壓前 `tar -tf` 檢查：每一項都要在 `agent-board/` 底下、沒有絕對路徑或 `..`；symlink 的目標在解開後檢查（§21.9 N3）。
-- **原生模組 ABI（B5）**：hub 驗證成品時讀 `.node-modules-platform` 的 `modules`（Node ABI）記在 `verified.json`；daemon hello 帶 `nodeAbi`（`process.versions.modules`）。不合 → 不發目標（`targetNote: abi_mismatch`），面板請人手動安裝。
+- **原生模組 ABI（B5）**：hub 驗證成品時讀 `.node-modules-platform` 的 `modules`（Node ABI）記在 `verified.json`；daemon hello 帶 `nodeAbi`（`process.versions.modules`）。不合 → 不發目標（`targetNote: abi_mismatch`），面板請人手動安裝。**只適用沒自帶 Node 的舊成品**；自帶 Node 的成品（`verified.json` 的 `bundledNode: true`）不比，`nodeAbi` 只供顯示（§21.10）。
 - **win-x64（W8）**：`UNVERIFIED_PLATFORMS`（目前 `win-x64`）：hub 照樣下載、驗證成品，但不發目標（`targetNote: platform_unverified`）；實機驗證後從清單拿掉（測試用 `AGENT_BOARD_ALLOW_UNVERIFIED_PLATFORMS=1`）。workflow 照樣建 win-x64 成品。
 - **延後（W5、W6）**：安裝程式因為 session 忙碌（要換 session host）中止時以 **75** 結束（什麼都沒改）；更新程式寫 `deferred/host_busy`（不算失敗、不推播），daemon 5 分鐘後再試。手動回滾套用同樣的延後條件（上一版的 session host 協定不同就看 RUN／PERM／PLAN／starting）。上一版是 `0.0.0-legacy` 或比 `FIRST_UPDATER_VERSION`（0.1.0）舊：hub 回 409 `previous_unsupported`，面板不給按並說明（要用 `install.sh --from` 重裝）。
 - **schema 判斷（W3）**：回滾時用舊版的 better-sqlite3 讀現在的 schema；和更新前不同（或讀更新前時讀不到、改用舊版 hub 的 `schema-version` 比對 `user_version >` 它）就帶 `--restore-db`。
@@ -887,3 +887,25 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
 - **不重複啟動（N2）**：hub 在這台有最近 60 分鐘內的進行中狀態時，「立即更新」「回滾」回 409 `update_in_progress`；daemon 的 `rollback()` 也先看狀態檔，有更新在跑就不啟動第二個、狀態檔不動。回滾延後中收到新目標不會取消回滾（面板照樣看到延後的回滾，回滾做完才處理新目標）；按「立即更新」（force）會取代它，並明確記成 `idle/superseded`。
 - **解開後檢查整棵樹（N3）**：`tar -tf` 的路徑檢查留著當第一道；解到 `.partial` 之後用 lstat 走 `agent-board/` 整棵樹，每個 symlink 的實際目標（realpath；懸空的照連結文字算）都要在 `.partial/agent-board` 裡，不是一般檔案／資料夾／symlink 的一律拒絕，過了才寫完成標記。真的發布檔（node_modules/.bin 有 6 個 symlink）實測不誤擋。不再解析 `tar -tvf` 的文字。
 - **手動回滾後暫停那一版（M1）**：hub 送 `release.rollback` 時把這台目前的版本記在 settings `machineHold:<機器 id>`。通道目標等於這一版時不發目標（`targetNote: rolled_back_hold`，面板「已手動回滾，暫停這一版；按『立即更新』或通道換新版才解除」）；通道目標換成別的版本時自動清掉，按「立即更新」（force）也清掉，刪機器時一起刪。hub_first 的計算用同一套：hub 那台被暫停時視同它拿不到目標，不擋其他機器。daemon 另有保險：上次狀態是 `succeeded/rollback_requested`、目標等於那次的 `fromVersion`、不是 force 時不升回去。
+
+### 21.10 發布檔自帶 Node（GM 2026-11-11）
+
+起因：發布檔附的原生模組（node-pty、better-sqlite3、argon2）綁建置時的 Node ABI。Mac mini 的服務用 Node 24（ABI 137）、MacBook 是 Node 26（ABI 147），hub 遇到 ABI 不合就不發目標（B5），canary（MacBook）永遠收不到更新。GM 決定：**發布檔自帶固定版本的 Node**，hub、daemon、session host、更新程式、安裝程式、hook、派工 MCP server 都用它跑，各機系統 Node 版本不再影響 Agent Board。
+
+- **版本**：根目錄 `package.json` 的 `bundledNode`（完整版本號，目前 `24.22.2`，Node 24 LTS）。改版本就改這裡；workflow、build、測試都讀它。
+- **建置**（`scripts/fetch-node.mjs`，只在建置與 CI 執行、不進發布檔）：只從 `https://nodejs.org/dist/v<版本>/` 下載 `SHASUMS256.txt` 與這個平台的官方成品（`node-v<版本>-darwin-arm64.tar.gz`、`-win-x64.zip`），**用官方 SHASUMS256.txt 驗 SHA-256**（不符就刪掉、建置失敗；快取裡的也每次重驗）；快取在 `release/.node-cache/v<版本>/`（`release/` 不進 git，`build:release` 清 `release/` 時保留它）。只取出 `bin/node`（Windows `node.exe`）與 `LICENSE` 放到 `agent-board/runtime/node/`，不帶 npm／corepack／標頭檔。用它本身確認版本與 ABI，再**用它跑 `npm ci`**（系統 npm 的 `npm-cli.js`，PATH 前面放自帶 node 的資料夾，安裝腳本與 prebuild 也用它），裝完用它實際載入 node-pty／argon2／better-sqlite3 並開一次 PTY，失敗就不產出發布檔——建置機的系統 Node 主版本不同也不會產出 ABI 不合的成品。**沒有驗證 SHASUMS256.txt 的 GPG 簽章**（只信 HTTPS 下的 nodejs.org）。
+- **`.node-modules-platform`**：`{ platform, node: <自帶的版本>, modules: <它的 ABI>, bundledNode: true }`。`modules` 照樣寫：0.1.0 的 hub 用它比 ABI。
+- **hub**：驗成品時把 `bundledNode` 記進 `verified.json`；是自帶 Node 的成品就不比 ABI（`abi_mismatch` 只對舊成品）；舊 hub 驗過、沒有這個欄位的 cache 照舊比。hello 的 `nodeAbi` 保留，只供顯示。
+- **安裝程式**（`scripts/installer.mjs`，共用 `scripts/lib/bundled-node.mjs`）：
+  - hub、daemon 的服務與 `~/.local/bin` 捷徑用 `current/runtime/node/bin/node`（經過 current，換版不改服務設定）。current 沒自帶 Node（回滾到 0.1.0）時用系統的 node：PATH 上的、install.json 記的 `systemNode`，或執行安裝程式的那支（不在安裝資料夾裡的才算）。
+  - session host 不跟著 current 換版（§20.5），所以換 host 時連 `runtime/node` 一起複製到 `session-host/runtime/node/`，服務設定指那份；install.json 記 `sessionHostNode`（`bundled:<版本>`／`system`）。host 還是舊的（用系統 node）時，服務設定沿用原本的 node（install.json 的 `sessionHostNodePath` 或舊 plist 寫的），不會指到和它的 node-pty 不合的 Node。
+  - 原生模組檢查、hub.db 備份、PTY 檢查都用「那一版」的 node；安裝程式本身只用內建模組，誰的 node 跑都行。
+  - 服務的 PATH 最前面是系統的 node（有的話），**不放自帶的 node**：agent 繼承 daemon 的 PATH，使用者專案裡的 `node` 要是他自己的版本。daemon 服務多帶 `AGENT_BOARD_NODE`（`current/runtime/node/…`），派工 MCP 設定檔的 command 用它（沒有才用 daemon 的 `process.execPath`）。
+  - install.sh／install.ps1：解開的發布檔有 `runtime/node` 就用它跑安裝程式，**這台不必裝 Node.js**；舊版發布檔才要系統的 node ≥22.18 與 npm。
+- **hook**：`daemon/node_modules/.bin/agent-board-hook` 改成小的 sh 包裝（`.cmd` 同理），用相對路徑找 `runtime/node`（找不到才用 PATH 上的 node）執行 `daemon/dist/agent-board-hook.cjs`。不靠 `#!/usr/bin/env node`、也不把自帶 node 放進 agent 的 PATH（理由同上）。`~/.local/bin/agent-board-hook` 從 symlink 改成 exec 包裝的 shell 腳本（經過 symlink 執行時相對路徑會算錯）。
+- **session host 換版判斷**：除了協定版本（§20.5），**新版自帶 Node 的識別字和 `sessionHostNode` 不同**（system → bundled、或自帶的版本變了）也要換 host，照既有規則：有 RUN／PERM／PLAN／starting 就中止（**75**，什麼都沒改），自動更新記 `deferred/host_busy`、daemon 下載後也先看這個條件延後（`selfUpdate.ts` 的 `hostNodeDiffers`）。手動安裝可以加 **`--keep-session-host`**（只在協定沒變時有效）：先只換 hub／daemon，host 留在原本的 node 與 node-pty（agent 不中斷），之後同一個指令不加參數、或下一次自動更新（沒人工作時）再換。`switch`（回滾）只在協定不同時換 host，Node 不同不換（host 自帶的 runtime 跟著它的資料夾）。
+- **更新程式**：daemon 用新版自帶的 node 啟動新版的 `updater.mjs`（回滾用 current 的）；0.1.0 的 daemon 用它自己的系統 node 啟動——`updater.mjs` 只用 node 內建模組（Node ≥22.18 都能跑）、不在自己的程序載入原生模組，所以相容（`e2e:update` 加 `E2E_LEGACY_AUTO=1` 實測過）。它跑安裝程式、讀 schema、跑 hub 的 `schema-version` 都用那一版的 node（舊版用系統的）。清 `.incoming` 失敗（Windows 鎖住執行中的 node.exe）只記錄，不算更新失敗。
+- **大小**：darwin-arm64 成品從 29.6 MB（0.1.0）變成 65.9 MB（Node 執行檔解開約 117 MB）；session host 資料夾多一份 Node。
+- **過渡（從 0.1.0）**：線上兩台都是 0.1.0（hub 在 Mac mini）。0.1.0 的 hub 用舊邏輯比 ABI：新成品記的 `modules` 是 137，所以 Mac mini（系統 Node 24，ABI 137）**可能收到自動更新**，MacBook（ABI 147）收不到。**第一個自帶 Node 的版本一律手動裝**（`install.sh hub|daemon --from <成品>`）：會把三個服務改到自帶的 node，並換 session host（要沒有 RUN／PERM／PLAN／starting，否則 75 中止；或加 `--keep-session-host`）。hub 升上自帶 Node 的版本之後，兩台之間就照常自動更新。萬一 Mac mini 先被 0.1.0 的 hub 自動更新，也會走同一套（有 session 在工作就延後到沒人工作時）。
+- **已驗證**（2026-11-11，Apple Silicon Mac、系統 Node 24.17）：`build:release` 下載並驗證官方 24.22.2、`runtime/node/bin/node --version`＝v24.22.2、ABI 137、原生模組用它載得起來；`smoke:release`（安裝時 PATH 上沒有 node，三個服務都用自帶的）；`e2e:update`（真的 0.1.0 成品 → 手動升級 → 自帶 Node 版本間自動更新、壞版回滾；另跑 `E2E_LEGACY_AUTO=1` 讓 0.1.0 的 daemon 自動更新到自帶 Node 的版本）。
+- **未驗證**：建置機系統 Node 主版本和自帶的不同（例如 Node 26 的機器建置）時 `npm ci` 確實建出自帶 Node 的 ABI（程式用自帶的 node 跑 npm 並在最後實際載入檢查，載不起來就失敗，但沒在 Node 26 的機器上實際跑過）；Windows 的下載、zip 解壓、`node.exe`、`.cmd` 包裝、工作排程器；真的 GitHub Actions；真的 launchd（只用假 launchctl 照 plist 跑）。

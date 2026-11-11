@@ -9,6 +9,8 @@
 // 結果在 `<dataDir>/update-state.json`，daemon 每次連上 hub 都放進 hello，進行中時輪詢檔案用 update.status 回報。
 // 進行中的狀態會過期（S1）：downloading 只有 daemon 自己寫，daemon 重啟過就是中斷了；其他階段看更新程式的鎖
 // （update.lock 的 pid 還活著）與開始時間（超過 15 分鐘）。過期的寫成 failed/interrupted，可以重試。
+// 自帶 Node（CONTRACTS §21.10）：更新程式用新版發布檔自帶的 node 跑（回滾用 current 的）；舊版發布檔沒有才用
+// daemon 自己的 node。
 // 只連 hub（已配對的那一台），不連 GitHub、不呼叫 LLM。
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -59,6 +61,8 @@ const InstallState = z.object({
   previousVersion: z.string().nullable().optional().catch(null),
   previousRelease: z.string().nullable().optional().catch(null),
   sessionHostProtocol: z.number().int().nullable().optional().catch(null),
+  /** session host 用的 node（`bundled:<版本>`／`system`）；沒記＝0.1.0 以前的 system（§21.10）。 */
+  sessionHostNode: z.string().nullable().optional().catch(null),
 });
 export type InstallState = z.infer<typeof InstallState>;
 
@@ -139,6 +143,8 @@ export function updaterLockPid(root: string): number | null {
 }
 
 export interface SpawnRequest {
+  /** 用哪個 node 跑（發布檔自帶的那支）；不給＝daemon 自己的 node。 */
+  node?: string;
   script: string;
   args: string[];
   cwd: string;
@@ -161,7 +167,7 @@ export function spawnDetached(
   return new Promise((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(process.execPath, [request.script, ...request.args], {
+      child = spawn(request.node ?? process.execPath, [request.script, ...request.args], {
         cwd: request.cwd,
         detached: true,
         stdio: ['ignore', out, out],
@@ -180,6 +186,26 @@ export function spawnDetached(
       resolve(child.pid ?? 0);
     });
   });
+}
+
+/**
+ * 發布檔（解開的資料夾或 current）自帶的 node（§21.10）：`.node-modules-platform` 記著 bundledNode 而且執行檔在。
+ * 沒自帶的舊版回 null。
+ */
+export function bundledNodeIn(dir: string): string | null {
+  try {
+    const info = JSON.parse(readFileSync(join(dir, '.node-modules-platform'), 'utf8')) as {
+      bundledNode?: unknown;
+    };
+    if (info.bundledNode !== true) return null;
+  } catch {
+    return null;
+  }
+  const node =
+    process.platform === 'win32'
+      ? join(dir, 'runtime', 'node', 'node.exe')
+      : join(dir, 'runtime', 'node', 'bin', 'node');
+  return existsSync(node) ? node : null;
 }
 
 /** 系統 tar 解壓（Windows 的 tar.exe 是 bsdtar，zip 也能解）。 */
@@ -582,10 +608,11 @@ export class SelfUpdater {
         writeFileSync(join(partial, EXTRACTED_MARKER), `${target.sha256}\n`, { mode: 0o600 });
         await rename(partial, extracted);
       }
-      // 這次要不要換 session host：新版的協定和現在跑的不同才要（§20.5）。換的話有工作中的 session 就延後。
-      const hostChange = this.hostProtocolDiffers(
-        join(source, 'session-host', 'dist', 'meta.json'),
-      );
+      // 這次要不要換 session host：新版的協定和現在跑的不同（§20.5），或自帶 Node 的版本和 host 現在用的不同
+      // （§21.10）才要。換的話有工作中的 session 就延後（安裝程式也會檢查，以 75 結束）。
+      const hostChange =
+        this.hostProtocolDiffers(join(source, 'session-host', 'dist', 'meta.json')) ||
+        this.hostNodeDiffers(source);
       const busy = updateDeferReason(this.deps.sessionStatuses(), hostChange);
       if (busy) {
         await this.defer(target, busy, target.version);
@@ -606,7 +633,9 @@ export class SelfUpdater {
         root,
         ...this.timeoutArgs(),
       ];
+      const node = bundledNodeIn(source);
       const request: SpawnRequest = {
+        ...(node ? { node } : {}),
         script: join(source, 'scripts', 'updater.mjs'),
         args,
         cwd: root,
@@ -677,6 +706,32 @@ export class SelfUpdater {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 新版自帶的 Node 和 session host 現在用的不同（§21.10）：安裝程式會換 host。
+   * install.json 沒有 session host（還沒裝過）時不算。
+   */
+  private hostNodeDiffers(releaseDir: string): boolean {
+    const installed = readInstallState(this.deps.installRoot);
+    if (
+      !installed ||
+      installed.sessionHostProtocol === null ||
+      installed.sessionHostProtocol === undefined
+    )
+      return false;
+    let wanted = 'system';
+    try {
+      const info = JSON.parse(readFileSync(join(releaseDir, '.node-modules-platform'), 'utf8')) as {
+        bundledNode?: unknown;
+        node?: unknown;
+      };
+      if (info.bundledNode === true && typeof info.node === 'string')
+        wanted = `bundled:${info.node}`;
+    } catch {
+      // 讀不到當成舊版
+    }
+    return wanted !== (installed.sessionHostNode ?? 'system');
   }
 
   private async download(target: ReleaseTarget, archive: string): Promise<void> {
@@ -759,7 +814,9 @@ export class SelfUpdater {
     });
     const args = ['rollback', '--data', this.deps.dataDir, '--root', root, ...this.timeoutArgs()];
     try {
+      const node = bundledNodeIn(join(root, 'current'));
       await (this.deps.spawnUpdater ?? ((r) => spawnDetached(r)))({
+        ...(node ? { node } : {}),
         script: join(root, 'current', 'scripts', 'updater.mjs'),
         args,
         cwd: root,

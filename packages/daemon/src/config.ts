@@ -21,6 +21,11 @@ export interface DaemonConfig {
    */
   mcpServer?: string | null;
   /**
+   * 跑派工 MCP server 的 node（寫進 MCP 設定檔）：AGENT_BOARD_NODE（安裝程式設成發布檔自帶的
+   * current/runtime/node/…，CONTRACTS §21.10），沒有就是 daemon 自己的 process.execPath。
+   */
+  nodeBin?: string;
+  /**
    * session host（CONTRACTS §20）：`auto`（預設）＝連得上就用，daemon 重啟時 agent 不中斷；連不上或協定不相容
    * 就退回 daemon 自己開 PTY 的舊模式。`off`＝一律舊模式（AGENT_BOARD_SESSION_HOST=off）。
    */
@@ -92,6 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     machineName: env.AGENT_BOARD_MACHINE_NAME || hostname(),
     claudeConfigDir: env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
     mcpServer: env.AGENT_BOARD_MCP_SERVER || null,
+    nodeBin: env.AGENT_BOARD_NODE || process.execPath,
     sessionHost: env.AGENT_BOARD_SESSION_HOST === 'off' ? 'off' : 'auto',
     sessionHostService: env.AGENT_BOARD_SESSION_HOST_SERVICE || null,
     installRoot: env.AGENT_BOARD_INSTALL_ROOT || null,

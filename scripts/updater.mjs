@@ -14,6 +14,9 @@
 // 健康檢查（S3b）：新 daemon 起來而且連上 hub、hub 的 /api/health 回新版。新 daemon 程序活著但還連不到 hub
 // （例如 hub 也在重啟）時最多等 5 分鐘；daemon 本身起不來或崩潰就照 60 秒回滾。
 // 每一步寫 <資料夾>/update-state.json（帶這個程序的 pid 與開始時間），daemon 下次連上 hub 時回報。
+// 自帶 Node（CONTRACTS §21.10）：daemon 用新版自帶的 node 啟動這支；舊版（0.1.0）的 daemon 用它自己的系統 node
+// 啟動，所以這支只用 node 內建模組（Node ≥22.18 都能跑）、不在自己的程序裡載入任何原生模組。安裝程式、
+// 讀 schema、hub 的 schema-version 一律用「那一版」的 node（自帶的；舊版用系統的）另開程序跑。
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -28,9 +31,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { createRequire } from 'node:module';
-import { basename, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { bundledNodeOf } from './lib/bundled-node.mjs';
 
 const HEALTH_TIMEOUT_MS = 60_000;
 const CONNECT_TIMEOUT_MS = 5 * 60_000;
@@ -119,26 +122,63 @@ export function takeLock(root) {
   }
 }
 
-/** 某一版的 better-sqlite3 讀 hub.db 的 schema 版本；沒有檔案或讀不到回 null。 */
-function schemaVersion(releaseDir, dbPath) {
-  if (!existsSync(dbPath) || !releaseDir) return null;
+const isInside = (root, path) => {
   try {
-    const Database = createRequire(join(releaseDir, 'package.json'))('better-sqlite3');
-    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-    try {
-      return db.pragma('user_version', { simple: true });
-    } finally {
-      db.close();
-    }
+    const base = realpathSync(root);
+    const real = realpathSync(path);
+    return real === base || real.startsWith(`${base}${process.platform === 'win32' ? '\\' : '/'}`);
   } catch {
-    return null;
+    return false;
   }
+};
+
+/** PATH 上第一個 node（不是 Agent Board 自帶的那支）。 */
+function nodeOnPath(root) {
+  const names = process.platform === 'win32' ? ['node.exe'] : ['node'];
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    if (!dir || !isAbsolute(dir)) continue;
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate) && !isInside(root, candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * 某一版要用的 node（§21.10）：自帶的那支；舊版（沒自帶 Node）用系統的——install.json 記的、PATH 上的，
+ * 或執行這支的 node（舊 daemon 啟動時就是系統的）。
+ */
+export function nodeFor(releaseDir, root) {
+  const bundled = releaseDir ? bundledNodeOf(releaseDir) : null;
+  if (bundled) return bundled.path;
+  const recorded = installState(root).systemNode;
+  if (recorded && existsSync(recorded) && !isInside(root, recorded)) return recorded;
+  if (!isInside(root, process.execPath)) return process.execPath;
+  return nodeOnPath(root) ?? process.execPath;
+}
+
+/** 某一版的 better-sqlite3（用那一版的 node 另開程序）讀 hub.db 的 schema 版本；沒有檔案或讀不到回 null。 */
+function schemaVersion(releaseDir, dbPath, root) {
+  if (!existsSync(dbPath) || !releaseDir) return null;
+  const script = `
+const Database = require('better-sqlite3');
+const db = new Database(process.argv[1], { readonly: true, fileMustExist: true });
+try { console.log(db.pragma('user_version', { simple: true })); } finally { db.close(); }
+`;
+  const result = spawnSync(nodeFor(releaseDir, root), ['-e', script, dbPath], {
+    cwd: releaseDir,
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
+  const value = Number((result.stdout ?? '').trim());
+  return result.status === 0 && Number.isInteger(value) ? value : null;
 }
 
 /** 某一版 hub 認得的 schema 版本（`agent-board-hub schema-version`）；舊版沒有這個指令回 null。 */
-function hubSchemaOf(releaseDir) {
+function hubSchemaOf(releaseDir, root) {
   const result = spawnSync(
-    process.execPath,
+    nodeFor(releaseDir, root),
     [join(releaseDir, 'hub', 'dist', 'main.mjs'), 'schema-version'],
     { encoding: 'utf8', timeout: 15_000 },
   );
@@ -168,9 +208,11 @@ function supportsSwitch(installer) {
   }
 }
 
-function runInstaller(installer, args) {
-  log(`執行 ${installer} ${args.join(' ')}`);
-  const result = spawnSync(process.execPath, [installer, ...args], {
+/** 用那一版的 node 跑它的安裝程式（舊版的安裝程式會用 process.execPath 寫服務設定，要是它自己的 node）。 */
+function runInstaller(installer, args, root) {
+  const node = nodeFor(dirname(dirname(installer)), root);
+  log(`執行 ${node} ${installer} ${args.join(' ')}`);
+  const result = spawnSync(node, [installer, ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     env: { ...process.env, AGENT_BOARD_UPDATER: '1' },
@@ -183,6 +225,18 @@ function runInstaller(installer, args) {
     status: result.status,
     detail: lastLine || `exit ${result.status}`,
   };
+}
+
+/**
+ * 刪掉 daemon 解好的 .incoming/<版本>。這支（與它跑的安裝程式）可能是用那裡面自帶的 node 執行的：
+ * Windows 會鎖住執行中的 node.exe 刪不掉，留著也無妨（daemon 下次會重新解到 .partial），不能讓更新因此失敗。
+ */
+function removeIncoming(source) {
+  try {
+    rmSync(dirname(source), { recursive: true, force: true });
+  } catch (error) {
+    log(`.incoming 清不掉（下次再清）：${error.message}`);
+  }
 }
 
 /** hub.db.pre-update-* 只留最近幾份（W3）。 */
@@ -282,15 +336,13 @@ async function update(options) {
     const hasHubDb = roles.includes('hub') && existsSync(dbPath);
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*$/, '');
     const backup = hasHubDb ? `${dbPath}.pre-update-${from ?? 'unknown'}-${stamp}` : null;
-    const schemaBefore = hasHubDb ? schemaVersion(fromDir, dbPath) : null;
+    const schemaBefore = hasHubDb ? schemaVersion(fromDir, dbPath, root) : null;
     const role = roles.includes('hub') ? 'hub' : 'daemon';
-    const installed = runInstaller(join(source, 'scripts', 'installer.mjs'), [
-      'install',
-      role,
-      '--source',
-      source,
-      ...(backup ? ['--backup-db', backup] : []),
-    ]);
+    const installed = runInstaller(
+      join(source, 'scripts', 'installer.mjs'),
+      ['install', role, '--source', source, ...(backup ? ['--backup-db', backup] : [])],
+      root,
+    );
     if (backup) pruneDbBackups(data);
     // 看實際的 current 連結（安裝程式可能在換完 current、寫 install.json 之前就失敗）。
     const switched = currentRelease(root) !== fromRelease;
@@ -312,7 +364,7 @@ async function update(options) {
       writeState(data, { ...base, phase: 'checking', reason: null, detail: null });
       if (await healthy({ data, root, version: to, since, timeoutMs, connectTimeoutMs })) {
         writeState(data, { ...base, phase: 'succeeded', reason: null, detail: null });
-        rmSync(dirname(source), { recursive: true, force: true });
+        removeIncoming(source);
         return 0;
       }
       reason = 'health_timeout';
@@ -327,9 +379,9 @@ async function update(options) {
     }
     let restore = null;
     if (backup && existsSync(backup)) {
-      const schemaAfter = schemaVersion(fromDir, dbPath);
+      const schemaAfter = schemaVersion(fromDir, dbPath, root);
       // 舊版模組讀不到（例如新 schema 舊程式開不了）時保守比對：比舊版 hub 認得的新就還原（W3）。
-      const oldSchema = schemaBefore ?? hubSchemaOf(fromDir);
+      const oldSchema = schemaBefore ?? hubSchemaOf(fromDir, root);
       const changed =
         schemaAfter === null ? true : oldSchema === null ? false : schemaAfter > oldSchema;
       if (changed || (schemaBefore !== null && schemaAfter !== schemaBefore)) {
@@ -345,10 +397,10 @@ async function update(options) {
       fromRelease,
       ...(restore ? ['--restore-db', restore] : []),
     ];
-    let switchedBack = runInstaller(join(source, 'scripts', 'installer.mjs'), switchArgs);
+    let switchedBack = runInstaller(join(source, 'scripts', 'installer.mjs'), switchArgs, root);
     const oldInstaller = join(root, 'releases', fromRelease, 'scripts', 'installer.mjs');
     if (!switchedBack.ok && supportsSwitch(oldInstaller)) {
-      switchedBack = runInstaller(oldInstaller, switchArgs);
+      switchedBack = runInstaller(oldInstaller, switchArgs, root);
     }
     const back =
       switchedBack.ok &&
@@ -368,7 +420,7 @@ async function update(options) {
         ? detail
         : `${detail}；回滾：${switchedBack.ok ? '舊版也沒通過健康檢查' : switchedBack.detail}`,
     });
-    rmSync(dirname(source), { recursive: true, force: true });
+    removeIncoming(source);
     return 1;
   } finally {
     release();
@@ -401,8 +453,8 @@ async function rollback(options) {
     }
     const dbPath = join(data, 'hub.db');
     if ((before.roles ?? []).includes('hub') && existsSync(dbPath)) {
-      const now = schemaVersion(join(root, 'current'), dbPath);
-      const old = hubSchemaOf(join(root, 'releases', target));
+      const now = schemaVersion(join(root, 'current'), dbPath, root);
+      const old = hubSchemaOf(join(root, 'releases', target), root);
       if (old !== null && now !== null && now > old) {
         writeState(data, {
           ...base,
@@ -421,7 +473,7 @@ async function rollback(options) {
     });
     const installer = join(root, 'current', 'scripts', 'installer.mjs');
     const since = Date.now();
-    const switched = runInstaller(installer, ['switch', '--to', target]);
+    const switched = runInstaller(installer, ['switch', '--to', target], root);
     if (
       switched.ok &&
       (await healthy({
@@ -445,11 +497,11 @@ async function rollback(options) {
     // 上一版起不來：切回原本的版本。
     const restored =
       fromRelease &&
-      runInstaller(join(root, 'releases', fromRelease, 'scripts', 'installer.mjs'), [
-        'switch',
-        '--to',
-        fromRelease,
-      ]).ok;
+      runInstaller(
+        join(root, 'releases', fromRelease, 'scripts', 'installer.mjs'),
+        ['switch', '--to', fromRelease],
+        root,
+      ).ok;
     writeState(data, {
       ...base,
       phase: restored ? 'failed' : 'rollback_failed',
