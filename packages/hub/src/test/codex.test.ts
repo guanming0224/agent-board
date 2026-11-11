@@ -33,6 +33,23 @@ describe('Codex session', () => {
     expect(daemon.of('session.create')).toHaveLength(0);
   });
 
+  it('Windows 機器先不開 Codex（審查 W5：hook 指令在 cmd 下會壞）：409 codex_windows_unsupported', async () => {
+    hub = await startHub();
+    const cookie = await hub.setupOwner();
+    const { daemon, machineId } = await hub.onlineDaemon(cookie, {
+      features: codexFeatures,
+      os: 'win32',
+    } as never);
+    expect(hub.running.store.getMachine(machineId)?.os).toBe('win32');
+    const res = await hub.api<{ code?: string }>('POST', '/api/sessions', {
+      cookie,
+      body: { ...spec({ agent: 'codex' }), machineId },
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('codex_windows_unsupported');
+    expect(daemon.of('session.create')).toHaveLength(0);
+  });
+
   it('Codex 不支援帳號資料夾：400', async () => {
     const { create } = await setup();
     const res = await create({ agent: 'codex', accountProfile: '/home/demo/.claude-2' });

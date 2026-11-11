@@ -82,7 +82,8 @@ export const codexHookCommand = (event: CodexHookEvent, target: CodexHookTarget)
 
 /**
  * `-c` 的值（TOML）：`hooks.<Event>=[{hooks=[{type="command",command="…",timeout=N}]}]`。
- * 不寫 matcher＝每個工具都送（daemon 只對 Bash 比對危險指令）。Windows 的 `commandWindows` 先不帶（第一版不做 Windows）。
+ * 不寫 matcher＝每個工具都送（daemon 只對 Bash 比對危險指令）。指令用 POSIX 單引號，Windows 的 cmd 讀不懂：
+ * Windows 機器先不開 Codex（hub 回 codex_windows_unsupported、daemon 也擋，審查 W5），`commandWindows` 不帶。
  */
 export function codexHookOverrides(target: CodexHookTarget): string[] {
   return CODEX_HOOK_EVENTS.map(

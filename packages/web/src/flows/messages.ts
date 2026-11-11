@@ -219,6 +219,8 @@ export const zhTW: Record<string, string> = {
   'flows.new.agentNoCodex':
     '{machine} 沒有回報 Codex CLI（沒安裝或 daemon 版本太舊），只能開 Claude Code。',
   'flows.new.err.codex': '{machine} 沒有 Codex CLI，換一台或改選 Claude Code',
+  'flows.new.err.codexWindows':
+    '{machine} 是 Windows：Codex 的 hook 指令在 Windows 還不能用（危險指令檢查會失效），先改選 Claude Code',
   'flows.new.codexMode': 'Codex：{args}',
   'flows.new.codexModeNote':
     'Codex 沒有同名的權限模式，換算成沙盒與核准設定。plan、default 用唯讀沙盒：改檔、連網、跑沙盒外的指令都要你允許；唯讀的指令不問就跑，而且讀得到工作資料夾外的檔案（Codex 0.167.0 沒有更嚴的選項）。acceptEdits、auto 用可寫工作區：工作資料夾內改檔、跑指令都不問，連網和寫到外面才問——這比 Claude 的 acceptEdits 寬（Claude 跑指令仍會問）。dontAsk 唯讀、不問、做不到的直接失敗。危險指令清單照樣攔。',
@@ -971,6 +973,8 @@ export const en: Record<string, string> = {
   'flows.new.agentNoCodex':
     '{machine} did not report a Codex CLI (not installed, or the daemon is too old), so only Claude Code is available.',
   'flows.new.err.codex': '{machine} has no Codex CLI. Choose another machine or Claude Code.',
+  'flows.new.err.codexWindows':
+    '{machine} runs Windows: the Codex hook command does not work on Windows yet (the dangerous-command check would not run). Choose Claude Code.',
   'flows.new.codexMode': 'Codex: {args}',
   'flows.new.codexModeNote':
     'Codex has no modes with these names, so each is mapped to sandbox and approval settings. plan and default use a read-only sandbox: editing files, using the network and running commands outside the sandbox ask you first; read-only commands run without asking and can read files outside the working folder (Codex 0.167.0 has no stricter option). acceptEdits and auto use a writable workspace: edits and commands inside the working folder run without asking, and only network use or writing outside asks — looser than Claude acceptEdits (Claude still asks before commands). dontAsk is read-only, never asks, and fails what it cannot do. The dangerous command list still applies.',

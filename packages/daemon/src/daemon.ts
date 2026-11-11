@@ -1371,6 +1371,12 @@ export class Daemon {
   }
 
   private assertCanLaunch(agent: AgentKind): void {
+    // 審查 W5：Codex 的 hook 指令用 POSIX 單引號，Windows 的 cmd 讀不懂，危險指令檢查會失效。hub 也會擋，這裡是保險。
+    if (agent === 'codex' && process.platform === 'win32') {
+      throw new Error(
+        'Windows 上還不能開 Codex session：Codex 的 hook 指令在 cmd 下會壞（危險指令檢查會失效）。請改用 Claude Code。',
+      );
+    }
     const env = this.childEnv();
     findExecutable(this.agentBin(agent), env);
     findHook(this.deps.config.hookBin, env);

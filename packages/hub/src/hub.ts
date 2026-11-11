@@ -1570,6 +1570,14 @@ export class Hub {
    * 會照 Claude 開，絕不能送）；帳號資料夾是 Claude Code 的設定，Codex 不支援。
    */
   private assertCodexReady(machineId: string, spec: Pick<SessionSpec, 'accountProfile'>): void {
+    // 審查 W5：Codex 的 hook 指令用 POSIX 單引號，Windows 的 cmd 讀不懂（--socket、--key-file 會壞，危險指令檢查
+    // 就失效）。Windows 機器先不開 Codex，說清楚原因。
+    if (this.store.getMachine(machineId)?.os === 'win32') {
+      throw conflict(
+        'codex_windows_unsupported',
+        'Codex sessions are not supported on Windows machines yet (the hook command does not work under cmd)',
+      );
+    }
     if (!this.daemonFor(machineId)?.features.has(DAEMON_FEATURES.codex)) {
       throw conflict('codex_unavailable', 'Codex CLI is not available on this machine');
     }

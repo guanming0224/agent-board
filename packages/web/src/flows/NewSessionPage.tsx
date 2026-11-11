@@ -190,10 +190,13 @@ export function NewSessionPage() {
         ? t('flows.new.err.machineOffline', { machine: machine.name })
         : null,
     cwd: cwd.trim() ? null : t('flows.new.err.cwd'),
+    // Windows 上先不開 Codex（hook 指令在 cmd 下會壞，hub 也會擋：codex_windows_unsupported）。
     agent:
-      codex && machine && !codexVersion
-        ? t('flows.new.err.codex', { machine: machine.name })
-        : null,
+      codex && machine && machine.os === 'win32'
+        ? t('flows.new.err.codexWindows', { machine: machine.name })
+        : codex && machine && !codexVersion
+          ? t('flows.new.err.codex', { machine: machine.name })
+          : null,
     // 和 hub 的 SessionSpec 用同一組規則（protocol 的 AbsolutePath、ClaudeSessionId）。
     account:
       trimmedAccount && !AbsolutePath.safeParse(trimmedAccount).success
