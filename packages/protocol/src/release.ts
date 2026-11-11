@@ -219,14 +219,15 @@ export function rollbackSupported(previousVersion: string | null): boolean {
 }
 
 /** 沒有發目標的原因（面板顯示）：hub_first＝等 hub 那台先升到這版；hub_update_failed＝hub 那台這版更新失敗，
- * 其他機器暫停；platform_unverified＝這個平台還沒實機驗證
- *（win-x64）；abi_mismatch＝成品附的原生模組和這台的 Node 版本不合（只有沒自帶 Node 的舊成品會有，§21.10）。 */
+ * 其他機器暫停；platform_unverified＝這個平台還沒實機驗證（win-x64）；node_too_old＝這台的 Node 主版本低於
+ * 成品的最低版本（§21.10）。abi_mismatch 是 0.1.1 以前的 hub 用的，現在不再產生（原生模組是 N-API），留著相容。 */
 export const TargetNote = z.enum([
   'hub_first',
   'hub_update_failed',
   /** 手動回滾後暫停剛退掉的那一版（M1）：「立即更新」或通道換成別的版本才解除。 */
   'rolled_back_hold',
   'platform_unverified',
+  'node_too_old',
   'abi_mismatch',
 ]);
 export type TargetNote = z.infer<typeof TargetNote>;
@@ -261,6 +262,8 @@ export const MachineRelease = z.object({
   version: z.string().nullable(),
   buildId: z.string().nullable(),
   protocolVersion: z.number().int().nullable(),
+  /** daemon 回報的 Node 版本（只供顯示，§21.10）；0.1.2 以前的 daemon 不送為 null。 */
+  nodeVersion: z.string().nullable().optional(),
   /** 上一版（可以回滾到的版本）；不知道為 null。 */
   previousVersion: z.string().nullable(),
   channel: ReleaseChannel,

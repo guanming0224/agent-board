@@ -14,9 +14,10 @@
 // 健康檢查（S3b）：新 daemon 起來而且連上 hub、hub 的 /api/health 回新版。新 daemon 程序活著但還連不到 hub
 // （例如 hub 也在重啟）時最多等 5 分鐘；daemon 本身起不來或崩潰就照 60 秒回滾。
 // 每一步寫 <資料夾>/update-state.json（帶這個程序的 pid 與開始時間），daemon 下次連上 hub 時回報。
-// 自帶 Node（CONTRACTS §21.10）：daemon 用新版自帶的 node 啟動這支；舊版（0.1.0）的 daemon 用它自己的系統 node
-// 啟動，所以這支只用 node 內建模組（Node ≥22.18 都能跑）、不在自己的程序裡載入任何原生模組。安裝程式、
-// 讀 schema、hub 的 schema-version 一律用「那一版」的 node（自帶的；舊版用系統的）另開程序跑。
+// Node（CONTRACTS §21.10）：發布檔不自帶 Node。daemon 用安裝時記下的系統 node（AGENT_BOARD_NODE）啟動這支；
+// 舊版 daemon（0.1.0 的系統 node、0.1.1 的自帶 node）用它自己的 node 啟動，所以這支只用 node 內建模組、不在自己
+// 的程序裡載入原生模組。安裝程式、讀 schema、hub 的 schema-version 一律用系統的 node 另開程序跑
+// （0.1.1 自帶的 runtime 不算系統的 node）。
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -33,7 +34,7 @@ import {
 } from 'node:fs';
 import { basename, delimiter, dirname, isAbsolute, join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { bundledNodeOf, isBundledRuntime } from './lib/bundled-node.mjs';
+import { isBundledRuntime } from './lib/node-runtime.mjs';
 
 const HEALTH_TIMEOUT_MS = 60_000;
 const CONNECT_TIMEOUT_MS = 5 * 60_000;
@@ -148,15 +149,18 @@ function nodeOnPath(root) {
 }
 
 /**
- * 某一版要用的 node（§21.10）：自帶的那支；舊版（沒自帶 Node）用系統的——install.json 記的、PATH 上的，
- * 或執行這支的 node（舊 daemon 啟動時就是系統的）。
+ * 跑安裝程式、讀 schema 用的系統 node（§21.10）：install.json 記的 systemNode、daemon 給的 AGENT_BOARD_NODE、
+ * 執行這支的 node、PATH 上的 node，依序取第一個存在而且不是自帶 runtime（0.1.1 的殘留）的。
+ * 不做 realpath（安裝程式照 0.1.0 的寫法決定服務的路徑）。releaseDir 不影響結果（保留參數給呼叫端看得懂）。
  */
-export function nodeFor(releaseDir, root) {
-  const bundled = releaseDir ? bundledNodeOf(releaseDir) : null;
-  if (bundled) return bundled.path;
-  const recorded = installState(root).systemNode;
-  if (recorded && existsSync(recorded) && !isInside(root, recorded)) return recorded;
-  if (!isInside(root, process.execPath)) return process.execPath;
+export function nodeFor(_releaseDir, root) {
+  for (const candidate of [
+    installState(root).systemNode,
+    process.env.AGENT_BOARD_NODE,
+    process.execPath,
+  ]) {
+    if (candidate && existsSync(candidate) && !isInside(root, candidate)) return candidate;
+  }
   return nodeOnPath(root) ?? process.execPath;
 }
 

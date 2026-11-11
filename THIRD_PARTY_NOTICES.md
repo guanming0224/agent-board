@@ -9,13 +9,6 @@ None. [OpenCove](https://github.com/DeadWaveWave/opencove) (MIT) was listed as a
 PTY and xterm integration, but no OpenCove code has been copied. If that changes, its MIT notice
 must be added here.
 
-## Node.js runtime
-
-Release archives include the official Node.js executable from https://nodejs.org/dist/ (version
-pinned by `bundledNode` in the root `package.json`, checked against the official
-`SHASUMS256.txt` at build time) in `runtime/node/`, together with its own `LICENSE` file, which
-covers Node.js and the third-party code built into it. The executable is shipped unmodified.
-
 ## Third-party packages that ship with Agent Board
 
 "Shipped as" says how each package reaches users:

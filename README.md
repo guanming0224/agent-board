@@ -27,12 +27,11 @@ A self-hosted web console for all your Claude Code sessions, across all your com
 
 You need these on every machine that will run sessions:
 
-- Nothing for Node.js: releases bundle a pinned official Node (currently 24.22.2), and the hub, daemon and session host all run on it, whatever Node version the machine has. You only need [Node.js](https://nodejs.org) 22.18 or newer, with npm, to build from source.
-- Disk space: each unpacked version includes a Node of about 117 MB. The installer keeps the last 3 versions and the session host has its own copy, so Node takes about 470 MB in total.
+- [Node.js](https://nodejs.org) 22.18 or newer, with npm. Check with `node -v`. Machines don't need the same version: the hub, daemon and session host run on the node found at install time, and the bundled native modules work with any Node version.
 - [Claude Code](https://code.claude.com), logged in. Run `claude` once in a terminal and finish the login.
 - Linux only: tools to build `node-pty`, because it has no Linux prebuilt binary. On Debian or Ubuntu: `sudo apt install build-essential python3`.
 
-The machine that only runs the hub needs nothing else. One computer can be both.
+The machine that only runs the hub needs Node.js alone. One computer can be both.
 
 ## Set it up
 
@@ -165,7 +164,7 @@ More about auto-start, including why Windows uses a scheduled task: [docs/instal
 | Linux: `npm ci` fails on `node-pty`                          | Install the build tools listed in [Before you start](#before-you-start).                                                                                                                      |
 | Linux: `systemctl --user` unavailable (some containers, WSL) | Start by hand: `~/.local/bin/agent-board-daemon`.                                                                                                                                             |
 | Linux: doesn't start after reboot until you log in           | Run `loginctl enable-linger $USER`. The installer tries this for you.                                                                                                                         |
-| Services stopped after removing a Node version (nvm etc.)    | Only releases without bundled Node (0.1.0) are affected. Run the install command again with the new Node version, or install a release that bundles Node.                                     |
+| Services stopped after removing a Node version (nvm etc.)    | Run the install command again with the new Node version.                                                                                                                                      |
 | Log files are large                                          | Logs aren't rotated yet. Deleting them is safe; restart the service afterwards.                                                                                                               |
 | Forgot your password                                         | See [Forgot your password](#forgot-your-password) below.                                                                                                                                      |
 
@@ -198,25 +197,23 @@ One thing has to be cleaned by hand. Each project that had a session keeps Agent
 
 ## Install from source
 
-Needed until a release is published, or for development. Requires `git`, Node.js 22.18 or newer, and network access for dependencies and the official Node (`build:release` downloads the `bundledNode` version from `package.json` from nodejs.org, checks it against the official SHASUMS256 and puts it in the release; it is cached in `release/.node-cache/`).
+Needed until a release is published, or for development. Requires `git` and network access for dependencies.
 
 ```sh
 git clone https://github.com/OWNER/agent-board.git
 cd agent-board
 corepack pnpm install
 corepack pnpm build:release
-sh scripts/install.sh hub --from release/agent-board-0.1.1-darwin-arm64.tar.gz
+sh scripts/install.sh hub --from release/agent-board-0.1.2-darwin-arm64.tar.gz
 ```
 
-Then use the same `--from` for the daemon. To set up other machines, copy `release/agent-board-<version>-<platform>.tar.gz` (`.zip` on Windows) to them; they don't need Node.js. After that, new versions arrive through the hub (CONTRACTS §21).
+Then use the same `--from` for the daemon. To set up other machines, copy `release/agent-board-<version>-<platform>.tar.gz` (`.zip` on Windows) to them. After that, new versions arrive through the hub (CONTRACTS §21).
 
-When upgrading from a release without bundled Node (0.1.0), install the first release with bundled Node (0.1.1) by hand with `--from` on **the hub machine first**. Until the hub machine has it, don't use "Promote to stable" for that version on the 0.1.0 hub (after the hub is upgraded, other machines update automatically). The session host switches to the bundled Node, and restarting it ends every agent (they come back with `--resume`), so the installer stops if a session is still working. Run it again once they stop, or add `--keep-session-host` to update only the hub and daemon now (agents keep running) and switch the session host later, when nothing is running.
-
-To go back to 0.1.0, use "Roll back" in the machines panel. If you must go back by hand with 0.1.0's `install.sh --from`, **always add `--restart-session-host`**: the 0.1.0 installer doesn't know about the session host's bundled Node, and without a restart the host won't start after the next reboot.
+To upgrade from 0.1.1 (the release that bundled Node) to 0.1.2, install by hand with the same `--from`. Services go back to the system node, the session host is not restarted (agents keep running), and the `runtime/` folder it left behind is removed once nothing uses it.
 
 ## What the installer does
 
-- Downloads only this project's release file (and, for old releases without bundled Node, its npm dependencies). It sends no data anywhere, and `npm audit` is turned off.
+- Downloads only this project's release file and its npm dependencies. It sends no data anywhere, and `npm audit` is turned off.
 - Writes only under your home directory and needs no root.
 - Won't overwrite files in `~/.local/bin` that it didn't create. It doesn't edit your shell configuration.
 - Stores the machine token only in `~/.agent-board/machine.json` (mode 0600), never in service files.

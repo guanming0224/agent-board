@@ -385,8 +385,8 @@ describe('通道、目標與 daemon', () => {
 });
 
 describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
-  /** 真的 tar.gz，帶 .node-modules-platform（hub 讀出成品的 Node ABI）。 */
-  function archiveWithAbi(abi: string, bundledNode = false): Buffer {
+  /** 真的 tar.gz，帶 .node-modules-platform（hub 讀出成品的 ABI 與最低 Node 版本）。 */
+  function archiveWithAbi(abi: string, minNode: string | null = null): Buffer {
     const dir = mkdtempSync(join(tmpdir(), 'ab-abi-'));
     mkdirSync(join(dir, 'agent-board'));
     writeFileSync(
@@ -395,7 +395,8 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
         platform: 'darwin-arm64',
         node: '24.0.0',
         modules: abi,
-        ...(bundledNode ? { bundledNode: true } : {}),
+        napi: true,
+        ...(minNode ? { minNode } : {}),
       }),
     );
     const out = join(dir, 'a.tar.gz');
@@ -435,61 +436,65 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
     });
   });
 
-  it('成品的原生模組 ABI 和 daemon 的 Node 不合：不發目標（abi_mismatch）；合就發', async () => {
+  it('N-API：daemon 的 Node ABI 和建置的不同也發目標（不再 abi_mismatch，§21.10）', async () => {
     const r = release('0.2.0');
-    r.files[releaseAssetName('0.2.0', 'darwin-arm64')] = archiveWithAbi('137');
+    r.files[releaseAssetName('0.2.0', 'darwin-arm64')] = archiveWithAbi('137', '22.18');
     const { hub, cookie } = await ready([r]);
     await hub.api('POST', '/api/releases/check', { cookie });
     await hub.api('POST', '/api/releases/promote', {
       cookie,
       body: { version: '0.2.0', confirm: true },
     });
-    const odd = await hub.onlineDaemon(cookie, macHello({ nodeAbi: '127' }) as never);
-    expect(
-      (await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie })).body.machines.find(
-        (m) => m.machineId === odd.machineId,
-      ),
-    ).toMatchObject({ targetVersion: null, targetNote: 'abi_mismatch' });
-    const same = await hub.pair(cookie, 'same-abi');
-    const daemon = await hub.daemon(same.token);
-    daemon.send(macHello({ nodeAbi: '137' }));
-    expect(releaseOf(await daemon.next('hub.welcome'))).toBe('0.2.0');
-  });
-
-  it('自帶 Node 的成品（bundledNode）不比 ABI：daemon 的 Node 是別的版本也發目標（§21.10）', async () => {
-    const r = release('0.2.0');
-    r.files[releaseAssetName('0.2.0', 'darwin-arm64')] = archiveWithAbi('137', true);
-    const { hub, cookie } = await ready([r]);
-    await hub.api('POST', '/api/releases/check', { cookie });
-    await hub.api('POST', '/api/releases/promote', {
-      cookie,
-      body: { version: '0.2.0', confirm: true },
-    });
-    // MacBook 的系統 Node 26（ABI 147）、Mac mini 的 Node 24（ABI 137）、沒送 nodeAbi 的都拿得到。
-    for (const [name, nodeAbi] of [
-      ['macbook', '147'],
-      ['mac mini', '137'],
+    // MacBook 的 0.1.0 daemon（Node 26，只送 ABI 147）、Mac mini（Node 24）、新 daemon 送 nodeVersion 的都拿得到。
+    for (const [name, extra] of [
+      ['macbook', { nodeAbi: '147' }],
+      ['mac mini', { nodeAbi: '137' }],
+      ['new daemon', { nodeAbi: '147', nodeVersion: '26.1.0' }],
     ] as const) {
       const paired = await hub.pair(cookie, name);
       const daemon = await hub.daemon(paired.token);
-      daemon.send(macHello({ nodeAbi }));
+      daemon.send(macHello(extra));
       expect(releaseOf(await daemon.next('hub.welcome'))).toBe('0.2.0');
     }
     const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
-    expect(overview.body.machines.every((m) => m.targetNote !== 'abi_mismatch')).toBe(true);
+    expect(overview.body.machines.every((m) => m.targetNote === null)).toBe(true);
   });
 
-  it('舊 hub 驗過的 cache（verified.json 沒有 bundledNode）：重讀成品補上、寫回，之後不比 ABI（§21.10）', async () => {
+  it('Node 主版本低於成品的最低版本：不發目標（node_too_old）；ABI 推得出主版本的舊 daemon 也一樣', async () => {
+    const r = release('0.2.0');
+    r.files[releaseAssetName('0.2.0', 'darwin-arm64')] = archiveWithAbi('137', '22.18');
+    const { hub, cookie } = await ready([r]);
+    await hub.api('POST', '/api/releases/check', { cookie });
+    await hub.api('POST', '/api/releases/promote', {
+      cookie,
+      body: { version: '0.2.0', confirm: true },
+    });
+    const viaVersion = await hub.onlineDaemon(
+      cookie,
+      macHello({ nodeVersion: '20.11.0' }) as never,
+    );
+    const viaAbi = await hub.onlineDaemon(cookie, macHello({ nodeAbi: '115' }) as never);
+    const machines = (await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie })).body
+      .machines;
+    for (const id of [viaVersion.machineId, viaAbi.machineId]) {
+      expect(machines.find((m) => m.machineId === id)).toMatchObject({
+        targetVersion: null,
+        targetNote: 'node_too_old',
+      });
+    }
+  });
+
+  it('舊 hub 驗過的 cache（verified.json 沒有 minNode）：重讀成品補上、寫回，之後照最低版本判斷（§21.10）', async () => {
     const gh = fakeGh({ releases: [] });
     const dir = mkdtempSync(join(tmpdir(), 'ab-cache-'));
     try {
       const asset = releaseAssetName('0.2.0', 'darwin-arm64');
       const versionDir = join(dir, 'release-cache', '0.2.0');
       mkdirSync(versionDir, { recursive: true });
-      const bytes = archiveWithAbi('137', true);
+      const bytes = archiveWithAbi('137', '22.18');
       writeFileSync(join(versionDir, asset), bytes);
       const digest = sha(bytes);
-      // 0.1.0 的 hub 寫的格式：只有 abi，沒有 bundledNode。
+      // 0.1.0 的 hub 寫的格式：只有 abi，沒有 minNode。
       writeFileSync(
         join(versionDir, 'verified.json'),
         JSON.stringify({
@@ -501,7 +506,7 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
       hub = await startHub({ gh: gh.runner, releaseCheckIntervalMs: null, releaseDataDir: dir });
       await hub.running.hub.release.loadCache();
       const rewritten = JSON.parse(readFileSync(join(versionDir, 'verified.json'), 'utf8'));
-      expect(rewritten.assets['darwin-arm64']).toMatchObject({ abi: '137', bundledNode: true });
+      expect(rewritten.assets['darwin-arm64']).toMatchObject({ abi: '137', minNode: '22.18' });
       const cookie = await hub.setupOwner();
       await hub.api('POST', '/api/releases/promote', {
         cookie,
@@ -567,16 +572,19 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
     return { daemon, version: releaseOf(await daemon.next('hub.welcome')) };
   };
 
-  it('hub 那台自己拿不到這個目標（ABI 不合、Windows）：其他機器照常拿到（N1）', async () => {
+  it('hub 那台自己拿不到這個目標（Node 太舊、Windows）：其他機器照常拿到（N1）', async () => {
     const r = release('0.2.0');
-    r.files[releaseAssetName('0.2.0', 'darwin-arm64')] = archiveWithAbi('137');
+    r.files[releaseAssetName('0.2.0', 'darwin-arm64')] = archiveWithAbi('137', '22.18');
     const ctx = await ready([r]);
     await ctx.hub.api('POST', '/api/releases/check', { cookie: ctx.cookie });
     await ctx.hub.api('POST', '/api/releases/promote', {
       cookie: ctx.cookie,
       body: { version: '0.2.0', confirm: true },
     });
-    await ctx.hub.onlineDaemon(ctx.cookie, macHello({ hostsHub: true, nodeAbi: '127' }) as never);
+    await ctx.hub.onlineDaemon(
+      ctx.cookie,
+      macHello({ hostsHub: true, nodeVersion: '20.11.0' }) as never,
+    );
     const laptop = await ctx.hub.pair(ctx.cookie, 'laptop');
     const daemon = await ctx.hub.daemon(laptop.token);
     daemon.send(macHello({ nodeAbi: '137' }));

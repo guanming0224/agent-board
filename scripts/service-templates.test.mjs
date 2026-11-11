@@ -163,11 +163,8 @@ test('安裝程式：daemon 角色連 session host 一起裝、順序在 daemon 
   assert.match(source, /'session-host': \['session-host', 'dist', 'main\.mjs'\]/);
   // host 跑自己資料夾裡那份（換 app 時不動），協定變了才強制重啟、有 session 在工作就中止（S1、W1）。
   assert.match(source, /role === SESSION_HOST\s*\? runningHostFiles\(paths\)\.main/);
-  // 自帶 Node 的版本變了也要換 host（--keep-session-host 可以先不換，§21.10）。
-  assert.match(
-    source,
-    /protocolChanged \|\| \(nodeChanged && !keepHost\) \|\| Boolean\(options\['restart-session-host'\]\)/,
-  );
+  // Node 換了不重啟 host（N-API，§21.10）：只有協定變了或明確要求才重啟。
+  assert.match(source, /protocolChanged \|\| Boolean\(options\['restart-session-host'\]\)/);
   assert.match(source, /const busy = busySessions\(paths\);/);
   // 換 host 的程式：先在 .new 準備並實際開過 PTY，通過才停 host、換資料夾（N3）。
   const install = source.slice(source.indexOf('function installHostRuntime('));

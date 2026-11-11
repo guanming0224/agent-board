@@ -21,8 +21,8 @@ export interface DaemonConfig {
    */
   mcpServer?: string | null;
   /**
-   * 跑派工 MCP server 的 node（寫進 MCP 設定檔）：AGENT_BOARD_NODE（安裝程式設成發布檔自帶的
-   * current/runtime/node/…，CONTRACTS §21.10），沒有就是 daemon 自己的 process.execPath。
+   * 跑派工 MCP server 與更新程式的 node：AGENT_BOARD_NODE（安裝程式設成安裝時找到的系統 node 路徑，不是 realpath，
+   * CONTRACTS §21.10），沒有就是 daemon 自己的 process.execPath。
    */
   nodeBin?: string;
   /**
@@ -48,6 +48,8 @@ export interface DaemonConfig {
   updateConnectMs?: number;
   /** 只給測試（AGENT_BOARD_PROTOCOL_VERSION_OVERRIDE）：hello 假裝成別的 hub 協定版本。 */
   protocolVersionOverride?: number;
+  /** 只給測試（AGENT_BOARD_TEST_NODE_VERSION）：hello 假裝跑在別的 Node 版本（e2e 模擬 Node 26 的機器）。 */
+  nodeVersionOverride?: string;
 }
 
 /** 接受 http(s) 或 ws(s)；沒寫路徑就補上 /ws/daemon。 */
@@ -106,6 +108,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
       : {}),
     ...(Number(env.AGENT_BOARD_UPDATE_CONNECT_MS) > 0
       ? { updateConnectMs: Number(env.AGENT_BOARD_UPDATE_CONNECT_MS) }
+      : {}),
+    ...(/^\d+\.\d+\.\d+$/.test(env.AGENT_BOARD_TEST_NODE_VERSION ?? '')
+      ? { nodeVersionOverride: env.AGENT_BOARD_TEST_NODE_VERSION }
       : {}),
     ...(Number(env.AGENT_BOARD_PROTOCOL_VERSION_OVERRIDE) > 0
       ? { protocolVersionOverride: Number(env.AGENT_BOARD_PROTOCOL_VERSION_OVERRIDE) }

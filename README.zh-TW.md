@@ -27,12 +27,11 @@
 
 每台要跑 session 的機器都需要：
 
-- 不必另外裝 Node.js：發布檔自帶固定版本的官方 Node（目前 24.22.2），hub、daemon 與 session host 都用它跑，和這台的系統 Node 版本無關。只有從原始碼建置時，才需要 [Node.js](https://nodejs.org) 22.18 以上（含 npm）。
-- 磁碟空間：每個版本解開後含一份約 117 MB 的 Node，安裝程式保留最近 3 版、session host 另有一份，Node 合計約 470 MB。
+- [Node.js](https://nodejs.org) 22.18 以上（含 npm）。用 `node -v` 確認。各台的版本不必一樣：hub、daemon 與 session host 都用安裝時找到的那支 node，附的原生模組不分 Node 版本。
 - [Claude Code](https://code.claude.com)，而且已登入。在終端機執行一次 `claude`，完成登入。
 - 僅 Linux：編譯 `node-pty` 的工具，因為它沒有 Linux 預編譯檔。Debian／Ubuntu：`sudo apt install build-essential python3`。
 
-只跑 hub 的機器不需要其他東西。同一台電腦可以兩者都裝。
+只跑 hub 的機器只需要 Node.js。同一台電腦可以兩者都裝。
 
 ## 安裝
 
@@ -165,7 +164,7 @@ hub 就把 `daemon` 換成 `hub`。
 | Linux：`npm ci` 卡在 `node-pty`                       | 裝[開始之前](#開始之前)列的編譯工具。                                                                               |
 | Linux：`systemctl --user` 不能用（部分容器、WSL）     | 手動啟動：`~/.local/bin/agent-board-daemon`。                                                                       |
 | Linux：重開機後要登入才會啟動                         | 執行 `loginctl enable-linger $USER`。安裝腳本會先試一次。                                                           |
-| 移除某個 Node 版本（nvm 等）後服務停了                | 只有沒自帶 Node 的舊版（0.1.0）會遇到：用新版 Node 重跑一次安裝指令，或改裝自帶 Node 的版本。                       |
+| 移除某個 Node 版本（nvm 等）後服務停了                | 用新版 Node 重跑一次安裝指令。                                                                                      |
 | 紀錄檔太大                                            | 目前還沒有自動輪替。可以直接刪，刪完重新啟動服務。                                                                  |
 | 忘記密碼                                              | 見下方[忘記密碼](#忘記密碼)。                                                                                       |
 
@@ -198,25 +197,23 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\agent-board\app\scri
 
 ## 從原始碼安裝
 
-還沒有發布檔或要開發時用。需要 `git`、Node.js 22.18 以上，並能連網下載依賴與官方 Node（`build:release` 從 nodejs.org 下載 `package.json` 的 `bundledNode` 那一版、用官方 SHASUMS256 驗證後放進發布檔，快取在 `release/.node-cache/`）。
+還沒有發布檔或要開發時用。需要 `git`，並能連網下載依賴。
 
 ```sh
 git clone https://github.com/OWNER/agent-board.git
 cd agent-board
 corepack pnpm install
 corepack pnpm build:release
-sh scripts/install.sh hub --from release/agent-board-0.1.1-darwin-arm64.tar.gz
+sh scripts/install.sh hub --from release/agent-board-0.1.2-darwin-arm64.tar.gz
 ```
 
-daemon 也用同樣的 `--from`。要裝到其他機器，把 `release/agent-board-<版本>-<平台>.tar.gz`（Windows 是 `.zip`）複製過去，那台不必裝 Node.js。之後的新版由 hub 自動更新（CONTRACTS §21）。
+daemon 也用同樣的 `--from`。要裝到其他機器，把 `release/agent-board-<版本>-<平台>.tar.gz`（Windows 是 `.zip`）複製過去。之後的新版由 hub 自動更新（CONTRACTS §21）。
 
-從沒自帶 Node 的版本（0.1.0）升級時，第一個自帶 Node 的版本（0.1.1）要先在 **hub 那台**用 `--from` 手動裝；hub 那台裝完之前，不要在 0.1.0 的 hub 上把這一版「升為 stable」（hub 升級後，其他機器照常自動更新）。手動安裝時session host 會換成自帶的 Node，重啟時會結束所有 agent（之後用 `--resume` 接回），所以還有 session 在工作時安裝程式會中止。等它們停下再跑一次，或加 `--keep-session-host` 先只換 hub／daemon（agent 不中斷），session host 留到之後沒有 session 在工作時再換。
-
-要退回 0.1.0 時，用面板的「回滾到上一版」；如果一定要用 0.1.0 的 `install.sh --from` 手動退回，**一定要加 `--restart-session-host`**（0.1.0 的安裝程式不認得 session host 自帶的 Node，不重啟 host 的話，下次重開機 host 會起不來）。
+從 0.1.1（曾經自帶 Node 的版本）升到 0.1.2 用同樣的 `--from` 手動裝：服務改回系統的 node，session host 不重啟（agent 不中斷），它資料夾裡留下的 `runtime/` 沒人用時會清掉。
 
 ## 安裝腳本做了什麼
 
-- 只下載本專案的發布檔（舊版沒自帶 Node 時另外下載 npm 依賴）。不送出任何資料，也關閉 `npm audit`。
+- 只下載本專案的發布檔與 npm 依賴。不送出任何資料，也關閉 `npm audit`。
 - 只寫使用者目錄，不需要 root。
 - 不會覆蓋 `~/.local/bin` 裡不是它建立的檔案，也不改你的 shell 設定檔。
 - 機器 token 只存在 `~/.agent-board/machine.json`（權限 0600），不會寫進服務設定。

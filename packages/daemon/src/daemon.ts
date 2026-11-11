@@ -322,6 +322,7 @@ export class Daemon {
       report: (state) => this.send({ type: 'update.status', state }),
       ...(config.updateHealthMs ? { healthTimeoutMs: config.updateHealthMs } : {}),
       ...(config.updateConnectMs ? { connectTimeoutMs: config.updateConnectMs } : {}),
+      ...(config.nodeBin ? { nodeBin: config.nodeBin } : {}),
     });
     this.hub = new HubClient({
       url: config.hubUrl,
@@ -925,7 +926,9 @@ export class Daemon {
       platform: platformKey(process.platform, process.arch),
       previousVersion: this.updater.previousVersion,
       hostsHub: this.updater.hostsHub,
-      nodeAbi: process.versions.modules,
+      // Node 版本只供 hub 擋太舊的機器（node_too_old，§21.10）；原生模組是 N-API，不比 ABI。
+      nodeVersion: this.deps.config.nodeVersionOverride ?? process.versions.node,
+      nodeAbi: this.deps.config.nodeVersionOverride ? '0' : process.versions.modules,
       update: this.updater.state,
     };
   }

@@ -92,7 +92,7 @@ function harness(
         join(dir, 'session-host', 'dist', 'meta.json'),
         JSON.stringify({ protocol: over.hostProtocol ?? 1 }),
       );
-      // 自帶 Node 的成品（§21.10）：.node-modules-platform 記 bundledNode，runtime/node 裡有執行檔。
+      // 像 0.1.1 那樣自帶 Node 的成品（§21.10）：.node-modules-platform 記 bundledNode，runtime/node 裡有執行檔。
       if (over.bundledNode) {
         writeFileSync(
           join(dir, '.node-modules-platform'),
@@ -233,18 +233,8 @@ describe('SelfUpdater', () => {
     same.updater.dispose();
   });
 
-  it('自帶 Node（§21.10）：更新程式用新版自帶的 node 跑；host 用的 Node 不同而有 RUN 時延後', async () => {
-    // 0.1.0 的 install.json 沒記 sessionHostNode（host 用系統 node）：新版自帶 Node → 要換 host。
-    const busy = harness({ bundledNode: '24.22.2' });
-    busy.setStatuses(['running']);
-    busy.updater.onTarget(target(), false);
-    await settle();
-    expect(busy.reports.at(-1)).toMatchObject({ phase: 'deferred', reason: 'host_busy' });
-    expect(busy.spawned).toEqual([]);
-    busy.updater.dispose();
-
-    // host 已經用同一版自帶的 Node：不用換 host，RUN 不擋；更新程式用新版裡的 runtime/node/bin/node 啟動。
-    rmSync(join(root, 'releases', '.incoming'), { recursive: true, force: true });
+  it('Node（§21.10）：更新程式用安裝時記下的系統 node 跑；0.1.1 留下的自帶 Node 記錄不會讓 RUN 延後', async () => {
+    // 0.1.1 的 install.json 記著 sessionHostNode 是 bundled，新版沒有自帶 Node：Node 不同不用換 host，RUN 不擋。
     writeFileSync(
       join(root, 'install.json'),
       JSON.stringify({
@@ -254,23 +244,22 @@ describe('SelfUpdater', () => {
         sessionHostNode: 'bundled:24.22.2',
       }),
     );
-    const same = harness({ bundledNode: '24.22.2' });
-    same.setStatuses(['running']);
-    same.updater.onTarget(target(), false);
+    const h = harness({ bundledNode: '24.22.2', nodeBin: '/usr/local/bin/node' });
+    h.setStatuses(['running']);
+    h.updater.onTarget(target(), false);
     await settle();
-    expect(same.spawned).toHaveLength(1);
-    const source = join(root, 'releases', '.incoming', '0.2.0', 'agent-board');
-    expect(same.spawned[0]!.node).toBe(join(source, 'runtime', 'node', 'bin', 'node'));
-    same.updater.dispose();
+    expect(h.spawned).toHaveLength(1);
+    expect(h.spawned[0]!.node).toBe('/usr/local/bin/node');
+    h.updater.dispose();
 
-    // 舊版成品（沒自帶 Node）：不指定 node（daemon 自己的）。
+    // 沒給 nodeBin（開發模式）：不指定 node（daemon 自己的）。
     rmSync(join(root, 'releases', '.incoming'), { recursive: true, force: true });
     rmSync(join(data, 'update-state.json'), { force: true });
-    const legacy = harness();
-    legacy.updater.onTarget(target(), false);
+    const plain = harness();
+    plain.updater.onTarget(target(), false);
     await settle();
-    expect(legacy.spawned[0]!.node).toBeUndefined();
-    legacy.updater.dispose();
+    expect(plain.spawned[0]!.node).toBeUndefined();
+    plain.updater.dispose();
   });
 
   it('同版、降級、別的平台、目標 null：什麼都不做（降級要 force）', async () => {

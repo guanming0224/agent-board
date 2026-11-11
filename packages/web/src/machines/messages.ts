@@ -115,6 +115,7 @@ export const zhTW: Record<string, string> = {
   'machines.err.update_in_progress': '這台的更新還在進行，等它結束再試',
   'machines.note.platform_unverified': 'Windows 還沒實機驗證，暫不自動更新',
   'machines.note.abi_mismatch': '成品的原生模組和這台的 Node 版本不合，請手動安裝',
+  'machines.note.node_too_old': '這台的 Node.js 版本太舊，請升級 Node.js 後再更新',
   'machines.block.previous_unsupported':
     '上一版沒有自動更新功能，不能從這裡回滾（用 install.sh --from 重裝）',
   'machines.err.previous_unsupported':
@@ -265,6 +266,7 @@ export const en: Record<string, string> = {
     'Windows is not verified on a real machine yet; no automatic updates',
   'machines.note.abi_mismatch':
     'the bundled native modules do not match this machine’s Node version; install by hand',
+  'machines.note.node_too_old': 'Node.js on this machine is too old; upgrade Node.js to update',
   'machines.block.previous_unsupported':
     'the previous version predates automatic updates; reinstall it with install.sh --from',
   'machines.err.previous_unsupported':

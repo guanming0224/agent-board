@@ -3,11 +3,9 @@
 # 只跑單元測試；e2e、smoke:release、test:install 在本機跑（要開瀏覽器、裝服務）。
 # 權限：預設唯讀，只有最後的 publish job 能寫（建 Release）；只用 GITHUB_TOKEN，不需要其他秘密。
 # actions 釘 commit SHA（註解是對應的版本）。
-# Node 版本（CONTRACTS §21.10）：成品自帶固定版本的官方 Node（runtime/node），版本＝根目錄 package.json 的
-# bundledNode（完整版本號，例如 24.22.2；改版本就改那裡，不再用 repo 變數 RELEASE_NODE_VERSION）。
-# build:release 自己從 https://nodejs.org/dist/ 下載這一版、用官方 SHASUMS256.txt 驗證後放進成品，並用它跑
-# npm ci 建原生模組；setup-node 裝同一個版本，typecheck、單元測試也用同一個 Node 跑。
-# 各機的系統 Node 版本不再影響成品（hub 對自帶 Node 的成品不比 ABI）。
+# Node 版本（CONTRACTS §21.10）：成品不自帶 Node；附的原生模組（node-pty、better-sqlite3、argon2）都是 N-API，
+# 不分 Node 版本，各機用自己的系統 Node（≥ package.json 的 engines）。建置用的 Node 只要符合 engines：
+# repo 變數 RELEASE_NODE_VERSION，預設 24。
 name: Release
 on:
   push:
@@ -36,23 +34,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: 讀自帶 Node 的版本（package.json 的 bundledNode）
-        id: node
-        shell: bash
-        run: |
-          # runner 預裝的 node 只用來讀 JSON（Windows checkout 可能是 CRLF，不用 sed）。
-          version="$(node -p "require('./package.json').bundledNode")"
-          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "package.json 的 bundledNode 要是完整版本號，讀到「${version}」" >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: ${{ steps.node.outputs.version }}
-      - name: 確認跑測試的 Node 就是要放進成品的版本
-        shell: bash
-        run: test "$(node -p process.versions.node)" = "${{ steps.node.outputs.version }}"
+          node-version: ${{ vars.RELEASE_NODE_VERSION || '24' }}
       - run: corepack enable
       - name: tag 要和 package.json 的版本一致
         shell: bash
@@ -69,14 +53,10 @@ jobs:
         run: pnpm -r test
       - if: runner.os == 'Windows'
         run: pnpm --filter @agent-board/protocol --filter @agent-board/web test
-      # 下載官方 Node（nodejs.org）、驗 SHASUMS256、放進 runtime/node，用它 npm ci 並實際載入原生模組。
       - run: pnpm build:release
       - name: 檢查成品
         shell: bash
         run: |
-          node_bin=release/agent-board/runtime/node/bin/node
-          [ "${{ matrix.platform }}" = win-x64 ] && node_bin=release/agent-board/runtime/node/node.exe
-          test "$("$node_bin" -p process.versions.node)" = "${{ steps.node.outputs.version }}"
           version="$(node -p "require('./package.json').version")"
           ext=tar.gz
           [ "${{ matrix.platform }}" = win-x64 ] && ext=zip

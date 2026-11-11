@@ -1,17 +1,12 @@
 {
   "name": "agent-board",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "license": "MIT",
   "packageManager": "pnpm@12.16.1",
   "engines": {
     "node": ">=22.18"
-  },
-  "bundledNode": "24.22.2",
-  "bundledNodeSha256": {
-    "darwin-arm64": "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a",
-    "win-x64": "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2"
   },
   "scripts": {
     "postinstall": "node scripts/fix-node-pty.mjs",
@@ -22,7 +17,7 @@
     "notices": "node scripts/third-party-notices.mjs",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "test:install": "node --test scripts/service-templates.test.mjs scripts/updater.test.mjs scripts/bundled-node.test.mjs",
+    "test:install": "node --test scripts/service-templates.test.mjs scripts/updater.test.mjs scripts/system-node.test.mjs",
     "test:notices": "node --test scripts/release-shipped.test.mjs",
     "check:no-llm": "node scripts/check-no-llm.mjs",
     "lint": "eslint .",

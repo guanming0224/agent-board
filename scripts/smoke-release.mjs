@@ -1,7 +1,7 @@
 // 發布檔冒煙測試：release/agent-board-<版本>-<這台平台>.tar.gz 裝到臨時 HOME（路徑含空格與中文），
 // 用服務設定檔裡「只有」的環境變數啟動 hub 與 daemon（重現 launchd 的乾淨環境），
 // 再走配對、開 session、真 hook、危險指令攔截、重裝、解除安裝。claude 是假的，不花額度。
-// 發布檔自帶 Node（CONTRACTS §21.10）：hub 安裝時 PATH 上故意沒有 node，服務設定一律指自帶的那支。
+// 系統 Node（CONTRACTS §21.10）：發布檔不自帶 Node，三個服務一律用安裝時 PATH 上那支 node 的路徑。
 //
 // launchctl、systemctl、loginctl 全部換成只會記錄參數的假程式，不碰這台機器的系統服務。
 import assert from 'node:assert/strict';
@@ -49,12 +49,22 @@ const listAgents = () =>
     : [];
 const agentsBefore = listAgents();
 
+// launchctl：只記錄、不跑程式，但照真的語意記著哪些 job 載入了（bootstrap 載入、bootout 卸載、print 沒載入回 113、
+// bootstrap 已載入的回 5），安裝程式會在 bootstrap 後用 print 確認。服務程式由測試照 plist 自己啟動。
+const loadedDir = join(base, 'launchd-loaded');
+mkdirSync(loadedDir);
 for (const name of ['launchctl', 'systemctl', 'loginctl']) {
   const stub = join(stubs, name);
-  // launchctl print 回 1 代表「尚未載入」，讓安裝腳本走 bootstrap。
+  const launchd = [
+    'case "$1" in',
+    `  print) [ -f "${loadedDir}/\${2##*/}" ] && exit 0; exit 113 ;;`,
+    `  bootstrap) l=$(basename "$3" .plist); [ -f "${loadedDir}/$l" ] && exit 5; : > "${loadedDir}/$l"; exit 0 ;;`,
+    `  bootout) l=\${2##*/}; [ -f "${loadedDir}/$l" ] || exit 3; rm -f "${loadedDir}/$l"; exit 0 ;;`,
+    'esac',
+  ].join('\n');
   writeFileSync(
     stub,
-    `#!/bin/sh\nprintf '%s\\n' "${name} $*" >> "${callLog}"\n[ "$1" = "print" ] && exit 1\nexit 0\n`,
+    `#!/bin/sh\nprintf '%s\\n' "${name} $*" >> "${callLog}"\n${name === 'launchctl' ? `${launchd}\n` : ''}exit 0\n`,
   );
   chmodSync(stub, 0o755);
 }
@@ -145,16 +155,11 @@ async function main() {
   const hub = `http://127.0.0.1:${port}`;
   const from = ['--from', tarball];
 
-  // ── 安裝 hub（PATH 上沒有 node：安裝程式與服務都用發布檔自帶的）──
+  // ── 安裝 hub ──
   const noNodePath = `${stubs}:/usr/bin:/bin`;
-  assert.equal(
-    spawnSync('sh', ['-c', 'command -v node'], { env: { PATH: noNodePath } }).status,
-    1,
-    '這個步驟的 PATH 上不該有 node',
-  );
-  const first = mustInstall(['hub', ...from, '--port', String(port), '--no-start'], {
-    PATH: noNodePath,
-  });
+  // 服務用的 node：PATH 上那支（cleanEnv 的 PATH 第二個資料夾），不是 realpath。
+  const systemNodePath = join(dirname(process.execPath), 'node');
+  const first = mustInstall(['hub', ...from, '--port', String(port), '--no-start']);
   assert.match(first, /--no-start/);
   // 新配置：releases/<版本>，current 指向它（CONTRACTS §21.2）。
   const app = join(home, '.local/share/agent-board/current');
@@ -169,58 +174,30 @@ async function main() {
     const helper = join(app, 'node_modules/node-pty/prebuilds', name, 'spawn-helper');
     if (existsSync(helper)) assert.ok(lstatSync(helper).mode & 0o100, `${helper} 要可執行`);
   }
-  const bundledNode = join(app, 'runtime/node/bin/node');
-  const { bundledNode: pinned } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
-  const reported = spawnSync(
-    bundledNode,
-    ['-p', 'process.versions.node + " " + process.versions.modules'],
-    { encoding: 'utf8' },
-  ).stdout.trim();
+  assert.ok(!existsSync(join(app, 'runtime')), '發布檔不自帶 Node');
   const modulesInfo = JSON.parse(readFileSync(join(app, '.node-modules-platform'), 'utf8'));
-  assert.equal(reported, `${pinned} ${modulesInfo.modules}`);
-  assert.equal(modulesInfo.bundledNode, true);
-  const probe = spawnSync(
-    bundledNode,
-    [
-      '-e',
-      "require('node-pty');require('argon2');new (require('better-sqlite3'))(':memory:').close()",
-    ],
-    { cwd: app, encoding: 'utf8' },
-  );
-  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(modulesInfo.napi, true);
+  assert.equal(modulesInfo.minNode, '22.18');
   step(
-    `安裝 hub 到含空格與中文的 HOME（PATH 上沒有 node），只裝執行依賴，spawn-helper 可執行；自帶 Node ${pinned}（ABI ${modulesInfo.modules}）載得起原生模組`,
+    '安裝 hub 到含空格與中文的 HOME，npm ci 只裝執行依賴，spawn-helper 可執行；不自帶 Node、記最低版本',
   );
 
   const rerun = mustInstall(['hub', ...from, '--no-start']);
   assert.match(rerun, /略過安裝/);
   step('重跑是冪等的：內容相同不重裝，保留 --port');
 
-  // 沒自帶 Node 的舊版發布檔（把這次的拿掉 runtime/）在沒有 node 的機器上：給出清楚訊息。
-  const legacyDir = join(base, 'legacy release');
-  mkdirSync(legacyDir);
-  execFileSync('tar', ['-xzf', tarball, '-C', legacyDir]);
-  rmSync(join(legacyDir, 'agent-board/runtime'), { recursive: true });
-  const tooOld = spawnSync('sh', [installScript, 'hub', '--from', join(legacyDir, 'agent-board')], {
+  const tooOld = spawnSync('sh', [installScript, 'hub', ...from], {
     env: { ...cleanEnv, PATH: noNodePath },
     encoding: 'utf8',
   });
   assert.notEqual(tooOld.status, 0);
-  assert.match(tooOld.stderr, /找不到 node。這個發布檔沒有自帶 Node/);
-  // 沒給 --from 也沒有下載位址：說明要用 --from（不需要 node 就能判斷）。
-  const noUrl = spawnSync('sh', [installScript, 'hub'], {
-    env: { ...cleanEnv, PATH: noNodePath },
-    encoding: 'utf8',
-  });
-  assert.notEqual(noUrl.status, 0);
-  assert.match(noUrl.stderr, /--from/);
-  rmSync(legacyDir, { recursive: true, force: true });
-  step('沒自帶 Node 的舊版發布檔在沒有 node 的機器上、沒有下載位址時都給出清楚訊息');
+  assert.match(tooOld.stderr, /找不到 node/);
+  step('沒有 node 時給出清楚訊息');
 
   // ── 用服務設定的環境跑 hub ──
   const hubProc = startFromPlist('hub');
   assert.ok(!('AGENT_BOARD_HOST' in hubProc.plist.EnvironmentVariables));
-  assert.equal(hubProc.plist.ProgramArguments[0], bundledNode, 'hub 用自帶的 node');
+  assert.equal(hubProc.plist.ProgramArguments[0], systemNodePath, 'hub 用 PATH 上的系統 node');
   await poll('hub 回應', async () => (await fetch(`${hub}/api/auth/status`).catch(() => null))?.ok);
   const index = await fetch(`${hub}/`);
   assert.match(await index.text(), /<div id="root">/);
@@ -300,11 +277,7 @@ async function main() {
   // session host（CONTRACTS §20）：照 plist 啟動打包的 session-host/dist/main.mjs（node-pty 用發布檔的 node_modules），
   // daemon 起來時先連它。daemon 的服務設定要知道怎麼拉起它。
   const hostProc = startFromPlist('session-host');
-  assert.equal(
-    hostProc.plist.ProgramArguments[0],
-    join(home, '.local/share/agent-board/session-host/runtime/node/bin/node'),
-    'session host 用自己資料夾裡複製的 node',
-  );
+  assert.equal(hostProc.plist.ProgramArguments[0], systemNodePath, 'session host 用系統 node');
   const hostToken = join(home, '.agent-board/session-host.token');
   await poll('session host 起來', () => existsSync(hostToken));
   assert.equal(lstatSync(hostToken).mode & 0o777, 0o600);
@@ -321,10 +294,9 @@ async function main() {
   // hook 與 MCP server 指 current 底下那支（不是 ~/.local/bin 的捷徑，也不是 releases/<版本> 的實際路徑：
   // 舊版被清掉後還活著的 agent 也找得到，CONTRACTS §21.2）。
   const daemonEnv = daemonProc.plist.EnvironmentVariables;
-  assert.equal(daemonProc.plist.ProgramArguments[0], bundledNode, 'daemon 用自帶的 node');
-  // 派工 MCP server 用自帶的 node；agent 的 PATH 不放自帶的 node（使用者專案用自己的 Node）。
-  assert.equal(daemonEnv.AGENT_BOARD_NODE, bundledNode);
-  assert.doesNotMatch(daemonEnv.PATH, /runtime\/node/);
+  assert.equal(daemonProc.plist.ProgramArguments[0], systemNodePath, 'daemon 用系統 node');
+  // 派工 MCP server、更新程式、hook 包裝用的 node：安裝時記下的那支。
+  assert.equal(daemonEnv.AGENT_BOARD_NODE, systemNodePath);
   assert.equal(
     daemonEnv.AGENT_BOARD_HOOK_BIN,
     join(app, 'daemon/node_modules/.bin/agent-board-hook'),
@@ -458,14 +430,14 @@ async function main() {
     ),
     calls,
   );
-  // hook 捷徑是 exec 發布檔裡包裝的 shell 腳本（包裝用相對路徑找自帶的 node，不能經過 symlink 執行）。
+  // hook 捷徑是 exec 發布檔裡包裝的 shell 腳本（包裝用相對路徑找 .cjs，不能經過 symlink 執行）。
   assert.ok(!lstatSync(join(home, '.local/bin/agent-board-hook')).isSymbolicLink());
   assert.match(
     readFileSync(join(home, '.local/bin/agent-board-hook'), 'utf8'),
     /current\/daemon\/node_modules\/\.bin\/agent-board-hook/,
   );
   const viaShim = spawnSync(join(home, '.local/bin/agent-board-hook'), ['Stop'], {
-    env: { PATH: noNodePath },
+    env: { PATH: noNodePath, AGENT_BOARD_NODE: systemNodePath },
     input: '{}',
     encoding: 'utf8',
   });

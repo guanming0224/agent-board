@@ -119,8 +119,10 @@ const MachineRecord = z.object({
   protocolVersion: z.number().int().nullable().catch(null),
   previousVersion: z.string().nullable().catch(null),
   hostsHub: z.boolean().catch(false),
-  /** daemon 的 Node 原生模組 ABI（`process.versions.modules`）；舊 daemon 不送。 */
+  /** daemon 的 Node 原生模組 ABI（`process.versions.modules`）；舊 daemon 不送。沒有 nodeVersion 時推算主版本。 */
   nodeAbi: z.string().nullable().catch(null),
+  /** daemon 的 Node 版本（`process.versions.node`）；0.1.2 以前的 daemon 不送。 */
+  nodeVersion: z.string().nullable().catch(null),
   update: UpdateState.nullable().catch(null),
   /** 已經推播過的失敗（update.at）：同一次失敗只通知一次。 */
   notifiedAt: z.string().nullable().catch(null),
@@ -134,6 +136,7 @@ const EMPTY_RECORD: MachineRecord = {
   previousVersion: null,
   hostsHub: false,
   nodeAbi: null,
+  nodeVersion: null,
   update: null,
   notifiedAt: null,
 };
@@ -154,13 +157,15 @@ const Verified = z.object({
       asset: z.string(),
       sha256: z.string(),
       size: z.number().int().nonnegative(),
-      /** 成品附的 node_modules 是哪個 Node ABI 建的（`.node-modules-platform`）；讀不到為 null（不擋）。 */
+      /** 建置成品的 Node ABI（`.node-modules-platform`，只供參考；原生模組是 N-API，不比對）。 */
       abi: z.string().nullable().optional(),
-      /**
-       * 成品自帶 Node（`.node-modules-platform` 的 bundledNode，CONTRACTS §21.10）：各機用它跑，原生模組 ABI
-       * 一定相同，**不和 daemon 的 nodeAbi 比**。沒有這個欄位＝舊成品（或舊 hub 驗的），照舊比 ABI。
-       */
+      /** 0.1.1 的成品自帶 Node（只供參考）。 */
       bundledNode: z.boolean().optional(),
+      /**
+       * 成品要求的最低 Node 版本（`.node-modules-platform` 的 minNode，來自 package.json engines，§21.10）。
+       * null＝成品沒記（0.1.1 以前），不擋；沒有這個欄位＝舊 hub 驗的，讀 cache 時從成品補上。
+       */
+      minNode: z.string().nullable().optional(),
     }),
   ),
 });
@@ -183,6 +188,7 @@ export interface HelloRelease {
   previousVersion?: string | null | undefined;
   hostsHub?: boolean | undefined;
   nodeAbi?: string | undefined;
+  nodeVersion?: string | undefined;
   update?: UpdateState | null | undefined;
 }
 
@@ -302,6 +308,7 @@ export class ReleaseManager {
       previousVersion: hello.previousVersion ?? null,
       hostsHub: hello.hostsHub ?? false,
       nodeAbi: hello.nodeAbi ?? null,
+      nodeVersion: hello.nodeVersion ?? null,
       update: hello.update === undefined ? prev.update : hello.update,
     };
     this.saveRecord(machineId, record);
@@ -406,8 +413,8 @@ export class ReleaseManager {
    * 目標與沒有目標的原因：
    * - 平台沒有成品、版本不在 cache 裡：null（沒有說明）。
    * - 還沒實機驗證的平台（win-x64，W8）：platform_unverified。hub 照樣下載成品，只是不發。
-   * - 成品附的原生模組 ABI 和這台 daemon 的 Node 不合（B5）：abi_mismatch（不在更新中跑 npm ci）。
-   *   只適用沒自帶 Node 的舊成品；自帶 Node 的成品（bundledNode）不比（§21.10），hello 的 nodeAbi 只供顯示。
+   * - 這台的 Node 主版本低於成品的最低版本（§21.10）：node_too_old。原生模組是 N-API，不比 ABI
+   *   （0.1.1 以前的 abi_mismatch 不再產生）。
    * - hub 那台也要升到同一版但還沒升（S3a）：hub_first。先升 hub，其他機器才不會在 hub 重啟時健康檢查失敗。
    *   只在 hub 那台真的拿得到這個目標（它自己沒被平台、ABI 擋住）而且在線時才擋（N1）。
    *   hub 那台這一版更新失敗（rolled_back／rollback_failed）：繼續擋，說明改成 hub_update_failed（不管在不在線）。
@@ -435,8 +442,10 @@ export class ReleaseManager {
     }
     const entry = this.cacheIndex.get(version)?.assets[record.platform];
     if (!entry || entry.asset !== releaseAssetName(version, record.platform)) return none;
-    if (!entry.bundledNode && entry.abi && record.nodeAbi && entry.abi !== record.nodeAbi) {
-      return { target: null, note: 'abi_mismatch' };
+    const minMajor = nodeMajor(entry.minNode);
+    const machineMajor = nodeMajor(record.nodeVersion) ?? majorFromAbi(record.nodeAbi);
+    if (minMajor !== null && machineMajor !== null && machineMajor < minMajor) {
+      return { target: null, note: 'node_too_old' };
     }
     const hubId = this.str(KEY.hubMachine);
     if (!options.skipHubCheck && hubId && hubId !== machineId) {
@@ -496,15 +505,15 @@ export class ReleaseManager {
             JSON.parse(await readFile(join(dir, name, 'verified.json'), 'utf8')),
           );
           if (verified.version !== name) continue;
-          // 舊 hub（沒有 bundledNode 欄位）驗過的 cache：成品還在就重讀 .node-modules-platform 補上，寫回
-          // verified.json（§21.10）。不補的話自帶 Node 的成品會被當成舊成品比 ABI。
+          // 舊 hub（沒有 minNode 欄位）驗過的 cache：成品還在就重讀 .node-modules-platform 補上，寫回
+          // verified.json（§21.10），之後照最低 Node 版本判斷。
           let patched = false;
           for (const entry of Object.values(verified.assets)) {
-            if (entry.bundledNode !== undefined) continue;
+            if (entry.minNode !== undefined) continue;
             const archive = join(dir, name, entry.asset);
             if (!existsSync(archive)) continue;
             const modules = await modulesPlatform(archive);
-            entry.bundledNode = modules.bundledNode;
+            entry.minNode = modules.minNode;
             entry.abi ??= modules.abi;
             patched = true;
           }
@@ -777,6 +786,7 @@ export class ReleaseManager {
         version: record.version,
         buildId: record.buildId,
         protocolVersion: record.protocolVersion,
+        nodeVersion: record.nodeVersion,
         previousVersion: record.previousVersion,
         channel: this.channelOf(machine.id),
         targetVersion: resolved.target?.version ?? null,
@@ -809,31 +819,56 @@ export class ReleaseManager {
 }
 
 /**
- * 成品裡 `.node-modules-platform` 記的 Node ABI 與有沒有自帶 Node（用系統 tar 讀，tar.gz 與 zip 都行）；
- * 讀不到 ABI 為 null、bundledNode 為 false。
+ * 成品裡 `.node-modules-platform` 記的建置 ABI、有沒有自帶 Node（0.1.1）與最低 Node 版本（用系統 tar 讀，
+ * tar.gz 與 zip 都行）；讀不到的欄位是 null／false。
  */
 export function modulesPlatform(
   archive: string,
-): Promise<{ abi: string | null; bundledNode: boolean }> {
+): Promise<{ abi: string | null; bundledNode: boolean; minNode: string | null }> {
+  const empty = { abi: null, bundledNode: false, minNode: null };
   return new Promise((resolve) => {
     execFile(
       'tar',
       ['-xOf', archive, 'agent-board/.node-modules-platform'],
       { encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true },
       (error, stdout) => {
-        if (error) return resolve({ abi: null, bundledNode: false });
+        if (error) return resolve(empty);
         try {
-          const info = JSON.parse(stdout) as { modules?: unknown; bundledNode?: unknown };
+          const info = JSON.parse(stdout) as {
+            modules?: unknown;
+            bundledNode?: unknown;
+            minNode?: unknown;
+          };
           resolve({
             abi: typeof info.modules === 'string' ? info.modules : null,
             bundledNode: info.bundledNode === true,
+            minNode: typeof info.minNode === 'string' ? info.minNode : null,
           });
         } catch {
-          resolve({ abi: null, bundledNode: false });
+          resolve(empty);
         }
       },
     );
   });
+}
+
+/** 版本字串的主版本（`26.1.0`、`v24`、`22.18`）；讀不懂回 null。 */
+function nodeMajor(version: string | null | undefined): number | null {
+  const match = /^v?(\d+)/.exec(version ?? '');
+  return match ? Number(match[1]) : null;
+}
+
+/** 0.1.2 以前的 daemon 只送 ABI：常見的對照（Node 20＝115、22＝127、23＝131、24＝137、25＝141、26＝147）；不認得回 null。 */
+const ABI_MAJOR: Record<string, number> = {
+  '115': 20,
+  '127': 22,
+  '131': 23,
+  '137': 24,
+  '141': 25,
+  '147': 26,
+};
+function majorFromAbi(abi: string | null): number | null {
+  return abi ? (ABI_MAJOR[abi] ?? null) : null;
 }
 
 function firstLine(text: string): string {

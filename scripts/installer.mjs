@@ -10,9 +10,9 @@
 // Windows 是 junction），服務與捷徑一律指 current/…，換版只換 current。保留最近 3 版。
 // 舊的單一 app/ 第一次執行時搬成 releases/<版本或 0.0.0-legacy>/，app 留成指向 current 的連結
 // （舊 session 的 PATH、MCP 設定檔寫的是 app/… 的路徑）。
-// 自帶 Node（CONTRACTS §21.10）：發布檔有 runtime/node 時，hub、daemon 的服務與捷徑用 current/runtime/node，
-// session host 用複製到自己資料夾的那份；原生模組檢查、hub.db 備份都用「那一版」的 node 跑。
-// 這支本身只用 node 內建模組，由哪個 node 執行都可以（舊版 daemon 的系統 node、或新版自帶的 node）。
+// Node（CONTRACTS §21.10）：發布檔不自帶 Node。hub、daemon、session host 的服務與捷徑一律用安裝時找到的
+// 系統 node 路徑（照 0.1.0 的寫法，不做 realpath：macOS 的隱私權限照實際執行的路徑認）。0.1.1 曾經自帶
+// Node，它留下的 runtime/ 不當成系統的 node，session host 資料夾裡的那份在沒人用時清掉。
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
@@ -38,12 +38,11 @@ import { homedir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
-  bundledNodeOf,
-  hostNodeId,
   isBundledRuntime,
+  minNodeFromEngines,
   readModulesPlatform,
-  runtimeNodePath,
-} from './lib/bundled-node.mjs';
+  versionAtLeast,
+} from './lib/node-runtime.mjs';
 import {
   renderLaunchd,
   renderSystemd,
@@ -150,10 +149,10 @@ const realOrSelf = (path) => {
   }
 };
 /**
- * path 不能當系統的 node：在 Agent Board 的安裝資料夾裡，或是任何發布檔自帶的 runtime（例如 install.sh 用
- * 暫存資料夾裡新版自帶的 node 執行安裝程式時的 process.execPath）。
+ * path 不能當系統的 node：在 Agent Board 的安裝資料夾裡，或是任何發布檔自帶的 runtime（0.1.1 的殘留，
+ * 例如 0.1.1 的 daemon 啟動更新程式時的 process.execPath）。
  */
-const insideInstall = (paths, path) => {
+const notSystemNode = (paths, path) => {
   if (isBundledRuntime(path)) return true;
   const root = realOrSelf(paths.root);
   const real = realOrSelf(path);
@@ -161,39 +160,56 @@ const insideInstall = (paths, path) => {
 };
 
 /**
- * 系統的 node（不是 Agent Board 自帶的那支）：只有沒自帶 Node 的舊版發布檔（0.1.0 以前）、回滾到舊版、
- * 舊 session host 才用得到；找不到回 null（自帶 Node 的版本完全不需要）。
- * PATH 上的那支優先（Homebrew 的 Cellar 路徑帶版本號，升級 node 就失效）；再來是上次記下的、執行這支的 node。
+ * 服務用的系統 node（CONTRACTS §21.10）。照 0.1.0 的寫法：PATH 上的 node 和執行這支的是同一個檔案時用 PATH 上的
+ * 路徑（例如 /usr/local/bin/node、/opt/homebrew/bin/node；Homebrew 的 Cellar 路徑帶版本號，升級 node 就失效），
+ * 否則用執行這支的 node。**不把路徑 realpath 掉、不用自帶的 runtime**：macOS 的隱私權限（TCC）照實際執行的
+ * 路徑認，2026-11-11 換成自帶的 node 後，agent 讀不到 ~/Desktop 底下的專案。
+ * 執行這支的是 0.1.1 自帶的 runtime 時，改用 PATH 上的、或 install.json 記的 systemNode。找不到回 null。
  */
 function systemNode(paths, state) {
+  const usable = (path) => Boolean(path) && existsSync(path) && !notSystemNode(paths, path);
   const found = onPath('node');
-  if (found && !insideInstall(paths, found)) return found;
-  if (state.systemNode && existsSync(state.systemNode) && !insideInstall(paths, state.systemNode))
-    return state.systemNode;
-  if (!insideInstall(paths, process.execPath)) return process.execPath;
+  if (usable(process.execPath)) {
+    if (usable(found) && realOrSelf(found) === realOrSelf(process.execPath)) return found;
+    return process.execPath;
+  }
+  if (usable(found)) return found;
+  if (usable(state.systemNode)) return state.systemNode;
   return null;
 }
 
-/** 某一版發布檔要用的 node：自帶的那支；舊版發布檔用系統的 node（沒有就失敗）。 */
-function nodeFor(dir, ctx) {
-  const bundled = bundledNodeOf(dir, platform);
-  if (bundled) return bundled.path;
-  if (ctx.systemNode) return ctx.systemNode;
-  return fail(
-    t(
-      `${dir} 沒有自帶 Node，這台也找不到系統的 node。請改用自帶 Node 的發布檔，或先安裝 Node.js。`,
-      `${dir} has no bundled Node and no system node was found. Use a release with bundled Node, or install Node.js first.`,
-    ),
-  );
+/** 這個 node 的版本（`node -p process.versions.node`）；跑不起來回 null。 */
+function nodeVersionOf(node) {
+  if (node === process.execPath) return process.versions.node;
+  const result = run(node, ['-p', 'process.versions.node'], { timeout: 15_000 });
+  return result.status === 0 ? result.stdout.trim() : null;
 }
 
 /**
- * hub、daemon 服務與捷徑用的 node：current 自帶 Node 就用 current/runtime/node/…（經過 current 連結，換版時
- * 服務設定不用改）；否則系統的 node。
+ * 服務要用的 node：系統的 node，而且版本不低於發布檔 package.json 的 engines（預設 22）。
+ * 找不到或太舊就中止（什麼都還沒改）。
  */
-function serviceNode(paths, ctx) {
-  if (bundledNodeOf(paths.current, platform)) return runtimeNodePath(paths.current, platform);
-  return nodeFor(paths.current, ctx);
+function requireServiceNode(paths, state, source) {
+  const node = systemNode(paths, state);
+  const min = minNodeFromEngines(readJsonFile(join(source, 'package.json'))?.engines?.node);
+  if (!node) {
+    fail(
+      t(
+        `找不到系統的 node。請先安裝 Node.js ${min} 以上（https://nodejs.org）。`,
+        `Cannot find a system node. Install Node.js ${min} or newer (https://nodejs.org).`,
+      ),
+    );
+  }
+  const version = nodeVersionOf(node);
+  if (!version || !versionAtLeast(version, min)) {
+    fail(
+      t(
+        `${node} 的版本是 ${version ?? '未知'}，這一版需要 Node.js ${min} 以上。`,
+        `${node} is version ${version ?? 'unknown'}; this release needs Node.js ${min} or newer.`,
+      ),
+    );
+  }
+  return node;
 }
 
 const unxml = (text) =>
@@ -203,7 +219,7 @@ const unxml = (text) =>
     .replaceAll('&gt;', '>')
     .replaceAll('&amp;', '&');
 
-/** 舊的服務設定裡寫的 node（0.1.0 的 session host 用系統 node，install.json 沒記）；讀不到回 null。 */
+/** 服務設定裡現在寫的 node（plist／systemd unit 的執行檔）；讀不到回 null。 */
 function nodeInServiceFile(paths, role) {
   try {
     if (platform === 'darwin') {
@@ -222,33 +238,42 @@ function nodeInServiceFile(paths, role) {
   return null;
 }
 
-/**
- * session host 服務用的 node：它資料夾裡有複製來的 runtime/node 就用那份（host 不跟著 current 換版，§20.5）；
- * 否則是舊的系統 node（install.json 記的、舊服務設定寫的，或現在找得到的系統 node）。
- */
-function hostServiceNode(paths, ctx) {
-  const own = runtimeNodePath(paths.host, platform);
-  if (existsSync(own)) return own;
-  for (const candidate of [
-    ctx.state.sessionHostNodePath,
-    nodeInServiceFile(paths, SESSION_HOST),
-    ctx.systemNode,
-  ]) {
-    if (candidate && existsSync(candidate) && !insideInstall(paths, candidate)) return candidate;
-  }
-  // 還沒裝過 host（這台沒有系統 node）：等一下會從 current 複製 runtime 過去。
-  if (!existsSync(runningHostFiles(paths).main) && bundledNodeOf(paths.current, platform))
-    return own;
-  return fail(
-    t(
-      'session host 沒有自帶 Node，這台也找不到系統的 node。請加 --restart-session-host 重新安裝。',
-      'The session host has no bundled Node and no system node was found. Reinstall with --restart-session-host.',
-    ),
-  );
+/** 有沒有程序正在用這個資料夾裡的執行檔（`ps` 的指令列以它開頭）。查不了當成有（不刪）。 */
+function processRunsFrom(dir) {
+  if (isWindows) return true;
+  const result = run('ps', ['-axww', '-o', 'args=']);
+  if (result.status !== 0) return true;
+  const prefix = dir.endsWith('/') ? dir : `${dir}/`;
+  const real = realOrSelf(dir);
+  const realPrefix = real.endsWith('/') ? real : `${real}/`;
+  return result.stdout
+    .split('\n')
+    .some((line) => line.startsWith(prefix) || line.startsWith(realPrefix));
 }
 
-/** 現在跑的 session host 用的是哪個 node（install.json 沒記＝0.1.0 以前，用系統 node）。 */
-const runningHostNodeId = (state) => state.sessionHostNode ?? 'system';
+/**
+ * 0.1.1 複製到 session host 資料夾的 runtime/（自帶的 node）：服務設定已經改回系統 node，而且沒有程序在用它時
+ * 才刪；host 還在用它跑（plist 改了、還沒重啟）就留著，下次安裝再清（不能刪到正在執行的東西）。
+ */
+function cleanHostRuntime(paths) {
+  const dir = join(paths.host, 'runtime');
+  if (!existsSync(dir)) return;
+  if (processRunsFrom(dir)) {
+    say(
+      t(
+        `session host 還在用 ${dir} 裡的 node，先留著；下次 session host 重啟後再安裝一次就會清掉。`,
+        `The session host still runs the node in ${dir}; it is kept and removed by the next install after the session host restarts.`,
+      ),
+    );
+    return;
+  }
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    say(t(`已清掉不再使用的 ${dir}。`, `Removed the unused ${dir}.`));
+  } catch {
+    // 清不掉：下次再清
+  }
+}
 
 function findClaude(options, paths) {
   const explicit = options['claude-bin'] || process.env.AGENT_BOARD_CLAUDE_BIN;
@@ -406,33 +431,14 @@ const probeNative = (dir, node) =>
   );
 
 /**
- * 依賴與原生模組：發布檔帶了這個平台的 node_modules 就先試；載不起來（例如 Node 版本不同）再 npm ci。
- * 自帶 Node 的發布檔：用自帶的 node 檢查，載不起來就是發布檔壞了（ABI 一定相同），不跑 npm ci（CONTRACTS §21.10）。
+ * 依賴與原生模組：發布檔帶了這個平台的 node_modules 就先試（原生模組都是 N-API，不同 Node 版本也載得起來）；
+ * 載不起來再 npm ci。用服務要用的那個 node 檢查。
  */
 function installDependencies(dir, ctx) {
   if (skipNativeChecks) return;
-  const info = readModulesPlatform(dir);
-  const bundledNode = bundledNodeOf(dir, platform);
-  const bundled = existsSync(join(dir, 'node_modules')) && info?.platform === thisPlatform();
-  if (bundledNode) {
-    // 自帶的 node 要能在這台真的跑：比對實際的平台（AGENT_BOARD_INSTALL_PLATFORM 只改服務設定的寫法）。
-    const real = `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`;
-    const runnable = existsSync(join(dir, 'node_modules')) && info?.platform === real;
-    const probe = runnable ? probeNative(dir, bundledNode.path) : null;
-    if (probe?.status === 0) return;
-    fail(
-      probe
-        ? t(
-            `發布檔附的原生模組用它自帶的 Node ${bundledNode.version} 載不起來，發布檔可能壞了：\n${probe.stderr}`,
-            `The bundled native modules do not load with the release's own Node ${bundledNode.version}; the release may be broken:\n${probe.stderr}`,
-          )
-        : t(
-            `這個發布檔是 ${info?.platform ?? '未知平台'} 的，這台是 ${real}。請用這個平台的發布檔。`,
-            `This release is for ${info?.platform ?? 'an unknown platform'}, this machine is ${real}. Use the release for this platform.`,
-          ),
-    );
-  }
-  const node = nodeFor(dir, ctx);
+  const node = ctx.node;
+  const bundled =
+    existsSync(join(dir, 'node_modules')) && readModulesPlatform(dir)?.platform === thisPlatform();
   if (bundled && probeNative(dir, node).status === 0) return;
   if (fromUpdater) {
     // 自動更新不現場 npm ci（要連 npm registry、原生模組可能要編譯）：hub 只發 ABI 相同的成品，到這裡就是例外。
@@ -618,7 +624,7 @@ db.backup(process.argv[2]).then(() => {
   check.close();
 }, (error) => { console.error(error.message); process.exit(1); });
 `;
-  const result = run(nodeFor(paths.current, ctx), ['-e', script, db, target], {
+  const result = run(ctx.node, ['-e', script, db, target], {
     cwd: paths.current,
   });
   if (result.status !== 0) {
@@ -666,21 +672,12 @@ function writeShim(path, content, mode) {
 function installShims(paths, node) {
   mkdirSync(paths.bin, { recursive: true });
   if (isWindows) {
-    // .cmd 用系統碼頁解讀，使用者名稱有中文時不能寫死路徑；一律相對於 shim 自己。
-    // current 有自帶的 node.exe 就用它，沒有才用 PATH 上的 node（CONTRACTS §21.10，未在 Windows 實測）。
+    // .cmd 用系統碼頁解讀，使用者名稱有中文時不能寫死路徑；一律相對於 shim 自己，node 用 PATH 上的。
     const relative = (parts) => `%~dp0..\\current\\${parts.join('\\')}`;
-    const cmd = (parts) =>
-      [
-        `@rem ${SHIM_MARKER}`,
-        '@setlocal',
-        `@set "AB_NODE=${relative(['runtime', 'node', 'node.exe'])}"`,
-        '@if not exist "%AB_NODE%" set "AB_NODE=node"',
-        `@"%AB_NODE%" "${relative(parts)}" %*`,
-        '',
-      ].join('\r\n');
+    const cmd = (parts) => `@rem ${SHIM_MARKER}\r\n@node "${relative(parts)}" %*\r\n`;
     writeShim(join(paths.bin, 'agent-board-hub.cmd'), cmd(ENTRY.hub), 0o755);
     writeShim(join(paths.bin, 'agent-board-daemon.cmd'), cmd(ENTRY.daemon), 0o755);
-    // hook 交給發布檔裡的包裝（它自己找自帶的 node）。
+    // hook 交給發布檔裡的包裝（它找 AGENT_BOARD_NODE 或 PATH 上的 node）。
     writeShim(
       join(paths.bin, 'agent-board-hook.cmd'),
       `@rem ${SHIM_MARKER}\r\n@call "${relative(HOOK_PATH)}.cmd" %*\r\n`,
@@ -742,12 +739,10 @@ function serviceEnv(role, ctx) {
     '/usr/sbin',
     '/sbin',
   ];
-  // PATH 最前面是系統的 node（有的話），不是自帶的那支：agent 繼承 daemon／session host 的 PATH，
-  // 使用者專案裡的 node 要是他自己的版本。Agent Board 自己的程式都用絕對路徑呼叫自帶的 node（§21.10）。
   const env = {
     PATH: servicePath({
       first: [
-        ...(ctx.systemNode ? [dirname(ctx.systemNode)] : []),
+        dirname(ctx.node),
         ...((role === 'daemon' || role === SESSION_HOST) && claude ? [dirname(claude)] : []),
       ],
       current: process.env.PATH || '',
@@ -765,7 +760,12 @@ function serviceEnv(role, ctx) {
   }
   if (process.env.AGENT_BOARD_DATA_DIR) env.AGENT_BOARD_DATA_DIR = process.env.AGENT_BOARD_DATA_DIR;
   // 只給測試：縮短更新程式的健康檢查時限（scripts/e2e-update.mjs）。正式使用不設。
-  for (const key of ['AGENT_BOARD_UPDATE_HEALTH_MS', 'AGENT_BOARD_UPDATE_CONNECT_MS']) {
+  // AGENT_BOARD_TEST_NODE_VERSION：假裝 daemon 跑在別的 Node 版本（e2e 模擬 Node 26 的機器）。
+  for (const key of [
+    'AGENT_BOARD_UPDATE_HEALTH_MS',
+    'AGENT_BOARD_UPDATE_CONNECT_MS',
+    'AGENT_BOARD_TEST_NODE_VERSION',
+  ]) {
     if (role === 'daemon' && process.env[key]) env[key] = process.env[key];
   }
   if (role === 'hub') {
@@ -783,9 +783,8 @@ function serviceEnv(role, ctx) {
     // agent 環境（PATH）與 MCP 設定檔的是 releases/<版本>/…，舊版被清掉後還活著的 agent 就找不到。
     env.AGENT_BOARD_HOOK_BIN = join(paths.current, ...HOOK_PATH);
     env.AGENT_BOARD_MCP_SERVER = join(paths.current, 'daemon', 'dist', 'agent-board-mcp.mjs');
-    // 派工 MCP server 用哪個 node 跑（寫進 MCP 設定檔）：自帶的那支，同樣走 current（§21.10）。
-    if (bundledNodeOf(paths.current, platform))
-      env.AGENT_BOARD_NODE = runtimeNodePath(paths.current, platform);
+    // 安裝時找到的系統 node（§21.10）：派工 MCP 設定檔的 command、更新程式、hook 包裝都用它（不是 realpath）。
+    env.AGENT_BOARD_NODE = ctx.node;
   }
   return env;
 }
@@ -883,13 +882,7 @@ function prepareHostRuntime(paths, ctx) {
   mkdirSync(join(staging, 'node_modules'), { recursive: true });
   cpSync(dirname(source.main), join(staging, 'dist'), { recursive: true });
   cpSync(source.nodePty, join(staging, 'node_modules', 'node-pty'), { recursive: true });
-  // 自帶 Node（§21.10）：host 不跟著 current 換版，所以把 current 的 runtime/node 也複製一份過來，
-  // 舊版被清掉、current 換到別版時 host 照樣跑得動。
-  const bundled = bundledNodeOf(paths.current, platform);
-  if (bundled) {
-    cpSync(join(paths.current, 'runtime'), join(staging, 'runtime'), { recursive: true });
-  }
-  const node = bundled ? runtimeNodePath(staging, platform) : nodeFor(paths.current, ctx);
+  const node = ctx.node;
   // 不只載入：真的用這份 node-pty 開一個 PTY 跑 echo（spawn-helper 壞掉、權限不對都會在這裡被擋下）。
   const probe = skipNativeChecks
     ? { status: 0 }
@@ -903,7 +896,7 @@ function prepareHostRuntime(paths, ctx) {
       ),
     );
   }
-  return { staging, nodeId: hostNodeId(bundled), nodePath: bundled ? null : node };
+  return staging;
 }
 
 /** 換上準備好的那份（呼叫前 host 已停）。 */
@@ -916,16 +909,14 @@ function swapHostRuntime(paths, staging) {
 
 /**
  * 在 .new 準備好並實際開過 PTY，通過了才停 host、換資料夾（N3）；檢查失敗 host 不動、中止安裝。
- * 記下 host 的版本雜湊、協定與用的是哪個 node（install.json）。
+ * 停 host 要等 launchd 真的收掉 job（stopService），不然接著的 bootstrap 會失敗或被略過（2026-11-11 事故）。
  */
 function installHostRuntime(paths, ctx, { stopRunning = false } = {}) {
-  const { staging, nodeId, nodePath } = prepareHostRuntime(paths, ctx);
+  const staging = prepareHostRuntime(paths, ctx);
   if (stopRunning) stopService(SESSION_HOST);
   swapHostRuntime(paths, staging);
   ctx.state.sessionHostBuild = sessionHostBuild(runningHostFiles(paths));
   ctx.state.sessionHostProtocol = sessionHostProtocol(runningHostFiles(paths));
-  ctx.state.sessionHostNode = nodeId;
-  ctx.state.sessionHostNodePath = nodePath;
 }
 
 /** 用 node-pty 開 echo，看得到輸出、結束碼 0 才算通過。 */
@@ -949,7 +940,7 @@ function writeService(role, ctx) {
   const spec = {
     label: launchdLabel(role),
     description: `Agent Board ${role}`,
-    node: role === SESSION_HOST ? hostServiceNode(paths, ctx) : ctx.node,
+    node: ctx.node,
     entry:
       role === SESSION_HOST ? runningHostFiles(paths).main : join(paths.current, ...ENTRY[role]),
     env: serviceEnv(role, ctx),
@@ -973,20 +964,46 @@ function writeService(role, ctx) {
 
 const guiDomain = () => `gui/${process.getuid()}`;
 
+const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const launchdLoaded = (role) =>
+  run('launchctl', ['print', `${guiDomain()}/${launchdLabel(role)}`]).status === 0;
+
+/**
+ * launchd 收掉 job 是非同步的：`launchctl bootout` 回來時 job 可能還在（程式還沒結束，例如 session host 要花
+ * 2 秒結束 agent），這時 `print` 照樣成功、`bootstrap` 會回 5。等到 `print` 失敗（真的卸載了）才算停好。
+ * 2026-11-11 事故：沒等就判斷「已載入」而略過 bootstrap，session host 被停掉後沒再載入。
+ */
+function waitLaunchdUnloaded(role, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (launchdLoaded(role)) {
+    if (Date.now() > deadline) return false;
+    sleepMs(200);
+  }
+  return true;
+}
+
 function startService(role, ctx, { restart }) {
   const { paths } = ctx;
   if (platform === 'darwin') {
     const target = `${guiDomain()}/${launchdLabel(role)}`;
-    const loaded = run('launchctl', ['print', target]).status === 0;
+    const loaded = launchdLoaded(role);
     if (loaded && !restart) return true;
-    if (loaded) run('launchctl', ['bootout', target]);
+    if (loaded) {
+      run('launchctl', ['bootout', target]);
+      waitLaunchdUnloaded(role);
+    }
     run('launchctl', ['enable', target]);
     let boot = run('launchctl', ['bootstrap', guiDomain(), launchdFile(paths, role)]);
-    // 剛 bootout 完，launchd 還沒收乾淨時會回 5: Input/output error；等一下再試就好。
-    for (let retry = 0; loaded && boot.status !== 0 && retry < 3; retry++) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+    // 還沒收乾淨時會回 5: Input/output error；等一下再試。
+    for (let retry = 0; boot.status !== 0 && retry < 5; retry++) {
+      sleepMs(1_000);
+      if (launchdLoaded(role) && !loaded) break; // 別人已經載入了（例如 daemon 拉起 host）
       boot = run('launchctl', ['bootstrap', guiDomain(), launchdFile(paths, role)]);
     }
+    if (boot.status === 0 && !launchdLoaded(role)) {
+      boot = { status: 1, stderr: 'bootstrap 回報成功，但 launchctl print 找不到這個服務' };
+    }
+    if (boot.status !== 0 && launchdLoaded(role) && !loaded) boot = { status: 0 };
     if (boot.status !== 0) {
       say(
         t(
@@ -1081,7 +1098,16 @@ function startWindowsTask(role, ctx, { restart }) {
 
 function stopService(role) {
   if (platform === 'darwin') {
+    if (!launchdLoaded(role)) return;
     run('launchctl', ['bootout', `${guiDomain()}/${launchdLabel(role)}`]);
+    if (!waitLaunchdUnloaded(role)) {
+      say(
+        t(
+          `${launchdLabel(role)} 停了 20 秒還沒卸載，接著重新載入可能失敗。`,
+          `${launchdLabel(role)} was still loaded 20 seconds after bootout; reloading it may fail.`,
+        ),
+      );
+    }
   } else if (platform === 'linux') {
     run('systemctl', ['--user', 'disable', '--now', systemdName(role)]);
   } else {
@@ -1246,10 +1272,9 @@ async function install(argv) {
     claudeBin: previous.claudeBin,
     sessionHostBuild: previous.sessionHostBuild,
     sessionHostProtocol: previous.sessionHostProtocol,
-    sessionHostNode: previous.sessionHostNode,
-    sessionHostNodePath: previous.sessionHostNodePath,
+    // 0.1.1 的 daemon 看這個欄位決定要不要換 host：一律是系統 node（§21.10）。
+    sessionHostNode: 'system',
     systemNode: previous.systemNode,
-    bundledNode: previous.bundledNode,
     currentRelease: previous.currentRelease,
     currentVersion: previous.currentVersion,
     previousRelease: previous.previousRelease,
@@ -1267,12 +1292,24 @@ async function install(argv) {
   }
   if (options.name !== undefined) state.name = options.name;
 
-  // 系統的 node 只給沒自帶 Node 的舊版與舊 session host 用（§21.10）；記下來，回滾到舊版時找得到。
-  const sourceNode = bundledNodeOf(options.source, platform);
+  // 三個服務、更新程式、hook、MCP 都用安裝時找到的系統 node（§21.10）；記下來，0.1.1 的殘留 runtime 不算。
   const manageServices = !options['no-service'];
   const activate = manageServices && !options['no-start'];
-  const ctx = { paths, node: null, systemNode: systemNode(paths, state), state, claude: null };
-  if (ctx.systemNode) state.systemNode = ctx.systemNode;
+  const ctx = {
+    paths,
+    node: requireServiceNode(paths, state, options.source),
+    state,
+    claude: null,
+  };
+  state.systemNode = ctx.node;
+  if (/[\\/](\.nvm|\.fnm|fnm|\.volta|\.asdf)[\\/]/.test(ctx.node)) {
+    say(
+      t(
+        `提醒：服務會用 ${ctx.node}。之後移除這個 Node 版本的話，請重跑一次安裝腳本。`,
+        `Note: services will use ${ctx.node}. If you remove this Node version later, run the installer again.`,
+      ),
+    );
+  }
   if (state.roles.includes('daemon')) {
     if (role === 'daemon' || !state.claudeBin) {
       // 上次記下的路徑還在就沿用；claude 搬家了就重新找。
@@ -1300,54 +1337,32 @@ async function install(argv) {
     );
   }
 
-  // session host 要不要重啟（S1、W1、§21.10）：協定變了一定要（新 daemon 連不上舊 host）；自帶 Node 的版本或
-  // 路徑變了也要（host 的 node-pty 綁它的 ABI，舊的系統 node 升級就壞），可以用 --keep-session-host 先不換；
-  // 或使用者明確要求。重啟會結束所有 agent：還有 session 在工作就中止安裝（什麼都還沒動）。
+  // session host 要不要重啟（S1、W1）：協定變了一定要（新 daemon 連不上舊 host），或使用者明確要求。
+  // **Node 換了不用重啟**（§21.10）：node-pty 是 N-API，host 用哪個 Node 都載得起來；服務設定改成系統 node，
+  // 下次 host 重啟時才生效，正在跑的 agent 不中斷。重啟會結束所有 agent：還有 session 在工作就中止安裝。
   const hostWanted = manageServices && state.roles.includes('daemon');
   const hostInstalled = existsSync(runningHostFiles(paths).main);
   const newProtocol = sessionHostProtocol(appHostFiles(options.source));
   const protocolChanged =
     hostInstalled && newProtocol !== null && newProtocol !== (state.sessionHostProtocol ?? null);
-  const newHostNode = hostNodeId(sourceNode);
-  const nodeChanged = hostInstalled && newHostNode !== runningHostNodeId(state);
-  const keepHost = Boolean(options['keep-session-host']) && !protocolChanged;
-  if (options['keep-session-host'] && protocolChanged && hostWanted) {
+  const restartHost =
+    hostWanted && hostInstalled && (protocolChanged || Boolean(options['restart-session-host']));
+  if (options['keep-session-host']) {
     say(
       t(
-        `--keep-session-host 這次不適用：session host 的協定從 ${state.sessionHostProtocol ?? '舊版'} 變成 ${newProtocol}，新 daemon 連不上舊的 host，一定要換。`,
-        `--keep-session-host does not apply: the session host protocol changes from ${state.sessionHostProtocol ?? 'old'} to ${newProtocol}, so the new daemon cannot talk to the old host and it must be replaced.`,
+        '--keep-session-host 已不需要（0.1.2 起 Node 換了不會重啟 session host），這次照一般規則處理。',
+        '--keep-session-host is no longer needed (from 0.1.2 a Node change does not restart the session host); using the normal rules.',
       ),
     );
   }
-  const restartHost =
-    hostWanted &&
-    hostInstalled &&
-    (protocolChanged || (nodeChanged && !keepHost) || Boolean(options['restart-session-host']));
+  const hostNodeBefore = hostInstalled ? nodeInServiceFile(paths, SESSION_HOST) : null;
   if (restartHost && activate) {
     const busy = busySessions(paths);
     if (busy.length > 0) {
-      const why = protocolChanged
-        ? t(
-            `協定從 ${state.sessionHostProtocol ?? '舊版'} 變成 ${newProtocol}`,
-            `protocol ${state.sessionHostProtocol ?? 'old'} → ${newProtocol}`,
-          )
-        : nodeChanged && !options['restart-session-host']
-          ? t(
-              `session host 用的 Node 從 ${runningHostNodeId(state)} 換成 ${newHostNode}`,
-              `the session host's Node changes from ${runningHostNodeId(state)} to ${newHostNode}`,
-            )
-          : t('加了 --restart-session-host', '--restart-session-host');
-      const keepHint =
-        !protocolChanged && nodeChanged && !options['restart-session-host']
-          ? t(
-              '或加上 --keep-session-host：先只換 hub／daemon（agent 不中斷），session host 留到之後沒有 session 在工作時再換。',
-              'Or add --keep-session-host to update only the hub and daemon now (agents keep running) and switch the session host later when nothing is running.',
-            )
-          : '';
       fail(
         t(
-          `session host 需要重啟（${why}），重啟會結束所有 agent，但還有 ${busy.length} 個 session 在工作（RUN／PERM／PLAN／starting）。等它們停下來再執行一次同樣的指令。${keepHint}這次什麼都沒有改。`,
-          `The session host must restart (${why}), which ends every agent, but ${busy.length} session(s) are still working. Run the same command again once they stop. ${keepHint ? `${keepHint} ` : ''}Nothing was changed.`,
+          `session host 需要重啟（${protocolChanged ? `協定從 ${state.sessionHostProtocol ?? '舊版'} 變成 ${newProtocol}` : '加了 --restart-session-host'}），重啟會結束所有 agent，但還有 ${busy.length} 個 session 在工作（RUN／PERM／PLAN／starting）。等它們停下來再執行一次同樣的指令。這次什麼都沒有改。`,
+          `The session host must restart (${protocolChanged ? `protocol ${state.sessionHostProtocol ?? 'old'} → ${newProtocol}` : '--restart-session-host'}), which ends every agent, but ${busy.length} session(s) are still working. Run the same command again once they stop. Nothing was changed.`,
         ),
         EXIT_BUSY,
       );
@@ -1357,19 +1372,9 @@ async function install(argv) {
   // 新版裝在自己的資料夾，不會蓋到正在跑的程式載入的檔案（Windows 的 .node 也不會被鎖住），換 current 再重啟。
   migrateLegacyApp(paths, state);
   const appChanged = installRelease(paths, options.source, state, ctx);
-  state.bundledNode = bundledNodeOf(paths.current, platform)?.version ?? null;
   // current 換了就先記下來：後面（服務設定、啟動）失敗時，install.json 和實際的 current 也一致。
   if (appChanged) writeFileSync(paths.state, `${JSON.stringify(state, null, 2)}\n`);
   ensureAppLink(paths);
-  ctx.node = serviceNode(paths, ctx);
-  if (!state.bundledNode && /[\\/](\.nvm|\.fnm|fnm|\.volta|\.asdf)[\\/]/.test(ctx.node)) {
-    say(
-      t(
-        `提醒：服務會用 ${ctx.node}。之後移除這個 Node 版本的話，請重跑一次安裝腳本。`,
-        `Note: services will use ${ctx.node}. If you remove this Node version later, run the installer again.`,
-      ),
-    );
-  }
   installShims(paths, ctx.node);
   if (role === 'daemon') pairDaemon(options, ctx);
 
@@ -1391,16 +1396,28 @@ async function install(argv) {
       // 或加了 --restart-session-host 才換上新版並（重新）啟動；其他時候只確定它在跑。
       if (!hostInstalled || restartHost) {
         installHostRuntime(paths, ctx, { stopRunning: hostInstalled });
-        // host 的 node 換了（複製來的 runtime/node 或系統 node）：服務設定跟著改。
         writeService(r, ctx);
-      } else if (
-        sessionHostBuild(appHostFiles(paths.current)) !== state.sessionHostBuild ||
-        nodeChanged ||
-        serviceChanged
-      ) {
+      } else if (sessionHostBuild(appHostFiles(paths.current)) !== state.sessionHostBuild) {
         hostUpdatePending = true;
+      } else if (serviceChanged && hostNodeBefore && hostNodeBefore !== ctx.node) {
+        // 只換了 node（例如 0.1.1 的自帶 node → 系統 node）：設定改好，下次 host 重啟才生效，不必重啟。
+        say(
+          t(
+            `session host 的服務設定改成用 ${ctx.node}（原本 ${hostNodeBefore}），下次 session host 重啟時生效；現在跑的 agent 不受影響。`,
+            `The session host service now uses ${ctx.node} (was ${hostNodeBefore}); it takes effect the next time the session host restarts. Running agents are not affected.`,
+          ),
+        );
       }
+      cleanHostRuntime(paths);
       started[r] = startService(r, ctx, { restart: false });
+      if (!started[r] && (restartHost || !hostInstalled)) {
+        say(
+          t(
+            `注意：session host 沒有載入成功。daemon 會退回舊模式（自己開 agent）；請確認服務 ${serviceName(r)} 已啟動（macOS：launchctl print gui/$UID/${serviceName(r)}）。`,
+            `Warning: the session host did not load. The daemon falls back to the old mode (it opens agents itself); make sure the ${serviceName(r)} service is running (macOS: launchctl print gui/$UID/${serviceName(r)}).`,
+          ),
+        );
+      }
       continue;
     }
     const restart = appChanged || serviceChanged || (r === 'daemon' && Boolean(ctx.justPaired));
@@ -1411,8 +1428,8 @@ async function install(argv) {
   if (hostUpdatePending) {
     say(
       t(
-        `session host 有新版${nodeChanged ? `（Node ${runningHostNodeId(state)} → ${newHostNode}）` : ''}，但沒有重啟（重啟會結束所有 session，之後用 --resume 接回）。確認沒有在跑的 session 後，再執行一次同樣的安裝指令並加上 --restart-session-host。`,
-        `A new session host is installed${nodeChanged ? ` (Node ${runningHostNodeId(state)} → ${newHostNode})` : ''} but was not restarted (restarting ends every session; they come back with --resume). When no session is running, run the same install command again with --restart-session-host.`,
+        'session host 有新版，但沒有重啟（重啟會結束所有 session，之後用 --resume 接回）。確認沒有在跑的 session 後，再執行一次同樣的安裝指令並加上 --restart-session-host。',
+        'A new session host is installed but was not restarted (restarting ends every session; they come back with --resume). When no session is running, run the same install command again with --restart-session-host.',
       ),
     );
   }
@@ -1570,8 +1587,7 @@ async function switchRelease(argv) {
     fail(t(`${target} 不是裝好的版本。`, `${target} is not an installed release.`));
   const ctx = {
     paths,
-    node: null,
-    systemNode: systemNode(paths, state),
+    node: requireServiceNode(paths, state, target),
     state,
     claude: state.claudeBin ?? null,
   };
@@ -1597,12 +1613,9 @@ async function switchRelease(argv) {
   }
   state.currentRelease = name;
   state.currentVersion = releaseVersion(target);
-  state.bundledNode = bundledNodeOf(paths.current, platform)?.version ?? null;
-  // 舊版（沒自帶 Node）用系統的 node；自帶的用 current/runtime/node（§21.10）。
-  ctx.node = serviceNode(paths, ctx);
+  state.sessionHostNode = 'system';
 
-  // session host 只在協定不同時換回（不然舊 daemon 連不上）；只有 Node 不同時不換：host 是獨立的資料夾，
-  // 自帶的 runtime 跟著它走，舊 daemon 透過 socket 跟它說話，和 Node 版本無關。
+  // session host 只在協定不同時換回（不然舊 daemon 連不上）；Node 不同不用換（N-API，§21.10）。
   if (roles.includes('daemon') && existsSync(runningHostFiles(paths).main)) {
     const wanted = sessionHostProtocol(appHostFiles(paths.current));
     if (wanted !== null && wanted !== (state.sessionHostProtocol ?? null)) {

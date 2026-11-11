@@ -13,9 +13,7 @@
 # daemon 角色會一起裝 session host（macOS LaunchAgent com.agent-board.session-host、Linux systemd user
 # unit agent-board-session-host.service）：agent 掛在它底下，daemon 重啟或更新時不中斷（CONTRACTS §20）。
 # 服務設定由 scripts/installer.mjs 產生。
-# 發布檔自帶 Node（runtime/node，CONTRACTS §21.10）：有的話安裝程式與所有服務都用它，這台不必裝 Node.js；
-# 只有舊版（沒自帶 Node）的發布檔才需要系統的 node ≥22.18 與 npm。
-#   --keep-session-host：自帶 Node 的版本變了而還有 session 在工作時，先只換 hub／daemon，session host 之後再換。
+# 需要這台的系統 Node.js ≥22.18（含 npm）：安裝程式與所有服務都用安裝時找到的那支 node（CONTRACTS §21.10）。
 set -eu
 
 MIN_NODE_MAJOR=22
@@ -37,30 +35,18 @@ die() {
   exit 1
 }
 
-# 系統的 node：只有沒自帶 Node 的發布檔（與下載時驗 SHA-256）才需要。
-require_system_node() {
-  command -v node >/dev/null 2>&1 ||
-    die "$(t "找不到 node。這個發布檔沒有自帶 Node，請先安裝 Node.js ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} 以上（https://nodejs.org）。" "Cannot find node. This release has no bundled Node: install Node.js ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} or newer (https://nodejs.org).")"
-  node -e "
-    const [major, minor] = process.versions.node.split('.').map(Number);
-    process.exit(major > $MIN_NODE_MAJOR || (major === $MIN_NODE_MAJOR && minor >= $MIN_NODE_MINOR) ? 0 : 1);
-  " || die "$(t "Node.js 版本太舊（目前 $(node -v)），需要 ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} 以上。" "Node.js is too old ($(node -v)). ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} or newer is required.")"
-  node_bin=node
-}
+command -v node >/dev/null 2>&1 ||
+  die "$(t "找不到 node。請先安裝 Node.js ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} 以上（https://nodejs.org）。" "Cannot find node. Install Node.js ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} or newer (https://nodejs.org).")"
 
-# 發布檔資料夾裡自帶的 node（runtime/node/bin/node）；沒有回空字串。
-bundled_node() {
-  if [ -x "$1/runtime/node/bin/node" ]; then printf '%s' "$1/runtime/node/bin/node"; fi
-}
+node -e "
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  process.exit(major > $MIN_NODE_MAJOR || (major === $MIN_NODE_MAJOR && minor >= $MIN_NODE_MINOR) ? 0 : 1);
+" || die "$(t "Node.js 版本太舊（目前 $(node -v)），需要 ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} 以上。" "Node.js is too old ($(node -v)). ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} or newer is required.")"
+
+command -v npm >/dev/null 2>&1 || die "$(t "找不到 npm。它通常隨 Node.js 一起安裝。" "Cannot find npm. It normally comes with Node.js.")"
 
 data_root="$HOME/.local/share/agent-board"
 script_dir=$(dirname "$0")
-# 從已解開的發布檔裡執行時（$0 是路徑、旁邊有 BUILD_ID），先用它自帶的 node；否則用系統的
-# （之後解開發布檔再換成自帶的）。用 curl … | sh 執行時 $0 是 sh，不能拿目前目錄亂找。
-node_bin=""
-case "$0" in
-  */*) [ -f "$script_dir/../BUILD_ID" ] && node_bin=$(bundled_node "$script_dir/..") ;;
-esac
 
 # 在 Agent Board 開的 session 裡執行時（例如請畫布上的 Claude 上架），安裝程式重啟 daemon 會把
 # 這個 session 連同安裝程式一起殺掉，daemon 就起不來。這時改成脫離目前 session 在背景跑（新的
@@ -70,8 +56,7 @@ if [ -n "${AGENT_BOARD_SESSION_ID:-}" ] && [ -z "${AGENT_BOARD_INSTALL_DETACHED:
   mkdir -p "$log_dir" || die "$(t "無法建立紀錄資料夾：$log_dir" "Cannot create the log folder: $log_dir")"
   log_file="$log_dir/install-$(date +%Y%m%d-%H%M%S).log"
   self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-  [ -n "$node_bin" ] || require_system_node
-  AGENT_BOARD_INSTALL_DETACHED=1 "$node_bin" -e "
+  AGENT_BOARD_INSTALL_DETACHED=1 node -e "
     const { spawn } = require('node:child_process');
     const { openSync } = require('node:fs');
     const out = openSync(process.argv[1], 'a');
@@ -114,13 +99,7 @@ if [ -n "$uninstall" ]; then
     shift
     [ "$arg" = "--uninstall" ] || set -- "$@" "$arg"
   done
-  # 用裝好的那版自帶的 node（解除安裝會刪掉它；執行中的檔案在 Mac／Linux 刪掉不影響）。
-  uninstall_node=$(bundled_node "$(dirname "$(dirname "$installed")")")
-  if [ -z "$uninstall_node" ]; then
-    require_system_node
-    uninstall_node=node
-  fi
-  "$uninstall_node" "$installed" uninstall "$@"
+  node "$installed" uninstall "$@"
   exit $?
 fi
 
@@ -186,12 +165,5 @@ else
 fi
 [ -f "$source_dir/BUILD_ID" ] || die "$(t "$source_dir 不是 Agent Board 發布檔。" "$source_dir is not an Agent Board release.")"
 
-# 安裝程式用發布檔自帶的 node 跑；舊版發布檔（沒自帶 Node）才要系統的 node 與 npm（npm ci 退路）。
-node_bin=$(bundled_node "$source_dir")
-if [ -z "$node_bin" ]; then
-  require_system_node
-  command -v npm >/dev/null 2>&1 || die "$(t "找不到 npm。它通常隨 Node.js 一起安裝。" "Cannot find npm. It normally comes with Node.js.")"
-fi
-
-"$node_bin" "$source_dir/scripts/installer.mjs" install --source "$source_dir" "$@"
+node "$source_dir/scripts/installer.mjs" install --source "$source_dir" "$@"
 exit $?

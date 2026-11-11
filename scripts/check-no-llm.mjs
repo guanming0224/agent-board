@@ -323,9 +323,7 @@ const release = join(root, 'release/agent-board');
 let releaseFiles = 0;
 if (existsSync(release)) {
   // 發布檔裡的 node_modules 只有 daemon/node_modules/.bin 的 hook；npm ci 裝的套件上面已掃過。
-  // runtime/ 是建置時從 nodejs.org 下載、驗過官方 SHASUMS256 的 Node 執行檔（CONTRACTS §21.10），不掃：
-  // 它是未修改的官方二進位檔，審查理由見 docs/no-llm-review.md「建置時下載 Node」。
-  for (const file of walk(release, (p) => !/\.(png|gz|node)$/.test(p), ['runtime'])) {
+  for (const file of walk(release, (p) => !/\.(png|gz|node)$/.test(p), [])) {
     if (rel(file).includes('/node_modules/') && !rel(file).includes('/node_modules/.bin/'))
       continue;
     releaseFiles += 1;

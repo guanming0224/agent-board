@@ -3,9 +3,11 @@
 // 走一次完整的鏈：hub 查到新 tag → 下載驗證 → canary 機器的 daemon 向 hub 下載 → detached 更新程式換 current、
 // 重啟 → 新 daemon 連上 hub 回報新版 → 成功；再發一個壞版（新 daemon 起不來）→ 時限內自動回滾、hub 面板標失敗。
 // hub 從工作目錄的原始碼跑；daemon 與 session host 是裝在臨時 HOME 的發布檔。不碰這台機器的服務、不連 GitHub。
-// 自帶 Node（CONTRACTS §21.10）：先裝「沒自帶 Node 的舊版」（E2E_LEGACY_TARBALL 指定真的 0.1.0 成品；沒給就把
-// 這次的成品拿掉 runtime/ 當舊版），再用 install.sh --from 手動升到自帶 Node 的版本（三個服務改用自帶的 node、
-// session host 換成自帶的、忙碌時中止），之後自帶 Node 的版本之間照常自動更新。
+// 系統 Node（CONTRACTS §21.10）：先裝舊版（E2E_LEGACY_TARBALL 指定真的 0.1.0 成品；沒給就用這次的成品當舊版）；
+// 有 E2E_BUNDLED_TARBALL（0.1.1 自帶 Node 的成品）就再手動裝它、照 Lead 在 Mac mini 做的把 host plist 改回系統 node
+// （重現 Mac mini 的現況）；開一個 session 之後手動升到這一版：agent 不中斷、三個服務都用系統 node。
+// E2E_LEGACY_AUTO=1 時改成舊版 daemon 自己自動更新。新 daemon 用 AGENT_BOARD_TEST_NODE_VERSION 假裝跑在
+// Node 26（模擬 MacBook），hub 照樣發目標（N-API，不比 ABI）。
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -48,8 +50,8 @@ mkdirSync(ghDir, { recursive: true });
 installFakeLaunchctl(stubs, launchd);
 
 const v = (patch) => BASE.replace(/\d+$/, (n) => String(Number(n) + patch));
-/** 第一個自帶 Node 的版本（手動安裝）；之後三版走自動更新。 */
-const FIRST_BUNDLED = v(1);
+/** 從舊版升上來的第一版（手動安裝，或 E2E_LEGACY_AUTO=1 時自動）；之後三版走自動更新。 */
+const FIRST = v(1);
 const GOOD = v(2);
 const HUB_DOWN = v(3);
 const BAD = v(4);
@@ -60,8 +62,7 @@ const HUB_DOWN_MS = HEALTH_MS + 10_000;
 const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 
 /**
- * 沒自帶 Node 的舊版成品：E2E_LEGACY_TARBALL（真的 0.1.0）；沒給就把這次的成品拿掉 runtime/、改掉
- * .node-modules-platform 當舊版（程式是新的，只驗配置與服務設定的轉換）。
+ * 舊版成品：E2E_LEGACY_TARBALL（真的 0.1.0）；沒給就用這次的成品改 BUILD_ID 當舊版（程式是新的，只驗流程）。
  */
 function legacyTarball() {
   if (process.env.E2E_LEGACY_TARBALL) {
@@ -75,10 +76,6 @@ function legacyTarball() {
   mkdirSync(work, { recursive: true });
   execFileSync('tar', ['-xzf', tarball, '-C', work]);
   const dir = join(work, 'agent-board');
-  rmSync(join(dir, 'runtime'), { recursive: true, force: true });
-  const info = JSON.parse(readFileSync(join(dir, '.node-modules-platform'), 'utf8'));
-  delete info.bundledNode;
-  writeFileSync(join(dir, '.node-modules-platform'), `${JSON.stringify(info)}\n`);
   writeFileSync(
     join(dir, 'BUILD_ID'),
     `${readFileSync(join(dir, 'BUILD_ID'), 'utf8').trim()}-legacy\n`,
@@ -261,6 +258,8 @@ async function main() {
   mkdirSync(dirname(fakeClaude), { recursive: true });
   cpSync(join(repo, 'packages/web/e2e/fixtures/fake-claude.mjs'), fakeClaude);
   chmodSync(fakeClaude, 0o755);
+  // 服務該用的 node：PATH 上那支（不是 realpath）。
+  const systemNodePath = join(dirname(process.execPath), 'node');
   const env = {
     HOME: home,
     PATH: [stubs, dirname(process.execPath), '/usr/bin', '/bin'].join(':'),
@@ -268,26 +267,25 @@ async function main() {
     LANG: 'zh_TW.UTF-8',
     AGENT_BOARD_UPDATE_HEALTH_MS: String(HEALTH_MS),
     AGENT_BOARD_UPDATE_CONNECT_MS: String(HUB_DOWN_MS + 60_000),
+    // 新 daemon 假裝跑在 Node 26（MacBook 的情況）；舊版 daemon 不認得這個變數。
+    AGENT_BOARD_TEST_NODE_VERSION: '26.1.0',
   };
+  const installFrom = (archive, extra = []) =>
+    spawnSync('sh', [join(repo, 'scripts/install.sh'), 'daemon', '--from', archive, ...extra], {
+      env,
+      encoding: 'utf8',
+    });
   const legacy = legacyTarball();
-  const install = spawnSync(
-    'sh',
-    [
-      join(repo, 'scripts/install.sh'),
-      'daemon',
-      '--from',
-      legacy.path,
-      '--hub',
-      hubUrl,
-      '--code',
-      code,
-      '--name',
-      'canary mac',
-      '--claude-bin',
-      fakeClaude,
-    ],
-    { env, encoding: 'utf8' },
-  );
+  const install = installFrom(legacy.path, [
+    '--hub',
+    hubUrl,
+    '--code',
+    code,
+    '--name',
+    'canary mac',
+    '--claude-bin',
+    fakeClaude,
+  ]);
   assert.equal(install.status, 0, `${install.stdout}${install.stderr}`);
   const machine = await poll('daemon 連上 hub', async () => {
     const overview = await api('GET', '/api/releases');
@@ -296,19 +294,17 @@ async function main() {
   assert.equal(machine.platform, platform);
   assert.equal(machine.protocolVersion, 1);
   assert.equal(machine.previousVersion, null);
+  const plistPath = (label) => join(home, 'Library/LaunchAgents', `${label}.plist`);
   const plistNode = (label) =>
     JSON.parse(
-      execFileSync(
-        'plutil',
-        ['-convert', 'json', '-o', '-', join(home, 'Library/LaunchAgents', `${label}.plist`)],
-        { encoding: 'utf8' },
-      ),
+      execFileSync('plutil', ['-convert', 'json', '-o', '-', plistPath(label)], {
+        encoding: 'utf8',
+      }),
     ).ProgramArguments[0];
-  assert.ok(!plistNode('com.agent-board.daemon').includes('runtime/node'), '舊版用系統的 node');
-  const legacyHostPid = runningPid(launchd, 'com.agent-board.session-host');
-  assert.ok(legacyHostPid, 'session host 在跑');
+  const HOST = 'com.agent-board.session-host';
+  assert.ok(runningPid(launchd, HOST), 'session host 在跑');
   step(
-    `沒自帶 Node 的舊版 ${legacy.version}（${legacy.real ? '真的成品' : '這次的成品拿掉 runtime/'}）從發布檔安裝並連上 hub，服務用系統的 node`,
+    `舊版 ${legacy.version}（${legacy.real ? '真的成品' : '這次的成品'}）從發布檔安裝並連上 hub，服務用系統的 node`,
   );
 
   const channel = await api('PUT', `/api/machines/${machine.machineId}/channel`, {
@@ -316,73 +312,126 @@ async function main() {
   });
   assert.equal(channel.body.machines[0].channel, 'canary');
 
-  // ── 升到第一個自帶 Node 的版本 ─────────────────────────────────
-  // 正式上架用手動（install.sh --from）：0.1.0 的 hub 用舊邏輯比 ABI（成品記的 ABI 和那台的系統 Node 一樣才發）。
-  // E2E_LEGACY_AUTO=1：改成讓舊版 daemon 自己自動更新（舊 daemon 用它自己的系統 node 啟動新版的更新程式），
-  // 驗證 0.1.0 的 hub 剛好發了目標時這條路也走得通。
-  const first = repack(FIRST_BUNDLED);
-  if (process.env.E2E_LEGACY_AUTO === '1') {
-    publish(FIRST_BUNDLED);
-    assert.equal((await api('POST', '/api/releases/check')).body.canary, FIRST_BUNDLED);
+  // ── 重現 Mac mini 的現況：0.1.1（自帶 Node）＋ host plist 手動改回系統 node ─────────────
+  const bundled = process.env.E2E_BUNDLED_TARBALL;
+  if (bundled) {
+    const result = installFrom(bundled);
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    const bundledVersion = JSON.parse(
+      execFileSync('tar', ['-xOzf', bundled, 'agent-board/package.json'], { encoding: 'utf8' }),
+    ).version;
+    // Lead 的手動處理：host plist 的執行檔改成系統 node，重新載入。
+    const text = readFileSync(plistPath(HOST), 'utf8').replace(
+      /(<key>ProgramArguments<\/key>\s*<array>\s*<string>)[^<]*(<\/string>)/,
+      `$1${systemNodePath}$2`,
+    );
+    writeFileSync(plistPath(HOST), text);
+    const launchctl = (...args) => spawnSync(join(stubs, 'launchctl'), args, { encoding: 'utf8' });
+    launchctl('bootout', `gui/${process.getuid()}/${HOST}`);
     await poll(
-      '舊版 daemon 自動更新到自帶 Node 的版本',
+      'host 卸載',
+      () => launchctl('print', `gui/${process.getuid()}/${HOST}`).status !== 0,
+    );
+    assert.equal(launchctl('bootstrap', `gui/${process.getuid()}`, plistPath(HOST)).status, 0);
+    await poll('daemon 以 0.1.1 連上 hub', async () => {
+      const m = (await api('GET', '/api/releases')).body.machines[0];
+      return m.online && m.version === bundledVersion ? m : null;
+    });
+    assert.match(plistNode('com.agent-board.daemon'), /runtime\/node\/bin\/node$/);
+    assert.ok(existsSync(join(root, 'session-host/runtime')), '0.1.1 留下的 host runtime');
+    step(
+      `重現 Mac mini 現況：手動裝 ${bundledVersion}（自帶 Node），host plist 改回系統 node 並重新載入`,
+    );
+  } else {
+    console.log('  （沒有 E2E_BUNDLED_TARBALL：略過「0.1.1 自帶 Node」的現況）');
+  }
+
+  // ── 開一個 session：升級時 agent 不能中斷 ─────────────────────────
+  await poll('daemon 連上 hub（host 模式）', async () => {
+    const m = (await api('GET', '/api/releases')).body.machines[0];
+    return m.online;
+  });
+  const workdir = join(base, 'project');
+  mkdirSync(workdir, { recursive: true });
+  const created = await api('POST', '/api/sessions', {
+    machineId: machine.machineId,
+    name: 'keep-alive',
+    projectId: null,
+    cwd: workdir,
+    useWorktree: false,
+    permissionMode: 'default',
+    model: null,
+    accountProfile: null,
+    resumeClaudeSessionId: null,
+    firstPrompt: null,
+  });
+  assert.ok(created.status < 300, JSON.stringify(created.body));
+  const sessionId = created.body.id;
+  const sessionStatus = async () =>
+    (await api('GET', '/api/sessions')).body.find((s) => s.id === sessionId)?.status;
+  await poll('session 進 waiting_input', async () => (await sessionStatus()) === 'waiting_input');
+  const snapshot = join(data, 'state', `${sessionId}.json`);
+  const agentPid = await poll('host 開的 agent', () => {
+    try {
+      return JSON.parse(readFileSync(snapshot, 'utf8')).agentPid;
+    } catch {
+      return null;
+    }
+  });
+  const hostPid = runningPid(launchd, HOST);
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // ── 升到這一版 ─────────────────────────────────────────────
+  const first = repack(FIRST);
+  if (process.env.E2E_LEGACY_AUTO === '1') {
+    publish(FIRST);
+    assert.equal((await api('POST', '/api/releases/check')).body.canary, FIRST);
+    await poll(
+      '舊版 daemon 自動更新',
       async () => {
         const m = (await api('GET', '/api/releases')).body.machines[0];
-        return m.online && m.version === FIRST_BUNDLED && m.update?.phase === 'succeeded';
+        return m.online && m.version === FIRST && m.update?.phase === 'succeeded';
       },
       120_000,
     );
-    const log = readFileSync(join(data, 'logs/updater.log'), 'utf8');
-    assert.match(log, /runtime\/node\/bin\/node .*installer\.mjs install/);
   } else {
-    const manual = (extra = []) =>
-      spawnSync('sh', [join(repo, 'scripts/install.sh'), 'daemon', '--from', first, ...extra], {
-        env,
-        encoding: 'utf8',
-      });
-    mkdirSync(join(data, 'state'), { recursive: true });
-    const busyFile = join(data, 'state', 'e2e-busy.json');
-    writeFileSync(
-      busyFile,
-      JSON.stringify({ sessionId: 'e2e-busy', status: 'running', agentPid: process.pid }),
-    );
-    const refused = manual();
-    assert.equal(refused.status, 75, `${refused.stdout}${refused.stderr}`);
-    assert.match(`${refused.stdout}${refused.stderr}`, /--keep-session-host/);
-    assert.equal(basename(realpathSync(join(root, 'current'))), legacy.version);
-    rmSync(busyFile);
-    step(
-      '手動升級時有 session 在工作：要換 session host（Node 變了），以 75 中止、什麼都沒改，提示 --keep-session-host',
-    );
-    const upgraded = manual();
+    const upgraded = installFrom(first);
     assert.equal(upgraded.status, 0, `${upgraded.stdout}${upgraded.stderr}`);
   }
-  const bundledNode = join(root, 'current/runtime/node/bin/node');
-  assert.equal(plistNode('com.agent-board.daemon'), bundledNode);
+  await poll('daemon 以新版連上 hub', async () => {
+    const m = (await api('GET', '/api/releases')).body.machines[0];
+    return m.online && m.version === FIRST ? m : null;
+  });
+  for (const label of ['com.agent-board.daemon', HOST]) {
+    assert.equal(plistNode(label), systemNodePath, `${label} 用系統 node`);
+  }
+  assert.equal(runningPid(launchd, HOST), hostPid, 'session host 沒重啟');
+  assert.ok(alive(agentPid), 'agent 沒中斷');
+  const reported = (await api('GET', '/api/releases')).body.machines[0];
+  // 手動安裝時安裝程式把 AGENT_BOARD_TEST_NODE_VERSION 帶進 daemon 的服務設定；舊版 daemon 自動更新時
+  // 它的環境沒有這個變數，回報的是真的版本。
   assert.equal(
-    plistNode('com.agent-board.session-host'),
-    join(root, 'session-host/runtime/node/bin/node'),
+    reported.nodeVersion,
+    process.env.E2E_LEGACY_AUTO === '1' ? process.versions.node : '26.1.0',
+    '新 daemon 回報的 Node 版本',
   );
-  const installState = JSON.parse(readFileSync(join(root, 'install.json'), 'utf8'));
-  const { bundledNode: pinned } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
-  assert.equal(installState.sessionHostNode, `bundled:${pinned}`);
-  const hostPid = await poll('新的 session host 起來', () =>
-    runningPid(launchd, 'com.agent-board.session-host'),
-  );
-  assert.notEqual(hostPid, legacyHostPid, 'session host 換成自帶 Node 的那份（重啟過）');
-  const daemonPid = await poll('新 daemon 起來', () =>
-    runningPid(launchd, 'com.agent-board.daemon'),
-  );
+  assert.ok(!existsSync(join(root, 'session-host/runtime')), '沒人用的 host runtime 清掉了');
+  assert.ok(!existsSync(join(root, 'current/runtime')), '新版不自帶 Node');
+  await poll('session 接回、沒有變成錯誤', async () => (await sessionStatus()) === 'waiting_input');
+  const daemonPid = await poll('新 daemon', () => runningPid(launchd, 'com.agent-board.daemon'));
   const command = execFileSync('ps', ['-o', 'command=', '-p', String(daemonPid)], {
     encoding: 'utf8',
   });
-  assert.match(command, /runtime\/node\/bin\/node/, `daemon 用自帶的 node 跑：${command}`);
-  await poll('daemon 以新版連上 hub', async () => {
-    const m = (await api('GET', '/api/releases')).body.machines[0];
-    return m.online && m.version === FIRST_BUNDLED ? m : null;
-  });
+  assert.ok(command.startsWith(systemNodePath), `daemon 用系統 node 跑：${command}`);
   step(
-    `${process.env.E2E_LEGACY_AUTO === '1' ? '舊版 daemon 自動更新' : '沒人在工作時手動 install.sh --from'} 升到 ${FIRST_BUNDLED}：hub／daemon 改用 current/runtime/node、session host 改用自己資料夾的 runtime（重啟一次），daemon 以新版連上 hub`,
+    `${process.env.E2E_LEGACY_AUTO === '1' ? '舊版 daemon 自動更新' : '手動 install.sh --from'}升到 ${FIRST}：session host 沒重啟、agent 不中斷、三個服務都用系統 node（${systemNodePath}）`,
   );
 
   // ── 好的新版 ─────────────────────────────────────────────
@@ -407,7 +456,7 @@ async function main() {
     },
     90_000,
   );
-  assert.equal(updated.previousVersion, FIRST_BUNDLED);
+  assert.equal(updated.previousVersion, FIRST);
   assert.equal(basename(realpathSync(join(root, 'current'))), GOOD);
   assert.equal(
     runningPid(launchd, 'com.agent-board.session-host'),
@@ -423,9 +472,10 @@ async function main() {
   const audit = await api('GET', '/api/audit?action=release.download');
   assert.match(JSON.stringify(audit.body), new RegExp(GOOD.replaceAll('.', '\\.')));
   const updaterLog = readFileSync(join(data, 'logs/updater.log'), 'utf8');
-  assert.match(updaterLog, /runtime\/node\/bin\/node .*installer\.mjs install/);
+  assert.ok(updaterLog.includes(`執行 ${systemNodePath} `), '更新程式用系統 node 跑安裝程式');
+  assert.ok(alive(agentPid), '自動更新後 agent 也還在');
   step(
-    `canary 機器從自帶 Node 的版本自動更新到 ${GOOD}（hub 不比 ABI）：向 hub 下載、用新版自帶的 node 跑 detached 更新程式換 current、健康檢查通過（${Math.round((Date.now() - started) / 1000)} 秒），session host 沒重啟`,
+    `canary 機器${process.env.E2E_LEGACY_AUTO === '1' ? '' : '（daemon 回報 Node 26）'}自動更新到 ${GOOD}（hub 不比 ABI）：向 hub 下載、用系統 node 跑 detached 更新程式換 current、健康檢查通過（${Math.round((Date.now() - started) / 1000)} 秒），session host 沒重啟、agent 不中斷`,
   );
 
   // ── hub 在更新途中停掉（S3b）：新 daemon 起來了但連不上 hub，不該被當成壞版回滾 ─────────
