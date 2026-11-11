@@ -377,7 +377,8 @@ describe('agent-board-hook CLI', () => {
       expect(daemon.requests).toEqual([]);
     });
 
-    it.each(['SIGTERM', 'SIGINT', 'SIGHUP'] as const)(
+    // Windows 沒有 POSIX 訊號：kill(signal) 會直接結束程序，收不到 handler、結束碼是 null（2026-11-12 Windows CI）。
+    it.skipIf(process.platform === 'win32').each(['SIGTERM', 'SIGINT', 'SIGHUP'] as const)(
       '等待中被 %s 終止也 exit 0',
       async (signal) => {
         let kill: ((value: NodeJS.Signals) => void) | undefined;

@@ -240,19 +240,23 @@ describe('installHooks', () => {
     expect(await readdir(join(cwd, '.claude'))).toEqual(['settings.local.json']);
   });
 
-  it('寫入失敗時原檔不變，暫存檔清掉，錯誤往外丟', async () => {
-    await seed('{"model":"opus"}');
-    await chmod(join(cwd, '.claude'), 0o500);
-    try {
-      await expect(installHooks(cwd)).rejects.toThrow();
-      expect(await readFile(path, 'utf8')).toBe('{"model":"opus"}');
-    } finally {
-      await chmod(join(cwd, '.claude'), 0o700);
-    }
-    expect(await readdir(join(cwd, '.claude'))).toEqual(['settings.local.json']);
-  });
+  // Windows 沒有 Unix 權限位元：chmod 500 擋不住寫入、mode 也不是 0o600（2026-11-12 Windows CI）。
+  it.skipIf(process.platform === 'win32')(
+    '寫入失敗時原檔不變，暫存檔清掉，錯誤往外丟',
+    async () => {
+      await seed('{"model":"opus"}');
+      await chmod(join(cwd, '.claude'), 0o500);
+      try {
+        await expect(installHooks(cwd)).rejects.toThrow();
+        expect(await readFile(path, 'utf8')).toBe('{"model":"opus"}');
+      } finally {
+        await chmod(join(cwd, '.claude'), 0o700);
+      }
+      expect(await readdir(join(cwd, '.claude'))).toEqual(['settings.local.json']);
+    },
+  );
 
-  it('保留原檔權限', async () => {
+  it.skipIf(process.platform === 'win32')('保留原檔權限', async () => {
     await seed('{}');
     await chmod(path, 0o600);
     await installHooks(cwd);
