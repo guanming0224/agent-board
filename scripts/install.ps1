@@ -10,8 +10,10 @@
 # 建議：pwsh -NoProfile -ExecutionPolicy Bypass -File <解開的資料夾>\agent-board\scripts\install.ps1 daemon --hub … --code …
 # daemon 角色會一起裝 session host：工作排程器多一個「登入時」工作 AgentBoard-session-host（設定由
 # scripts/installer.mjs 產生，和 daemon 同一份 task.xml 模板，優先順序 5）。agent 掛在它底下，daemon 重啟時不中斷
-# （CONTRACTS §20）。session host 跑自己資料夾裡複製的那份 node-pty，換版時不會被鎖住；只有協定版本變了或加了
-# --restart-session-host 才重啟它（§20.5）。發布檔與服務都用這台的系統 Node（§21.10）。
+# （CONTRACTS §20）。session host 跑 %LOCALAPPDATA%\agent-board\session-host\ 裡複製的程式與 node-pty（installer.mjs 的
+# runningHostFiles），新版裝在 releases\<版本>\、換 current 時不碰它；只有協定版本變了或加了 --restart-session-host
+# 才停掉 host、換那個資料夾再啟動（§20.5）。hub／daemon 從 releases\<版本>\ 載入原生模組，舊版資料夾被鎖住時
+# 清不掉就留著下次再清（releases\.trash-*）。發布檔與服務都用這台的系統 Node（§21.10）。
 # 未在 Windows 實機驗證（安裝流程只在 Windows CI 測過連結、清理與 hook 包裝，見 scripts/windows-paths.test.mjs）。
 $ErrorActionPreference = 'Stop'
 

@@ -5,6 +5,7 @@ import {
   existsSync,
   lstatSync,
   readdirSync,
+  readlinkSync,
   renameSync,
   rmdirSync,
   rmSync,
@@ -45,13 +46,36 @@ export function removeLink(link) {
  * Windows：junction（不需要系統管理員或開發人員模式）；junction 不能 rename 蓋過，先拿掉再建（有極短的空窗），
  * 目標一律是絕對路徑。
  */
-export function pointLink(link, target, { windows = process.platform === 'win32' } = {}) {
+export function pointLink(
+  link,
+  target,
+  { windows = process.platform === 'win32', symlink = symlinkSync } = {},
+) {
   if (windows) {
-    if (isLink(link)) removeLink(link);
-    else if (existsSync(link)) {
+    let previous = null;
+    if (isLink(link)) {
+      try {
+        previous = readlinkSync(link);
+      } catch {
+        previous = null;
+      }
+      removeLink(link);
+    } else if (existsSync(link)) {
       throw new Error(`${link} 是一般資料夾或檔案，不是連結，不會蓋掉它`);
     }
-    symlinkSync(target, link, 'junction');
+    try {
+      symlink(target, link, 'junction');
+    } catch (error) {
+      // 拿掉了舊的、新的卻建不起來：指回原本的目標，不讓 current 消失（服務與捷徑都指著它）。
+      if (previous !== null) {
+        try {
+          symlink(previous, link, 'junction');
+        } catch {
+          // 指不回去：照樣丟出原本的錯誤，安裝程式會說明
+        }
+      }
+      throw error;
+    }
     return;
   }
   const base = dirname(link);

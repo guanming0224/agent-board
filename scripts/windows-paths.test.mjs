@@ -11,6 +11,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -67,6 +68,24 @@ describe('current／app 連結（Windows 是 junction）', () => {
       readdirSync(root).filter((n) => n.includes('.new-')),
       [],
     );
+  });
+
+  it('Windows 模式：拿掉舊的連結後新的建不起來 → 指回原本的目標、照樣丟錯', () => {
+    const root = tempDir();
+    const a = release(root, '0.1.6');
+    const b = release(root, '0.1.7');
+    const current = join(root, 'current');
+    pointLink(current, a, { windows: true });
+    let calls = 0;
+    const flaky = (target, link, type) => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('EPERM: junction failed'), { code: 'EPERM' });
+      symlinkSync(target, link, type);
+    };
+    assert.throws(() => pointLink(current, b, { windows: true, symlink: flaky }), /EPERM/);
+    assert.equal(calls, 2);
+    assert.ok(isLink(current));
+    assert.equal(realpathSync(current), realpathSync(a));
   });
 
   it('拿掉連結只拿掉連結本身，目標的檔案還在', () => {
