@@ -95,20 +95,25 @@ export function hostEndpoint(
 }
 
 /** 執行外部指令（測試換成假的）：回 stdout，失敗丟例外。 */
-export type RunSync = (file: string, args: string[]) => string;
+/** 執行外部指令（測試換成假的）：回 stdout，失敗丟例外。extraEnv 會加進子程序的環境變數。 */
+export type RunSync = (file: string, args: string[], extraEnv?: Record<string, string>) => string;
 
-const defaultRunSync: RunSync = (file, args) =>
+const defaultRunSync: RunSync = (file, args, extraEnv) =>
   execFileSync(file, args, {
     encoding: 'utf8',
     timeout: 15_000,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
   });
 
-/** 這個程序已經鎖好的資料夾（每個資料夾每次啟動只做一次）。 */
-const lockedDirs = new Set<string>();
+/**
+ * 這個程序設過 ACL 的資料夾與結果（每個資料夾每次啟動只做一次；複查 R2：失敗也記住，不會每寫一次快照就同步重跑
+ * whoami＋icacls）。值是 null＝成功；Error＝失敗（之後照樣丟同一個錯）。
+ */
+const lockedDirs = new Map<string, Error | null>();
 
-/** 只給測試：忘記哪些資料夾鎖過了。 */
+/** 只給測試：忘記哪些資料夾設過了。 */
 export function forgetLockedDirs(): void {
   lockedDirs.clear();
 }
@@ -122,13 +127,23 @@ export function parseWhoamiSid(text: string): string | null {
   return match ? match[1]! : null;
 }
 
+/** 讀資料夾擁有者的 PowerShell 指令（路徑從環境變數 AB_ACL_DIR 帶進去，不經過指令字串的引號）。 */
+export const OWNER_COMMAND =
+  '(Get-Acl -LiteralPath $env:AB_ACL_DIR).GetOwner([System.Security.Principal.SecurityIdentifier]).Value';
+
+const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 /**
  * Windows（審查 W2）：Unix 的 600／700 在 Windows 沒有作用，密鑰（hook.key、host token、install-id、機器 token）
  * 的保護靠資料夾的 ACL。預設的使用者資料夾只有本人、SYSTEM、Administrators 讀得到，但 `AGENT_BOARD_DATA_DIR`
- * 指到別處（例如 `C:\agent-board`）時會繼承「Users 可讀」。所以拿掉繼承，只給目前使用者與 SYSTEM 完整權限
- * （子資料夾與檔案跟著繼承）：`icacls <dir> /inheritance:r /grant:r *<自己的 SID>:(OI)(CI)F /grant:r *S-1-5-18:(OI)(CI)F`。
+ * 指到別處（例如 `C:\agent-board`）時會繼承「Users 可讀」。
+ * 1. `whoami /user` 取自己的 SID。
+ * 2. 複查 R3：資料夾的擁有者要是自己（PowerShell `Get-Acl` 的 owner SID）。別人建的資料夾，擁有者隨時能改回權限、
+ *    也可能事先放了東西，不用；拒絕啟動並說明。
+ * 3. 拿掉繼承，只給自己與 SYSTEM 完整權限（子資料夾與檔案跟著繼承）：
+ *    `icacls <dir> /inheritance:r /grant:r *<自己的 SID>:(OI)(CI)F /grant:r *S-1-5-18:(OI)(CI)F`。
  * 用 SID 不用名稱：不受網域名稱、語系（「SYSTEM」的在地名稱）、引號影響；參數用陣列傳、不經過 shell。
- * whoami／icacls 用 System32 的絕對路徑。失敗就丟例外（呼叫端拒絕啟動並說明）。
+ * whoami／icacls／PowerShell 都用 System32 的絕對路徑。任何一步失敗就丟例外（呼叫端拒絕啟動並說明）。
  */
 export function restrictToCurrentUser(
   dir: string,
@@ -139,10 +154,28 @@ export function restrictToCurrentUser(
     sid = parseWhoamiSid(run(system32('whoami.exe', env), ['/user', '/fo', 'csv', '/nh']));
   } catch (error) {
     throw new Error(
-      `讀不到目前使用者的 SID（whoami 失敗：${error instanceof Error ? error.message : String(error)}），不能確定 ${dir} 只有自己讀得到，不啟動。`,
+      `讀不到目前使用者的 SID（whoami 失敗：${describe(error)}），不能確定 ${dir} 只有自己讀得到，不啟動。`,
     );
   }
   if (!sid) throw new Error(`讀不到目前使用者的 SID，不能確定 ${dir} 只有自己讀得到，不啟動。`);
+  let owner = '';
+  try {
+    owner = run(
+      system32('WindowsPowerShell\\v1.0\\powershell.exe', env),
+      ['-NoProfile', '-NonInteractive', '-Command', OWNER_COMMAND],
+      { AB_ACL_DIR: dir },
+    ).trim();
+  } catch (error) {
+    throw new Error(
+      `讀不到 ${dir} 的擁有者（${describe(error)}），不能確定是自己的資料夾，不啟動。`,
+    );
+  }
+  if (owner !== sid) {
+    throw new Error(
+      `${dir} 的擁有者（${owner || '不明'}）不是目前使用者（${sid}）。裡面要放密鑰，別人的資料夾不用：` +
+        '請改用自己建立的資料夾（或預設的使用者資料夾），再重新啟動。',
+    );
+  }
   try {
     run(system32('icacls.exe', env), [
       dir,
@@ -154,7 +187,7 @@ export function restrictToCurrentUser(
     ]);
   } catch (error) {
     throw new Error(
-      `無法把 ${dir} 設成只有目前使用者（與 SYSTEM）讀得到（icacls 失敗：${error instanceof Error ? error.message : String(error)}）。` +
+      `無法把 ${dir} 設成只有目前使用者（與 SYSTEM）讀得到（icacls 失敗：${describe(error)}）。` +
         '裡面有密鑰，所以不啟動。請確認這個資料夾是自己的（或改用預設的資料夾），再重新啟動。',
     );
   }
@@ -162,7 +195,8 @@ export function restrictToCurrentUser(
 
 /**
  * 資料夾 700（裡面有機器 token、MCP 密鑰、socket）。Windows 改成用 ACL 只給目前使用者與 SYSTEM
- * （restrictToCurrentUser，每個資料夾每次啟動做一次；失敗丟例外）。
+ * （restrictToCurrentUser）。每個資料夾每次啟動只做一次，結果（含失敗）記住：失敗之後再呼叫照樣丟同一個錯，
+ * 但不再重跑外部指令（複查 R2）。子資料夾用 ensurePrivateSubdir（Windows 只建資料夾，繼承上層的 ACL）。
  */
 export function ensurePrivateDir(
   dir: string,
@@ -179,9 +213,31 @@ export function ensurePrivateDir(
     return;
   }
   const key = resolve(dir);
-  if (lockedDirs.has(key)) return;
-  restrictToCurrentUser(key, options);
-  lockedDirs.add(key);
+  if (lockedDirs.has(key)) {
+    const failure = lockedDirs.get(key);
+    if (failure) throw failure;
+    return;
+  }
+  try {
+    restrictToCurrentUser(key, options);
+    lockedDirs.set(key, null);
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    lockedDirs.set(key, failure);
+    throw failure;
+  }
+}
+
+/**
+ * dataDir 底下的子資料夾（例如 `state\`）：Mac／Linux 一樣 700；Windows 只建資料夾，ACL 繼承 dataDir 的
+ * （dataDir 由 ensurePrivateDir 設好，複查 R2：不對每個子資料夾重跑 whoami＋icacls）。
+ */
+export function ensurePrivateSubdir(
+  dir: string,
+  { platform = process.platform }: { platform?: NodeJS.Platform } = {},
+): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (platform !== 'win32') chmodSync(dir, 0o700);
 }
 
 /** 先寫暫存檔、設好權限再換名：檔案從出現的那一刻起就是 600。 */

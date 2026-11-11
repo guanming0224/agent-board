@@ -4,6 +4,8 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ensurePrivateDir,
+  ensurePrivateSubdir,
+  OWNER_COMMAND,
   forgetLockedDirs,
   hostEndpoint,
   installId,
@@ -35,25 +37,39 @@ describe('位置', () => {
     }
   });
 
-  it('W2 Windows：資料夾拿掉繼承、只給自己的 SID 與 SYSTEM（icacls 用絕對路徑、參數不經過 shell）；每次啟動只做一次', () => {
-    forgetLockedDirs();
-    const calls: { file: string; args: string[] }[] = [];
-    const run: RunSync = (file, args) => {
-      calls.push({ file, args });
-      return file.endsWith('whoami.exe') ? '"pc\\a b","S-1-5-21-111-222-333-1001"\r\n' : '';
+  const ME = 'S-1-5-21-111-222-333-1001';
+  /** 假的 whoami／PowerShell／icacls：記下呼叫，owner 由參數決定。 */
+  const fakeWindows = (owner = ME, icacls: () => string = () => '') => {
+    const calls: { file: string; args: string[]; env?: Record<string, string> }[] = [];
+    const run: RunSync = (file, args, extraEnv) => {
+      calls.push({ file, args, ...(extraEnv ? { env: extraEnv } : {}) });
+      if (file.endsWith('whoami.exe')) return `"pc\\a b","${ME}"\r\n`;
+      if (file.endsWith('powershell.exe')) return `${owner}\r\n`;
+      return icacls();
     };
-    const env = { SystemRoot: 'C:\\Windows' };
+    return { calls, run };
+  };
+  const env = { SystemRoot: 'C:\\Windows' };
+
+  it('W2 Windows：自己的資料夾拿掉繼承、只給自己的 SID 與 SYSTEM（System32 絕對路徑、參數不經過 shell）；每次啟動只做一次', () => {
+    forgetLockedDirs();
+    const { calls, run } = fakeWindows();
     ensurePrivateDir(dataDir, { platform: 'win32', run, env });
     ensurePrivateDir(dataDir, { platform: 'win32', run, env });
     expect(calls).toEqual([
       { file: 'C:\\Windows\\System32\\whoami.exe', args: ['/user', '/fo', 'csv', '/nh'] },
+      {
+        file: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        args: ['-NoProfile', '-NonInteractive', '-Command', OWNER_COMMAND],
+        env: { AB_ACL_DIR: resolve(dataDir) },
+      },
       {
         file: 'C:\\Windows\\System32\\icacls.exe',
         args: [
           resolve(dataDir),
           '/inheritance:r',
           '/grant:r',
-          '*S-1-5-21-111-222-333-1001:(OI)(CI)F',
+          `*${ME}:(OI)(CI)F`,
           '/grant:r',
           '*S-1-5-18:(OI)(CI)F',
         ],
@@ -63,18 +79,43 @@ describe('位置', () => {
     forgetLockedDirs();
   });
 
-  it('W2 Windows：icacls 或 whoami 失敗就丟例外（呼叫端拒絕啟動），下次啟動再試', () => {
+  it('R3 Windows：資料夾的擁有者不是自己（例如 Administrators）就拒絕啟動、不改權限', () => {
     forgetLockedDirs();
-    const failing: RunSync = (file) => {
-      if (file.endsWith('icacls.exe')) throw new Error('Access is denied.');
-      return '"pc\\me","S-1-5-21-1-2-3-1001"';
-    };
-    expect(() => ensurePrivateDir(dataDir, { platform: 'win32', run: failing })).toThrow(
+    const { calls, run } = fakeWindows('S-1-5-32-544');
+    expect(() => ensurePrivateDir(dataDir, { platform: 'win32', run, env })).toThrow(
+      /擁有者（S-1-5-32-544）不是目前使用者/,
+    );
+    expect(calls.some((c) => c.file.endsWith('icacls.exe'))).toBe(false);
+    forgetLockedDirs();
+  });
+
+  it('R2 Windows：失敗也記住，這次啟動不再重跑 whoami／icacls，照樣丟同一個錯', () => {
+    forgetLockedDirs();
+    const { calls, run } = fakeWindows(ME, () => {
+      throw new Error('Access is denied.');
+    });
+    expect(() => ensurePrivateDir(dataDir, { platform: 'win32', run, env })).toThrow(
       /icacls 失敗：Access is denied/,
     );
+    const count = calls.length;
+    expect(() => ensurePrivateDir(dataDir, { platform: 'win32', run, env })).toThrow(
+      /icacls 失敗：Access is denied/,
+    );
+    expect(calls.length).toBe(count);
+    forgetLockedDirs();
     const noSid: RunSync = () => 'nothing';
     expect(() => ensurePrivateDir(dataDir, { platform: 'win32', run: noSid })).toThrow(/SID/);
     forgetLockedDirs();
+  });
+
+  it('R2：子資料夾只建資料夾（Windows 繼承上層的 ACL，不跑外部指令）；Mac 700', () => {
+    const sub = join(dataDir, 'state');
+    ensurePrivateSubdir(sub, { platform: 'win32' });
+    expect(statSync(sub).isDirectory()).toBe(true);
+    if (process.platform !== 'win32') {
+      ensurePrivateSubdir(sub);
+      expect(statSync(sub).mode & 0o777).toBe(0o700);
+    }
   });
 
   it('Windows：pipe 名稱含使用者與 installId（別人猜不到）；Mac 是資料夾裡的 Unix socket', () => {

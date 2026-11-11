@@ -11,6 +11,8 @@ export {
 } from './client';
 export {
   ensurePrivateDir,
+  ensurePrivateSubdir,
+  OWNER_COMMAND,
   forgetLockedDirs,
   parseWhoamiSid,
   restrictToCurrentUser,

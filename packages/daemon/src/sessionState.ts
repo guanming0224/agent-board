@@ -4,7 +4,7 @@
 import { readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { ApprovalKind, Id, IsoTime, SessionStatus } from '@agent-board/protocol';
-import { ensurePrivateDir, writePrivateFile } from '@agent-board/session-host';
+import { ensurePrivateSubdir, writePrivateFile } from '@agent-board/session-host';
 import { z } from 'zod';
 import { errorMessage, log } from './log';
 
@@ -58,7 +58,8 @@ export function writeSnapshot(dataDir: string, input: SessionSnapshotInput): voi
   const file = fileFor(dataDir, snapshot.sessionId);
   if (!file) return;
   try {
-    ensurePrivateDir(stateDir(dataDir));
+    // Windows 只建資料夾、繼承 dataDir 的 ACL（複查 R2：不在每次寫快照時重跑 icacls）。
+    ensurePrivateSubdir(stateDir(dataDir));
     writePrivateFile(file, `${JSON.stringify(snapshot)}\n`);
   } catch (error) {
     log.warn(`無法寫入 session ${snapshot.sessionId} 的狀態快照：${errorMessage(error)}`);
