@@ -332,6 +332,8 @@ describe('群發', () => {
     expect(result.mentioned).toBe(false);
 
     await until(() => inputsTo(b.daemon, ask).includes('\r'), 'ask enter');
+    // 每個 session 的 Enter 各自隔一小段才送：兩個都等到再比（慢的機器上第二個還沒到）。
+    await until(() => inputsTo(b.daemon, fresh).includes('\r'), 'fresh enter');
     expect(inputsTo(b.daemon, ask)).toEqual(['先停下，回報目前進度', '\r']);
     expect(inputsTo(b.daemon, fresh)).toEqual(['先停下，回報目前進度', '\r']);
     expect(inputsTo(b.daemon, run)).toEqual([]);

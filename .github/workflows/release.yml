@@ -58,10 +58,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
       # macOS 跑全部單元測試；Windows 只跑不碰 PTY／Unix socket 的套件（其他套件的測試未在 Windows 驗證）。
+      # GitHub 的共用機器比 Mac mini 慢，時間敏感的測試偶爾失敗（v0.1.4、v0.1.5）：發版建置時失敗的測試最多重跑 2 次。
+      # 本機與一般開發仍是一次定生死。
       - if: runner.os == 'macOS'
-        run: pnpm -r test
+        run: pnpm -r test -- --retry=2
       - if: runner.os == 'Windows'
-        run: pnpm --filter @agent-board/protocol --filter @agent-board/web test
+        run: pnpm --filter @agent-board/protocol --filter @agent-board/web test -- --retry=2
       - run: pnpm build:release
       - name: 檢查成品
         shell: bash
