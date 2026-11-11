@@ -725,6 +725,19 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
     expect((await laptopTarget(hub, laptop.token)).version).toBe('0.2.0');
   });
 
+  it('win-x64 不能從面板回滾到 0.1.7 以前（審查 W4：0.1.6 的 hello 帶明文 token）', async () => {
+    const { hub, cookie } = await ready([release('0.2.0')]);
+    const { machineId } = await hub.onlineDaemon(
+      cookie,
+      macHello({ os: 'win32', platform: 'win-x64', previousVersion: '0.1.6' }) as never,
+    );
+    const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
+    expect(overview.body.machines[0]).toMatchObject({ canRollback: false });
+    const res = await hub.api('POST', `/api/machines/${machineId}/rollback`, { cookie });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('previous_unsupported');
+  });
+
   it('更新還在進行：「立即更新」「回滾」回 409 update_in_progress（N2）', async () => {
     const { hub, cookie } = await ready([release('0.2.0')]);
     await hub.api('POST', '/api/releases/check', { cookie });

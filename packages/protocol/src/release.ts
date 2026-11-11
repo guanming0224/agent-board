@@ -209,13 +209,24 @@ export const UPDATE_STALE_MS = 60 * 60 * 1000;
 /** 第一個有自動更新（scripts/updater.mjs、installer switch、daemon-status.json）的版本：更早的不能自動回滾過去。 */
 export const FIRST_UPDATER_VERSION = '0.1.0';
 
-/** 能不能從面板回滾到這一版：0.0.0-legacy 或比 FIRST_UPDATER_VERSION 舊的不行（健康檢查等不到舊 daemon）。 */
-export function rollbackSupported(previousVersion: string | null): boolean {
-  return (
-    previousVersion !== null &&
-    isVersion(previousVersion) &&
-    compareVersions(previousVersion, FIRST_UPDATER_VERSION) >= 0
-  );
+/**
+ * 各平台能從面板回滾過去的最低版本（審查 W4）。win-x64：0.1.6 以前的 daemon 和 session host 是協定 1，
+ * hello 帶明文 token；Windows 的 pipe 擋不住別的程式先開同名 pipe，回滾到那一版等於把 token 交出去。
+ */
+export const MIN_ROLLBACK_VERSION: Readonly<Record<string, string>> = { 'win-x64': '0.1.7' };
+
+/**
+ * 能不能從面板回滾到這一版：0.0.0-legacy 或比 FIRST_UPDATER_VERSION 舊的不行（健康檢查等不到舊 daemon）；
+ * 平台另有最低版本（MIN_ROLLBACK_VERSION）的也不行。
+ */
+export function rollbackSupported(
+  previousVersion: string | null,
+  platform: string | null = null,
+): boolean {
+  if (previousVersion === null || !isVersion(previousVersion)) return false;
+  if (compareVersions(previousVersion, FIRST_UPDATER_VERSION) < 0) return false;
+  const min = platform ? MIN_ROLLBACK_VERSION[platform] : undefined;
+  return min === undefined || compareVersions(previousVersion, min) >= 0;
 }
 
 /** 沒有發目標的原因（面板顯示）：hub_first＝等 hub 那台先升到這版；hub_update_failed＝hub 那台這版更新失敗，

@@ -829,7 +829,7 @@ export class ReleaseManager {
         channel: this.channelOf(machine.id),
         targetVersion: resolved.target?.version ?? null,
         targetNote: resolved.note,
-        canRollback: rollbackSupported(record.previousVersion),
+        canRollback: rollbackSupported(record.previousVersion, record.platform),
         unverifiedPlatform:
           record.platform !== null && UNVERIFIED_PLATFORMS.includes(record.platform),
         allowUnverified: this.allowsUnverified(machine.id),

@@ -13,6 +13,19 @@ import {
   versionFromTag,
 } from './release';
 import { DaemonToHub, HubToDaemon } from './ws';
+import { MIN_ROLLBACK_VERSION, rollbackSupported } from './release';
+
+describe('回滾的最低版本（審查 W4）', () => {
+  it('win-x64 不能回滾到 0.1.7 以前（0.1.6 的 hello 帶明文 token）；Mac 照舊只看 0.1.0', () => {
+    expect(MIN_ROLLBACK_VERSION['win-x64']).toBe('0.1.7');
+    expect(rollbackSupported('0.1.6', 'win-x64')).toBe(false);
+    expect(rollbackSupported('0.1.7', 'win-x64')).toBe(true);
+    expect(rollbackSupported('0.1.6', 'darwin-arm64')).toBe(true);
+    expect(rollbackSupported('0.1.6')).toBe(true);
+    expect(rollbackSupported('0.0.9', 'darwin-arm64')).toBe(false);
+    expect(rollbackSupported(null, 'win-x64')).toBe(false);
+  });
+});
 
 describe('版本比較', () => {
   it('主、次、修依數字比，不是字串', () => {

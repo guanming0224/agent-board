@@ -948,7 +948,8 @@ export class Hub {
     const previous = this.release.record(machineId).previousVersion;
     if (!previous) throw new HttpError(409, 'no_previous', 'No previous version on this machine');
     // 0.0.0-legacy 或比第一個有更新程式的版本舊：舊 daemon 不寫健康狀態檔，自動回滾一定失敗（W6）。
-    if (!rollbackSupported(previous)) {
+    // win-x64 另有最低版本（審查 W4：0.1.6 以前的 hello 帶明文 token）。
+    if (!rollbackSupported(previous, this.release.record(machineId).platform)) {
       throw new HttpError(
         409,
         'previous_unsupported',
