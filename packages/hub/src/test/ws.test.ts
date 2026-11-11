@@ -1882,7 +1882,8 @@ describe('directory browsing', () => {
   });
 
   it('surfaces daemon errors, timeouts, disconnects, and offline machines', async () => {
-    hub = await startHub({ timing: { browseTimeoutMs: 40 } });
+    // 逾時與斷線共用這個值：太短的話，慢的機器（GitHub Actions）在斷線前就先逾時（504 而不是 502）。
+    hub = await startHub({ timing: { browseTimeoutMs: 500 } });
     const cookie = await hub.setupOwner();
     const { daemon, machineId } = await hub.onlineDaemon(cookie);
     const url = `/api/machines/${machineId}/fs?path=/x`;

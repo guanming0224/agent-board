@@ -93,7 +93,7 @@ describe('收斂重複定義', () => {
   it('模式晶片元件只有一份（views/session.tsx；flows/common.tsx 只轉出）', () => {
     const defs = allTsx.filter((f) => /function ModeChip\b/.test(f.text));
     expect(defs.map((f) => rel(f.path))).toEqual(['views/session.tsx']);
-    const common = allTsx.find((f) => f.path.endsWith('flows/common.tsx'))!;
+    const common = allTsx.find((f) => rel(f.path) === 'flows/common.tsx')!;
     expect(common.text).toContain("export { ModeChip } from '../views/session';");
   });
 });
