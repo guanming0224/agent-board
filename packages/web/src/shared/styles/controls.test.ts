@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { PHONE_QUERY, TOUCH_QUERY } from '../breakpoints';
 
-const read = (name: string) => readFileSync(new URL(`./${name}`, import.meta.url), 'utf8');
+/** 讀檔並把 CRLF 換成 LF（Windows 上 git 可能轉成 CRLF）。 */
+const read = (name: string) =>
+  readFileSync(new URL(`./${name}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const tokens = read('tokens.css');
 const controls = read('controls.css');
 const srcDir = fileURLToPath(new URL('../../', import.meta.url));
@@ -18,16 +20,19 @@ function filesIn(dir: string, ext: RegExp): string[] {
 }
 const allCss = filesIn(srcDir, /\.css$/).map((path) => ({
   path,
-  text: readFileSync(path, 'utf8'),
+  text: readFileSync(path, 'utf8').replace(/\r\n/g, '\n'),
 }));
 const allTsx = filesIn(srcDir, /\.tsx$/).map((path) => ({
   path,
-  text: readFileSync(path, 'utf8'),
+  text: readFileSync(path, 'utf8').replace(/\r\n/g, '\n'),
 }));
 
 /** 某個選擇器（整行、後面接 `{`）在全部 CSS 裡出現在哪些檔案。 */
 const definedIn = (selector: RegExp) =>
-  allCss.filter((f) => selector.test(f.text)).map((f) => f.path.slice(srcDir.length));
+  allCss
+    .filter((f) => selector.test(f.text))
+    // Windows 的路徑分隔是 \；斷言一律用 /。
+    .map((f) => f.path.slice(srcDir.length).replaceAll('\\', '/'));
 
 /** 找出 `selector {` 的宣告內容（只取第一個）。 */
 function block(css: string, selector: string): string {
@@ -166,7 +171,7 @@ describe('寫死的 px 字級／最小高度', () => {
   const PX = /^\s*(font-size|min-height|font)\s*:\s*([a-z0-9-]+\s+)*[0-9.]+px/gm;
   it.each(
     allCss
-      .map((f) => [f.path.slice(srcDir.length), f.text] as const)
+      .map((f) => [f.path.slice(srcDir.length).replaceAll('\\', '/'), f.text] as const)
       .filter(([path]) => !/shared\/styles\/(tokens|controls)\.css$/.test(path)),
   )('%s 沒有新增', (path, text) => {
     expect((text.match(PX) ?? []).length).toBeLessThanOrEqual(BASELINE[path] ?? 0);

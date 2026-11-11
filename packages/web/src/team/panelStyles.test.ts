@@ -3,7 +3,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const src = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+/** 讀檔並把 CRLF 換成 LF（Windows 上 git 可能轉成 CRLF）。 */
+const src = (path: string) =>
+  readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const team = src('team/team.css');
 const presets = src('team/presets.css');
 const flows = src('flows/flows.css');

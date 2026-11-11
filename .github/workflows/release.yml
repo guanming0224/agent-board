@@ -21,15 +21,20 @@ concurrency:
 jobs:
   build:
     strategy:
-      fail-fast: true
+      # 一個平台失敗不取消另一個（v0.1.2 時 Windows 測試失敗把 macOS 也取消了）。
+      fail-fast: false
       matrix:
         include:
           - os: macos-14
             platform: darwin-arm64
-          # win-x64 照樣建成品，但實機驗證前 hub 不發給 Windows 機器（CONTRACTS §21.3，W8）。
+            required: true
+          # win-x64 照樣建成品，但實機驗證前 hub 不發給 Windows 機器（CONTRACTS §21.3，W8），
+          # 所以 Windows 建置失敗不擋 macOS 的 Release（publish 只合併有建出來的平台）。
           - os: windows-latest
             platform: win-x64
+            required: false
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ !matrix.required }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -85,6 +90,8 @@ jobs:
       - name: 合併 SHA256SUMS 並重新驗一次
         working-directory: dist
         run: |
+          # macOS 是必要的平台；沒有它就不發（Windows 可以缺）。
+          ls agent-board-*-darwin-arm64.tar.gz
           cat SHA256SUMS.* | sort -k2 > SHA256SUMS
           rm SHA256SUMS.*
           sha256sum -c SHA256SUMS

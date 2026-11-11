@@ -1,0 +1,9 @@
+# 一律用 LF：Windows 的 git 預設會把換行轉成 CRLF，讓讀原始檔比對的測試在 Windows CI 失敗（v0.1.2 Actions）。
+* text=auto eol=lf
+# cmd／bat 在 Windows 上需要 CRLF。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+# 二進位檔不轉換。
+*.png binary
+*.ico binary
+*.woff2 binary
