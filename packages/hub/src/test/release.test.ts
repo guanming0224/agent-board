@@ -21,7 +21,7 @@ import {
   type UpdateState,
 } from '@agent-board/protocol';
 import { CLOSE_INCOMPATIBLE } from '../hub';
-import { execGh, type GhResult, type GhRunner } from '../release';
+import { execGh, nodeTooOld, type GhResult, type GhRunner } from '../release';
 import { hello, startHub, until, type Peer, type TestHub } from './helpers';
 
 const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
@@ -458,6 +458,18 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
     }
     const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
     expect(overview.body.machines.every((m) => m.targetNote === null)).toBe(true);
+  });
+
+  it('nodeTooOld：有 nodeVersion 用完整版本比，只有 ABI 才比主版本；沒記 minNode 不擋（W5）', () => {
+    expect(nodeTooOld('22.18', '22.17.1', '127')).toBe(true);
+    expect(nodeTooOld('22.18', '22.18.0', '127')).toBe(false);
+    expect(nodeTooOld('22.18', '26.1.0', null)).toBe(false);
+    // 舊 daemon 只送 ABI：127＝Node 22（主版本相同就不擋）、115＝Node 20。
+    expect(nodeTooOld('22.18', null, '127')).toBe(false);
+    expect(nodeTooOld('22.18', null, '115')).toBe(true);
+    expect(nodeTooOld('22.18', null, '108')).toBe(true);
+    expect(nodeTooOld('22.18', null, '999')).toBe(false);
+    expect(nodeTooOld(null, '18.0.0', '108')).toBe(false);
   });
 
   it('Node 主版本低於成品的最低版本：不發目標（node_too_old）；ABI 推得出主版本的舊 daemon 也一樣', async () => {

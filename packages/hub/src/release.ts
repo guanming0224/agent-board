@@ -442,9 +442,7 @@ export class ReleaseManager {
     }
     const entry = this.cacheIndex.get(version)?.assets[record.platform];
     if (!entry || entry.asset !== releaseAssetName(version, record.platform)) return none;
-    const minMajor = nodeMajor(entry.minNode);
-    const machineMajor = nodeMajor(record.nodeVersion) ?? majorFromAbi(record.nodeAbi);
-    if (minMajor !== null && machineMajor !== null && machineMajor < minMajor) {
+    if (nodeTooOld(entry.minNode ?? null, record.nodeVersion, record.nodeAbi)) {
       return { target: null, note: 'node_too_old' };
     }
     const hubId = this.str(KEY.hubMachine);
@@ -836,11 +834,14 @@ export function modulesPlatform(
         try {
           const info = JSON.parse(stdout) as {
             modules?: unknown;
+            buildModules?: unknown;
             bundledNode?: unknown;
             minNode?: unknown;
           };
+          // 0.1.2 起記成 buildModules（舊 hub 讀不到 modules 就不擋 ABI），之前是 modules。只供參考。
+          const abi = info.buildModules ?? info.modules;
           resolve({
-            abi: typeof info.modules === 'string' ? info.modules : null,
+            abi: typeof abi === 'string' ? abi : null,
             bundledNode: info.bundledNode === true,
             minNode: typeof info.minNode === 'string' ? info.minNode : null,
           });
@@ -858,9 +859,40 @@ function nodeMajor(version: string | null | undefined): number | null {
   return match ? Number(match[1]) : null;
 }
 
-/** 0.1.2 以前的 daemon 只送 ABI：常見的對照（Node 20＝115、22＝127、23＝131、24＝137、25＝141、26＝147）；不認得回 null。 */
+/**
+ * 這台的 Node 低於成品的最低版本（§21.10）：daemon 有送 nodeVersion 就用完整版本比（例如 22.17 < 22.18），
+ * 只有 ABI 的舊 daemon 才比主版本。成品沒記 minNode、或推不出這台的版本：不擋。
+ */
+export function nodeTooOld(
+  minNode: string | null,
+  nodeVersion: string | null,
+  nodeAbi: string | null,
+): boolean {
+  if (!minNode) return false;
+  if (nodeVersion && /^v?\d+/.test(nodeVersion)) return !versionAtLeast(nodeVersion, minNode);
+  const major = majorFromAbi(nodeAbi);
+  const minMajor = nodeMajor(minNode);
+  return major !== null && minMajor !== null && major < minMajor;
+}
+
+/** a ≥ b（只比數字部分，缺的當 0）。 */
+function versionAtLeast(a: string, b: string): boolean {
+  const pa = a.replace(/^v/, '').split('.').map(Number);
+  const pb = b.replace(/^v/, '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+
+/** 0.1.2 以前的 daemon 只送 ABI：常見的對照（Node 18＝108 … 26＝147）；不認得回 null。 */
 const ABI_MAJOR: Record<string, number> = {
+  '108': 18,
+  '111': 19,
   '115': 20,
+  '120': 21,
   '127': 22,
   '131': 23,
   '137': 24,

@@ -148,25 +148,26 @@ hub 就把 `daemon` 換成 `hub`。
 
 ## 疑難排解
 
-| 看到什麼                                              | 怎麼做                                                                                                              |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `agent-board-daemon: command not found`               | `~/.local/bin` 不在 `PATH` 上。把它加進去，或用完整路徑 `~/.local/bin/agent-board-daemon`。Windows 請開新的終端機。 |
-| `已被其他程式使用`                                    | 加 `--port 9000`。如果已有配對好的機器，hub 網址變了，要重新配對。                                                  |
-| `找不到 claude`                                       | 加 `--claude-bin /完整/路徑/claude`，路徑可用 `which claude` 查。                                                   |
-| 機器一直離線                                          | 看 daemon 紀錄。「沒有機器 token」表示還沒配對；「連不到 hub」請檢查網址與網路。                                    |
-| 配對被拒絕                                            | 配對碼只能用一次，也會過期。到**設定**產生新的。                                                                    |
-| session 一開就結束                                    | 可能信任對話框選了 `No, exit`，或那台機器的 `claude` 沒登入。到那台機器手動執行一次 `claude`。                      |
-| session 開不起來，訊息提到 `settings.local.json`      | 該專案的 `.claude/settings.local.json` 不是合法 JSON。Agent Board 不會覆蓋它，請修好檔案。                          |
-| session 開不起來：`找不到可執行的 agent-board-hook`   | 少了這支 hook，危險指令檢查無法執行，所以會拒絕開 session。重跑一次安裝指令。                                       |
-| 經代理時網頁一直斷線                                  | 設定對外網址（見上）。                                                                                              |
-| macOS：桌面或文件資料夾出現 `Operation not permitted` | macOS 隱私保護會限制背景程式。到**系統設定 → 隱私權與安全性 → 檔案和資料夾**允許 `node`，或改用其他資料夾。         |
-| macOS：`launchctl bootstrap` 失敗                     | 多半是透過 SSH 執行、沒有桌面登入。下次登入桌面時服務會啟動。LaunchAgent 是登入時啟動，不是開機時。                 |
-| Linux：`npm ci` 卡在 `node-pty`                       | 裝[開始之前](#開始之前)列的編譯工具。                                                                               |
-| Linux：`systemctl --user` 不能用（部分容器、WSL）     | 手動啟動：`~/.local/bin/agent-board-daemon`。                                                                       |
-| Linux：重開機後要登入才會啟動                         | 執行 `loginctl enable-linger $USER`。安裝腳本會先試一次。                                                           |
-| 移除某個 Node 版本（nvm 等）後服務停了                | 用新版 Node 重跑一次安裝指令。                                                                                      |
-| 紀錄檔太大                                            | 目前還沒有自動輪替。可以直接刪，刪完重新啟動服務。                                                                  |
-| 忘記密碼                                              | 見下方[忘記密碼](#忘記密碼)。                                                                                       |
+| 看到什麼                                                                       | 怎麼做                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-board-daemon: command not found`                                        | `~/.local/bin` 不在 `PATH` 上。把它加進去，或用完整路徑 `~/.local/bin/agent-board-daemon`。Windows 請開新的終端機。                                                                                                                               |
+| `已被其他程式使用`                                                             | 加 `--port 9000`。如果已有配對好的機器，hub 網址變了，要重新配對。                                                                                                                                                                                |
+| `找不到 claude`                                                                | 加 `--claude-bin /完整/路徑/claude`，路徑可用 `which claude` 查。                                                                                                                                                                                 |
+| 機器一直離線                                                                   | 看 daemon 紀錄。「沒有機器 token」表示還沒配對；「連不到 hub」請檢查網址與網路。                                                                                                                                                                  |
+| 配對被拒絕                                                                     | 配對碼只能用一次，也會過期。到**設定**產生新的。                                                                                                                                                                                                  |
+| session 一開就結束                                                             | 可能信任對話框選了 `No, exit`，或那台機器的 `claude` 沒登入。到那台機器手動執行一次 `claude`。                                                                                                                                                    |
+| session 開不起來，訊息提到 `settings.local.json`                               | 該專案的 `.claude/settings.local.json` 不是合法 JSON。Agent Board 不會覆蓋它，請修好檔案。                                                                                                                                                        |
+| session 開不起來：`找不到可執行的 agent-board-hook`                            | 少了這支 hook，危險指令檢查無法執行，所以會拒絕開 session。重跑一次安裝指令。                                                                                                                                                                     |
+| 經代理時網頁一直斷線                                                           | 設定對外網址（見上）。                                                                                                                                                                                                                            |
+| macOS：桌面或文件資料夾出現 `Operation not permitted`                          | macOS 隱私保護會限制背景程式。到**系統設定 → 隱私權與安全性 → 檔案和資料夾**允許 `node`，或改用其他資料夾。                                                                                                                                       |
+| macOS：`launchctl bootstrap` 失敗                                              | 多半是透過 SSH 執行、沒有桌面登入。下次登入桌面時服務會啟動。LaunchAgent 是登入時啟動，不是開機時。                                                                                                                                               |
+| Linux：`npm ci` 卡在 `node-pty`                                                | 裝[開始之前](#開始之前)列的編譯工具。                                                                                                                                                                                                             |
+| Linux：`systemctl --user` 不能用（部分容器、WSL）                              | 手動啟動：`~/.local/bin/agent-board-daemon`。                                                                                                                                                                                                     |
+| Linux：重開機後要登入才會啟動                                                  | 執行 `loginctl enable-linger $USER`。安裝腳本會先試一次。                                                                                                                                                                                         |
+| 移除某個 Node 版本（nvm 等）後服務停了                                         | 用新版 Node 重跑一次安裝指令。                                                                                                                                                                                                                    |
+| 升級或重裝 Node（例如 `brew upgrade node`）後，session 卡在 starting、沒有畫面 | macOS 隱私權限照 node 執行檔認，換了 node 可能要重新允許：系統設定 →「隱私權與安全性」→「檔案和資料夾」或「完整磁碟取用權限」允許那支 node，再執行 `launchctl kickstart -k gui/$UID/com.agent-board.session-host`（會結束 agent，之後自動接回）。 |
+| 紀錄檔太大                                                                     | 目前還沒有自動輪替。可以直接刪，刪完重新啟動服務。                                                                                                                                                                                                |
+| 忘記密碼                                                                       | 見下方[忘記密碼](#忘記密碼)。                                                                                                                                                                                                                     |
 
 ### 忘記密碼
 
