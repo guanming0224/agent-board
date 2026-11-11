@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } f
 import { connect, createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { newNonce, verifyLocalProof } from '@agent-board/protocol/local-auth';
+import { localProof, newNonce, verifyLocalProof } from '@agent-board/protocol/local-auth';
 import { ensureHookKey, HookServer, proveDaemon, type HookHandler } from './hookServer';
 import { HookClient, makeTempDir, waitUntil } from './test-support/harness';
 
@@ -282,8 +282,16 @@ describe('HookServer', () => {
           squatter.close(() => resolve());
         }),
     );
+    // 沒拿 daemon.lock（不能確定沒有別的 daemon）：不改用備用名稱，啟動失敗（複查 R1）。
+    const unsure = new HookServer(dir, async () => null, null, {
+      location: path,
+      proveTimeoutMs: 200,
+    });
+    await expect(unsure.start()).rejects.toThrow(/daemon\.lock/);
     const server = new HookServer(dir, async (request) => ({ got: request.event }), null, {
       location: path,
+      exclusive: true,
+      proveTimeoutMs: 200,
     });
     await server.start();
     cleanups.push(() => server.close());
@@ -307,6 +315,40 @@ describe('HookServer', () => {
     const second = new HookServer(dir, async () => null, null, { location: path });
     await expect(second.start()).rejects.toThrow('已有 daemon');
   });
+
+  it('R1：合法的 daemon 回得慢（3 秒才回 auth.proof）不會被當成占位者：不搶、啟動失敗', async () => {
+    const dir = makeTempDir();
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const path = testLocation(dir, 'slow');
+    const key = ensureHookKey(dir);
+    const held = new Set<Socket>();
+    const slow = createServer((socket) => {
+      held.add(socket);
+      socket.setEncoding('utf8');
+      socket.on('error', () => {});
+      socket.on('data', (chunk: string) => {
+        const { nonce } = JSON.parse(chunk.trim()) as { nonce: string };
+        setTimeout(() => {
+          if (!socket.destroyed) {
+            socket.write(
+              `${JSON.stringify({ type: 'auth.proof', proof: localProof(key, 'hookServer', nonce) })}\n`,
+            );
+          }
+        }, 3_000);
+      });
+    });
+    await new Promise<void>((resolve) => slow.listen(path, resolve));
+    cleanups.push(
+      () =>
+        new Promise<void>((resolve) => {
+          for (const socket of held) socket.destroy();
+          slow.close(() => resolve());
+        }),
+    );
+    const server = new HookServer(dir, async () => null, null, { location: path, exclusive: true });
+    await expect(server.start()).rejects.toThrow('已有 daemon');
+    expect(server.squattedPath).toBeNull();
+  }, 20_000);
 
   it('W5：daemon 重啟後沿用同一把密鑰（活著的 agent 還拿著同一個路徑）', async () => {
     const dir = makeTempDir();

@@ -28,11 +28,13 @@ import {
   type SessionSpec,
 } from '@agent-board/protocol';
 import {
+  ensurePrivateDir,
   HostConnectError,
   hostEndpoint,
   probeHost,
   SessionHostClient,
 } from '@agent-board/session-host';
+import { acquireDaemonLock, type DaemonLock } from './daemonLock';
 import { SelfUpdater, writeDaemonStatus } from './selfUpdate';
 import { APP_VERSION } from './version';
 import { ApprovalManager } from './approvals';
@@ -298,6 +300,8 @@ export class Daemon {
   private readonly blocked = new Map<string, { entry: PersistedSession; reason: string }>();
   /** 自動重開的規則：null＝可以；否則只擋 liveIds 裡的（liveIds 為 null＝全部擋）。 */
   private resumeBlock: { reason: string; liveIds: ReadonlySet<string> | null } | null = null;
+  /** `<dataDir>/daemon.lock`（複查 R1）：start 拿、stop 放。 */
+  private lock: DaemonLock | null = null;
   /** 要報給 hub 的機器警示（審查 W3）：每次連上 hub（welcome）都送，hub 自己一小時去重。 */
   private readonly alerts = new Map<DaemonAlertCode, string>();
   /** daemon 崩潰前還在等的審批（快照裡的）：放進 hello 讓 hub 對上帳，welcome 後標 terminal（W6）。 */
@@ -378,6 +382,8 @@ export class Daemon {
       config.dataDir,
       (request, signal) => this.handleHook(request, signal),
       (request) => this.handleMcp(request),
+      // start() 先拿 daemon.lock 才開 hook server（複查 R1）。
+      { exclusive: true },
     );
   }
 
@@ -386,8 +392,18 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
-    // 另一個 daemon 正在用同一份資料夾時在這裡就失敗，不會去搶 session host 的連線。
-    await this.hookServer.start();
+    // 一份資料夾只能有一個 daemon（複查 R1）：先拿 daemon.lock，另一個活著的 daemon 拿著就在這裡失敗，
+    // 不會去搶 session host 的連線，hook pipe 被占時也才能確定對方不是 daemon。
+    ensurePrivateDir(this.deps.config.dataDir);
+    this.lock = await acquireDaemonLock(this.deps.config.dataDir);
+    try {
+      // Mac／Linux：另一個 daemon 正在用同一份資料夾時 hook socket 也會擋（舊版不拿鎖的 daemon）。
+      await this.hookServer.start();
+    } catch (error) {
+      this.lock.release();
+      this.lock = null;
+      throw error;
+    }
     if (this.hookServer.squattedPath) {
       this.alerts.set(
         'hook_pipe_squatted',
@@ -452,6 +468,8 @@ export class Daemon {
     await this.hookServer.close();
     this.host?.close();
     this.host = null;
+    this.lock?.release();
+    this.lock = null;
   }
 
   // ── session host（CONTRACTS §20）──────────────────────────

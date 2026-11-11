@@ -23,6 +23,9 @@ import { errorMessage, log } from './log';
 /** macOS 的 sun_path 上限 104 bytes，保守一點。 */
 const MAX_UNIX_SOCKET_BYTES = 100;
 const MAX_LINE_BYTES = 16 * 1024 * 1024;
+/** 位置被占時請對方證明的時限與次數（複查 R1：合法的 daemon 可能剛好忙，2 秒太短）。 */
+export const PROVE_TIMEOUT_MS = 8_000;
+const PROVE_ATTEMPTS = 2;
 
 export type HookOutput = HookReply['output'];
 /** signal 在 hook 連線斷掉時 abort。 */
@@ -94,7 +97,11 @@ export function ensureHookKey(dataDir: string): string {
  * 占著這個位置的是不是 daemon（審查 W3）：送 `auth.challenge`，對方要用同一把 hook.key 回正確的 `auth.proof`。
  * 2 秒內沒有、證明不對、連不上都回 false。
  */
-export function proveDaemon(path: string, key: string, timeoutMs = 2_000): Promise<boolean> {
+export function proveDaemon(
+  path: string,
+  key: string,
+  timeoutMs = PROVE_TIMEOUT_MS,
+): Promise<boolean> {
   return new Promise((resolve) => {
     const nonce = newNonce();
     const socket = connect(path);
@@ -157,7 +164,13 @@ export class HookServer {
     private readonly handler: HookHandler,
     private readonly mcpHandler: McpHandler | null = null,
     /** location：只給測試，指定位置（略過 Unix 的殘留檔處理，模擬 Windows 的 pipe）。 */
-    private readonly options: { location?: string } = {},
+    private readonly options: {
+      location?: string;
+      /** 呼叫端已經拿到 daemon.lock（複查 R1）：位置被占而對方證明不了時，才可以改用備用名稱。 */
+      exclusive?: boolean;
+      /** 請對方證明的時限（只給測試縮短）。 */
+      proveTimeoutMs?: number;
+    } = {},
   ) {}
 
   get path(): string {
@@ -198,16 +211,39 @@ export class HookServer {
           resolve();
         });
       });
+    const isInUse = (error: unknown) => (error as NodeJS.ErrnoException).code === 'EADDRINUSE';
+    let squatted = false;
     try {
       await listen(location.path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
-      // 同名 pipe 已經有人開著（Windows；審查 W3，§20.7）。用 hook.key 請對方證明自己是 daemon：
-      // 是 → 另一個 daemon 在跑，不搶、啟動失敗；證明不了 → 別的程式占了名稱：改用備用名稱照常啟動（新開的 session 用它），
-      // 記下來連上 hub 時報警示（不能無聲地一直被擋）。占用期間，舊名稱上還活著的 agent 的 hook 會當成連不上。
-      if (await proveDaemon(location.path, this.key)) {
+      if (!isInUse(error)) throw error;
+      squatted = true;
+    }
+    // 同名 pipe 已經有人開著（Windows；審查 W3、複查 R1，§20.7）。用 hook.key 請對方證明自己是 daemon，
+    // 每次最多等 PROVE_TIMEOUT_MS（合法的 daemon 可能剛好卡在別的事上），對方消失了就再 listen 一次，試 PROVE_ATTEMPTS 次：
+    // 證明了 → 另一個 daemon 在跑，不搶、啟動失敗。一直證明不了：只有呼叫端已經拿到 daemon.lock（`exclusive`，確定這份
+    // 資料夾沒有其他活著的 daemon）才改用備用名稱照常啟動（新開的 session 用它），記下來連上 hub 時報警示；
+    // 沒拿鎖的一律啟動失敗。占用期間，舊名稱上還活著的 agent 的 hook 會當成連不上。
+    for (let attempt = 0; squatted && attempt < PROVE_ATTEMPTS; attempt += 1) {
+      if (!(await isSocketAlive(location.path))) {
+        try {
+          await listen(location.path);
+          squatted = false;
+          break;
+        } catch (error) {
+          if (!isInUse(error)) throw error;
+        }
+      }
+      if (await proveDaemon(location.path, this.key, this.options.proveTimeoutMs)) {
         throw new Error(
           `已有 daemon 在使用 ${location.path}（它證明了自己），不搶。先停掉另一個 daemon。`,
+        );
+      }
+    }
+    if (squatted) {
+      if (!this.options.exclusive) {
+        throw new Error(
+          `${location.path} 已經被占用，對方證明不了自己是 daemon；沒有拿到 daemon.lock，不能確定沒有別的 daemon，不啟動。`,
         );
       }
       const original = location.path;
