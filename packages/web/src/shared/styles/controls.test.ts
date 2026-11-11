@@ -31,9 +31,7 @@ const allTsx = filesIn(srcDir, /\.tsx$/).map((path) => ({
 
 /** 某個選擇器（整行、後面接 `{`）在全部 CSS 裡出現在哪些檔案。 */
 const definedIn = (selector: RegExp) =>
-  allCss
-    .filter((f) => selector.test(f.text))
-    .map((f) => rel(f.path));
+  allCss.filter((f) => selector.test(f.text)).map((f) => rel(f.path));
 
 /** 找出 `selector {` 的宣告內容（只取第一個）。 */
 function block(css: string, selector: string): string {
@@ -87,9 +85,7 @@ describe('收斂重複定義', () => {
     const costColor = allCss.filter((f) =>
       /\.chip\.cost \{[^}]*color: var\(--quota\)/.test(f.text),
     );
-    expect(costColor.map((f) => rel(f.path))).toEqual([
-      'shared/styles/controls.css',
-    ]);
+    expect(costColor.map((f) => rel(f.path))).toEqual(['shared/styles/controls.css']);
   });
   it('分段切換 .seg 只在 controls.css', () => {
     expect(definedIn(/(^|\n)\.seg \{/)).toEqual(['shared/styles/controls.css']);
