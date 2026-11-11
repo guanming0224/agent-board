@@ -98,7 +98,11 @@ describe('session host', () => {
       id,
       bin: process.execPath,
       args: [ECHO],
-      env: { PATH: process.env.PATH ?? '' },
+      // Windows 的程式少了 SystemRoot 會有系統 API 起不來（socket、加密）。
+      env: {
+        PATH: process.env.PATH ?? '',
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+      },
       cwd: dataDir,
       cols: 80,
       rows: 24,
@@ -116,7 +120,8 @@ describe('session host', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it('socket 與 token 檔是 600、資料夾 700', () => {
+  // Windows 沒有 Unix 檔案權限，pipe 也不是檔案（存取權限見 CONTRACTS §20.7）。
+  it.skipIf(process.platform === 'win32')('socket 與 token 檔是 600、資料夾 700', () => {
     const endpoint = hostEndpoint(dataDir);
     expect(statSync(endpoint.path).mode & 0o777).toBe(0o600);
     expect(statSync(endpoint.tokenPath).mode & 0o777).toBe(0o600);
@@ -332,15 +337,17 @@ describe('session host', () => {
     client.resize('s1', 100, 30);
     // agent 讀的是 Node 快取的尺寸，收到 SIGWINCH 才更新；機器忙時 size 可能比 SIGWINCH 先到、回舊尺寸。
     // 所以沒看到新尺寸就隔一下重問（全套並行時實際發生過）。
+    // Windows（ConPTY）沒有 SIGWINCH，子程序的 columns 何時更新不保證：只看 host 記下的尺寸（下面的 list）。
     let asked = 0;
-    await waitUntil(() => {
-      if (rec.text.includes('SIZE 100x30')) return true;
-      if (Date.now() - asked > 200) {
-        asked = Date.now();
-        client.write('s1', 'size\r');
-      }
-      return false;
-    }, 'size');
+    if (process.platform !== 'win32')
+      await waitUntil(() => {
+        if (rec.text.includes('SIZE 100x30')) return true;
+        if (Date.now() - asked > 200) {
+          asked = Date.now();
+          client.write('s1', 'size\r');
+        }
+        return false;
+      }, 'size');
     // 序號＝之前所有輸出的位元組數。
     let expected = 0;
     const outputs = rec.seqs;
@@ -454,7 +461,9 @@ describe('session host', () => {
     const total = Buffer.byteLength(rec.text);
     expect(Buffer.byteLength(again.text)).toBeLessThanOrEqual(512);
     expect(again.gap + Buffer.byteLength(again.text)).toBe(total);
-    expect(again.text.trimEnd().endsWith('FLOOD DONE')).toBe(true);
+    // ConPTY 會在最後補游標控制碼，Windows 只確認最新的內容在。
+    if (process.platform === 'win32') expect(again.text).toContain('FLOOD DONE');
+    else expect(again.text.trimEnd().endsWith('FLOOD DONE')).toBe(true);
   });
 
   it('kill SIGTERM、SIGKILL 都收得掉；關閉 host 會結束所有 agent', async () => {

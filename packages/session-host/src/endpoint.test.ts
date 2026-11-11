@@ -14,7 +14,10 @@ describe('位置', () => {
   it('installId：每份安裝一個隨機亂數，存 600 檔，之後讀回同一個', () => {
     const id = installId(dataDir);
     expect(id).toMatch(/^[0-9a-f]{32}$/);
-    expect(statSync(join(dataDir, 'install-id')).mode & 0o777).toBe(0o600);
+    // Windows 沒有 Unix 檔案權限。
+    if (process.platform !== 'win32') {
+      expect(statSync(join(dataDir, 'install-id')).mode & 0o777).toBe(0o600);
+    }
     expect(installId(dataDir)).toBe(id);
     expect(readFileSync(join(dataDir, 'install-id'), 'utf8').trim()).toBe(id);
     const other = mkdtempSync(join(tmpdir(), 'ab-ep-'));

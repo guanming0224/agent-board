@@ -2,6 +2,11 @@ name: CI
 on:
   push:
   pull_request:
+  # 手動試跑（例如上 Windows 前先確認 windows job 綠）。
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -16,3 +21,24 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm lint
       - run: pnpm -r test
+
+  # Windows（原生、PowerShell 7、工作排程器；CONTRACTS §20.7、§21.10）：push 到 main、PR、手動才跑（其他分支的 push 不跑）。
+  # 跑 protocol、web、session-host、hook 全部，daemon 的 processCheck／hookServer／codex，
+  # 安裝的 windows-paths（junction、檔案鎖、cmd.exe 跑 hook 包裝）、process-start（真的 PowerShell）、service-templates。
+  # 跑不了的測試在檔案裡 skipIf(win32) 並寫原因（daemon 的整套假 claude 是 sh 腳本）。和 release.yml 的 Windows 建置同一組。
+  windows:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ vars.RELEASE_NODE_VERSION || '24' }}
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm --filter @agent-board/protocol --filter @agent-board/web --filter @agent-board/session-host --filter @agent-board/hook test
+      - run: pnpm --filter @agent-board/daemon exec vitest run src/processCheck.test.ts src/hookServer.test.ts src/codex.test.ts
+      - run: node --test scripts/windows-paths.test.mjs scripts/process-start.test.mjs scripts/service-templates.test.mjs

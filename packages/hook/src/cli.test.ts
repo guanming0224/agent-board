@@ -88,7 +88,13 @@ function runCli({ args, env = {}, stdin, onSpawn }: RunOptions): Promise<RunResu
     // 不繼承外面的環境，確保不會碰到真的 session 或 daemon。
     const child = spawn(process.execPath, [CLI, ...args], {
       // 連不上時的重試預設關掉（不然每個「連不上」的測試都要等 10 秒）；要測重試的自己給值。
-      env: { PATH: process.env.PATH ?? '', [RETRY_OVERRIDE_ENV]: '0', ...env },
+      // Windows 的程式少了 SystemRoot 會有系統 API（socket、加密）起不來。
+      env: {
+        PATH: process.env.PATH ?? '',
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        [RETRY_OVERRIDE_ENV]: '0',
+        ...env,
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -619,7 +625,11 @@ describe('agent-board-hook CLI', () => {
     });
 
     it('daemon 不讀資料：到期限後 exit 0，不會卡住', async () => {
-      const path = join(dir, 'paused.sock');
+      // Windows 沒有 Unix socket：改用 named pipe。
+      const path =
+        process.platform === 'win32'
+          ? `\\\\.\\pipe\\agent-board-test-paused-${crypto.randomUUID()}`
+          : join(dir, 'paused.sock');
       const sockets: Socket[] = [];
       const server = createServer({ pauseOnConnect: true }, (socket) => sockets.push(socket));
       await new Promise<void>((resolve) => server.listen(path, resolve));

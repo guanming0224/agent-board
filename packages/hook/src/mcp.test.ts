@@ -129,7 +129,12 @@ interface Server_ {
 
 function startServer(env: Record<string, string>): Server_ {
   child = spawn(process.execPath, [SERVER], {
-    env: { PATH: process.env.PATH ?? '', ...env },
+    // Windows 的程式少了 SystemRoot 會有系統 API（socket、加密）起不來。
+    env: {
+      PATH: process.env.PATH ?? '',
+      ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+      ...env,
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const lines: Record<string, unknown>[] = [];

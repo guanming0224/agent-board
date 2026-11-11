@@ -18,7 +18,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "test:install": "node --test scripts/service-templates.test.mjs scripts/updater.test.mjs scripts/system-node.test.mjs scripts/windows-paths.test.mjs scripts/process-start.test.mjs",
-    "test:install:windows": "node --test scripts/windows-paths.test.mjs scripts/process-start.test.mjs scripts/service-templates.test.mjs",
+    "test:windows": "pnpm --filter @agent-board/protocol --filter @agent-board/web --filter @agent-board/session-host --filter @agent-board/hook test && pnpm --filter @agent-board/daemon exec vitest run src/processCheck.test.ts src/hookServer.test.ts src/codex.test.ts && node --test scripts/windows-paths.test.mjs scripts/process-start.test.mjs scripts/service-templates.test.mjs",
     "test:notices": "node --test scripts/release-shipped.test.mjs",
     "check:no-llm": "node scripts/check-no-llm.mjs",
     "lint": "eslint .",

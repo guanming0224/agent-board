@@ -253,7 +253,9 @@ describe('codexProjectHookFiles', () => {
   });
 });
 
-describe('daemon 開 Codex', () => {
+// 整個 daemon 的測試架子（假 claude／codex、假 hook）是 #!/bin/sh 腳本，Windows 執行不了；
+// Windows 只跑上面的參數、hook 指令與檔案檢查（CI 的 windows job）。
+describe.skipIf(process.platform === 'win32')('daemon 開 Codex', () => {
   let h: Harness;
   beforeEach(() => {
     h = new Harness();
