@@ -117,6 +117,8 @@ const CALL_SITES = new Set([
   'scripts/installer.mjs child-process',
   'scripts/installer.mjs fetch',
   'scripts/installer.mjs node-network',
+  // Windows 的資料夾 ACL（審查 W2）：System32 的 whoami /user 取 SID、icacls 拿掉繼承只給自己與 SYSTEM
+  'packages/session-host/src/endpoint.ts child-process',
   // 安裝程式判斷 agent 還在不在（N2，2026-11-12）：只讀程序啟動時間（`ps -o lstart=`／Windows 的 PowerShell Get-Process）
   'scripts/lib/process-start.mjs child-process',
   // 獨立更新程式（隨發布檔散布）：跑新版的 installer.mjs、`agent-board-hub schema-version`，

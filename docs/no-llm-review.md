@@ -36,7 +36,7 @@ corepack pnpm check:no-llm    # scripts/check-no-llm.mjs
 ```
 
 通過時印出 `通過：沒有 LLM 呼叫；對外連線與終端機輸入共 29 處，都在審查清單內。`（2026-11-08 P3 項目一後重跑；進度卡沒有新增呼叫點，數字與 main 相同。2026-11-09 P3 ③b 深層搜尋後先跑 `build:release` 再重跑：原始碼 244 檔、第三方套件 134 個、發布檔 25 檔，仍是 29 處——深層搜尋沒有新的連線、行程或送字寫法，`CALL_SITES` 不用改。2026-11-10 session host 拆分後 35 處，審查修正加 `processCheck.ts` 後 36 處——`node-pty` 從 `session.ts` 搬到 `pty.ts`，新增 session host 的 socket、PTY、送字與 daemon 拉起 host 的 `launchctl`，見下表）
-2026-11-12 Windows 上線前必修（CONTRACTS §20.7）後 42 處：新增 `scripts/lib/process-start.mjs` 的 `child-process`（安裝程式判斷 agent 還在不在，只讀程序啟動時間：`ps -o lstart=`、Windows 的 PowerShell `Get-Process`）；`processCheck.ts` 多了 Windows 的 PowerShell 查詢（同一個呼叫點）。session host 與 hook／MCP socket 改成挑戰／回應（`@agent-board/protocol/local-auth`，只用 `node:crypto` 算 HMAC），連線的位置沒變、不連網路、不送字進 PTY。hub 的「允許自動更新」只改 settings 與發目標，沒有新的連線。
+2026-11-12 Windows 上線前必修（CONTRACTS §20.7）後 42 處：新增 `scripts/lib/process-start.mjs` 的 `child-process`（安裝程式判斷 agent 還在不在，只讀程序啟動時間：`ps -o lstart=`、Windows 的 PowerShell `Get-Process`）；`processCheck.ts` 多了 Windows 的 PowerShell 查詢（同一個呼叫點）。session host 與 hook／MCP socket 改成挑戰／回應（`@agent-board/protocol/local-auth`，只用 `node:crypto` 算 HMAC），連線的位置沒變、不連網路、不送字進 PTY。hub 的「允許自動更新」只改 settings 與發目標，沒有新的連線。同日審查修正後 43 處：新增 `packages/session-host/src/endpoint.ts` 的 `child-process`（Windows 的資料夾 ACL：System32 的 `whoami /user` 取自己的 SID、`icacls` 拿掉繼承只給自己與 SYSTEM，只在本機改權限）；`processCheck.ts` 改成非同步、一次查完（`ps -o pid=,lstart= -p<清單>`、PowerShell 用絕對路徑），同一個呼叫點；session host 與 hook server 遇到同名 pipe 已開時用本機 socket 請對方證明身分（`proveHost`／`proveDaemon`，連線位置沒變）；`daemon.alert` 走既有的 hub WebSocket。
 
 這支腳本做三件事（任何一項不符就結束碼 1）：
 

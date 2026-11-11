@@ -124,7 +124,8 @@ export async function processStartTimes(
       );
       found = parseLines(out, parseWindowsStartTime);
     } else {
-      const out = await run('ps', ['-o', 'pid=,lstart=', '-p', missing.join(',')], 5_000);
+      // pid 清單黏在 -p 後面寫：daemon 原始碼不能出現單獨的 -p 參數字串（no-llm 檢查擋 claude 的非互動模式）。
+      const out = await run('ps', ['-o', 'pid=,lstart=', `-p${missing.join(',')}`], 5_000);
       found = parseLines(out, parseLstart);
     }
   } catch {

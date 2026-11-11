@@ -703,7 +703,7 @@ codex [resume <thread id>] <權限參數> [-m <model>] --dangerously-bypass-hook
 
 - 傳輸（`session-host/src/endpoint.ts`）：Mac／Linux 是 Unix socket `<dataDir>/session-host.sock`（檔案 600、資料夾 700；路徑超過 100 bytes 時改放 `tmpdir()/ab-host-<資料夾雜湊>/`，固定名稱、只有自己能進）；Windows 是 named pipe `\\.\pipe\agent-board-session-host-<使用者名稱>-<installId>`（`installId`＝每份安裝的隨機亂數，存在 `<dataDir>/install-id`，600；別的使用者猜不到名稱、搶不了先開同名 pipe。**未在 Windows 實機測過**（Windows CI 跑 session host 的單元測試）；pipe 的存取權限見 §20.7）。
 - 驗證（協定 2，W5，2026-11-12）：host 每次啟動產生隨機 token 寫進 `<dataDir>/session-host.token`（600，socket 開好才寫）。**token 不經過 socket**：daemon 讀檔後只送 nonce，**host 先證明自己拿得到 token**，daemon 驗過才回自己的證明（§20.2）。第一則不是 hello、5 秒內沒驗完、證明不對、nonce 重送 → 斷線。
-- 同一個資料夾已有 host 在跑（socket 連得上；Windows 是同名 pipe 已開＝`EADDRINUSE`）：第二個正常結束（exit 0，launchd／工作排程器不會一直重啟）。
+- 同一個資料夾已有 host 在跑（socket 連得上）：第二個正常結束（exit 0，launchd 不會一直重啟）。Windows 同名 pipe 已開（`EADDRINUSE`，審查 W3）：先用這個資料夾的 token 請對方證明（`proveHost`：只送 nonce、驗 `hello.challenge`），證明得了才正常結束；證明不了（別的程式占了名稱）記錯誤、exit 1（工作排程器重試，紀錄看得到）。
 - host 收到 SIGTERM／SIGINT（換版、停服務）：先送 `shutdown` 給已連上的 daemon，SIGHUP 所有 agent、2 秒後 SIGKILL 整個程序群組，再結束。SIGHUP 不理（沒有終端機）。
 
 ### 20.2 協定（`protocol/src/sessionHost.ts`，子路徑 `@agent-board/protocol/session-host`）
@@ -729,7 +729,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 - **確定沒有 host**（socket 不存在或連線被拒；有 `AGENT_BOARD_SESSION_HOST_SERVICE` 時先叫服務管理程式拉起——macOS `launchctl kickstart gui/<uid>/<label>`、Linux `systemctl --user start`、Windows `schtasks /Run`——最多等 5 秒還是沒有）→ **舊模式**（daemon 自己開 PTY，行為同 §3.2），上一輪的 session 照舊 `--resume`。
 - **host 可能還活著但不能用**（協定不相容、token 不符或 host 證明不了自己、逾時，或 `off` 但 host 還在跑）→ 新的 session 用舊模式開（**絕不能因此開不了 session**），但**上一輪的 session 不自動重開**（同一個對話不能有兩個 agent）：它們留在本機清單，hello 回報 `status: 'error'`、`endedAt: null`、`statusDetail` 寫原因（例如「舊的 session host 還在跑（協定不相容）…重新安裝並加 --restart-session-host」）。`off` 而且連得上 host 時只擋還在 host 裡的。使用者在網頁上停止它才從清單移除；下次 daemon 啟動會重新判斷。
 
-另外，快照記著 agent 的 pid 與啟動時間：任何模式要 `--resume` 重開前，pid 還在而且啟動時間對得上（誤差 15 秒內；讀不到啟動時間時當成還在）就不重開，同樣標成錯誤（`daemon/src/processCheck.ts`）。啟動時間：Mac／Linux `ps -o lstart=`；Windows（N2，2026-11-12）`powershell.exe -NoProfile -NonInteractive` 跑 `Get-Process` 取 UTC 的 `o` 格式，逾時 10 秒、只認含時區的 ISO 8601，失敗當成還在；讀到的值快取 60 秒。安裝程式判斷「session 還在工作」（`busySessions`，§20.5）用同一套規則（`scripts/lib/process-start.mjs`）。
+另外，快照記著 agent 的 pid 與啟動時間：任何模式要 `--resume` 重開前，pid 還在而且啟動時間對得上（誤差 15 秒內；讀不到啟動時間時當成還在）就不重開，同樣標成錯誤（`daemon/src/processCheck.ts`）。啟動時間：Mac／Linux `ps -o pid=,lstart= -p a,b,c`；Windows（N2，2026-11-12）用絕對路徑 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive` 跑 `Get-Process -Id a,b,c` 取 UTC 的 `o` 格式，逾時 10 秒、只認含時區的 ISO 8601，失敗當成還在；讀到的值快取 60 秒。**非同步、一次查完所有 pid**（審查 W1：daemon 重啟時逐一同步開 PowerShell 會卡住 event loop 數十秒，hook 等不到 `auth.proof`、hub 心跳停）：`agentsStillRunning`（`execFile`、`windowsHide`），`resumeEach` 與舊模式清 MCP 檔前各查一次。沒有改成由 host 回報啟動時間：用到這個檢查的情況（確定沒有 host、host 不能用、網頁停止被擋住的 session）都拿不到 host 的清單。安裝程式判斷「session 還在工作」（`busySessions`，§20.5）用同一套規則、同樣一次查完（`scripts/lib/process-start.mjs`，同步）。
 
 **daemon 停止（host 模式）**：
 
@@ -759,7 +759,9 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 
 **host 連線中斷**（host 崩潰、被停掉、背壓斷線；收到 `shutdown` 也走這條）：host 開的 session 不算結束、不回報，留在本機清單；daemon 重新連（拉起）host，接回還活著的，其他的照上面的規則重開（確定沒有 host 才用舊模式）。接回途中又斷一次：這一輪做完再跑一輪。
 
-**hook socket 位置固定**：agent 的環境變數（`AGENT_BOARD_SOCKET`、Codex 的 `--socket`、MCP 設定檔）會活過 daemon 重啟，所以位置由資料夾決定：Mac／Linux `<dataDir>/hook.sock`（太長時 `tmpdir()/ab-hook-<雜湊>/hook.sock`）；Windows `\\.\pipe\agent-board-hook-<installId>`（以前是每次隨機）。hook 密鑰 `<dataDir>/hook.key` 同理固定沿用（§4.2）。Windows 同名 pipe 已經有人開著（`EADDRINUSE`）：daemon 啟動失敗並說明（另一個 daemon 在跑，或別的程式占了名稱），不搶。
+**hook socket 位置固定**：agent 的環境變數（`AGENT_BOARD_SOCKET`、Codex 的 `--socket`、MCP 設定檔）會活過 daemon 重啟，所以位置由資料夾決定：Mac／Linux `<dataDir>/hook.sock`（太長時 `tmpdir()/ab-hook-<雜湊>/hook.sock`）；Windows `\\.\pipe\agent-board-hook-<installId>`（以前是每次隨機）。hook 密鑰 `<dataDir>/hook.key` 同理固定沿用（§4.2）。hook server 每次啟動都先 `ensurePrivateDir(dataDir)`（審查 W6：Mac／Linux chmod 700，「沒給密鑰檔的舊 agent 照舊不驗證」的前提）。Windows 同名 pipe 已經有人開著（`EADDRINUSE`，審查 W3）：用 hook.key 請對方證明（`proveDaemon`）；是 daemon → 不搶、啟動失敗；證明不了（別的程式占了名稱）→ 改用備用名稱 `<原名>-<亂數>` 照常啟動（新開的 session 用它；占用期間舊名稱上還活著的 agent 的 hook 當成連不上），並報 `daemon.alert hook_pipe_squatted`。
+
+**機器警示（審查 W3）**：`daemon.alert { code: session_host_unauthorized | hook_pipe_squatted, message }`（daemon → hub，每次連上 hub 都送）。host 證明不了自己（`unauthorized`）或 hook pipe 被占時送；hub 寫 audit `machine.alert`（機器 id、名稱、代碼、說明），同一台同一種一小時一次，面板的操作紀錄看得到。說明不含 token、密鑰。舊 hub 不認得這個訊息類型，回 error 不斷線。
 
 ### 20.4 hook CLI 重試（GM 2026-11-10）
 
@@ -791,8 +793,11 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 目標：原生 Windows、PowerShell 7、工作排程器「登入時」啟動（`AgentBoard-session-host`、`AgentBoard-daemon`，優先順序 5＝一般；預設 7 會讓 agent 跟著變慢）。各機用自己的系統 Node（≥22.18），原生模組都是 N-API。
 
 - **W5 伺服器先證明身分**：session host（§20.1、§20.2，協定 2）與 hook／MCP socket（§4.2）都是伺服器先證明自己拿得到密鑰，客戶端驗過才送任何秘密或請求。別的程序搶先開了同名 pipe 也騙不到 token、請求內容，也不能冒充 daemon 回答危險指令檢查。
-- **pipe 只允許目前使用者：做不到**。Node 的 `net.Server.listen(pipe)` 沒有設定安全描述元（DACL）的 API；libuv 建 named pipe 用預設的安全描述元，同一台機器的其他帳號（含 Everyone 的唯讀）可能看得到、連得上。目前靠三層擋：名稱含每份安裝的隨機 `installId`（猜不到）、同名 pipe 已開時不搶（host 當成已在跑而正常結束；daemon 的 hook pipe 啟動失敗並說明）、連上之後的挑戰／回應（拿不到密鑰什麼都做不了）。之後要更嚴就得用原生模組設 DACL（未做）。
-- **N2 程序啟動時間**：見 §20.3（PowerShell `Get-Process`，逾時 10 秒、只認含時區 ISO 8601、失敗當成還在、快取 60 秒）。
+- **pipe 只允許目前使用者：做不到**。Node 的 `net.Server.listen(pipe)` 沒有設定安全描述元（DACL）的 API；libuv 建 named pipe 用預設的安全描述元，同一台機器的其他帳號（含 Everyone 的唯讀）可能看得到、連得上。目前靠三層擋：名稱含每份安裝的隨機 `installId`（猜不到）、同名 pipe 已開時先請對方證明（host 證明不了就 exit 1；hook pipe 改用備用名稱；兩者都報 `daemon.alert`，§20.3）、連上之後的挑戰／回應（拿不到密鑰什麼都做不了）。之後要更嚴就得用原生模組設 DACL（未做）。
+- **資料夾的 ACL（審查 W2）**：Unix 的 600／700 在 Windows 沒有作用。`ensurePrivateDir`（`session-host/src/endpoint.ts`）在 Windows 用 System32 的 `whoami /user` 取自己的 SID，再 `icacls <dir> /inheritance:r /grant:r *<SID>:(OI)(CI)F /grant:r *S-1-5-18:(OI)(CI)F`（拿掉繼承、只給自己與 SYSTEM，子資料夾與檔案跟著繼承；用 SID 不受網域、語系、引號影響；參數不經過 shell）。session host 與 daemon（hook server）啟動時各對 dataDir 做一次；whoami 或 icacls 失敗就丟例外、服務不啟動並說明。**已知限制**：安裝程式配對時寫 `machine.json` 早於第一次啟動，`AGENT_BOARD_DATA_DIR` 指到使用者資料夾外時，這段時間它繼承的是原本的 ACL。
+- **N2 程序啟動時間**：見 §20.3（PowerShell `Get-Process`，一次查完、非同步，逾時 10 秒、只認含時區 ISO 8601、失敗當成還在、快取 60 秒）。
+- **Codex（審查 W5）**：Codex 的 hook 指令用 POSIX 單引號，cmd 讀不懂（`--socket \\.\pipe\…`、`--key-file` 會壞，危險指令檢查失效）；cmd 的跳脫沒辦法在實機驗證前做穩，所以 **Windows 機器先不開 Codex**：hub 回 409 `codex_windows_unsupported`、daemon 開之前也擋、新增 session 頁說明原因。`commandWindows` 不帶。
+- **回滾的最低版本（審查 W4）**：win-x64 不能從面板回滾到 0.1.7 以前（`MIN_ROLLBACK_VERSION`；0.1.6 以前的 hello 帶明文 token），`canRollback: false`、`POST /rollback` 回 409 `previous_unsupported`。
 - **安裝路徑**：`current`／`app` 是 junction（不需要系統管理員或開發人員模式），先拿掉再建，拿掉只拿連結本身；清舊版先改名成 `releases\.trash-<名稱>-<亂數>` 再刪（被鎖住改不了名就整份留著，原本名稱的版本要嘛完整、要嘛整個不見），`scripts/lib/release-dirs.mjs`。hook 的 `.cmd` 包裝用 cmd.exe 跑：參數、stdin、結束碼原樣傳；`AGENT_BOARD_NODE` 失效退回 PATH 上的 node；node 或 `.cjs` 都找不到 exit 2（§21.10）。
 - **install.ps1**：建議 `pwsh -NoProfile -ExecutionPolicy Bypass -File <解開的資料夾>\agent-board\scripts\install.ps1 daemon --hub … --code … --name …`；找不到 git 只提醒不中止（worktree、repo 狀態、Claude Code 的 Bash 工具要它）。README 有完整步驟（下載、驗 SHA256、tar 解壓、配對、schtasks 確認、實測、最後在面板允許自動更新）。
 - **CI**：`ci.yml` 的 `windows` job（push 到 main、PR、手動）與 `release.yml` 的 Windows 建置跑同一組：protocol、web、session-host、hook 全部，daemon 的 processCheck／hookServer／codex，安裝的 `windows-paths`（junction、檔案鎖住時的清理、cmd.exe 跑 hook 包裝，只在 Windows 跑）、`process-start`（真的 PowerShell）、`service-templates`。跑不了的測試 `skipIf(win32)` 並寫原因（daemon 整套的假 claude／hook 是 sh 腳本；Unix 檔案權限；ConPTY 沒有 SIGWINCH）；測試用的假 daemon／假 host 在 Windows 改用 pipe。
