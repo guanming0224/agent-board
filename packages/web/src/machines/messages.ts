@@ -114,6 +114,19 @@ export const zhTW: Record<string, string> = {
   'machines.reason.superseded': '延後中的回滾被「立即更新」取代',
   'machines.err.update_in_progress': '這台的更新還在進行，等它結束再試',
   'machines.note.platform_unverified': 'Windows 還沒實機驗證，暫不自動更新',
+  'machines.unverified.offHint':
+    '{platform} 還沒在實機驗證過自動更新，預設不自動更新（新版要手動安裝）。在這台照 README 實測過安裝、更新、回滾之後，再允許它自動更新。',
+  'machines.unverified.onHint':
+    '已允許這台 {platform} 機器自動更新（這個平台還沒在實機驗證過）。出問題時可以停止，改回手動安裝。',
+  'machines.unverified.on': '允許自動更新',
+  'machines.unverified.off': '停止自動更新',
+  'machines.unverified.confirm':
+    '「{name}」的平台還沒在實機驗證過自動更新：更新或回滾失敗時可能要到那台機器上手動處理。確定要允許它自動更新嗎？',
+  'machines.unverified.yes': '確定允許',
+  'machines.unverified.allowed': '已允許自動更新',
+  'machines.unverified.stopped': '已停止自動更新',
+  'machines.err.confirm_required': '要再確認一次才能打開',
+  'machines.err.platform_verified': '這台不是未驗證的平台，不需要另外允許',
   'machines.note.abi_mismatch': '成品的原生模組和這台的 Node 版本不合，請手動安裝',
   'machines.note.node_too_old': '這台的 Node.js 版本太舊，請升級 Node.js 後再更新',
   'machines.block.previous_unsupported':
@@ -264,6 +277,19 @@ export const en: Record<string, string> = {
     'an update is still running on this machine; try again when it finishes',
   'machines.note.platform_unverified':
     'Windows is not verified on a real machine yet; no automatic updates',
+  'machines.unverified.offHint':
+    'Automatic updates on {platform} have not been verified on a real machine, so they are off by default (install new versions by hand). Allow them after you have tried install, update and rollback on this machine as described in the README.',
+  'machines.unverified.onHint':
+    'Automatic updates are allowed on this {platform} machine (the platform is not verified yet). Stop them if anything goes wrong and install by hand.',
+  'machines.unverified.on': 'Allow automatic updates',
+  'machines.unverified.off': 'Stop automatic updates',
+  'machines.unverified.confirm':
+    '“{name}” runs a platform whose automatic updates are not verified yet: a failed update or rollback may need fixing on that machine by hand. Allow automatic updates?',
+  'machines.unverified.yes': 'Allow',
+  'machines.unverified.allowed': 'Automatic updates allowed',
+  'machines.unverified.stopped': 'Automatic updates stopped',
+  'machines.err.confirm_required': 'This needs a second confirmation',
+  'machines.err.platform_verified': 'This machine is not on an unverified platform',
   'machines.note.abi_mismatch':
     'the bundled native modules do not match this machine’s Node version; install by hand',
   'machines.note.node_too_old': 'Node.js on this machine is too old; upgrade Node.js to update',

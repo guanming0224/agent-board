@@ -1,12 +1,14 @@
 // demo／e2e 用的機器面板資料（發版與自動更新，docs/release-update-spec.md §7）。
 // canary 0.1.1（6 小時前，升 stable 要再確認一次）、stable 0.1.0；三台 demo 機器：
-//   demo-gpu canary 已是最新；demo-studio stable、有 session 在等你允許所以延後；demo-laptop 更新失敗已回滾（離線）。
+//   demo-gpu（Windows）canary 已是最新（owner 打開了「允許自動更新」）；demo-studio stable、有 session 在等你允許
+//   所以延後；demo-laptop 更新失敗已回滾（離線）。新配對的 Windows 機器預設不自動更新（platform_unverified）。
 // 按鈕會真的改這份資料，規則照 hub 的（protocol/release.ts 與 rest.ts 的錯誤碼）。
 import {
   CANARY_SOAK_MS,
   channelTarget,
   compareVersions,
   PROTOCOL_VERSION,
+  UNVERIFIED_PLATFORMS,
   updateDeferReason,
   type Machine,
   type MachineRelease,
@@ -31,6 +33,8 @@ interface DemoRelease {
   channel: ReleaseChannel;
   hasHub: boolean;
   update: UpdateState | null;
+  /** 未驗證平台（win-x64）的「允許自動更新」（hub 的 settings `machineAllowUnverified:<id>`）。 */
+  allowUnverified?: boolean;
 }
 
 /** 更新動畫（下載 → 安裝 → 檢查 → 成功）每一步的時間；e2e 不想等可以改小。 */
@@ -61,6 +65,8 @@ export function createFakeReleases(
         previousVersion: '0.1.0',
         channel: 'canary',
         hasHub: false,
+        // Windows 還沒實機驗證：hub 預設不發，owner 對這台打開了「允許自動更新」才拿到 0.1.1。
+        allowUnverified: true,
         update: {
           phase: 'succeeded',
           fromVersion: '0.1.0',
@@ -132,10 +138,15 @@ export function createFakeReleases(
     return found;
   };
 
+  const unverified = (r: DemoRelease) => UNVERIFIED_PLATFORMS.includes(r.platform);
+  /** 和 hub 一樣：未驗證平台沒打開「允許自動更新」就不發（platform_unverified）。 */
   const target = (r: DemoRelease) =>
-    r.platform === 'darwin-arm64' || r.platform === 'win-x64'
+    (r.platform === 'darwin-arm64' || r.platform === 'win-x64') &&
+    !(unverified(r) && !r.allowUnverified)
       ? channelTarget(r.channel, { canary, stable })
       : null;
+  const targetNote = (r: DemoRelease) =>
+    unverified(r) && !r.allowUnverified ? ('platform_unverified' as const) : null;
 
   const overview = (): ReleaseOverview => ({
     hub: {
@@ -167,11 +178,13 @@ export function createFakeReleases(
         previousVersion: r.previousVersion,
         channel: r.channel,
         targetVersion: target(r),
-        targetNote: null,
+        targetNote: targetNote(r),
         canRollback: r.previousVersion !== null,
         compat: 'ok',
         hasHub: r.hasHub,
         update: r.update,
+        unverifiedPlatform: unverified(r),
+        allowUnverified: r.allowUnverified === true,
       };
     }),
   });
@@ -239,6 +252,19 @@ export function createFakeReleases(
       const machine = machines().find((m) => m.id === machineId);
       if (!machine) throw apiError(404, 'not_found', 'machine not found');
       entry(machine).channel = channel;
+      return overview();
+    },
+    async setMachineAllowUnverified(machineId: string, allow: boolean, confirm: boolean) {
+      const machine = machines().find((m) => m.id === machineId);
+      if (!machine) throw apiError(404, 'not_found', 'machine not found');
+      const r = entry(machine);
+      if (!unverified(r)) {
+        throw apiError(409, 'platform_verified', 'this machine runs a verified platform');
+      }
+      if (allow && !confirm) {
+        throw apiError(400, 'confirm_required', 'allowing updates needs confirm');
+      }
+      r.allowUnverified = allow;
       return overview();
     },
     async updateMachine(machineId: string) {

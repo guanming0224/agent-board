@@ -568,6 +568,8 @@ export function createHubBackend() {
       call('machineChannel', { params: { id }, body: { channel } }),
     updateMachine: (id) => call('machineUpdate', { params: { id } }),
     rollbackMachine: (id) => call('machineRollback', { params: { id } }),
+    setMachineAllowUnverified: (id, allow, confirm) =>
+      call('machineAllowUnverified', { params: { id }, body: { allow, confirm } }),
 
     getLayouts: (workspace) => call('layoutsGet', { query: { workspace } }),
     async saveLayouts(layouts) {

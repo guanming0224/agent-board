@@ -854,6 +854,17 @@ export const routes = {
     body: z.object({ channel: ReleaseChannel }),
     response: ReleaseOverview,
   }),
+  /**
+   * 未驗證平台（win-x64）的這台機器也發自動更新目標（CONTRACTS §21.3）。打開要帶 `confirm: true`（沒帶回 400
+   * `confirm_required`）；這台回報的平台不是未驗證平台回 409 `platform_verified`。關掉不用 confirm。
+   */
+  machineAllowUnverified: route({
+    method: 'PUT',
+    path: '/api/machines/:id/allow-unverified',
+    auth: 'owner',
+    body: z.object({ allow: z.boolean(), confirm: z.boolean().optional() }),
+    response: ReleaseOverview,
+  }),
   /** 「立即更新」：照目前目標版本更新（不管上次失敗過；延後條件仍然要過）。機器離線回 409 `machine_offline`。 */
   machineUpdate: route({
     method: 'POST',

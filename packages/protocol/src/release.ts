@@ -232,7 +232,10 @@ export const TargetNote = z.enum([
 ]);
 export type TargetNote = z.infer<typeof TargetNote>;
 
-/** 還沒在實機驗證過安裝與更新的平台：hub 照樣下載成品，但不發給這些平台的機器（W8）。 */
+/**
+ * 還沒在實機驗證過安裝與更新的平台：hub 照樣下載成品，但預設不發給這些平台的機器（W8）。
+ * owner 可以對單一機器打開「允許自動更新」（settings `machineAllowUnverified:<id>`，§21.3）。
+ */
 export const UNVERIFIED_PLATFORMS: readonly string[] = ['win-x64'];
 
 /** 延後條件（規格 §5 第 2 點）：有 PERM 就延後；這次要換 session host 而有 RUN／PERM／PLAN／starting 也延後。 */
@@ -277,6 +280,13 @@ export const MachineRelease = z.object({
   targetNote: TargetNote.nullable(),
   /** 能不能按「回滾到上一版」（rollbackSupported(previousVersion)）。 */
   canRollback: z.boolean(),
+  /**
+   * 這台回報的平台還沒實機驗證（UNVERIFIED_PLATFORMS，例如 win-x64）。舊 hub 不送＝false。
+   * 面板依此顯示說明與「允許自動更新」按鈕。
+   */
+  unverifiedPlatform: z.boolean().default(false),
+  /** owner 對這台打開了「允許自動更新」（settings `machineAllowUnverified:<id>`）。舊 hub 不送＝false。 */
+  allowUnverified: z.boolean().default(false),
 });
 export type MachineRelease = z.infer<typeof MachineRelease>;
 

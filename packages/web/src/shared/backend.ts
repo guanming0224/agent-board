@@ -246,6 +246,15 @@ export interface BoardBackend {
   updateMachine(machineId: string): Promise<ReleaseOverview>;
   /** 「回滾到上一版」。 */
   rollbackMachine(machineId: string): Promise<ReleaseOverview>;
+  /**
+   * 未驗證平台（win-x64）的這台也自動更新（CONTRACTS §21.3）。打開要 confirm=true（400 confirm_required），
+   * 不是未驗證平台 409 platform_verified；關掉不用 confirm。
+   */
+  setMachineAllowUnverified(
+    machineId: string,
+    allow: boolean,
+    confirm: boolean,
+  ): Promise<ReleaseOverview>;
 
   getLayouts(workspace: string): Promise<Layout[]>;
   saveLayouts(layouts: Layout[]): Promise<void>;

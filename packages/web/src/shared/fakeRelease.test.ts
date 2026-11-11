@@ -79,6 +79,33 @@ describe('假的機器面板（demo／e2e）', () => {
     );
   });
 
+  it('未驗證平台（Windows）：沒允許就不發目標；打開要 confirm、Mac 不能開（和 hub 同樣的錯誤碼）', async () => {
+    const { releases } = setup();
+    let gpu = (await releases.releases()).machines.find((m) => m.machineId === 'm-gpu')!;
+    expect(gpu).toMatchObject({
+      unverifiedPlatform: true,
+      allowUnverified: true,
+      targetNote: null,
+    });
+    let overview = await releases.setMachineAllowUnverified('m-gpu', false, false);
+    gpu = overview.machines.find((m) => m.machineId === 'm-gpu')!;
+    expect(gpu).toMatchObject({
+      allowUnverified: false,
+      targetVersion: null,
+      targetNote: 'platform_unverified',
+    });
+    await expect(releases.setMachineAllowUnverified('m-gpu', true, false)).rejects.toSatisfy(
+      (e) => codeOf(e) === 'confirm_required',
+    );
+    await expect(releases.setMachineAllowUnverified('m-studio', true, true)).rejects.toSatisfy(
+      (e) => codeOf(e) === 'platform_verified',
+    );
+    overview = await releases.setMachineAllowUnverified('m-gpu', true, true);
+    expect(overview.machines.find((m) => m.machineId === 'm-gpu')!.targetVersion).toBe('0.1.1');
+    const studio = overview.machines.find((m) => m.machineId === 'm-studio')!;
+    expect([studio.unverifiedPlatform, studio.allowUnverified]).toEqual([false, false]);
+  });
+
   it('離線的機器不能更新或回滾；清掉 repo 時 gh 狀態是 no_repo', async () => {
     const { releases } = setup();
     await expect(releases.updateMachine('m-laptop')).rejects.toSatisfy(

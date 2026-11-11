@@ -58,7 +58,9 @@ function actionError(e: unknown, t: T): string {
     code === 'previous_unsupported' ||
     code === 'update_in_progress' ||
     code === 'no_target' ||
-    code === 'schema_changed'
+    code === 'schema_changed' ||
+    code === 'confirm_required' ||
+    code === 'platform_verified'
   ) {
     return t(`machines.err.${code}`);
   }
@@ -502,6 +504,99 @@ function ActionButton({
   );
 }
 
+/**
+ * 未驗證平台（Windows）：說明為什麼預設不自動更新，owner 可以對這台打開（要再確認一次）或關掉（不用確認）。
+ * hub：PUT /api/machines/:id/allow-unverified（CONTRACTS §21.3）。
+ */
+function UnverifiedSwitch({
+  machine,
+  owner,
+  apply,
+}: {
+  machine: MachineRelease;
+  owner: boolean;
+  apply: (o: ReleaseOverview) => void;
+}) {
+  const t = useT();
+  const backend = useBoard((s) => s.backend);
+  const action = useAction(apply);
+  const [confirming, setConfirming] = useState(false);
+  const id = machine.machineId;
+  const set = (allow: boolean) =>
+    void action
+      .run(
+        () => backend.setMachineAllowUnverified(id, allow, allow),
+        t(allow ? 'machines.unverified.allowed' : 'machines.unverified.stopped'),
+      )
+      .then(() => setConfirming(false));
+  return (
+    <div className="rel-unverified" data-testid={`machine-unverified-${id}`}>
+      <p className="hint">
+        {t(machine.allowUnverified ? 'machines.unverified.onHint' : 'machines.unverified.offHint', {
+          platform: machine.platform ?? machine.os,
+        })}
+      </p>
+      <div className="row">
+        {machine.allowUnverified ? (
+          <button
+            type="button"
+            className="sm"
+            disabled={!owner || action.pending}
+            title={owner ? undefined : t('machines.block.member')}
+            onClick={() => set(false)}
+            data-testid={`machine-unverified-off-${id}`}
+          >
+            {t('machines.unverified.off')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="sm"
+            disabled={!owner || action.pending || confirming}
+            title={owner ? undefined : t('machines.block.member')}
+            onClick={() => setConfirming(true)}
+            data-testid={`machine-unverified-on-${id}`}
+          >
+            {t('machines.unverified.on')}
+          </button>
+        )}
+        <NoteText note={action.note} testId={`machine-unverified-note-${id}`} />
+      </div>
+      {confirming && !machine.allowUnverified && (
+        <div
+          className="alert rel-warn rel-confirm"
+          role="alert"
+          data-testid={`machine-unverified-confirm-${id}`}
+        >
+          <span aria-hidden="true">⚠</span>
+          <div>
+            <p>{t('machines.unverified.confirm', { name: machine.name })}</p>
+            <div className="row">
+              <button
+                type="button"
+                className="sm danger"
+                disabled={action.pending}
+                onClick={() => set(true)}
+                data-testid={`machine-unverified-yes-${id}`}
+              >
+                {t('machines.unverified.yes')}
+              </button>
+              <button
+                type="button"
+                className="sm"
+                onClick={() => setConfirming(false)}
+                data-testid={`machine-unverified-no-${id}`}
+              >
+                {t('machines.promoteCancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MachineRow({
   machine,
   owner,
@@ -563,6 +658,9 @@ function MachineRow({
       </p>
       {machine.update?.detail && status.kind === 'failed' && (
         <p className="hint rel-detail">{machine.update.detail}</p>
+      )}
+      {machine.unverifiedPlatform && (
+        <UnverifiedSwitch machine={machine} owner={owner} apply={apply} />
       )}
       {!machine.online && machine.lastSeenAt && (
         <p className="sub">

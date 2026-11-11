@@ -128,8 +128,17 @@
 .rel-status,
 .rel-detail,
 .rel-row > .sub,
-.rel-acts {
+.rel-acts,
+.rel-unverified {
   grid-column: 1 / -1;
+  margin: 0;
+}
+/* 未驗證平台（Windows）的說明與「允許自動更新」 */
+.rel-unverified {
+  display: grid;
+  gap: var(--space-2);
+}
+.rel-unverified .hint {
   margin: 0;
 }
 .rel-status {

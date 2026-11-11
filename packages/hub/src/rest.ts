@@ -639,6 +639,15 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       hub.release.setChannel(param(ctx), ctx.body.channel, ctx.user.id);
       return hub.release.overview();
     },
+    machineAllowUnverified: (ctx) => {
+      hub.release.setAllowUnverified(
+        param(ctx),
+        ctx.body.allow,
+        ctx.body.confirm === true,
+        ctx.user.id,
+      );
+      return hub.release.overview();
+    },
     machineUpdate: (ctx) => {
       hub.updateMachineNow(param(ctx), ctx.user);
       return hub.release.overview();

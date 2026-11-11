@@ -53,6 +53,8 @@ const machine = (over: Partial<MachineRelease> = {}): MachineRelease => ({
   update: null,
   targetNote: null,
   canRollback: true,
+  unverifiedPlatform: false,
+  allowUnverified: false,
   ...over,
 });
 

@@ -64,6 +64,8 @@ const KEY = {
   hold: (id: string) => `machineHold:${id}`,
   channel: (id: string) => `machineChannel:${id}`,
   machine: (id: string) => `machineRelease:${id}`,
+  /** 未驗證平台（win-x64）的這台也發目標（owner 在面板打開，§21.3）。 */
+  allowUnverified: (id: string) => `machineAllowUnverified:${id}`,
 };
 
 /** gh 子程序的結果。`missing`：找不到 gh 執行檔。 */
@@ -268,6 +270,43 @@ export class ReleaseManager {
     this.deps.store.setRawJson(KEY.hold(machineId), null);
     this.deps.store.setRawJson(KEY.channel(machineId), null);
     this.deps.store.setRawJson(KEY.machine(machineId), null);
+    this.deps.store.setRawJson(KEY.allowUnverified(machineId), null);
+  }
+
+  /** owner 對這台打開了「允許自動更新」（未驗證平台）。 */
+  allowsUnverified(machineId: string): boolean {
+    return this.deps.store.getRawJson(KEY.allowUnverified(machineId)) === true;
+  }
+
+  /**
+   * 未驗證平台（win-x64）的機器也發目標（§21.3）。owner 才能改（路由擋）；打開要 confirm（400 confirm_required）；
+   * 這台回報的平台不是未驗證平台 → 409 platform_verified（不知道平台也算）。audit `release.allow_unverified`。
+   */
+  setAllowUnverified(machineId: string, allow: boolean, confirm: boolean, userId: string): void {
+    if (!this.deps.store.getMachine(machineId))
+      throw new HttpError(404, 'not_found', 'No such machine');
+    const platform = this.record(machineId).platform;
+    if (!platform || !UNVERIFIED_PLATFORMS.includes(platform)) {
+      throw new HttpError(
+        409,
+        'platform_verified',
+        'This machine does not run an unverified platform',
+      );
+    }
+    if (allow && !confirm) {
+      throw new HttpError(
+        400,
+        'confirm_required',
+        'Allowing updates on an unverified platform needs confirm: true',
+      );
+    }
+    this.deps.store.setRawJson(KEY.allowUnverified(machineId), allow ? true : null);
+    this.deps.audit(
+      userId,
+      'release.allow_unverified',
+      JSON.stringify({ machineId, platform, allow }),
+    );
+    this.deps.onTargetsChanged();
   }
 
   setRepo(repo: string | null, userId: string): void {
@@ -436,7 +475,8 @@ export class ReleaseManager {
     }
     if (
       UNVERIFIED_PLATFORMS.includes(record.platform) &&
-      process.env.AGENT_BOARD_ALLOW_UNVERIFIED_PLATFORMS !== '1'
+      process.env.AGENT_BOARD_ALLOW_UNVERIFIED_PLATFORMS !== '1' &&
+      !this.allowsUnverified(machineId)
     ) {
       return { target: null, note: 'platform_unverified' };
     }
@@ -790,6 +830,9 @@ export class ReleaseManager {
         targetVersion: resolved.target?.version ?? null,
         targetNote: resolved.note,
         canRollback: rollbackSupported(record.previousVersion),
+        unverifiedPlatform:
+          record.platform !== null && UNVERIFIED_PLATFORMS.includes(record.platform),
+        allowUnverified: this.allowsUnverified(machine.id),
         compat:
           record.protocolVersion === null
             ? 'ok'

@@ -433,7 +433,77 @@ describe('目標的限制（S3a、W8、B5）與退避（W9）', () => {
     expect(overview.body.machines[0]).toMatchObject({
       targetVersion: null,
       targetNote: 'platform_unverified',
+      unverifiedPlatform: true,
+      allowUnverified: false,
     });
+  });
+
+  it('未驗證平台「允許自動更新」：owner 才能改、打開要 confirm、非未驗證平台 409、audit、關掉不用 confirm、刪機器一起清', async () => {
+    const { hub, cookie } = await ready([release('0.2.0')]);
+    await hub.api('POST', '/api/releases/check', { cookie });
+    const { daemon, machineId } = await hub.onlineDaemon(
+      cookie,
+      macHello({ os: 'win32', platform: 'win-x64' }) as never,
+    );
+    await hub.api('PUT', `/api/machines/${machineId}/channel`, {
+      cookie,
+      body: { channel: 'canary' },
+    });
+    expect((await daemon.next('release.target')).target).toBeNull();
+    const url = `/api/machines/${machineId}/allow-unverified`;
+
+    const member = await hub.createMember(cookie);
+    expect(
+      (await hub.api('PUT', url, { cookie: member.cookie, body: { allow: true, confirm: true } }))
+        .status,
+    ).toBe(403);
+    const noConfirm = await hub.api('PUT', url, { cookie, body: { allow: true } });
+    expect(noConfirm.status).toBe(400);
+    expect(JSON.stringify(noConfirm.body)).toContain('confirm_required');
+    expect(hub.running.store.getRawJson(`machineAllowUnverified:${machineId}`)).toBeNull();
+
+    const on = await hub.api<ReleaseOverview>('PUT', url, {
+      cookie,
+      body: { allow: true, confirm: true },
+    });
+    expect(on.status).toBe(200);
+    expect(on.body.machines[0]).toMatchObject({
+      allowUnverified: true,
+      unverifiedPlatform: true,
+      targetVersion: '0.2.0',
+      targetNote: null,
+    });
+    // 打開後馬上送目標給這台。
+    expect((await daemon.next('release.target')).target).toMatchObject({
+      version: '0.2.0',
+      platform: 'win-x64',
+    });
+    const audit = await hub.api('GET', '/api/audit?action=release.allow_unverified', { cookie });
+    expect(JSON.stringify(audit.body)).toContain(machineId);
+
+    // 關掉不用 confirm，回到預設（不發）。
+    const off = await hub.api<ReleaseOverview>('PUT', url, { cookie, body: { allow: false } });
+    expect(off.status).toBe(200);
+    expect(off.body.machines[0]).toMatchObject({
+      allowUnverified: false,
+      targetVersion: null,
+      targetNote: 'platform_unverified',
+    });
+
+    // Mac（已驗證的平台）不能開：409。
+    const mac = await hub.onlineDaemon(cookie, macHello() as never);
+    const verified = await hub.api('PUT', `/api/machines/${mac.machineId}/allow-unverified`, {
+      cookie,
+      body: { allow: true, confirm: true },
+    });
+    expect(verified.status).toBe(409);
+    expect(JSON.stringify(verified.body)).toContain('platform_verified');
+
+    // 刪機器一起清。
+    await hub.api('PUT', url, { cookie, body: { allow: true, confirm: true } });
+    expect(hub.running.store.getRawJson(`machineAllowUnverified:${machineId}`)).toBe(true);
+    await hub.api('DELETE', `/api/machines/${machineId}`, { cookie });
+    expect(hub.running.store.getRawJson(`machineAllowUnverified:${machineId}`)).toBeNull();
   });
 
   it('N-API：daemon 的 Node ABI 和建置的不同也發目標（不再 abi_mismatch，§21.10）', async () => {

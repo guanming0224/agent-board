@@ -110,6 +110,40 @@ test.describe('機器面板（桌面）', () => {
     await expect(page.getByTestId('machine-rollback-m-gpu')).toBeDisabled();
   });
 
+  test('Windows（未驗證平台）：說明預設不自動更新；打開要再確認，關掉不用', async ({ page }) => {
+    await open(page, '#/machines');
+    const box = page.getByTestId('machine-unverified-m-gpu');
+    // demo-gpu 已允許：說明＋「停止自動更新」。Mac 那幾台沒有這一區。
+    await expect(box).toContainText('已允許這台 win-x64 機器自動更新');
+    await expect(page.getByTestId('machine-unverified-m-studio')).toHaveCount(0);
+    await expect(page.getByTestId('machine-status-m-gpu')).toHaveText('最新');
+
+    // 關掉不用確認：回到預設（不發目標）。
+    await page.getByTestId('machine-unverified-off-m-gpu').click();
+    await expect(page.getByTestId('machine-unverified-note-m-gpu')).toHaveText('已停止自動更新');
+    await expect(page.getByTestId('machine-status-m-gpu')).toHaveText(
+      'Windows 還沒實機驗證，暫不自動更新',
+    );
+    await expect(box).toContainText('預設不自動更新');
+    await expect(page.getByTestId('machine-update-m-gpu')).toBeDisabled();
+
+    // 打開要再確認：取消就什麼都不變。
+    await page.getByTestId('machine-unverified-on-m-gpu').click();
+    const confirm = page.getByTestId('machine-unverified-confirm-m-gpu');
+    await expect(confirm).toContainText('還沒在實機驗證過自動更新');
+    await page.getByTestId('machine-unverified-no-m-gpu').click();
+    await expect(confirm).toHaveCount(0);
+    await expect(page.getByTestId('machine-status-m-gpu')).toHaveText(
+      'Windows 還沒實機驗證，暫不自動更新',
+    );
+    await page.getByTestId('machine-unverified-on-m-gpu').click();
+    await page.getByTestId('machine-unverified-yes-m-gpu').click();
+    await expect(confirm).toHaveCount(0);
+    await expect(page.getByTestId('machine-unverified-note-m-gpu')).toHaveText('已允許自動更新');
+    await expect(page.getByTestId('machine-status-m-gpu')).toHaveText('最新');
+    await expect(page.getByTestId('machine-unverified-off-m-gpu')).toBeEnabled();
+  });
+
   test('gh 沒登入時說明怎麼處理；成員只能看', async ({ page }) => {
     await open(
       page,
@@ -126,6 +160,7 @@ test.describe('機器面板（桌面）', () => {
     await expect(page.getByTestId('machines-promote-btn')).toBeDisabled();
     await expect(page.getByTestId('machine-update-m-studio')).toBeDisabled();
     await expect(page.getByTestId('machine-channel-m-gpu-stable')).toBeDisabled();
+    await expect(page.getByTestId('machine-unverified-off-m-gpu')).toBeDisabled();
     await expect(page.getByTestId('machines-repo-input')).toHaveCount(0);
   });
 });
@@ -145,6 +180,7 @@ test.describe('機器面板（手機）', () => {
       'machine-update-m-gpu',
       'machine-rollback-m-gpu',
       'machine-channel-m-gpu-canary',
+      'machine-unverified-off-m-gpu',
     ]) {
       const box = await page.getByTestId(id).boundingBox();
       expect(box?.height ?? 0, id).toBeGreaterThanOrEqual(44);
