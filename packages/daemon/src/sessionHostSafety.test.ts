@@ -137,22 +137,22 @@ describe('S1：host 可能還活著時不自動重開（同一個對話不能有
     // 模擬 host 被殺但 agent 沒跟著走（孤兒）。
     await host!.close({ killSessions: false });
     host = null;
-    expect(agentStillRunning(pid, readSnapshot(h.dataDir, 's1')!.agentStartedAt)).toBe(true);
+    expect(await agentStillRunning(pid, readSnapshot(h.dataDir, 's1')!.agentStartedAt)).toBe(true);
 
     await h.startDaemon();
     expect(h.runs()).toHaveLength(1);
     expect(helloSession('s1')!.statusDetail).toMatch(new RegExp(`pid ${pid}`));
   });
 
-  it('agentStillRunning：pid 在而且啟動時間對得上才算；pid 被重用（時間不對）、不在都不算', () => {
-    const started = processStartTime(process.pid)!;
+  it('agentStillRunning：pid 在而且啟動時間對得上才算；pid 被重用（時間不對）、不在都不算', async () => {
+    const started = (await processStartTime(process.pid))!;
     expect(started).toBeInstanceOf(Date);
-    expect(agentStillRunning(process.pid, started.toISOString())).toBe(true);
+    expect(await agentStillRunning(process.pid, started.toISOString())).toBe(true);
     expect(
-      agentStillRunning(process.pid, new Date(started.getTime() - 3_600_000).toISOString()),
+      await agentStillRunning(process.pid, new Date(started.getTime() - 3_600_000).toISOString()),
     ).toBe(false);
-    expect(agentStillRunning(2 ** 22 + 12345, new Date().toISOString())).toBe(false);
-    expect(agentStillRunning(null, null)).toBe(false);
+    expect(await agentStillRunning(2 ** 22 + 12345, new Date().toISOString())).toBe(false);
+    expect(await agentStillRunning(null, null)).toBe(false);
   });
 });
 
@@ -337,11 +337,11 @@ describe('N1：被擋住的 session 停止與接續', () => {
     writeFileSync(hostEndpoint(h.dataDir).tokenPath, 'sk-ant-demo-wrong-token\n');
     await h.startDaemon({ sessionHostLaunchWaitMs: 200 });
     expect(helloSession('s1')).toMatchObject({ status: 'error' });
-    expect(agentStillRunning(pid, readSnapshot(h.dataDir, 's1')!.agentStartedAt)).toBe(true);
+    expect(await agentStillRunning(pid, readSnapshot(h.dataDir, 's1')!.agentStartedAt)).toBe(true);
 
     h.hub.send({ type: 'session.stop', sessionId: 's1' });
     await waitUntil(() => runtimes('s1').some((r) => r.endedAt !== null), '停止後算結束');
-    expect(agentStillRunning(pid, null)).toBe(false);
+    expect(await agentStillRunning(pid, null)).toBe(false);
     expect(readSnapshot(h.dataDir, 's1')).toBeNull();
 
     // 接續：舊的已經收掉，開一個新的。

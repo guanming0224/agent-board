@@ -42,7 +42,7 @@ import {
   readModulesPlatform,
   versionAtLeast,
 } from './lib/node-runtime.mjs';
-import { agentStillRunning } from './lib/process-start.mjs';
+import { agentsStillRunning } from './lib/process-start.mjs';
 import {
   cleanTrash,
   isLink,
@@ -850,20 +850,22 @@ function busySessions(paths) {
   } catch {
     return [];
   }
-  const busy = [];
+  const candidates = [];
   for (const name of names) {
     try {
       const snapshot = JSON.parse(readFileSync(join(dir, name), 'utf8'));
       if (!BUSY_STATUSES.includes(snapshot.status) || !(snapshot.agentPid > 0)) continue;
-      // N2：pid 還在而且啟動時間對得上才算（pid 可能被別的程序重用）；讀不到啟動時間當成還在。
-      // Windows 用 PowerShell 的 Get-Process（和 daemon 的 processCheck.ts 同一套）。
-      if (!agentStillRunning(snapshot.agentPid, snapshot.agentStartedAt ?? null)) continue;
-      busy.push(snapshot.sessionId);
+      candidates.push(snapshot);
     } catch {
-      // 壞檔或 agent 已經不在：不算
+      // 壞檔：不算
     }
   }
-  return busy;
+  // N2：pid 還在而且啟動時間對得上才算（pid 可能被別的程序重用）；讀不到啟動時間當成還在。
+  // 一次查完（Windows 只開一次 PowerShell），和 daemon 的 processCheck.ts 同一套規則。
+  const alive = agentsStillRunning(
+    candidates.map((s) => ({ pid: s.agentPid, startedAt: s.agentStartedAt ?? null })),
+  );
+  return candidates.filter((_, i) => alive[i]).map((s) => s.sessionId);
 }
 
 /**

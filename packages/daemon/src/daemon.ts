@@ -48,7 +48,7 @@ import { listDirectory, makeDirectory } from './fsList';
 import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { downMarkerPath, HookServer, type HookOutput } from './hookServer';
 import { attachTimeoutFor, HostPtyBackend } from './hostPty';
-import { agentStillRunning } from './processCheck';
+import { agentsStillRunning, agentStillRunning } from './processCheck';
 import { HubClient } from './hubClient';
 import { errorMessage, log } from './log';
 import {
@@ -462,7 +462,7 @@ export class Daemon {
       }
     } else if (outcome.kind === 'absent') {
       // 確定沒有 host：上次留下的派工設定與密鑰都作廢（agent 已經不在），每個 PTY 會拿到新的。
-      clearMcpDir(dataDir, this.idsWithLiveAgent());
+      clearMcpDir(dataDir, await this.idsWithLiveAgent());
     } else {
       // host 可能還活著、養著上一輪的 agent：不自動重開（同一個對話不能有兩個 agent），MCP 檔也留著。
       this.resumeBlock = { reason: outcome.reason, liveIds: outcome.liveIds };
@@ -473,15 +473,26 @@ export class Daemon {
   }
 
   /** 快照記的 agent 還活著的 session（舊模式下也不能刪它們的 MCP 檔）。 */
-  private idsWithLiveAgent(): Set<string> {
-    const ids = new Set<string>();
-    for (const entry of this.store.sessions) {
-      const snapshot = readSnapshot(this.deps.config.dataDir, entry.sessionId);
-      if (snapshot && agentStillRunning(snapshot.agentPid, snapshot.agentStartedAt)) {
-        ids.add(entry.sessionId);
-      }
-    }
-    return ids;
+  private async idsWithLiveAgent(): Promise<Set<string>> {
+    const live = await this.liveAgents(this.store.sessions.map((s) => s.sessionId));
+    return new Set([...live.entries()].filter(([, alive]) => alive).map(([id]) => id));
+  }
+
+  /**
+   * 這些 session 快照記的上一輪 agent 是否還在跑（一次查完，Windows 只開一次 PowerShell、不阻塞，審查 W1）。
+   * 沒有快照的不在結果裡（＝沒在跑）。
+   */
+  private async liveAgents(sessionIds: readonly string[]): Promise<Map<string, boolean>> {
+    const withSnapshot = sessionIds
+      .map((id) => ({ id, snapshot: readSnapshot(this.deps.config.dataDir, id) }))
+      .filter((s) => s.snapshot !== null);
+    const alive = await agentsStillRunning(
+      withSnapshot.map((s) => ({
+        pid: s.snapshot!.agentPid,
+        startedAt: s.snapshot!.agentStartedAt,
+      })),
+    );
+    return new Map(withSnapshot.map((s, i) => [s.id, alive[i]!]));
   }
 
   private async tryConnectHost(): Promise<SessionHostClient | Error> {
@@ -752,7 +763,7 @@ export class Daemon {
     if (!blocked) return;
     // 上一輪的 agent（快照記的 pid＋啟動時間）還在：先收掉，確定沒了才移除。不然之後按「接續」會開出第二個（N1）。
     const snapshot = readSnapshot(this.deps.config.dataDir, sessionId);
-    if (snapshot && agentStillRunning(snapshot.agentPid, snapshot.agentStartedAt)) {
+    if (snapshot && (await agentStillRunning(snapshot.agentPid, snapshot.agentStartedAt))) {
       const gone = await this.killOldAgent(sessionId, snapshot.agentPid!, snapshot.agentStartedAt);
       if (!gone) {
         const reason = `舊的 agent（pid ${snapshot.agentPid}）收不掉，沒有移除這個 session。請手動結束那個程序，或重新啟動 daemon。`;
@@ -795,10 +806,10 @@ export class Daemon {
     }
     const deadline = Date.now() + ORPHAN_KILL_WAIT_MS;
     while (Date.now() < deadline) {
-      if (!agentStillRunning(pid, startedAt)) return true;
+      if (!(await agentStillRunning(pid, startedAt))) return true;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    return !agentStillRunning(pid, startedAt);
+    return !(await agentStillRunning(pid, startedAt));
   }
 
   /**
@@ -1277,7 +1288,7 @@ export class Daemon {
       if (this.stopping) throw new Error('daemon 正在關閉');
       // 上一輪的 agent（快照記的 pid＋啟動時間）還在跑：再開一個就是同一個對話兩個 agent（N1）。
       const previous = readSnapshot(this.deps.config.dataDir, sessionId);
-      if (previous && agentStillRunning(previous.agentPid, previous.agentStartedAt)) {
+      if (previous && (await agentStillRunning(previous.agentPid, previous.agentStartedAt))) {
         throw new Error(
           `這個 session 上一輪的 agent（pid ${previous.agentPid}）還在跑，不能再開一個。請先在畫布上停止它（會結束那個程序），或重新啟動 daemon 讓它接回。`,
         );
@@ -1373,6 +1384,8 @@ export class Daemon {
   private codexThreads: Promise<Set<string>> | null = null;
 
   private async resumeEach(): Promise<void> {
+    // 上一輪的 agent 還在不在：一次查完（Windows 只開一次 PowerShell，審查 W1）。
+    const live = await this.liveAgents(this.store.sessions.map((s) => s.sessionId));
     for (const entry of [...this.store.sessions]) {
       // 已經從 session host 接回的、被擋住的不用再開。
       if (this.sessions.has(entry.sessionId) || this.blocked.has(entry.sessionId)) continue;
@@ -1384,7 +1397,7 @@ export class Daemon {
       }
       // 上一輪的 agent（快照記的 pid＋啟動時間）還在跑：不重開（S1）。
       const snapshot = readSnapshot(this.deps.config.dataDir, entry.sessionId);
-      if (snapshot && agentStillRunning(snapshot.agentPid, snapshot.agentStartedAt)) {
+      if (snapshot && live.get(entry.sessionId)) {
         this.blockSession(
           entry,
           `上一個 agent（pid ${snapshot.agentPid}）還在跑，沒有重開，避免同一個對話有兩個 agent。`,

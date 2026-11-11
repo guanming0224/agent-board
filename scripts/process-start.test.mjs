@@ -4,33 +4,42 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, it } from 'node:test';
 import {
+  agentsStillRunning,
   agentStillRunning,
   clearStartTimeCache,
   ISO_WITH_ZONE,
   parseWindowsStartTime,
   processStartTime,
+  processStartTimes,
   START_TIME_CACHE_MS,
   START_TOLERANCE_MS,
   WINDOWS_QUERY_TIMEOUT_MS,
+  windowsPowerShell,
   windowsStartTimeArgs,
 } from './lib/process-start.mjs';
 
 afterEach(() => clearStartTimeCache());
 
 describe('process-start', () => {
-  it('Windows：powershell.exe -NoProfile -NonInteractive、Get-Process、UTC o 格式、逾時 10 秒', () => {
+  it('Windows：絕對路徑的 powershell.exe、Get-Process 一次查全部 pid、UTC o 格式、逾時 10 秒', () => {
     const calls = [];
-    const at = processStartTime(4242, {
+    const times = processStartTimes([4242, 4243], {
       platform: 'win32',
       run: (file, args, timeout) => {
         calls.push({ file, args, timeout });
-        return '2026-11-12T01:02:03.4567890Z\r\n';
+        return '4242 2026-11-12T01:02:03.4567890Z\r\n';
       },
     });
-    assert.equal(at.toISOString(), '2026-11-12T01:02:03.456Z');
+    assert.equal(times.get(4242).toISOString(), '2026-11-12T01:02:03.456Z');
+    assert.equal(times.has(4243), false);
     assert.deepEqual(calls, [
-      { file: 'powershell.exe', args: windowsStartTimeArgs(4242), timeout: 10_000 },
+      { file: windowsPowerShell(), args: windowsStartTimeArgs([4242, 4243]), timeout: 10_000 },
     ]);
+    assert.match(calls[0].file, /\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/);
+    assert.equal(
+      windowsPowerShell({ SystemRoot: 'D:\\Win' }),
+      'D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    );
     assert.equal(WINDOWS_QUERY_TIMEOUT_MS, 10_000);
   });
 
@@ -44,19 +53,28 @@ describe('process-start', () => {
     assert.equal(parseWindowsStartTime(null), null);
   });
 
-  it('失敗、逾時當成讀不到 → 還在；讀到的值快取 60 秒', () => {
-    assert.equal(processStartTime(process.pid, { platform: 'win32', run: () => null }), null);
-    assert.equal(
-      agentStillRunning(process.pid, new Date(0).toISOString(), {
+  it('一批 agent 只開一次查詢；失敗、逾時當成讀不到 → 還在；讀到的值快取 60 秒', () => {
+    let runs = 0;
+    const result = agentsStillRunning(
+      [
+        { pid: process.pid, startedAt: new Date(0).toISOString() },
+        { pid: process.pid, startedAt: null },
+        { pid: 2 ** 22 + 12345, startedAt: new Date().toISOString() },
+      ],
+      {
         platform: 'win32',
-        run: () => null,
-      }),
-      true,
+        run: () => {
+          runs += 1;
+          return null;
+        },
+      },
     );
+    assert.deepEqual(result, [true, true, false]);
+    assert.equal(runs, 1);
     let count = 0;
     const run = () => {
       count += 1;
-      return '2026-11-12T01:02:03Z';
+      return '9 2026-11-12T01:02:03Z';
     };
     processStartTime(9, { platform: 'win32', run, now: 0 });
     processStartTime(9, { platform: 'win32', run, now: START_TIME_CACHE_MS - 1 });
@@ -81,7 +99,8 @@ describe('process-start', () => {
     assert.match(daemon, /WINDOWS_QUERY_TIMEOUT_MS = 10_000/);
     assert.match(daemon, /START_TIME_CACHE_MS = 60_000/);
     assert.ok(daemon.includes(ISO_WITH_ZONE.source));
-    assert.ok(daemon.includes("StartTime.ToUniversalTime().ToString('o')"));
+    const command = windowsStartTimeArgs([1])[3];
+    assert.ok(daemon.includes(command.slice(command.indexOf(' -ErrorAction'))));
   });
 
   it('這個平台真的讀得到自己的啟動時間（Windows CI 跑真的 PowerShell）', () => {
