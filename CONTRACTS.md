@@ -1005,8 +1005,8 @@ start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀�
 #### 22.3.3 執行（`daemon/src/review.ts`，`ReviewRunner`）
 
 - 在 diff 所在的資料夾、兩邊並行，prompt＝固定審查指示（`protocol/src/review.ts` 的 `REVIEW_INSTRUCTIONS`，版本 `REVIEW_INSTRUCTIONS_VERSION`＝1；要求繁中三段：嚴重問題、建議、整體結論；不要求 JSON）＋diff，**經 stdin**（不在 argv）。
-  - Claude：`claude -p --output-format json --permission-mode plan --disallowedTools Edit Write NotebookEdit [--model <設定>]`。審查對象是 Claude session 時用它的帳號資料夾（`CLAUDE_CONFIG_DIR`）。結果讀 `{ result, is_error, usage }`。
-  - Codex：`codex exec --json -s read-only -c approval_policy="never" --skip-git-repo-check [-m <設定>] [-c model_reasoning_effort="<設定>"] -`。**偏離規格**：規格寫 `-a never`，但 codex-cli 0.167 的 `exec --help` 沒有 `-a`（只有互動模式有），所以用等效的設定覆寫。結果讀 JSONL：最後一則 `item.completed`（`agent_message`）的 text、`turn.completed.usage`；`turn.failed`／`error` 是失敗。事件格式取自官方文件與社群整理，**未用真的 codex 驗證**。
+  - Claude：`claude -p --output-format json --restricted --tools Read,Grep,Glob --allowedTools Read Grep Glob --disallowedTools Bash Edit MultiEdit Write NotebookEdit WebFetch WebSearch Task mcp__* --strict-mcp-config --mcp-config '{"mcpServers":{}}' --permission-mode plan --no-session-persistence [--model …]`。審查對象是 Claude session 時用它的帳號資料夾（`CLAUDE_CONFIG_DIR`）。結果讀 `{ result, is_error, usage }`。
+  - Codex：`codex exec --json -s read-only -c approval_policy="never" --skip-git-repo-check --ephemeral [-m …] [-c model_reasoning_effort="…"] -`。**偏離規格**：規格寫 `-a never`，但 codex-cli 0.167 的 `exec --help` 沒有 `-a`（只有互動模式有），所以用等效的設定覆寫。結果讀 JSONL：最後一則 `item.completed`（`agent_message`）的 text、`turn.completed.usage`；`turn.failed`／`error` 是失敗。事件格式取自官方文件與社群整理，**未用真的 codex 驗證**。
 - 逾時 `REVIEW_TIMEOUT_MS` 10 分鐘：整個程序群組 SIGTERM、5 秒後 SIGKILL，標 `timeout`。一邊失敗、逾時不影響另一邊。同一台最多 2 份同時跑（再多回 `busy`）。意見文字最多 6 萬字。
 - **Windows 機器只跑 Claude**：hub 送 `codex: null`、Codex 那邊 `skipped`，原因「windows: …」寫在結果上（daemon 也擋一次）。沒有 codex 的機器同樣 `skipped`／`codex_unavailable`。
 - 結果 `review.side` 斷線時留著，連回 hub（welcome）後補送；hub 只收 `running` 中、同一台機器、還沒結束那一邊的結果。daemon 停止時跑到一半的全部結束。hub 心跳把跑太久的（逾時＋2 分鐘，daemon 重啟、結果沒回來）標 `failed`／`no_result`；hub 重啟時沒跑完的標 `hub_restarted`。
@@ -1030,3 +1030,21 @@ start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀�
 - 成功馬上回 `{ reviewId, status, target, reviewsLeftThisHour }`，diff 與兩邊在背景跑；做完把一行摘要 `[Review from Agent Board] <對象> | Claude: <整體結論那段的第一句> | Codex: … | Full review is in the Agent Board inbox.` 送回隊長（SafeDelivery，只在它等輸入時送；摘要是固定規則取字，不解讀內容；沒跑成是 `| not run: <原因>`）。送回的摘要不是新的派工，不會觸發任何自動送字。
 - **界線**（`docs/no-llm-review.md`「交叉審查」、`scripts/no-llm-review-boundary.mjs`）：非互動 CLI 只在 `daemon/src/review.ts`；daemon 只在 `case 'review.run'` 呼叫 `ReviewRunner.run`；hub 只有 `ReviewEngine.startReview` 會送 `review.run`，而 `startReview` 只有兩個呼叫點：GM 的 REST `reviewStart`、隊長的 `requestByLead`（只從 `DispatchDeps.requestReview` → `dispatch.ts` 的 `request_review` 處理呼叫）。白名單以外、或呼叫點和所在函式之間有計時器，`check:no-llm` 一律失敗。排程（hub 心跳）只會把審查**結束**（逾時），不會開始。
 - **上架影響**：schema v10 → v11（只加表、升級前自動備份、不中斷 agent：session host 不受影響，hub 重啟期間 session 照跑）；hub、daemon、hook 要一起更新（`request_review` 進 `--allowedTools`／`enabled_tools`；舊 daemon 不宣告 `review.v1`，GM 發起回 `review_unsupported`）。
+
+### 22.4 獨立審查後的修正（2026-11-13）
+
+- **讀檔安全（S1）**：未追蹤檔先 `lstat`：符號連結只列 `(symlink -> 目標)`、不讀內容；FIFO、裝置、socket 等非一般檔案略過（不會卡住）；`realpath` 必須在 repo 裡；開檔 `O_RDONLY|O_NOFOLLOW`。
+- **機密檔（W2）**：檔名像機密的（`.env*`、`*.pem`、`*.key`、`*.p12`、`*.pfx`、`*.keystore`、`*.jks`、`*.der`、`*.crt`、`*.cer`、`id_rsa`／`id_dsa`／`id_ecdsa`／`id_ed25519`、`credentials*.json`、`service-account*.json`、`.npmrc`、`.netrc`、`.pypirc`、`.git-credentials`、`.pgpass`，以及 `.aws/`、`.ssh/`、`.gnupg/`、`.docker/`、`.kube/` 底下）只列名稱、不送內容，摘要 `omitted: "sensitive"`；`git diff` 也用 pathspec 排除。`id_*` 只認 SSH 金鑰的檔名（不擋 `id_utils.ts` 這類程式檔）。git 一律 `--no-textconv`、`-c core.fsmonitor=false`、`GIT_CONFIG_NOSYSTEM=1`。
+- **Claude 審查端（S2）**：參數見 22.3.3（claude 2.1.322 `--help` 確認）。`--restricted` 不讀 user／project／local 設定檔（repo 的 `.claude/settings*.json` hooks 不載入）、拿掉跑指令的工具；`--strict-mcp-config` 加空的 `--mcp-config` 不載入任何 MCP（含 `.mcp.json`）。所以在 repo 資料夾執行即可，不另開暫存資料夾。舊版 claude 不認得 `--restricted` 時那一邊會失敗（往安全的方向）。Codex 審查加 `--ephemeral`（不留紀錄）；repo 有自己的 `.codex/hooks.json`／`config.toml` 時 Codex 那邊略過（`project_codex_hooks`）。`codex exec --ignore-user-config` 沒帶（會連 provider／登入相關設定一起略過，未驗證）。`check:no-llm` 檢查參數白名單、`-c` 值白名單（只准 `approval_policy="never"` 與 `model_reasoning_effort`）、Claude 拒絕清單至少含 Bash、Edit、Write、MultiEdit。
+- **Codex 掛 MCP 改成開關（S3）**：`Settings.codexMcp`，**預設關**，設定頁「Session 與額度」→「Codex 掛派工工具」，`hub.welcome.codexMcp` 下發（daemon 只記在記憶體，沒收到就不掛）。帶 MCP 開的 Codex 在 15 秒內、還沒有任何 hook 就以非 0 結束：daemon 不回報這次結束、不帶 MCP 重開一次，之後這個 daemon 開的 Codex 都不帶，並送 `daemon.alert`（`codex_mcp_failed`）。
+- **e2e（S4）**：所有啟動 daemon 的 e2e 都設暫存 `CODEX_HOME` 與 `AGENT_BOARD_E2E=1`；daemon 在 `AGENT_BOARD_E2E=1` 時 `CODEX_HOME` 指到真的 `~/.codex`（或沒設）就拒絕啟動。
+- **隊長 `repoPath`（W1）**：只能是隊長自己或它能派工的成員的 `repoRoot`／`cwd`（同一台機器），否則 `invalid_repo`；`repoPath` 必須是絕對路徑（protocol `isAbsolutePath`）。
+- **遮蔽（W3）**：兩邊的意見與錯誤訊息在存檔、廣播前先過 `redactSecrets`（同 audit）；送回隊長的摘要也遮。
+- **開始前重查（W4）**：隊長發起的，diff 準備好、`startReview` 之前再查全部暫停與全隊暫停／停止，有就 `failed`（`board_paused`／`team_held`）並告訴隊長。
+- **頻率（W5）**：多一層全面板上限 `Settings.review.boardPerHour`（所有隊長合計，預設 10，0–60），超過 `review_board_rate_limit`。計數只算真的跑到模型的（沒有變更、git 失敗、暫停擋下、取消、`busy` 拒絕都不算）。daemon 同時跑 2 份，再來的排隊最多 2 份（輪到才開 CLI），排不下才 `busy`；同時最多 2 個 git diff，準備好的 diff 最多留 10 份。hub 的「跑太久」改成 2 × 10 分鐘＋2 分鐘（排隊的那份）。
+- **過期（W6）**：`awaiting_confirm` 超過 30 分鐘（`REVIEW_PREPARED_TTL_MS`，daemon 的 diff 也過期）→ `failed`／`expired`；保留期限也清 `awaiting_confirm`。
+- **只送摘要（W7）**：board 快照、`review.updated`、`GET /api/reviews` 的兩邊 `output` 是 null、`outputChars` 是字數；全文只有 `GET /api/reviews/:id`（網頁打開審查、狀態變了時讀）。
+- **界線檢查（W8）**：多檢查 `case 'dispatch.request'` → `onDispatchRequest` → `dispatch.handle` → `case 'request_review'` → `requestReview`；`.then`、`queueMicrotask`、`process.nextTick`、事件監聽 `.on(`／`.once(` 包著的呼叫也算延後觸發（只有 `requestByLead` 等 diff 好才開始，明列例外）。hub 測試另外跑一輪心跳、recover／expire、自動接續、交接規則、全隊暫停／繼續，確認沒送出 `review.run`。
+- **Windows（W9）**：審查 CLI 只用 `.exe`（不用 `.cmd`，那要經 cmd.exe、JSON 參數會壞）；結束用 `taskkill /T /F /PID`。仍未在 Windows 實機驗證。
+- **Codex 用量去重（W10）**：整次掃描共用一份去重（事件時間＋累計 `total_tokens`），fork／resume 複製過來的事件只算一次。沒做「路徑＋大小＋mtime」快取。
+- 其他：`tomlString` 跳脫所有控制字元；`POST /api/reviews/prepare`、`/:id/start` 改成 owner 權限；分支審查的 prompt 註明「工作資料夾可能在別的分支，以 diff 為準」（沒有另外檢出 worktree）。

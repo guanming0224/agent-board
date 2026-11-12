@@ -184,9 +184,11 @@ GM 決定（`docs/codex-round2-spec.md` §1）：交叉審查是 daemon 在 GM �
 不讀憑證。
 
 - **呼叫點只有一個檔**：`packages/daemon/src/review.ts`（`ReviewRunner.runSide`，`child_process.spawn`）。
-  - Claude：`claude -p --output-format json --permission-mode plan --disallowedTools Edit Write NotebookEdit [--model …]`。
-  - Codex：`codex exec --json -s read-only -c approval_policy="never" --skip-git-repo-check [-m …] [-c model_reasoning_effort="…"] -`。
-  - 兩邊都唯讀（plan＋拿掉改檔工具；唯讀沙盒、從不詢問）。prompt＝固定審查指示（`protocol/src/review.ts`
+  - Claude：`claude -p --output-format json --restricted --tools Read,Grep,Glob --allowedTools Read Grep Glob --disallowedTools Bash Edit MultiEdit Write NotebookEdit WebFetch WebSearch Task mcp__* --strict-mcp-config --mcp-config '{"mcpServers":{}}' --permission-mode plan --no-session-persistence [--model …]`。
+  - Codex：`codex exec --json -s read-only -c approval_policy="never" --skip-git-repo-check --ephemeral [-m …] [-c model_reasoning_effort="…"] -`。
+  - 兩邊都唯讀：Claude 用 `--restricted`（不讀專案設定檔與 hooks、拿掉跑指令的工具）、只給 Read／Grep／Glob、
+    明列拒絕、不載任何 MCP、plan 模式、不留紀錄；Codex 唯讀沙盒、從不詢問、不留紀錄，repo 有自己的 `.codex` hook 就不跑。
+    `check:no-llm` 用白名單檢查參數與 `-c` 的值（2026-11-13 審查 S2、W8）。prompt＝固定審查指示（`protocol/src/review.ts`
     `REVIEW_INSTRUCTIONS`）＋daemon 自己用 git 產生的 diff，經 stdin。逾時 10 分鐘整組結束。
   - 環境同開 session（`childEnv`：拿掉 daemon 自己的秘密），不加任何 API key、不改 `~/.claude`、`~/.codex`。
   - `packages/daemon/src/reviewDiff.ts` 只跑 `git`（`rev-parse`、`diff`、`ls-files`）讀變更，不改 repo。
@@ -198,10 +200,12 @@ GM 決定（`docs/codex-round2-spec.md` §1）：交叉審查是 daemon 在 GM �
     （`hub.ts`）→ `ReviewEngine.requestByLead` → `startReview`。
   - daemon：只在收到 `review.run` 時（`daemon.ts` 的 `case 'review.run'`）呼叫 `ReviewRunner.run`。
   - hub 心跳只會把跑太久的審查**標成失敗**，不會開始任何審查；任務自動執行、交接規則、自動接續都碰不到這條路。
+- **Codex 掛 MCP 預設關**（`Settings.codexMcp`，2026-11-13 審查 S3）：實測後才開。
 - **檢查**：`scripts/no-llm-review-boundary.mjs`（`check:no-llm` 呼叫）把上面每個呼叫點列成白名單（檔案＋所在函式）：
   `.startReview(`、`.requestByLead(`、`.deps.requestReview(`、hub 送出的 `type: 'review.run',`、`.reviews.run(`、
   `new ReviewRunner(`。白名單以外出現、或呼叫點和所在函式開頭之間有 `setTimeout`／`setInterval`／`setImmediate`，
-  一律失敗；`'-p'`／`'--print'`、`codex exec` 出現在 `review.ts` 以外的 daemon 檔案也失敗；`review.ts` 的參數只能是
+  一律失敗（2026-11-13 起 `.then`、`queueMicrotask`、`process.nextTick`、事件監聽也算延後觸發；並多檢查
+  `onDispatchRequest`、`dispatch.handle`、`request_review` 的呼叫點）；`'-p'`／`'--print'`、`codex exec` 出現在 `review.ts` 以外的 daemon 檔案也失敗；`review.ts` 的參數只能是
   唯讀的那幾個（不能有 `bypassPermissions`、`acceptEdits`、`workspace-write`、`--dangerously…`），也不能有
   `setInterval`。`scripts/no-llm-review-boundary.test.mjs` 用假的違反（從心跳呼叫、包在計時器裡、自動流程檔呼叫、
   其他 daemon 檔帶 `-p`）確認抓得到。
