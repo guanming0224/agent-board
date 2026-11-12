@@ -247,6 +247,62 @@ describe('buildUsageReport', () => {
   });
 });
 
+describe('buildUsageReport：Codex（Codex 第二輪）', () => {
+  it('Codex 細項標 agent codex、只對 Codex session 的 thread id、各自的「其他」分開；總數另放', () => {
+    const codexDetail = detail({
+      models: ['gpt-5-codex'],
+      sessions: [{ id: CB, cwd: '/work/beta' }],
+      otherSessions: 2,
+      rows: [
+        [1, 0, 0, 5, 6, 7, 0],
+        [1, 0, -1, 1, 1, 1, 0],
+      ],
+    });
+    const report = buildUsageReport({
+      now: NOW,
+      machines: [machine('m1')],
+      latest: new Map([
+        [
+          'm1',
+          {
+            ...latest(summary('m1'), detail()),
+            codex: {
+              summary: (({ machineId: _, ...rest }) => rest)(summary('m1', 9)),
+              detail: codexDetail,
+            },
+          },
+        ],
+      ]),
+      sessions: [
+        // 同一個 id：Claude session 不能對到 Codex 的用量，反之亦然。
+        boardSession({ id: 'claude-b', machineId: 'm1', claudeSessionId: CB }),
+        boardSession({ id: 'codex-b', machineId: 'm1', claudeSessionId: CB, agent: 'codex' }),
+      ],
+      teams: [],
+      members: [],
+      zones: [],
+      projects: [],
+    });
+    const codexRows = report.rows.filter(([, , , s]) => report.sessions[s]!.agent === 'codex');
+    expect(codexRows.map(([, , , s, ...c]) => [report.sessions[s]!.boardSessionId, c])).toEqual([
+      ['codex-b', [5, 6, 7, 0]],
+      [null, [1, 1, 1, 0]],
+    ]);
+    expect(
+      report.sessions.filter((s) => s.agent === 'codex' && s.claudeSessionId === null),
+    ).toHaveLength(1);
+    expect(
+      report.sessions.filter((s) => s.agent === 'claude' && s.claudeSessionId === null),
+    ).toHaveLength(1);
+    expect(report.machines[0]).toMatchObject({
+      codexSummary: { machineId: 'm1', inputTokens: 9 },
+      codexOtherSessions: 2,
+      summary: { inputTokens: 1 },
+    });
+    expect(report.models).toContain('gpt-5-codex');
+  });
+});
+
 describe('GET /api/usage', () => {
   let hub: TestHub;
   afterEach(async () => {

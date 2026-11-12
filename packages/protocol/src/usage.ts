@@ -3,7 +3,7 @@
 // 大小靠字典編碼與上限控制：日期、模型、session 各一張表，每列只放索引與四個數字。
 // 全部欄位都是選用的延伸：舊 daemon 不送 `detail`，hub 與畫面照常顯示總數。
 import { z } from 'zod';
-import { Id, IsoTime, UsageSummary } from './models';
+import { AgentKind, Id, IsoTime, UsageSummary } from './models';
 
 /**
  * 細項保留幾個日曆日（含今天）。至少 60 天才能拿「近 30 天」和前 30 天比；90 天讓趨勢圖可切 90 天。
@@ -57,6 +57,19 @@ export const UsageDetail = z.object({
 });
 export type UsageDetail = z.infer<typeof UsageDetail>;
 
+/**
+ * Codex 的用量（Codex 第二輪，GM 2026-11-12）：daemon 讀 `$CODEX_HOME/sessions/` 底下 `.jsonl` 的 `token_count` 事件，
+ * 和 Claude 同一種格式（總數＋細項），session 是 Codex 的 thread id。另外放一欄，不混進 Claude 的總數與細項：
+ * 舊 hub 不認得這個欄位就忽略（總數、細項照收），頁首「近 30 天」仍只算 Claude。
+ * token 換算：輸入＝`input_tokens − cached_input_tokens`（Codex 的 input 含快取，Claude 的不含）、
+ * 快取讀＝`cached_input_tokens`、輸出＝`output_tokens`（已含推理 token）、快取寫＝`cache_write_input_tokens`。
+ */
+export const CodexUsage = z.object({
+  summary: UsageSummary.omit({ machineId: true }),
+  detail: UsageDetail,
+});
+export type CodexUsage = z.infer<typeof CodexUsage>;
+
 // ── hub → web：跨機器彙整（GET /api/usage） ─────────────────
 
 /**
@@ -79,12 +92,18 @@ export const UsageReportMachine = z.object({
   timeZone: z.string().nullable(),
   earliestAt: IsoTime.nullable(),
   otherSessions: z.number().int().nonnegative(),
+  /** Codex 的近 30 天總數（Codex 第二輪）；這台沒回報 Codex 用量（沒裝 codex、daemon 太舊）是 null。 */
+  codexSummary: UsageSummary.nullable().default(null),
+  /** Codex 細項裡併進「其他」的 thread 數。 */
+  codexOtherSessions: z.number().int().nonnegative().default(0),
 });
 export type UsageReportMachine = z.infer<typeof UsageReportMachine>;
 
 export const UsageReportSession = z.object({
   machineId: Id,
-  /** null：這台機器的「其他」（超過上限併起來的 session）。 */
+  /** 這筆用量是哪個 CLI 的（Codex 第二輪）；舊資料沒有＝Claude Code。 */
+  agent: AgentKind.default('claude'),
+  /** null：這台機器的「其他」（超過上限併起來的 session）。Codex 的是 thread id。 */
   claudeSessionId: z.string().nullable(),
   cwd: z.string().nullable(),
   /** 對得到 Agent Board 的 session 才有；null 表示「中控台外的 session」（在外面直接開的 claude）。 */

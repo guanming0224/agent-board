@@ -3,6 +3,9 @@
 import { describe, expect, it } from 'vitest';
 import type { UsageReport, UsageReportMachine, UsageReportSession } from '@agent-board/protocol';
 import {
+  byAgent,
+  filterByAgent,
+  hasCodexUsage,
   byMachine,
   byModel,
   change,
@@ -30,11 +33,14 @@ const machine = (
   timeZone: 'Asia/Taipei',
   earliestAt: '2026-08-01T00:00:00.000Z',
   otherSessions: 0,
+  codexSummary: null,
+  codexOtherSessions: 0,
   ...over,
 });
 
 const ses = (over: Partial<UsageReportSession>): UsageReportSession => ({
   machineId: 'm1',
+  agent: 'claude',
   claudeSessionId: 'c',
   cwd: null,
   boardSessionId: null,
@@ -258,5 +264,27 @@ describe('分布', () => {
   it('shortPath 留最後兩層', () => {
     expect(shortPath('/home/demo/work/api')).toBe('…/work/api');
     expect(shortPath('/w/a')).toBe('/w/a');
+  });
+});
+
+describe('代理（Codex 第二輪）', () => {
+  // 第 5 個 session 是 Codex 的 thread；只有它的列算 Codex。
+  const withCodex: UsageReport = {
+    ...report,
+    sessions: [...report.sessions, ses({ agent: 'codex', claudeSessionId: 'cx' })],
+    rows: [...report.rows, [0, 4, 0, 5, 9, 1, 0, 0]],
+  };
+
+  it('沒有 Codex 用量時不顯示切換；有的話依代理拆開、篩選只留那一邊的列', () => {
+    expect(hasCodexUsage(report)).toBe(false);
+    expect(hasCodexUsage(withCodex)).toBe(true);
+    const p = periodEnding(TODAY, 1);
+    expect(byAgent(withCodex, p, 'conversation')).toEqual([
+      { key: 'agent:claude', label: 'claude', value: 30 + 100 },
+      { key: 'agent:codex', label: 'codex', value: 10 },
+    ]);
+    expect(filterByAgent(withCodex, 'codex').rows).toEqual([[0, 4, 0, 5, 9, 1, 0, 0]]);
+    expect(filterByAgent(withCodex, 'claude').rows).toHaveLength(report.rows.length);
+    expect(filterByAgent(withCodex, 'all')).toBe(withCodex);
   });
 });

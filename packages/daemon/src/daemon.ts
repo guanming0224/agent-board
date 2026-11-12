@@ -80,7 +80,7 @@ import { claudeConfigFor, findTranscriptFiles, inspectSession, purgeSession } fr
 import type { CreateStatusTracker } from './status/types';
 import { SessionStore, type PersistedSession } from './store';
 import { readTranscript } from './transcript';
-import { scanUsage } from './usage';
+import { scanCodexUsage, scanUsage } from './usage';
 import {
   createWorktree,
   currentBranch,
@@ -1860,7 +1860,23 @@ export class Daemon {
         new Date(),
         { windowMs: USAGE_WINDOW_MS },
       );
-      this.send({ type: 'usage', summary, detail });
+      // Codex 第二輪：Codex 自己的對話紀錄（只讀 sessions/，不碰 auth.json）。偵測到 codex、或資料夾裡有紀錄才送。
+      const codex = await scanCodexUsage(codexHome(this.childEnv()), new Date(), {
+        windowMs: USAGE_WINDOW_MS,
+      }).catch((error: unknown) => {
+        log.warn(`Codex 用量統計失敗：${errorMessage(error)}`);
+        return null;
+      });
+      const sendCodex =
+        codex !== null &&
+        (this.capabilities?.codexVersion !== undefined ||
+          codex.stats.files + codex.stats.skippedFiles > 0);
+      this.send({
+        type: 'usage',
+        summary,
+        detail,
+        ...(sendCodex ? { codex: { summary: codex.summary, detail: codex.detail } } : {}),
+      });
     } catch (error) {
       log.warn(`用量統計失敗：${errorMessage(error)}`);
     } finally {

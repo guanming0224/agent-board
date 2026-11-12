@@ -2,6 +2,8 @@
 // 全程容錯：讀不懂的行、檔案、資料夾一律略過，不可 crash。
 // 同一次掃描算兩份：近 30 天總數（UsageSummary，頁首用）與細項（UsageDetail，「用量詳情」用：
 // 每日 × 模型 × Claude session，日期用這台機器的時區）。只讀本機檔案，不呼叫任何模型。
+// Codex 第二輪（GM 2026-11-12）：Codex 的對話紀錄（`$CODEX_HOME/sessions/` 底下的 rollout JSONL）用同一套彙總，
+// 另外算一份（scanCodexUsage）。只讀 sessions 資料夾，不碰 `auth.json`。
 import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -264,6 +266,29 @@ export async function scanUsage(
   now: Date,
   options: UsageScanOptions = {},
 ): Promise<UsageScan> {
+  const files = async function* () {
+    for (const configDir of new Set(configDirs)) yield* jsonlFiles(join(configDir, 'projects'));
+  };
+  return scanFiles(files(), claudeFile, now, options);
+}
+
+/** 一個對話紀錄檔的讀法：檔名推得出的 session，和逐行解析（Codex 要記住前面的行，所以每個檔案一份）。 */
+interface FileReader {
+  sessionId: string | null;
+  parse(line: string): Parsed | null;
+}
+
+const claudeFile = (file: string): FileReader => ({
+  sessionId: sessionIdFromPath(file),
+  parse: parseLine,
+});
+
+async function scanFiles(
+  files: AsyncIterable<string>,
+  open: (file: string) => FileReader,
+  now: Date,
+  options: UsageScanOptions,
+): Promise<UsageScan> {
   const started = performance.now();
   const windowMs = options.windowMs ?? 30 * DAY_MS;
   const detailDays = Math.max(1, options.detailDays ?? USAGE_DETAIL_DAYS);
@@ -298,8 +323,8 @@ export async function scanUsage(
     addInto(cell, entry.counts);
   };
 
-  for (const configDir of new Set(configDirs)) {
-    for await (const file of jsonlFiles(join(configDir, 'projects'))) {
+  {
+    for await (const file of files) {
       try {
         // 整個檔案都比區間舊就不用開。
         if ((await stat(file)).mtimeMs < oldest) {
@@ -307,14 +332,15 @@ export async function scanUsage(
           continue;
         }
         stats.files += 1;
-        const fileSession = sessionIdFromPath(file);
+        const reader = open(file);
+        const fileSession = reader.sessionId;
         const lines = createInterface({
           input: createReadStream(file, 'utf8'),
           crlfDelay: Infinity,
         });
         for await (const line of lines) {
           stats.lines += 1;
-          const parsed = parseLine(line);
+          const parsed = reader.parse(line);
           if (!parsed) continue;
           stats.usageLines += 1;
           if (parsed.at !== null && parsed.at > to) continue;
@@ -385,6 +411,98 @@ export async function scanUsage(
     },
     stats,
   };
+}
+
+// ── Codex（Codex 第二輪，GM 2026-11-12）──────────────────
+
+/** `rollout-<時間>-<thread id>.jsonl` 的 thread id（同 codex.ts 的 codexThreadIds）。 */
+const CODEX_ROLLOUT_ID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+
+const record = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+/**
+ * 一個 Codex rollout 檔的讀法（格式取自本機 codex-cli 0.130–0.167 的真實檔案，只看欄位結構）：
+ * - `{"type":"session_meta","payload":{"cwd":…}}`：工作資料夾（第一個）。
+ * - `{"type":"turn_context","payload":{"model":…}}`：之後的 token 算在這個模型上。
+ * - `{"type":"event_msg","timestamp":…,"payload":{"type":"token_count","info":{"last_token_usage":{…},
+ *   "total_token_usage":{…}}}}`：每次模型回應一則；`info` 可能是 null（只帶額度資訊）。
+ *   同一個檔案裡 `total_token_usage.total_tokens` 和上一則一樣的是重複送的（實測 4,529 則裡 45 則），略過；
+ *   其餘的 `last_token_usage` 加起來等於最後的 total（實測 144 個檔全部相等）。
+ * - 0.167 起另有 `token_usage_record`，和 token_count 重複，不讀。
+ * session 一律用檔名裡的 thread id（`Session.claudeSessionId` 存的就是它，§19.1）。讀不懂的行略過。
+ */
+export function codexFile(file: string): FileReader {
+  let model = '';
+  let cwd: string | null = null;
+  let previousTotal: number | null = null;
+  return {
+    sessionId: CODEX_ROLLOUT_ID.exec(file)?.[1]?.toLowerCase() ?? null,
+    parse(line) {
+      // 多數行是對話內容，先擋掉省下 JSON.parse。
+      if (
+        !line.includes('"token_count"') &&
+        !line.includes('"turn_context"') &&
+        !line.includes('"session_meta"')
+      ) {
+        return null;
+      }
+      let row: Record<string, unknown> | null;
+      try {
+        row = record(JSON.parse(line));
+      } catch {
+        return null;
+      }
+      const payload = record(row?.payload);
+      if (!row || !payload) return null;
+      if (row.type === 'session_meta') {
+        cwd ??= text(payload.cwd, 4096);
+        return null;
+      }
+      if (row.type === 'turn_context') {
+        model = text(payload.model, 200) ?? model;
+        cwd ??= text(payload.cwd, 4096);
+        return null;
+      }
+      if (row.type !== 'event_msg' || payload.type !== 'token_count') return null;
+      const info = record(payload.info);
+      const last = record(info?.last_token_usage);
+      if (!info || !last) return null;
+      const total = record(info.total_token_usage);
+      const totalTokens = typeof total?.total_tokens === 'number' ? total.total_tokens : null;
+      if (totalTokens !== null && totalTokens === previousTotal) return null;
+      if (totalTokens !== null) previousTotal = totalTokens;
+      const input = tokenCount(last.input_tokens);
+      const cached = Math.min(tokenCount(last.cached_input_tokens), input);
+      const at = typeof row.timestamp === 'string' ? Date.parse(row.timestamp) : NaN;
+      return {
+        key: null,
+        at: Number.isNaN(at) ? null : at,
+        model,
+        sessionId: null,
+        cwd,
+        counts: {
+          // Codex 的 input 含快取讀（Claude 的不含）：拆開才和 Claude 的四欄同義。
+          inputTokens: input - cached,
+          // output 已含推理 token（reasoning_output_tokens 是其中一部分）。
+          outputTokens: tokenCount(last.output_tokens),
+          cacheReadTokens: cached,
+          cacheCreationTokens: tokenCount(last.cache_write_input_tokens),
+        },
+      };
+    },
+  };
+}
+
+/** Codex 的對話紀錄（`<codexHome>/sessions/YYYY/MM/DD/rollout-*.jsonl`）：和 Claude 一樣的總數與細項。 */
+export async function scanCodexUsage(
+  codexHome: string,
+  now: Date,
+  options: UsageScanOptions = {},
+): Promise<UsageScan> {
+  return scanFiles(jsonlFiles(join(codexHome, 'sessions')), codexFile, now, options);
 }
 
 /** 只要總數（舊介面，測試沿用）。 */

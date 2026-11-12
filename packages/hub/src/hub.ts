@@ -60,6 +60,7 @@ import {
   StoredUsage,
   usableDetail,
   type LatestUsage,
+  type CodexUsage,
   type UsageDetail,
   type UsageReport,
   type UsageSummary,
@@ -739,7 +740,7 @@ export class Hub {
         });
         return;
       case 'usage':
-        this.recordUsage(conn.machineId, msg.summary, msg.detail ?? null);
+        this.recordUsage(conn.machineId, msg.summary, msg.detail ?? null, msg.codex ?? null);
         return;
       case 'fs.listResult':
       case 'session.inspectResult':
@@ -2528,11 +2529,15 @@ export class Hub {
     machineId: string,
     summary: Omit<UsageSummary, 'machineId'>,
     detail: UsageDetail | null,
+    codex: CodexUsage | null = null,
   ): void {
+    const codexDetail = usableDetail(codex?.detail);
     const stored: StoredUsage = {
       summary: { ...summary, machineId },
       // 看不懂的版本不存，畫面當這台沒有細項。
       detail: usableDetail(detail),
+      // Codex 第二輪：細項版本看不懂就整份不存（總數沒有細項對照，畫面會誤導）。
+      codex: codex && codexDetail ? { summary: codex.summary, detail: codexDetail } : null,
     };
     this.usage.set(machineId, { ...stored, restored: false });
     try {

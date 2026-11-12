@@ -3,9 +3,10 @@
 // 對不到的（在 Agent Board 外直接開的 claude，或 session 換過 Claude id 之前的紀錄）boardSessionId 是 null，
 // 畫面歸「中控台外的 session」並依 cwd 顯示。
 import { z } from 'zod';
-import type { Machine, Project, Session, Team, TeamMember, Zone } from './models';
-import { UsageSummary } from './models';
+import type { AgentKind, Machine, Project, Session, Team, TeamMember, Zone } from './models';
+import { agentOf, UsageSummary } from './models';
 import {
+  CodexUsage,
   USAGE_DETAIL_VERSION,
   UsageDetail,
   type UsageReport,
@@ -18,6 +19,8 @@ import {
 export const StoredUsage = z.object({
   summary: UsageSummary,
   detail: UsageDetail.nullable(),
+  /** Codex 的用量（Codex 第二輪）；舊資料、沒有 Codex 是 null。 */
+  codex: CodexUsage.nullable().optional(),
 });
 export type StoredUsage = z.infer<typeof StoredUsage>;
 
@@ -61,10 +64,11 @@ export function buildUsageReport(input: UsageReportInput): UsageReport {
     const seen = teamOf.get(m.sessionId);
     if (!seen || team.name < seen.name) teamOf.set(m.sessionId, team);
   }
+  // Codex session 的 claudeSessionId 存的是 Codex 的 thread id（CONTRACTS §19.1）：依 agent 分開對。
   const byClaudeId = new Map<string, Session[]>();
   for (const s of input.sessions) {
     if (!s.claudeSessionId) continue;
-    const key = `${s.machineId}\0${s.claudeSessionId.toLowerCase()}`;
+    const key = `${agentOf(s)}\0${s.machineId}\0${s.claudeSessionId.toLowerCase()}`;
     const list = byClaudeId.get(key);
     if (list) list.push(s);
     else byClaudeId.set(key, [s]);
@@ -77,8 +81,8 @@ export function buildUsageReport(input: UsageReportInput): UsageReport {
   const modelIndex = new Map<string, number>();
   const daysSet = new Set<string>();
   for (const latest of input.latest.values()) {
-    const detail = usableDetail(latest.detail);
-    detail?.days.forEach((d) => daysSet.add(d));
+    usableDetail(latest.detail)?.days.forEach((d) => daysSet.add(d));
+    usableDetail(latest.codex?.detail)?.days.forEach((d) => daysSet.add(d));
   }
   const days = [...daysSet].sort();
   days.forEach((d, i) => dayIndex.set(d, i));
@@ -87,6 +91,8 @@ export function buildUsageReport(input: UsageReportInput): UsageReport {
   input.machines.forEach((machine, machineIdx) => {
     const latest = input.latest.get(machine.id) ?? null;
     const detail = usableDetail(latest?.detail);
+    const codex = latest?.codex ?? null;
+    const codexDetail = usableDetail(codex?.detail);
     machines.push({
       machineId: machine.id,
       name: machine.name,
@@ -95,19 +101,29 @@ export function buildUsageReport(input: UsageReportInput): UsageReport {
       summary: latest?.summary ?? null,
       countedAt: detail === null ? null : (latest?.summary.to ?? null),
       restored: latest?.restored ?? false,
-      timeZone: detail?.timeZone ?? null,
+      timeZone: detail?.timeZone ?? codexDetail?.timeZone ?? null,
       earliestAt: detail?.earliestAt ?? null,
       otherSessions: detail?.otherSessions ?? 0,
+      codexSummary: codex ? { ...codex.summary, machineId: machine.id } : null,
+      codexOtherSessions: codexDetail?.otherSessions ?? 0,
     });
-    if (detail === null) return;
+    if (detail !== null) addDetail(machine, machineIdx, detail, 'claude');
+    if (codexDetail !== null) addDetail(machine, machineIdx, codexDetail, 'codex');
+  });
 
+  function addDetail(
+    machine: Machine,
+    machineIdx: number,
+    detail: UsageDetail,
+    agent: AgentKind,
+  ): void {
     const localSession: number[] = [];
     let otherIdx: number | null = null;
     const sessionIdx = (s: number): number => {
       if (s >= 0 && s < detail.sessions.length) {
         if (localSession[s] === undefined) {
           const raw = detail.sessions[s]!;
-          const matches = byClaudeId.get(`${machine.id}\0${raw.id.toLowerCase()}`);
+          const matches = byClaudeId.get(`${agent}\0${machine.id}\0${raw.id.toLowerCase()}`);
           const board = matches ? pickSession(matches) : null;
           const team = board ? (teamOf.get(board.id) ?? null) : null;
           const zoneId = board ? (team?.zoneId ?? board.zoneId) : null;
@@ -115,6 +131,7 @@ export function buildUsageReport(input: UsageReportInput): UsageReport {
           localSession[s] = sessions.length;
           sessions.push({
             machineId: machine.id,
+            agent,
             claudeSessionId: raw.id,
             // 對話紀錄沒寫 cwd 時用 Agent Board 記的。
             cwd: raw.cwd ?? board?.cwd ?? null,
@@ -135,6 +152,7 @@ export function buildUsageReport(input: UsageReportInput): UsageReport {
         otherIdx = sessions.length;
         sessions.push({
           machineId: machine.id,
+          agent,
           claudeSessionId: null,
           cwd: null,
           boardSessionId: null,
@@ -163,7 +181,7 @@ export function buildUsageReport(input: UsageReportInput): UsageReport {
       }
       rows.push([machineIdx, dayIndex.get(day)!, mi, sessionIdx(s), i, o, r, w]);
     }
-  });
+  }
 
   return { generatedAt: input.now.toISOString(), days, models, machines, sessions, rows };
 }

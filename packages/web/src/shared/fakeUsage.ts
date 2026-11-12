@@ -185,6 +185,29 @@ function summaryOf(machineId: string, detail: UsageDetail, countedAt: string) {
   };
 }
 
+/** demo-studio 的 Codex 用量（Codex 第二輪）：一個 thread、近 10 天，模型 gpt-5-codex，沒有快取寫。 */
+function demoCodexDetail(machineId: string, today: string, seed: number): UsageDetail | null {
+  if (machineId !== 'm-studio') return null;
+  const rand = random(seed);
+  const days = Array.from({ length: DAYS }, (_, i) => shiftUsageDay(today, i - (DAYS - 1)));
+  const rows: UsageDetailRow[] = [];
+  for (let ago = 10; ago >= 0; ago -= 1) {
+    if (rand() < 0.2) continue;
+    const output = Math.round(9_000 * (0.4 + rand()));
+    rows.push([DAYS - 1 - ago, 0, 0, Math.round(output * 0.8), output, output * 12, 0]);
+  }
+  return {
+    version: USAGE_DETAIL_VERSION,
+    timeZone: 'Asia/Taipei',
+    days,
+    models: ['gpt-5-codex'],
+    sessions: [{ id: '9c4d2e1f-7a6b-4c5d-8e9f-1a2b3c4d5e6f', cwd: '/home/demo/api' }],
+    otherSessions: 0,
+    earliestAt: new Date(Date.now() - 10 * 24 * 60 * 60_000).toISOString(),
+    rows,
+  };
+}
+
 export function demoUsageReport(state: {
   machines: readonly Machine[];
   sessions: readonly Session[];
@@ -200,7 +223,18 @@ export function demoUsageReport(state: {
   state.machines.forEach((m, i) => {
     const detail = demoDetail(m.id, today, 20261109 + i);
     if (detail) {
-      latest.set(m.id, { summary: summaryOf(m.id, detail, countedAt), detail, restored: false });
+      const codex = demoCodexDetail(m.id, today, 20261112 + i);
+      latest.set(m.id, {
+        summary: summaryOf(m.id, detail, countedAt),
+        detail,
+        codex: codex
+          ? {
+              summary: (({ machineId: _, ...rest }) => rest)(summaryOf(m.id, codex, countedAt)),
+              detail: codex,
+            }
+          : null,
+        restored: false,
+      });
     }
   });
   return buildUsageReport({ now, latest, ...state });

@@ -31,7 +31,7 @@ import {
   UsageSummary,
 } from './models';
 import { AgentBoardTool, ProgressCard } from './progress';
-import { UsageDetail } from './usage';
+import { CodexUsage, UsageDetail } from './usage';
 import { ReleaseTarget, UpdateState } from './release';
 import {
   DeepSearchLimits,
@@ -257,6 +257,8 @@ export const DaemonToHub = z.discriminatedUnion('type', [
      * 細項（GM 2026-11-09）；舊 daemon 不送。壞掉或超過上限時當沒送（`catch`），總數照收。
      */
     detail: UsageDetail.optional().catch(undefined),
+    /** Codex 的用量（Codex 第二輪）；這台沒有 Codex 紀錄或 daemon 太舊時不送。壞掉當沒送。 */
+    codex: CodexUsage.optional().catch(undefined),
   }),
   z.object({
     type: z.literal('fs.listResult'),

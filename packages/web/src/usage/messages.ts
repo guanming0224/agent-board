@@ -78,6 +78,11 @@ export const zhTW: Record<string, string> = {
 
   'usage.share.model': '依模型',
   'usage.share.machine': '依機器',
+  'usage.share.agent': '依代理',
+  'usage.agent': '代理',
+  'usage.agent.all': '合計',
+  'usage.agent.claude': 'Claude Code',
+  'usage.agent.codex': 'Codex',
   'usage.share.noModel': '（紀錄沒寫模型）',
   'usage.share.pct': '{pct}%',
 };
@@ -165,6 +170,11 @@ export const en: Record<string, string> = {
 
   'usage.share.model': 'By model',
   'usage.share.machine': 'By machine',
+  'usage.share.agent': 'By agent',
+  'usage.agent': 'Agent',
+  'usage.agent.all': 'Combined',
+  'usage.agent.claude': 'Claude Code',
+  'usage.agent.codex': 'Codex',
   'usage.share.noModel': '(no model in the transcript)',
   'usage.share.pct': '{pct}%',
 };

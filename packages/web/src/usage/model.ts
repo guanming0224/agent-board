@@ -404,6 +404,42 @@ export function byMachine(report: UsageReport, p: Period, measure: Measure): Sha
     .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label));
 }
 
+// ── 代理（Claude／Codex，Codex 第二輪）──────────────────
+
+/** all：Claude 與 Codex 合計；claude／codex：只看一邊。 */
+export type AgentFilter = 'all' | 'claude' | 'codex';
+
+const agentOfRow = (report: UsageReport, row: Row) => report.sessions[row[3]]?.agent ?? 'claude';
+
+/** 有沒有 Codex 的用量（沒有就不顯示代理切換）。 */
+export const hasCodexUsage = (report: UsageReport): boolean =>
+  report.sessions.some((s) => s.agent === 'codex') ||
+  report.machines.some((m) => m.codexSummary !== null);
+
+/** 只留某個代理的列；其餘欄位（日期、機器、session 表）不動，索引照舊有效。 */
+export function filterByAgent(report: UsageReport, agent: AgentFilter): UsageReport {
+  if (agent === 'all') return report;
+  return { ...report, rows: report.rows.filter((row) => agentOfRow(report, row) === agent) };
+}
+
+export function byAgent(report: UsageReport, p: Period, measure: Measure): Share[] {
+  const sums = new Map<string, Counts>();
+  for (const row of report.rows) {
+    if (!inPeriod(report, row, p)) continue;
+    const agent = agentOfRow(report, row);
+    let c = sums.get(agent);
+    if (!c) {
+      c = zeroCounts();
+      sums.set(agent, c);
+    }
+    add(c, row);
+  }
+  return [...sums]
+    .map(([agent, c]) => ({ key: `agent:${agent}`, label: agent, value: measureOf(c, measure) }))
+    .filter((s) => s.value > 0)
+    .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label));
+}
+
 /** 資料夾太長時只留最後兩層（完整路徑放提示框）。 */
 export function shortPath(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);

@@ -17,8 +17,11 @@ import { inboxHash, teamHash } from '../views/overlay';
 import { formatTokens, formatTokensFull } from '../views/usage';
 import { useViewsUi } from '../views/uiStore';
 import {
+  byAgent,
   byMachine,
   byModel,
+  filterByAgent,
+  hasCodexUsage,
   change,
   conversation,
   allTokens,
@@ -32,6 +35,7 @@ import {
   todayOf,
   TOKEN_KINDS,
   type Counts,
+  type AgentFilter,
   type Measure,
   type OverviewItem,
   type RankKind,
@@ -514,12 +518,16 @@ function Shares({
   );
 }
 
-function Detail({ report, refreshing }: { report: UsageReport; refreshing: boolean }) {
+function Detail({ report: full, refreshing }: { report: UsageReport; refreshing: boolean }) {
   const t = useT();
   const mask = useMaskText();
   const [period, setPeriod] = useState<number>(30);
   const [stackBy, setStackBy] = useState<StackBy>('type');
   const [measure, setMeasure] = useState<Measure>('conversation');
+  // Codex 第二輪：代理維度。沒有 Codex 用量時不顯示切換，畫面和以前一樣。
+  const [agent, setAgent] = useState<AgentFilter>('all');
+  const codex = hasCodexUsage(full);
+  const report = useMemo(() => filterByAgent(full, codex ? agent : 'all'), [full, codex, agent]);
   const today = todayOf(new Date());
   const p = periodEnding(today, period);
   const items = useMemo(() => overview(report, today), [report, today]);
@@ -539,7 +547,7 @@ function Detail({ report, refreshing }: { report: UsageReport; refreshing: boole
           ? t('usage.otherMachines')
           : machineName(s.key),
   }));
-  const hasDetail = report.machines.some((m) => m.state === 'detail');
+  const hasDetail = codex || report.machines.some((m) => m.state === 'detail');
   const caption = `${t('usage.lastDays', { n: period })} · ${t(
     measure === 'all' ? 'usage.all' : 'usage.conversation',
   )}`;
@@ -571,6 +579,19 @@ function Detail({ report, refreshing }: { report: UsageReport; refreshing: boole
               onChange={setMeasure}
               testId="usage-measure"
             />
+            {codex && (
+              <Seg
+                label={t('usage.agent')}
+                value={agent}
+                options={[
+                  { value: 'all', label: t('usage.agent.all') },
+                  { value: 'claude', label: t('usage.agent.claude') },
+                  { value: 'codex', label: t('usage.agent.codex') },
+                ]}
+                onChange={setAgent}
+                testId="usage-agent"
+              />
+            )}
           </div>
           <Overview items={items} />
           <section className="usage-card" aria-labelledby="usage-trend-h">
@@ -607,6 +628,15 @@ function Detail({ report, refreshing }: { report: UsageReport; refreshing: boole
               caption={caption}
               labelOf={(s) => mask(s.label)}
             />
+            {codex && (
+              <Shares
+                title={t('usage.share.agent')}
+                shares={byAgent(report, p, measure)}
+                testId="usage-by-agent"
+                caption={caption}
+                labelOf={(s) => t(s.label === 'codex' ? 'usage.agent.codex' : 'usage.agent.claude')}
+              />
+            )}
           </div>
         </>
       )}
