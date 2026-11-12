@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { UsageDetail } from '@agent-board/protocol';
 import { makeTempDir } from './test-support/harness';
+import { assertE2eCodexHome } from './daemon';
 import { codexFile, scanCodexUsage } from './usage';
 
 const temps: string[] = [];
@@ -139,5 +140,21 @@ describe('scanCodexUsage', () => {
     expect(reader.parse('{"type":"token_count"')).toBeNull();
     expect(reader.parse('["token_count"]')).toBeNull();
     expect(codexFile('/x/notes.jsonl').sessionId).toBeNull();
+  });
+});
+
+describe('assertE2eCodexHome（審查 S4）', () => {
+  it('e2e 模式下 CODEX_HOME 指到真的 ~/.codex（或沒設）就拒絕；暫存資料夾或非 e2e 照常', () => {
+    const home = '/home/someone';
+    expect(() => assertE2eCodexHome({ AGENT_BOARD_E2E: '1', HOME: home }, home)).toThrow(
+      /CODEX_HOME/,
+    );
+    expect(() =>
+      assertE2eCodexHome({ AGENT_BOARD_E2E: '1', CODEX_HOME: `${home}/.codex/` }, home),
+    ).toThrow();
+    expect(() =>
+      assertE2eCodexHome({ AGENT_BOARD_E2E: '1', CODEX_HOME: '/tmp/ab-codex' }, home),
+    ).not.toThrow();
+    expect(() => assertE2eCodexHome({ HOME: home }, home)).not.toThrow();
   });
 });

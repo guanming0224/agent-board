@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, constants, rmSync, statSync, writeFileSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, delimiter, dirname, extname, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, extname, join, resolve, sep } from 'node:path';
 import {
   agentOf,
   CODEX_PERMISSION_WAIT_MS,
@@ -95,6 +95,19 @@ import {
 } from './worktree';
 
 const USAGE_INTERVAL_MS = 15 * 60_000;
+/**
+ * 審查 S4：e2e 測試（`AGENT_BOARD_E2E=1`）一律要給暫存的 `CODEX_HOME`，不能讀、寫使用者真的 `~/.codex`
+ * （用量掃描、resume 檢查、假 codex 留的對話紀錄）。指到真的就拒絕啟動。
+ */
+export function assertE2eCodexHome(env: NodeJS.ProcessEnv, home: string = homedir()): void {
+  if (env.AGENT_BOARD_E2E !== '1') return;
+  if (resolve(codexHome(env)) === resolve(join(home, '.codex'))) {
+    throw new Error(
+      'AGENT_BOARD_E2E=1 but CODEX_HOME points to the real ~/.codex; set CODEX_HOME to a temporary folder',
+    );
+  }
+}
+
 /** 帶 MCP 開的 Codex 在這段時間內、還沒有任何 hook 就失敗：當成 MCP 設定問題，不帶 MCP 重開（審查 S3）。 */
 const CODEX_MCP_PROBE_MS = 15_000;
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60_000;
@@ -419,6 +432,7 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
+    assertE2eCodexHome(this.baseEnv);
     // 一份資料夾只能有一個 daemon（複查 R1）：先拿 daemon.lock，另一個活著的 daemon 拿著就在這裡失敗，
     // 不會去搶 session host 的連線，hook pipe 被占時也才能確定對方不是 daemon。
     ensurePrivateDir(this.deps.config.dataDir);

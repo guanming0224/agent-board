@@ -34,9 +34,14 @@ let daemon: ChildProcess | undefined;
 let daemonDir: string;
 let claudeDir: string;
 
+const E2E_CODEX_HOME = mkdtempSync(join(tmpdir(), 'ab-e2e-codex-home-'));
+
 function daemonEnv(): NodeJS.ProcessEnv {
   return {
     ...process.env,
+    // 審查 S4：daemon 在 e2e 模式下拒絕用真的 ~/.codex；用量掃描、resume 檢查都只碰暫存資料夾。
+    AGENT_BOARD_E2E: '1',
+    CODEX_HOME: E2E_CODEX_HOME,
     AGENT_BOARD_HUB_URL: `ws://127.0.0.1:${PORT}`,
     AGENT_BOARD_DATA_DIR: daemonDir,
     AGENT_BOARD_CLAUDE_BIN: FAKE_CLAUDE,
