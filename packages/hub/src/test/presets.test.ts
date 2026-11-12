@@ -68,7 +68,7 @@ describe('schema v10：team_presets', () => {
   }
 
   it('v9 升級：寫 -v9 備份；team_presets 存在且為空；舊資料（團隊、session、工作區、範本、座標）原封不動', () => {
-    expect(SCHEMA_VERSION).toBe(10);
+    expect(SCHEMA_VERSION).toBe(11);
     const path = join(dir, 'hub.db');
     makeV9(path);
     const before = new Database(path, { readonly: true });
@@ -77,7 +77,7 @@ describe('schema v10：team_presets', () => {
     before.close();
 
     const db = openDatabase(path, { log: () => undefined, now: NOW });
-    expect(db.pragma('user_version', { simple: true })).toBe(10);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     expect(readdirSync(dir).filter((n) => n.includes('.bak-'))).toEqual([`hub.db.bak-${STAMP}-v9`]);
     const columns = (db.prepare('PRAGMA table_info(team_presets)').all() as { name: string }[]).map(
       (c) => c.name,

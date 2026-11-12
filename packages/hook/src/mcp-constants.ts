@@ -13,6 +13,7 @@ export const DISPATCH_TOOLS = [
   'send_task',
   'get_result',
   'release_member',
+  'request_review',
 ] as const;
 /**
  * 舊版 daemon 沒給 MCP_TOOLS_ENV 時只列這四個：舊 daemon 的 --allowedTools 沒有 release_member，

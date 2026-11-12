@@ -21,8 +21,11 @@ import {
   TeamRole,
   type AutoStaff,
   PermissionMode,
+  ReviewRef,
   sameWorkingTree,
   type DispatchTool,
+  type Review,
+  type ReviewTargetInput,
   type DispatchWork,
   type Session,
   type SessionEvent,
@@ -164,6 +167,13 @@ const SpawnArgs = z.object({
 const SendArgs = z.object({ member: z.string().min(1), text: z.string().min(1) });
 const MemberArgs = z.object({ member: z.string().min(1) });
 const ReleaseArgs = z.object({ member: z.string().min(1), reason: z.string() });
+const ReviewArgs = z.object({
+  member: z.string().min(1).optional(),
+  branch: ReviewRef.optional(),
+  base: ReviewRef.optional(),
+  repoPath: z.string().min(1).max(4096).optional(),
+  reason: z.string(),
+});
 
 /** reason 必填（隊長自主擴編）：一行、清控制字元、截斷。空的回 null。 */
 const reasonOf = (raw: unknown): string | null => {
@@ -296,7 +306,22 @@ export interface DispatchDeps {
     member: Session;
     role: TeamMember['role'];
     reason: string;
+    reviewId?: string;
   }): void;
+  /**
+   * 交叉審查（Codex 第二輪）：隊長的 request_review。建好紀錄就回（diff 與兩邊審查在背景跑）；
+   * 對象不在、機器離線、daemon 太舊時丟 HttpError。沒給＝這個 hub 不支援（測試）。
+   */
+  requestReview?(input: {
+    lead: Session;
+    teamId: string;
+    target: ReviewTargetInput;
+    reason: string;
+  }): Review;
+  /** 這一隊這個小時還能要求幾次審查（設定 `review.leadPerHour` 減去已用的）。 */
+  reviewsLeft?(teamId: string): number;
+  /** 設定的每小時上限（0＝隊長不能發起）。 */
+  reviewLimit?(): number;
   /** 團隊成員變了：推 team.updated（畫面不等輪詢）。 */
   teamChanged(team: Team): void;
   /**
@@ -388,6 +413,8 @@ export class DispatchEngine {
         return this.getResult(caller, args);
       case 'release_member':
         return this.release(caller, args);
+      case 'request_review':
+        return this.requestReview(caller, args);
     }
   }
 
@@ -898,6 +925,134 @@ export class DispatchEngine {
   }
 
   /** 擴編被擋下：audit 加事件（記在呼叫者）。 */
+  // ── request_review（交叉審查，Codex 第二輪）──────────────────
+
+  /**
+   * 隊長要求交叉審查。依序：沒帶理由 → reason_required；參數不對 → invalid_arguments；全部暫停 → board_paused；
+   * 不是隊長 → not_lead；全隊暫停／停止 → team_held；設定上限 0 → review_disabled；這個小時用完 → review_rate_limit；
+   * 對象不是自己團隊的成員 → not_your_member。跑模型的是 hub 的 ReviewEngine（no-llm 界線：只有這裡與 GM 的確認會觸發）。
+   */
+  private requestReview(caller: Session, raw: Record<string, unknown>): DispatchReply {
+    const reason = reasonOf(raw.reason);
+    if (reason === null) {
+      return fail(
+        'reason_required',
+        'request_review requires reason: one short sentence on why this change needs a cross review now. It is shown to the user.',
+      );
+    }
+    const parsed = ReviewArgs.safeParse(raw);
+    if (
+      !parsed.success ||
+      (parsed.data.member === undefined) === (parsed.data.branch === undefined)
+    ) {
+      return fail(
+        'invalid_arguments',
+        'Give exactly one of member (a member of your team: its uncommitted changes) or branch (optional base, default main; optional repoPath, default your repository). Branch names cannot start with "-" or contain spaces or "..".',
+      );
+    }
+    const args = parsed.data;
+    if (!this.deps.requestReview || !this.deps.reviewsLeft) {
+      return fail('review_unsupported', 'This Agent Board hub does not support cross reviews.');
+    }
+    if (this.deps.paused?.()) {
+      this.blockedTool(caller, 'request_review', 'board_paused');
+      return fail(
+        'board_paused',
+        'Agent Board is paused (the user pressed "pause all"); reviews cannot start now. Do not retry; wait for the user to resume.',
+      );
+    }
+    const led = this.ledTeams(caller);
+    if (led.length === 0) {
+      return fail(
+        'not_lead',
+        'Only a team lead can request a cross review. If your work needs one, say so in your reply to your lead.',
+      );
+    }
+    const team = led[0]!.team;
+    if (team.hold) {
+      this.blockedTool(caller, 'request_review', 'team_held');
+      return fail(
+        'team_held',
+        'The user paused this team; do not request reviews until it is resumed.',
+      );
+    }
+    const left = this.deps.reviewsLeft(team.id);
+    if (this.deps.reviewLimit?.() === 0) {
+      this.blockedTool(caller, 'request_review', 'review_disabled');
+      return fail(
+        'review_disabled',
+        'The user does not allow team leads to request cross reviews. Ask the user if you need one.',
+      );
+    }
+    if (left <= 0) {
+      this.blockedTool(caller, 'request_review', 'review_rate_limit');
+      return fail(
+        'review_rate_limit',
+        'This team has used its cross reviews for this hour (limit set by the user). Try again later, or continue without one.',
+      );
+    }
+    let targetSession: Session | null = null;
+    let target: ReviewTargetInput;
+    if (args.member !== undefined) {
+      const found = this.resolve(caller, args.member);
+      if ('ok' in found) return found;
+      targetSession = found;
+      target = { kind: 'session', sessionId: found.id };
+    } else {
+      target = {
+        kind: 'branch',
+        machineId: caller.machineId,
+        repoPath: args.repoPath ?? caller.repoRoot ?? caller.cwd,
+        branch: args.branch!,
+        base: args.base ?? 'main',
+      };
+    }
+    let review: Review;
+    try {
+      review = this.deps.requestReview({ lead: caller, teamId: team.id, target, reason });
+    } catch (error) {
+      if (error instanceof HttpError) {
+        this.blockedTool(caller, 'request_review', error.code, targetSession?.id);
+        return fail(error.code, error.message);
+      }
+      throw error;
+    }
+    this.deps.audit(
+      caller.id,
+      'dispatch.review',
+      JSON.stringify({
+        fromSessionId: caller.id,
+        ...(targetSession ? { toSessionId: targetSession.id } : {}),
+        reviewId: review.id,
+        teamId: team.id,
+        target: review.target.label,
+        reason,
+      }),
+    );
+    const role =
+      (targetSession &&
+        this.deps.store.listTeamMembers(team.id).find((m) => m.sessionId === targetSession.id)
+          ?.role) ??
+      'lead';
+    this.deps.teamActivity({
+      kind: 'review_requested',
+      team,
+      lead: caller,
+      member: targetSession ?? caller,
+      role,
+      reason,
+      reviewId: review.id,
+    });
+    return okJson({
+      reviewId: review.id,
+      status: review.status,
+      target: review.target.label,
+      reviewsLeftThisHour: Math.max(0, left - 1),
+      result:
+        'Claude and Codex review it in the background (read-only). When both finish, a one-line verdict from each is typed back to you as "[Review from Agent Board] …". Do not poll.',
+    });
+  }
+
   private blockedTool(caller: Session, tool: string, reason: string, toSessionId?: string): void {
     const detail = {
       fromSessionId: caller.id,

@@ -14,6 +14,8 @@ import { activeMention, parseCommand, sortRoster } from './broadcast';
 import { refreshTeams } from './store';
 import { ROLE_ABBR } from './teamPlan';
 import { Empty } from '../flows/common';
+import { newCrossReviewHash } from '../views/overlay';
+import '../review/messages';
 
 type Role = TeamMember['role'];
 
@@ -200,6 +202,14 @@ export function Roster({ team, rows }: { team: Team; rows: RosterRow[] }) {
                 <span className="roster-age">
                   <Age session={session} />
                 </span>
+                {/* 交叉審查（Codex 第二輪）：這位成員還沒 commit 的變更。 */}
+                <a
+                  className="link roster-review"
+                  href={newCrossReviewHash(session.id)}
+                  data-testid={`roster-review-${session.id}`}
+                >
+                  {t('review.open')}
+                </a>
                 {(latest || queuedEarlier.length > 0) && (
                   <span className="roster-results">
                     {queuedEarlier.map(({ b, x }) => (

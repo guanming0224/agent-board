@@ -41,6 +41,7 @@ export const DISPATCH_INSTRUCTIONS: readonly string[] = [
   'send_task types a new task into one of your members once it is waiting for input.',
   'When a member finishes the turn that handled your work, its result is typed back into this session automatically as "[Result from <name>] Summary: … | Detected file edits: … | Branch: …". Do not poll; wait for it.',
   "get_result shows a member's latest summary, files and branch on demand.",
+  'request_review (team lead only) asks Agent Board to have both Claude and Codex review a change read-only: a member\'s uncommitted changes, or a branch against its base. A reason is required, the user is notified, and each team has an hourly limit. The verdicts come back here as "[Review from Agent Board] …" when both finish; do not poll.',
   LEAD_STAFFING_RHYTHM,
   `If you are not the lead: ${MEMBER_STAFFING_GUIDE}`,
 ];
@@ -55,6 +56,8 @@ export const DISPATCH_TOOL_DESCRIPTIONS = {
     'Give one of your members (a member of a team you lead, or one you spawned) a new task. It is typed in when the member is waiting for input; if it is busy the task waits in a queue. The result comes back to you automatically.',
   get_result:
     "Show a member's latest one-sentence summary, detected file edits and branch, and whether it is still working on your task.",
+  request_review:
+    "Team lead only. Ask Agent Board for a cross review: Claude and Codex each review the change read-only, side by side, using the user's own CLI subscriptions. Target either a member of your team (member: its uncommitted changes, including new files) or a branch (branch, optional base default main, optional repoPath default your repository). reason is required (shown in the user's audit log and team activity). The user is notified; each team may request a limited number of reviews per hour. Returns at once with a review id; when both reviews finish, a one-line summary of each verdict is typed back to you as \"[Review from Agent Board] …\" and the full text is in the user's inbox.",
   release_member:
     "Release (archive) a member of a team you lead to free its slot, when it has finished and will not be needed again. Its session is stopped, handoff rules touching it are paused, and its conversation is kept; the user can restore it from Settings → Archived. reason is required (shown to the user). A member still in a turn (running, starting, waiting for the user's approval or plan review) or that still owes you a result cannot be released: wait for its result first. You cannot release yourself. Only the team lead can release members.",
 } as const;
@@ -62,6 +65,8 @@ export const DISPATCH_TOOL_DESCRIPTIONS = {
 /** 參數說明（inputSchema 的 description）。 */
 export const SPAWN_REASON_DESCRIPTION =
   'Required. One short sentence: why the team needs this member now (for example "No tester yet; the change needs regression tests"). Shown to the user.';
+export const REVIEW_REASON_DESCRIPTION =
+  'Required. One short sentence: why this change needs a cross review now (shown to the user).';
 export const RELEASE_REASON_DESCRIPTION =
   'Required. One short sentence: why this member is no longer needed (shown to the user).';
 

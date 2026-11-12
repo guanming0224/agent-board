@@ -1,0 +1,171 @@
+/*
+ * 交叉審查（Codex 第二輪）。控制項用 controls.css 的共用元件（.panel-head、.seg.sm、button.primary、.sm、.hint、.msg）；
+ * 這裡只留版面：兩邊並排（手機上下）、檔案表、意見全文（純文字 pre-wrap）。
+ * 顏色：耗額度標記用 QUOTA 紫；失敗用 --fault；不拿狀態色給 Claude／Codex 區分（兩邊同樣的外框）。
+ */
+.page.cross-review-page {
+  max-width: 1120px;
+  padding: 0 var(--space-6) var(--space-8);
+}
+.modal-body .page.cross-review-page {
+  padding-top: 0;
+}
+.cross-review-page > .cross-review-head {
+  margin: 0 calc(-1 * var(--space-6)) var(--space-3);
+  padding-right: calc(var(--ctl-h-sm) + var(--space-2) * 2);
+}
+.cr-note,
+.cr-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-ctl-sm);
+}
+.cr-new,
+.cr-review {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+.cr-new h2,
+.cr-review-head h2 {
+  margin: 0;
+  font-size: var(--fs-h2);
+}
+.cr-field {
+  display: grid;
+  gap: var(--space-1);
+  font-size: var(--fs-ctl-sm);
+  color: var(--muted);
+}
+.cr-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+.cr-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.cr-review-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.cr-state {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cr-state-failed {
+  color: var(--fault);
+}
+.quota-mark {
+  color: var(--quota);
+  font-size: var(--fs-sm);
+}
+.cr-files summary {
+  cursor: pointer;
+  font-size: var(--fs-ctl-sm);
+}
+.cr-file-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-ctl-sm);
+  margin-top: var(--space-2);
+}
+.cr-file-table td {
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+.cr-file-path {
+  word-break: break-all;
+}
+.cr-file-lines,
+.cr-file-size {
+  text-align: right;
+  white-space: nowrap;
+}
+.cr-file-status,
+.cr-file-flag {
+  color: var(--muted);
+  white-space: nowrap;
+}
+tr[data-omitted='1'] .cr-file-path {
+  color: var(--faint);
+}
+.cr-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  align-items: start;
+}
+.cr-side {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: var(--space-3);
+  min-width: 0;
+}
+.cr-side-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.cr-side-head h3 {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+.cr-side-state {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.cr-side-failed .cr-side-state,
+.cr-side-timeout .cr-side-state {
+  color: var(--fault);
+}
+.cr-side-meta {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--faint);
+}
+.cr-skip {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  border-left: 3px solid var(--you);
+  background: var(--you-tint);
+  font-size: var(--fs-ctl-sm);
+}
+.cr-output {
+  margin: var(--space-2) 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: var(--fs-base);
+  line-height: 1.55;
+}
+
+/* 收件匣的「交叉審查」區塊：同團隊動態的排版。 */
+.cross-review-inbox .cr-inbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.cross-review-inbox .cr-inbox-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .page.cross-review-page {
+    padding: 0 var(--space-4) var(--space-6);
+  }
+  .cr-sides,
+  .cr-row {
+    grid-template-columns: 1fr;
+  }
+}

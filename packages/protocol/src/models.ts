@@ -241,8 +241,9 @@ export type SessionAwaiting = NonNullable<Session['awaiting']>;
 /** Claude Code 裡看到的 MCP server 名稱：工具全名是 `mcp__agent-board__<tool>`。 */
 export const DISPATCH_MCP_SERVER = 'agent-board';
 /**
- * 派工工具。只有這五個，hub 依呼叫者的團隊判斷能不能做。release_member 是隊長自主擴編（GM 2026-11-10）加的：
- * 隊長封存自己團隊的成員，空出名額。
+ * 派工工具。只有這六個，hub 依呼叫者的團隊判斷能不能做。release_member 是隊長自主擴編（GM 2026-11-10）加的：
+ * 隊長封存自己團隊的成員，空出名額。request_review 是交叉審查（Codex 第二輪，GM 2026-11-12）：隊長要求
+ * Claude 與 Codex 各審一次（理由必填、每隊每小時有上限、推播通知 GM）。
  */
 export const DispatchTool = z.enum([
   'list_members',
@@ -250,6 +251,7 @@ export const DispatchTool = z.enum([
   'send_task',
   'get_result',
   'release_member',
+  'request_review',
 ]);
 export type DispatchTool = z.infer<typeof DispatchTool>;
 /**
@@ -507,7 +509,8 @@ export type TeamMember = z.infer<typeof TeamMember>;
  * 團隊動態（隊長自主擴編，GM 2026-11-10）：隊長新增或封存成員時記一筆，收件匣的「團隊動態」列出來。
  * 只是告知、不需要動作；可以標已讀、清除。存在 settings 表 `teamActivity`（最多 `TEAM_ACTIVITY_KEEP` 筆，舊的先丟）。
  */
-export const TeamActivityKind = z.enum(['member_added', 'member_released']);
+/** review_requested：隊長用 `request_review` 要求交叉審查（Codex 第二輪；成員欄位是審查對象，分支審查時是隊長自己）。 */
+export const TeamActivityKind = z.enum(['member_added', 'member_released', 'review_requested']);
 export type TeamActivityKind = z.infer<typeof TeamActivityKind>;
 export const TeamActivity = z.object({
   id: Id,
@@ -523,6 +526,8 @@ export const TeamActivity = z.object({
   /** 隊長給的理由（Claude 寫的一句，已清控制字元、截斷）。 */
   reason: z.string(),
   read: z.boolean(),
+  /** review_requested 的審查 id（點了開結果）。 */
+  reviewId: Id.optional(),
 });
 export type TeamActivity = z.infer<typeof TeamActivity>;
 export const TEAM_ACTIVITY_KEEP = 100;
@@ -717,6 +722,29 @@ export const AUTO_STAFF_DEFAULT: AutoStaff = {
   push: true,
 };
 
+/** 隊長 `request_review` 的預設頻率上限：同一隊每小時最多幾次（設定頁可改，Codex 第二輪）。 */
+export const REVIEW_LEAD_RATE_DEFAULT = 3;
+export const REVIEW_LEAD_RATE_MAX = 20;
+
+/** 交叉審查的設定（`Settings.review`，Codex 第二輪，docs/codex-round2-spec.md §2）。 */
+export const ReviewSettings = z.object({
+  /** 隊長 `request_review` 同一隊每小時最多幾次；0＝隊長不能發起。 */
+  leadPerHour: z.number().int().min(0).max(REVIEW_LEAD_RATE_MAX).default(REVIEW_LEAD_RATE_DEFAULT),
+  /** Claude 那一邊的模型；null＝CLI 自己的預設。 */
+  claudeModel: z.string().max(100).nullable().default(null),
+  /** Codex 那一邊的模型；null＝CLI 自己的預設。 */
+  codexModel: z.string().max(100).nullable().default(null),
+  /** Codex 的推理強度（`-c model_reasoning_effort=…`）；null＝CLI 預設。 */
+  codexEffort: z.enum(['minimal', 'low', 'medium', 'high']).nullable().default(null),
+});
+export type ReviewSettings = z.infer<typeof ReviewSettings>;
+export const REVIEW_SETTINGS_DEFAULT: ReviewSettings = {
+  leadPerHour: REVIEW_LEAD_RATE_DEFAULT,
+  claudeModel: null,
+  codexModel: null,
+  codexEffort: null,
+};
+
 /** Lead 增補的 `settings` 鍵值表內容（§3 沒有列，但 §5.3-7、§7、§8 都需要）。 */
 export const Settings = z.object({
   listenAddress: z.string(),
@@ -764,6 +792,8 @@ export const Settings = z.object({
    * push：新增或封存成員時推播（收件匣的「團隊動態」不受影響）。舊設定沒有這個鍵＝全部預設。
    */
   autoStaff: AutoStaff.default(AUTO_STAFF_DEFAULT),
+  /** 交叉審查（Codex 第二輪）：隊長頻率上限、兩邊的模型。舊設定沒有這個鍵＝預設。 */
+  review: ReviewSettings.default(REVIEW_SETTINGS_DEFAULT),
 });
 export type Settings = z.infer<typeof Settings>;
 

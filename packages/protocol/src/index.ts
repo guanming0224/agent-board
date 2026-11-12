@@ -12,5 +12,6 @@ export * from './usage';
 export * from './usageReport';
 export * from './leadGuide';
 export * from './codex';
+export * from './review';
 export * from './sessionHost';
 export * from './release';

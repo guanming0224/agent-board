@@ -35,6 +35,7 @@ import { SessionReviewCards } from './ReviewCards';
 import { badgeCode, StatusBadge } from './StatusBadge';
 import { DenyForm } from './DenyForm';
 import { TeamActivitySection } from './TeamActivity';
+import { ReviewInboxSection } from '../review/ReviewInbox';
 import { summarizeTool } from './toolView';
 import {
   contextLine,
@@ -826,6 +827,7 @@ export function InboxBoard({
           </div>
         </>
       )}
+      <ReviewInboxSection />
       <TeamActivitySection canvas />
       <DecisionHistory me={me} />
     </div>

@@ -153,6 +153,27 @@ const UPDATE_TEXT = {
   },
 };
 
+/**
+ * 交叉審查（Codex 第二輪，hub 送 { kind: 'review', event: 'done'|'requested', reviewId, lead?, at }）。
+ * 不帶審查內容、不帶理由：只說「審查完成」或「<隊長> 要求交叉審查」，點了開那份審查。
+ */
+const REVIEW_TEXT = {
+  'zh-TW': { title: '交叉審查', done: '審查完成', requested: '{lead} 要求交叉審查' },
+  en: {
+    title: 'Cross review',
+    done: 'Review finished',
+    requested: '{lead} asked for a cross review',
+  },
+};
+
+const reviewUrl = (reviewId) =>
+  new URL(
+    typeof reviewId === 'string' && reviewId
+      ? `/#/cross-review/${encodeURIComponent(reviewId)}`
+      : '/#/inbox',
+    self.location.origin,
+  ).href;
+
 const fill = (template, values) =>
   template.replace(/\{(\w+)\}/g, (_, key) => (key in values ? String(values[key]) : ''));
 
@@ -301,6 +322,14 @@ self.addEventListener('push', (event) => {
   if (data && data.kind === 'update_failed') {
     const n = updateFailedNotification(data, lang);
     event.waitUntil(show(n.title, n.body, UPDATE_TAG, machinesUrl(), data.at));
+    return;
+  }
+  if (data && data.kind === 'review') {
+    const text = REVIEW_TEXT[lang];
+    const body =
+      data.event === 'requested' ? fill(text.requested, { lead: textOf(data.lead) }) : text.done;
+    const id = typeof data.reviewId === 'string' ? data.reviewId : '';
+    event.waitUntil(show(text.title, body, `agent-board-review-${id}`, reviewUrl(id), data.at));
     return;
   }
   if (data && data.kind === 'overload') {

@@ -127,13 +127,14 @@ describe('其他規則', () => {
     expect(firstLine('1. one')).toBe('one');
   });
 
-  it('agent-board 工具共七個：派工 5 個（含隊長自主擴編的 release_member）＋進度卡 2 個', () => {
+  it('agent-board 工具共八個：派工 6 個（含隊長自主擴編的 release_member、交叉審查的 request_review）＋進度卡 2 個', () => {
     expect(AgentBoardTool.options).toEqual([
       'list_members',
       'spawn_member',
       'send_task',
       'get_result',
       'release_member',
+      'request_review',
       'get_progress',
       'update_progress',
     ]);

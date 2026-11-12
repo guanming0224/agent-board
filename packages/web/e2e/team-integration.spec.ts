@@ -1,6 +1,6 @@
 // 交接與請隊長拆解走完整條路：假 claude 真的收到 hub 送進 PTY 的內容。不連外、不呼叫 LLM。
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, mkdtempSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -10,12 +10,14 @@ import {
   type BrowserContext,
   type Page,
 } from '@playwright/test';
-import type { Machine, Session, Team, TeamMember } from '@agent-board/protocol';
+import type { Machine, Review, Session, Team, TeamMember } from '@agent-board/protocol';
 
 const PORT = 5197;
 const HUB = `http://127.0.0.1:${PORT}`;
 const DAEMON_DIR = resolve(import.meta.dirname, '../../daemon');
 const FAKE_CLAUDE = resolve(import.meta.dirname, 'fixtures/fake-claude.mjs');
+// Codex 第二輪：假 codex（互動模式＋`exec` 審查模式）。CODEX_HOME 放暫存資料夾，不碰 ~/.codex。
+const FAKE_CODEX = resolve(import.meta.dirname, 'fixtures/fake-codex.mjs');
 const TSX = resolve(DAEMON_DIR, '../../node_modules/.bin/tsx');
 const PASSWORD = 'integration-password';
 
@@ -35,6 +37,7 @@ test.describe.configure({ mode: 'serial' });
 
 let daemon: ChildProcess | undefined;
 let daemonDir: string;
+let codexHome: string;
 let repo: string;
 let machineId: string;
 let lead: Session;
@@ -50,6 +53,8 @@ function daemonEnv(): NodeJS.ProcessEnv {
     AGENT_BOARD_HUB_URL: `ws://127.0.0.1:${PORT}`,
     AGENT_BOARD_DATA_DIR: daemonDir,
     AGENT_BOARD_CLAUDE_BIN: FAKE_CLAUDE,
+    AGENT_BOARD_CODEX_BIN: FAKE_CODEX,
+    CODEX_HOME: codexHome,
     AGENT_BOARD_MACHINE_NAME: 'team-e2e-machine',
   };
 }
@@ -144,7 +149,9 @@ test.beforeAll(async ({ browser }) => {
     }
   });
   chmodSync(FAKE_CLAUDE, 0o755);
+  chmodSync(FAKE_CODEX, 0o755);
   daemonDir = mkdtempSync(join(tmpdir(), 'ab-team-e2e-daemon-'));
+  codexHome = mkdtempSync(join(tmpdir(), 'ab-team-e2e-codex-'));
   repo = mkdtempSync(join(tmpdir(), 'ab-team-e2e-repo-'));
   execFileSync('git', ['init', '-q', '-b', 'main', repo]);
   execFileSync(
@@ -905,4 +912,115 @@ test('送進成員的工作被吃掉（成員沒開始做）：寬限期（30 �
   const card = page.getByTestId(`card-${member}`);
   await expect(card.locator('.lamp')).toHaveText('◇ASK', { timeout: 10_000 });
   await expect(card).toHaveAttribute('data-waits', 'true');
+});
+
+test('Codex 成員（Codex 第二輪，真 hub、真 MCP server、假 codex）：Claude 隊長指定 agent codex 開審查員 → Codex 帶 -c 的 MCP、收到工作 → Stop 時結果送回隊長', async ({
+  page,
+}) => {
+  await page.goto('/#/canvas');
+  const cxLead = await createSession(page, 'cx-ld', false);
+  await typeInto(
+    page,
+    cxLead.id,
+    'mcp spawn_member {"role":"reviewer","prompt":"Review the change.","reason":"Need a second opinion.","agent":"codex"}',
+  );
+  await screenOf(page, cxLead.id).toContain('MCP ok');
+  await screenOf(page, cxLead.id).toContain('"agent":"codex"');
+  let member: Session | undefined;
+  await expect
+    .poll(
+      async () => {
+        const sessions = (await (await page.request.get('/api/sessions')).json()) as Session[];
+        member = sessions.find((s) => s.name === 'cx-ld-RV');
+        return member?.agent ?? null;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe('codex');
+  expect(member).toMatchObject({ readOnly: true, dispatchedBy: cxLead.id, model: null });
+  // 假 codex 把收到的參數印出來：MCP server 用 -c 帶入（同一支程式、只露出開著的工具、免核准）。
+  await screenOf(page, member!.id).toContain('mcp_servers.agent-board.enabled_tools=');
+  await screenOf(page, member!.id).toContain('default_tools_approval_mode="approve"');
+  // 唯讀成員：Codex 唯讀沙盒。
+  await screenOf(page, member!.id).toContain('-s read-only');
+  await screenOf(page, member!.id).toContain('GOT [From cx-ld] Review the change.');
+  // Codex 的 Stop hook → 結果照 Claude 的路徑送回隊長。
+  await screenOf(page, cxLead.id).toContain(
+    'GOT [Result from cx-ld-RV] Summary: done: [From cx-ld] Review the change.',
+  );
+  const results = await auditOf(page, 'dispatch.result_delivered');
+  expect(results.some((r) => r.sessionId === member!.id)).toBe(true);
+});
+
+test('交叉審查（Codex 第二輪，真 hub、真 daemon、真 git、假 claude／假 codex）：隊長 request_review → 自動開始 → 兩邊結果 → 摘要送回隊長；GM 發起要先確認', async ({
+  page,
+}) => {
+  await page.goto('/#/canvas');
+  const sessions = (await (await page.request.get('/api/sessions')).json()) as Session[];
+  const cxLead = sessions.find((s) => s.name === 'cx-ld')!;
+  const untracked = join(repo, 'review-me.ts');
+  writeFileSync(untracked, 'export const reviewMe = true;\n');
+  try {
+    // 沒有理由：擋下。
+    await typeInto(page, cxLead.id, 'mcp request_review {"member":"cx-ld-RV"}');
+    await screenOf(page, cxLead.id).toContain('MCP error reason_required');
+    await typeInto(
+      page,
+      cxLead.id,
+      'mcp request_review {"member":"cx-ld-RV","reason":"Check before merge."}',
+    );
+    await screenOf(page, cxLead.id).toContain('MCP ok');
+    let review: Review | undefined;
+    await expect
+      .poll(
+        async () => {
+          const list = (await (await page.request.get('/api/reviews')).json()) as Review[];
+          review = list.find((r) => r.reason === 'Check before merge.');
+          return review?.status ?? null;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('done');
+    expect(review).toMatchObject({
+      requestedBy: { kind: 'lead', name: 'cx-ld' },
+      claude: { status: 'done', inputTokens: 150, outputTokens: 45 },
+      codex: { status: 'done', inputTokens: 200, outputTokens: 60 },
+    });
+    expect(review!.diff!.files.map((f) => [f.path, f.status])).toContainEqual([
+      'review-me.ts',
+      'untracked',
+    ]);
+    expect(review!.claude.output).toContain('Claude 假審查');
+    expect(review!.codex.output).toContain('Codex 假審查');
+    // 摘要送回隊長（固定格式，每邊一句結論）。
+    await screenOf(page, cxLead.id).toContain(
+      'GOT [Review from Agent Board] cx-ld-RV: uncommitted changes | Claude: Claude 假審查：可以合併。 | Codex: Codex 假審查：可以合併。',
+    );
+    const audit = await auditOf(page, 'dispatch.review');
+    expect(audit.some((a) => a.detail.includes('Check before merge.'))).toBe(true);
+
+    // GM 發起：prepare 只有檔案清單，確認之前不會跑。
+    const prepared = (await (
+      await page.request.post('/api/reviews/prepare', {
+        data: { target: { kind: 'session', sessionId: cxLead.id } },
+      })
+    ).json()) as Review;
+    expect(prepared.status).toBe('awaiting_confirm');
+    expect(prepared.diff!.files.map((f) => f.path)).toContain('review-me.ts');
+    await page.waitForTimeout(1_000);
+    expect(
+      ((await (await page.request.get(`/api/reviews/${prepared.id}`)).json()) as Review).status,
+    ).toBe('awaiting_confirm');
+    const started = await page.request.post(`/api/reviews/${prepared.id}/start`);
+    expect(started.ok()).toBe(true);
+    await expect
+      .poll(
+        async () =>
+          ((await (await page.request.get(`/api/reviews/${prepared.id}`)).json()) as Review).status,
+        { timeout: 30_000 },
+      )
+      .toBe('done');
+  } finally {
+    rmSync(untracked, { force: true });
+  }
 });

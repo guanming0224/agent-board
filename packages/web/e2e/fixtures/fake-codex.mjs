@@ -11,13 +11,54 @@
 // PreToolUse 之後不送 PermissionRequest）、model-error、quota、crash、quit。
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 if (args[0] === '--version') {
   console.log('codex-cli 0.0.0-fake');
+  process.exit(0);
+}
+
+/**
+ * 交叉審查（Codex 第二輪）：`codex exec --json -s read-only -c approval_policy="never" … -`，prompt 從 stdin。
+ * 不呼叫 LLM，照 `codex exec --json` 的事件格式印固定的意見（thread.started → turn.started → item.completed
+ * agent_message → turn.completed usage）。`-m fake-review-fail` → turn.failed、exit 1；`fake-review-slow` → 不結束。
+ * 收到的參數記在 AB_FAKE_REVIEW_LOG（有設才寫）。
+ */
+if (args[0] === 'exec') {
+  let prompt = '';
+  process.stdin.setEncoding('utf8');
+  for await (const chunk of process.stdin) prompt += chunk;
+  const execModel = args.includes('-m') ? args[args.indexOf('-m') + 1] : 'fake-codex-model';
+  if (process.env.AB_FAKE_REVIEW_LOG) {
+    appendFileSync(
+      process.env.AB_FAKE_REVIEW_LOG,
+      `${JSON.stringify({ cli: 'codex', args, cwd: process.cwd(), prompt })}\n`,
+    );
+  }
+  const emit = (event) => console.log(JSON.stringify(event));
+  emit({ type: 'thread.started', thread_id: randomUUID() });
+  emit({ type: 'turn.started' });
+  if (execModel === 'fake-review-slow')
+    await new Promise(() => setInterval(() => undefined, 1_000));
+  if (execModel === 'fake-review-fail') {
+    emit({ type: 'turn.failed', error: { message: 'fake codex failure' } });
+    process.exit(1);
+  }
+  emit({
+    type: 'item.completed',
+    item: {
+      id: 'item_0',
+      type: 'agent_message',
+      text: '1. 嚴重問題：無\n2. 建議：命名可以更清楚。\n3. 整體結論：Codex 假審查：可以合併。',
+    },
+  });
+  emit({
+    type: 'turn.completed',
+    usage: { input_tokens: 200, cached_input_tokens: 50, output_tokens: 60 },
+  });
   process.exit(0);
 }
 

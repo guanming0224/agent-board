@@ -2,7 +2,7 @@
 // 整合測試用的假 claude：不連網、不呼叫 LLM，但會真的執行 agent-board-hook，
 // 所以 settings.local.json、hook CLI、socket、核准流程都是真的路徑。
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
 const args = process.argv.slice(2);
@@ -12,6 +12,55 @@ if (args[0] === '--version') {
 }
 
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+
+/**
+ * 交叉審查（Codex 第二輪）：`claude -p --output-format json`，prompt 從 stdin。不呼叫 LLM，回固定的三段意見。
+ * `--model fake-review-fail` → is_error、exit 1；`fake-review-slow` → 一直不結束（測逾時）。
+ * 收到的參數與 prompt 開頭記在 AB_FAKE_REVIEW_LOG（有設才寫），測試用來確認唯讀參數與 diff 內容。
+ */
+if (args.includes('-p')) {
+  let prompt = '';
+  process.stdin.setEncoding('utf8');
+  for await (const chunk of process.stdin) prompt += chunk;
+  {
+    const model = flag('--model') ?? 'fake-claude-model';
+    if (process.env.AB_FAKE_REVIEW_LOG) {
+      appendFileSync(
+        process.env.AB_FAKE_REVIEW_LOG,
+        `${JSON.stringify({ cli: 'claude', args, cwd: process.cwd(), prompt })}\n`,
+      );
+    }
+    if (model === 'fake-review-slow') await new Promise(() => setInterval(() => undefined, 1_000));
+    if (model === 'fake-review-fail') {
+      console.log(
+        JSON.stringify({
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          result: 'fake failure',
+        }),
+      );
+      process.exit(1);
+    }
+    console.log(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: '1. 嚴重問題：無\n2. 建議：補一個測試。\n3. 整體結論：Claude 假審查：可以合併。',
+        usage: {
+          input_tokens: 120,
+          cache_read_input_tokens: 30,
+          cache_creation_input_tokens: 0,
+          output_tokens: 45,
+        },
+        duration_ms: 10,
+      }),
+    );
+    process.exit(0);
+  }
+}
+
 const sessionId = flag('--session-id') ?? flag('--resume') ?? randomUUID();
 const permissionMode = flag('--permission-mode') ?? 'default';
 

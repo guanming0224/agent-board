@@ -34,6 +34,15 @@ import { AgentBoardTool, ProgressCard } from './progress';
 import { CodexUsage, UsageDetail } from './usage';
 import { ReleaseTarget, UpdateState } from './release';
 import {
+  Review,
+  REVIEW_FEATURE,
+  ReviewCancelRequest,
+  ReviewPrepared,
+  ReviewPrepareRequest,
+  ReviewRunRequest,
+  ReviewSideUpdate,
+} from './review';
+import {
   DeepSearchLimits,
   DeepSearchMachine,
   DeepSearchRequest,
@@ -65,6 +74,8 @@ export const DAEMON_FEATURES = {
    * 舊版 daemon 不認得 agent 欄位、會照 Claude 開，所以 hub 只把 Codex 的 spec 送給有這個旗標的 daemon。
    */
   codex: 'agent.codex',
+  /** 會做交叉審查（`review.prepare`／`review.run`，Codex 第二輪）。舊 daemon 沒有：hub 回 review_unsupported。 */
+  review: REVIEW_FEATURE,
 } as const;
 
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);
@@ -315,6 +326,8 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     scannedSessions: z.number().int().nonnegative(),
     totalSessions: z.number().int().nonnegative(),
   }),
+  ReviewPrepared,
+  ReviewSideUpdate,
 ]);
 export type DaemonToHub = z.infer<typeof DaemonToHub>;
 
@@ -422,6 +435,9 @@ export const HubToDaemon = z.discriminatedUnion('type', [
   }),
   /** 取消深層搜尋：daemon 停止讀檔，不再回 result／done。 */
   z.object({ type: z.literal('search.cancel'), searchId: Id }),
+  ReviewPrepareRequest,
+  ReviewRunRequest,
+  ReviewCancelRequest,
 ]);
 export type HubToDaemon = z.infer<typeof HubToDaemon>;
 
@@ -480,7 +496,11 @@ export const HubToClient = z.discriminatedUnion('type', [
     presets: z.array(TeamPreset).default([]),
     /** 團隊動態（隊長自主擴編，新的在前）。舊版 hub 不送＝空。 */
     teamActivity: z.array(TeamActivity).default([]),
+    /** 交叉審查（Codex 第二輪），新的在前，最多 `REVIEW_BOARD_KEEP` 筆。舊版 hub 不送＝空。 */
+    reviews: z.array(Review).default([]),
   }),
+  /** 一則交叉審查變了（新建、diff 準備好、某一邊開始或結束、取消、已讀）。 */
+  z.object({ type: z.literal('review.updated'), review: Review }),
   /** 團隊動態變了（新增、標已讀、清除）：整份推給每個 client。 */
   z.object({ type: z.literal('team.activity'), items: z.array(TeamActivity) }),
   /** 進度卡寫入、鎖定、還原：整張卡推給每個 client（1 秒內更新）。 */

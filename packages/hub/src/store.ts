@@ -4,6 +4,7 @@ import {
   AgentKind,
   AUDIT_SYSTEM_USER,
   AUTO_STAFF_DEFAULT,
+  REVIEW_SETTINGS_DEFAULT,
   AutoContinue,
   BoardPause,
   DEFAULT_WAITING_LIMIT,
@@ -97,6 +98,7 @@ const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   dispatch: true,
   memory: true,
   autoStaff: { ...AUTO_STAFF_DEFAULT },
+  review: { ...REVIEW_SETTINGS_DEFAULT },
 });
 
 interface UserRow {

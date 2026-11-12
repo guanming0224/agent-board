@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   AuditEntry,
   AutoStaff,
+  ReviewSettings,
   TEAM_ACTIVITY_KEEP,
   TeamActivity,
   Broadcast,
@@ -46,6 +47,7 @@ import {
   ZoneName,
 } from './models';
 import { UsageReport } from './usage';
+import { Review, REVIEW_BOARD_KEEP, REVIEW_REASON_MAX, ReviewTargetInput } from './review';
 import { HealthInfo, ReleaseChannel, ReleaseOverview, ReleaseRepo, Version } from './release';
 import { ProgressCard, ProgressRevision, ProgressWrite } from './progress';
 import { SearchQuery, SearchResults } from './search';
@@ -106,6 +108,7 @@ export const SettingsPatch = Settings.extend({
   dispatch: z.boolean(),
   memory: z.boolean(),
   autoStaff: AutoStaff,
+  review: ReviewSettings,
 }).partial();
 
 /**
@@ -770,6 +773,46 @@ export const routes = {
     auth: 'user',
     body: z.object({ ids: z.array(Id).max(TEAM_ACTIVITY_KEEP).optional() }),
     response: z.array(TeamActivity),
+  }),
+  /**
+   * 交叉審查（Codex 第二輪，CONTRACTS §22）。prepare 只請 daemon 產生 diff（不跑模型），回傳檔案清單與大小；
+   * GM 看過按 start 才真的跑兩邊（耗額度）。清單在 board 快照的 reviews，變了推 review.updated。
+   */
+  reviewList: route({
+    method: 'GET',
+    path: '/api/reviews',
+    auth: 'user',
+    response: z.array(Review),
+  }),
+  reviewGet: route({ method: 'GET', path: '/api/reviews/:id', auth: 'user', response: Review }),
+  reviewPrepare: route({
+    method: 'POST',
+    path: '/api/reviews/prepare',
+    auth: 'user',
+    body: z.object({
+      target: ReviewTargetInput,
+      reason: z.string().max(REVIEW_REASON_MAX).optional(),
+    }),
+    response: Review,
+  }),
+  reviewStart: route({
+    method: 'POST',
+    path: '/api/reviews/:id/start',
+    auth: 'user',
+    response: Review,
+  }),
+  reviewCancel: route({
+    method: 'POST',
+    path: '/api/reviews/:id/cancel',
+    auth: 'user',
+    response: Review,
+  }),
+  reviewRead: route({
+    method: 'POST',
+    path: '/api/reviews/read',
+    auth: 'user',
+    body: z.object({ ids: z.array(Id).max(REVIEW_BOARD_KEEP).optional() }),
+    response: z.array(Review),
   }),
   settingsGet: route({ method: 'GET', path: '/api/settings', auth: 'owner', response: Settings }),
   settingsUpdate: route({

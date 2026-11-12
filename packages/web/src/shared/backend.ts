@@ -39,6 +39,8 @@ import type {
   TeamMember,
   TeamResumeResult,
   TeamActivity,
+  Review,
+  ReviewTargetInput,
   TeamPreset,
   TeamPresetConfig,
   TeamPresetUsed,
@@ -96,6 +98,8 @@ export interface BoardSnapshot {
   presets?: TeamPreset[];
   /** 團隊動態（隊長自主擴編：隊長新增、封存成員），新的在前。舊版 hub 沒有＝undefined（不顯示）。 */
   teamActivity?: TeamActivity[];
+  /** 交叉審查（Codex 第二輪），新的在前。舊版 hub 沒有＝undefined（不顯示）。 */
+  reviews?: Review[];
 }
 
 /** 團隊建立、修改（含換工作區）或刪除：hub 用 WS 推，不等輪詢。 */
@@ -362,6 +366,16 @@ export interface BoardBackend {
    */
   readTeamActivity(ids?: string[]): Promise<TeamActivity[]>;
   clearTeamActivity(ids?: string[]): Promise<TeamActivity[]>;
+
+  /**
+   * 交叉審查（Codex 第二輪，CONTRACTS §22）。prepare 只請 daemon 產生 diff（不跑模型）；GM 看過檔案清單
+   * 按確認才 startReview（耗額度）。清單在 board 快照的 reviews，變了推 review.updated。
+   */
+  getReview(id: string): Promise<Review>;
+  prepareReview(target: ReviewTargetInput, reason?: string): Promise<Review>;
+  startReview(id: string): Promise<Review>;
+  cancelReview(id: string): Promise<Review>;
+  readReviews(ids?: string[]): Promise<Review[]>;
 
   /** 由舊到新。請隊長拆解從這裡讀回覆；最近的交接紀錄也是。 */
   sessionEvents(sessionId: string): Promise<SessionEvent[]>;

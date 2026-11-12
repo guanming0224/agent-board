@@ -427,8 +427,15 @@ describe('listening address', () => {
 });
 
 /** 退回 v6 的樣子：拿掉 v7 加的欄位（額度恢復後自動接續）。 */
+/** 退回 v10 的樣子：拿掉 v11 加的交叉審查表（Codex 第二輪）。 */
+const dropV11 = (db: ReturnType<typeof openDatabase>) => {
+  db.exec('DROP INDEX reviews_created');
+  db.exec('DROP TABLE reviews');
+};
+
 /** 退回 v9 的樣子：拿掉 v10 加的東西（P3 一個 migration：進度卡兩張表、團隊 Presets 表與索引、全域搜尋的事件索引）。 */
 const dropV10 = (db: ReturnType<typeof openDatabase>) => {
+  dropV11(db);
   db.exec('DROP TABLE progress_revisions');
   db.exec('DROP TABLE progress_cards');
   db.exec('DROP INDEX team_presets_position');
@@ -504,6 +511,7 @@ describe('database', () => {
       'pairing_codes',
       'progress_cards',
       'progress_revisions',
+      'reviews',
     ];
     expect(tables.map((t) => t.name).sort()).toEqual([...expected].sort());
     for (const { name } of tables) {

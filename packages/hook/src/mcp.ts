@@ -13,6 +13,7 @@ import {
   DISPATCH_INSTRUCTIONS,
   DISPATCH_TOOL_DESCRIPTIONS,
   RELEASE_REASON_DESCRIPTION,
+  REVIEW_REASON_DESCRIPTION,
   SPAWN_REASON_DESCRIPTION,
 } from '@agent-board/protocol/lead-guide';
 import {
@@ -114,6 +115,33 @@ const ALL_TOOLS = [
         reason: { type: 'string', description: RELEASE_REASON_DESCRIPTION },
       },
       required: ['member', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'request_review',
+    description: DISPATCH_TOOL_DESCRIPTIONS.request_review,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        member: {
+          type: 'string',
+          description:
+            "Review this member's uncommitted changes (name as in list_members). Give member or branch, not both.",
+        },
+        branch: { type: 'string', description: 'Review this branch against base instead.' },
+        base: {
+          type: 'string',
+          description: 'Optional base branch for branch reviews; default main.',
+        },
+        repoPath: {
+          type: 'string',
+          description:
+            'Optional repository folder for branch reviews; defaults to your repository.',
+        },
+        reason: { type: 'string', description: REVIEW_REASON_DESCRIPTION },
+      },
+      required: ['reason'],
       additionalProperties: false,
     },
   },

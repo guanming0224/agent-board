@@ -592,6 +592,24 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     boardResume: (ctx) => hub.resumeBoard(ctx.user),
     settingsGet: () => store.getSettings(),
     teamActivityRead: (ctx) => hub.readTeamActivity(ctx.body.ids, ctx.user),
+    // 交叉審查（Codex 第二輪）：GM 的動作。start 是 GM 按確認，跑模型只有這裡與隊長的 request_review（no-llm 界線）。
+    reviewList: () => hub.reviews.table.list(100),
+    reviewGet: (ctx) => hub.reviews.get(param(ctx)),
+    reviewPrepare: (ctx) =>
+      hub.reviews.prepare({
+        target: ctx.body.target,
+        requestedBy: { kind: 'user', id: ctx.user.id, name: ctx.user.name },
+        reason: (ctx.body.reason ?? '').trim(),
+        teamId: null,
+      }),
+    reviewStart: (ctx) =>
+      hub.reviews.startReview(param(ctx), {
+        kind: 'user',
+        id: ctx.user.id,
+        name: ctx.user.name,
+      }),
+    reviewCancel: (ctx) => hub.reviews.cancel(param(ctx), ctx.user.id),
+    reviewRead: (ctx) => hub.reviews.markRead(ctx.body.ids, ctx.user.id),
     teamActivityClear: (ctx) => hub.clearTeamActivity(ctx.body.ids, ctx.user),
 
     settingsUpdate: (ctx) => {

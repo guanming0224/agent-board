@@ -7,6 +7,8 @@ import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { useViewsUi } from '../views';
 import { errorText, Msg, type Note } from './common';
+import { crossReviewHash } from '../views/overlay';
+import '../review/messages';
 
 /** 一開始顯示幾筆；其餘按「顯示全部」。 */
 export const TEAM_ACTIVITY_SHOWN = 5;
@@ -55,7 +57,11 @@ function ActivityRow({
           <span className="activity-dot" aria-label={t('flows.teamActivity.unread')} />
         )}
         {t(
-          item.kind === 'member_added' ? 'flows.teamActivity.added' : 'flows.teamActivity.released',
+          item.kind === 'review_requested'
+            ? 'review.activity'
+            : item.kind === 'member_added'
+              ? 'flows.teamActivity.added'
+              : 'flows.teamActivity.released',
           vars,
         )}
       </span>
@@ -64,6 +70,15 @@ function ActivityRow({
         {t('flows.teamActivity.reason', { reason: mask(item.reason) })}
       </span>
       <span className="activity-acts">
+        {item.kind === 'review_requested' && item.reviewId && (
+          <a
+            className="link"
+            href={crossReviewHash(item.reviewId)}
+            data-testid={`team-activity-review-${item.id}`}
+          >
+            {t('review.activity.open')}
+          </a>
+        )}
         {canvas && item.kind === 'member_added' && (
           <button
             type="button"

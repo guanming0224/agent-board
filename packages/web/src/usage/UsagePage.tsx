@@ -547,7 +547,9 @@ function Detail({ report: full, refreshing }: { report: UsageReport; refreshing:
           ? t('usage.otherMachines')
           : machineName(s.key),
   }));
-  const hasDetail = codex || report.machines.some((m) => m.state === 'detail');
+  // 只有 Codex 的列也算有細項（Claude 那邊 daemon 太舊時）；完全沒有列就照舊說明。
+  const hasDetail =
+    report.machines.some((m) => m.state === 'detail') || (codex && full.rows.length > 0);
   const caption = `${t('usage.lastDays', { n: period })} · ${t(
     measure === 'all' ? 'usage.all' : 'usage.conversation',
   )}`;

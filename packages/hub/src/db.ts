@@ -313,6 +313,31 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX team_presets_position ON team_presets(position);
   `,
+  /*
+   * 11：交叉審查（Codex 第二輪，GM 2026-11-12，docs/codex-round2-spec.md §2-3）。**只加表，不動既有欄位**。
+   * 不存整份 diff，只存摘要（檔案清單、行數）；兩邊各自的狀態、意見文字、用量是 JSON（ReviewSide）。
+   * 不設外鍵：session、機器刪掉後審查紀錄照樣可以看（和 audit 一樣）；保留期限同 session_events（retention.ts）。
+   */ `
+  CREATE TABLE reviews (
+    id TEXT PRIMARY KEY,
+    requested_by TEXT NOT NULL,
+    team_id TEXT,
+    reason TEXT NOT NULL DEFAULT '',
+    machine_id TEXT NOT NULL,
+    target TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    diff TEXT,
+    claude TEXT NOT NULL,
+    codex TEXT NOT NULL,
+    instructions_version INTEGER NOT NULL,
+    read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+  );
+  CREATE INDEX reviews_created ON reviews(created_at);
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

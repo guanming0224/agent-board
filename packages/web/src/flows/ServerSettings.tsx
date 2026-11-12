@@ -9,6 +9,7 @@ import {
   WAITING_LIMIT_MIN,
   TEAM_SIZE_MAX,
   TEAM_SIZE_MIN,
+  REVIEW_LEAD_RATE_MAX,
   type Settings,
 } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
@@ -16,6 +17,7 @@ import { useBoard } from '../shared/store';
 import { errorText, Msg, type Note } from './common';
 import { KEY_CATEGORY, settingsHash, type Category } from './settingsNav';
 import { Section } from './settingsParts';
+import '../review/messages';
 import { listenAddressError, originError } from './validation';
 
 type SettingsKey = keyof Settings;
@@ -615,6 +617,88 @@ export function AutoStaffSection({ form }: { form: ServerSettingsForm }) {
           {t('flows.autoStaff.push')}
         </label>
         <p className="hint">{t('flows.autoStaff.pushHint')}</p>
+      </div>
+    </Section>
+  );
+}
+
+/**
+ * 交叉審查（Codex 第二輪，CONTRACTS §22）：隊長每小時上限（每隊，0–20，0＝隊長不能發起）、兩邊的模型、
+ * Codex 推理強度。GM 在網頁按確認或隊長要求才會跑，所以標 ◈。PATCH 帶整個 review 物件。
+ */
+export function ReviewSection({ form }: { form: ServerSettingsForm }) {
+  const t = useT();
+  const { draft, patch } = form;
+  const review = draft.review;
+  const [perHour, setPerHour] = useState(String(review.leadPerHour));
+  useEffect(() => setPerHour(String(review.leadPerHour)), [review.leadPerHour]);
+  const model = (value: string) => value.trim().slice(0, 100) || null;
+  return (
+    <Section id="review" title={t('review.settings.title')} dirty={form.isDirty('review')}>
+      <p className="hint">
+        {t('review.settings.hint')}{' '}
+        <span className="chip cost">◈ {t('flows.autoContinue.cost')}</span>
+      </p>
+      <div className="field">
+        <label htmlFor="st-review-per-hour">{t('review.settings.leadPerHour')}</label>
+        <input
+          id="st-review-per-hour"
+          className="short num"
+          inputMode="numeric"
+          data-testid="review-per-hour"
+          value={perHour}
+          onChange={(e) => {
+            setPerHour(e.target.value);
+            const text = e.target.value.trim();
+            const n = /^\d+$/.test(text) ? Number(text) : null;
+            if (n !== null && n >= 0 && n <= REVIEW_LEAD_RATE_MAX) {
+              patch({ review: { ...review, leadPerHour: n } });
+            }
+          }}
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="st-review-claude">{t('review.settings.claudeModel')}</label>
+        <input
+          id="st-review-claude"
+          className="mono"
+          data-testid="review-claude-model"
+          value={review.claudeModel ?? ''}
+          onChange={(e) => patch({ review: { ...review, claudeModel: model(e.target.value) } })}
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="st-review-codex">{t('review.settings.codexModel')}</label>
+        <input
+          id="st-review-codex"
+          className="mono"
+          data-testid="review-codex-model"
+          value={review.codexModel ?? ''}
+          onChange={(e) => patch({ review: { ...review, codexModel: model(e.target.value) } })}
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="st-review-effort">{t('review.settings.codexEffort')}</label>
+        <select
+          id="st-review-effort"
+          data-testid="review-codex-effort"
+          value={review.codexEffort ?? ''}
+          onChange={(e) =>
+            patch({
+              review: {
+                ...review,
+                codexEffort: (e.target.value || null) as typeof review.codexEffort,
+              },
+            })
+          }
+        >
+          <option value="">{t('review.settings.effort.default')}</option>
+          {(['minimal', 'low', 'medium', 'high'] as const).map((effort) => (
+            <option key={effort} value={effort}>
+              {t(`review.settings.effort.${effort}`)}
+            </option>
+          ))}
+        </select>
       </div>
     </Section>
   );

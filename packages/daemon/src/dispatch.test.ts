@@ -62,7 +62,7 @@ const mcpConfigPath = () => join(h.dataDir, 'mcp', 's1.json');
 const secretPath = () => join(h.dataDir, 'mcp', 's1.key');
 
 describe('派工工具：開 PTY 的參數', () => {
-  it('hub 開著派工：帶 --mcp-config 與五個派工工具（含 release_member）的 --allowedTools，最後接 --name', async () => {
+  it('hub 開著派工：帶 --mcp-config 與六個派工工具（含 release_member、request_review）的 --allowedTools，最後接 --name', async () => {
     await start(true);
     const { argv, env } = h.runs()[0]!;
     const at = argv.indexOf('--mcp-config');
@@ -75,6 +75,7 @@ describe('派工工具：開 PTY 的參數', () => {
       'mcp__agent-board__send_task',
       'mcp__agent-board__get_result',
       'mcp__agent-board__release_member',
+      'mcp__agent-board__request_review',
     ]);
     expect(argv[at + 3 + DISPATCH_TOOL_NAMES.length]).toBe('--name');
     expect(argv).not.toContain('--strict-mcp-config');
@@ -145,7 +146,7 @@ describe('進度卡工具（P3 項目一）：掛載條件', () => {
     JSON.parse(readFileSync(mcpConfigPath(), 'utf8')).mcpServers['agent-board'].env
       .AGENT_BOARD_MCP_TOOLS as string;
 
-  it('hello 宣告 mcp.memory；派工與進度卡都開：--allowedTools 七個工具，設定檔 env 列同樣的七個', async () => {
+  it('hello 宣告 mcp.memory；派工與進度卡都開：--allowedTools 八個工具，設定檔 env 列同樣的八個', async () => {
     await start(true, MCP_SERVER, true);
     const hello = h.hub.received.find((m) => m.type === 'daemon.hello');
     expect(hello && 'features' in hello ? hello.features : []).toContain(DAEMON_FEATURES.memory);
@@ -156,18 +157,20 @@ describe('進度卡工具（P3 項目一）：掛載條件', () => {
       'mcp__agent-board__update_progress',
     ]);
     expect(toolsEnv()).toBe(
-      'list_members,spawn_member,send_task,get_result,release_member,get_progress,update_progress',
+      'list_members,spawn_member,send_task,get_result,release_member,request_review,get_progress,update_progress',
     );
   });
 
-  it('只開進度卡：只掛兩個工具；只開派工：只掛五個；兩個都關或舊版 hub：完全不掛', async () => {
+  it('只開進度卡：只掛兩個工具；只開派工：只掛六個；兩個都關或舊版 hub：完全不掛', async () => {
     await start(false, MCP_SERVER, true);
     expect(allowed(h.runs()[0]!.argv)).toEqual([...MEMORY_TOOL_NAMES]);
     expect(toolsEnv()).toBe('get_progress,update_progress');
     await h.cleanup();
     await start(true, MCP_SERVER, false);
     expect(allowed(h.runs()[0]!.argv)).toEqual([...DISPATCH_TOOL_NAMES]);
-    expect(toolsEnv()).toBe('list_members,spawn_member,send_task,get_result,release_member');
+    expect(toolsEnv()).toBe(
+      'list_members,spawn_member,send_task,get_result,release_member,request_review',
+    );
     await h.cleanup();
     for (const [dispatch, memory] of [
       [false, false],
@@ -278,6 +281,7 @@ describe('進度卡設定關掉（P3 §1.8 驗收 8）', () => {
         'send_task',
         'get_result',
         'release_member',
+        'request_review',
       ]);
       const argv = h.runs().at(-1)!.argv;
       expect(argv.join(' ')).not.toContain('get_progress');
@@ -405,6 +409,7 @@ describe('派工工具：密鑰與轉送', () => {
         'send_task',
         'get_result',
         'release_member',
+        'request_review',
       ]);
       rpc(3, 'tools/call', { name: 'send_task', arguments: { member: 'BD1', text: 'go' } });
       const request = await h.hub.waitFor('dispatch.request');
@@ -460,7 +465,7 @@ describe.skipIf(process.platform === 'win32')('Codex 掛派工工具', () => {
     expect(mcp[2]).toContain('AGENT_BOARD_SESSION_ID="c1"');
     expect(mcp[2]).toContain('AGENT_BOARD_HOOK_KEY_FILE=');
     expect(mcp[3]).toBe(
-      'mcp_servers.agent-board.enabled_tools=["list_members","spawn_member","send_task","get_result","release_member"]',
+      'mcp_servers.agent-board.enabled_tools=["list_members","spawn_member","send_task","get_result","release_member","request_review"]',
     );
     expect(mcp[4]).toBe('mcp_servers.agent-board.default_tools_approval_mode="approve"');
     // 提示仍在最後（-- 之後）。

@@ -3,6 +3,7 @@ import { closeSync, mkdirSync, openSync, renameSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { auditToCsv } from './audit';
 import type { RetentionDays } from './config';
+import { ReviewStore } from './reviews';
 import type { Store } from './store';
 
 export const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
@@ -15,6 +16,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface RetentionResult {
   eventsDeleted: number;
+  /** 交叉審查（schema v11）：和事件同一個保留期限，只刪已結束的。 */
+  reviewsDeleted: number;
   auditDeleted: number;
   /** 這一輪寫出的封存檔；沒有就是 null。 */
   archive: string | null;
@@ -44,9 +47,15 @@ export function runRetention(
   now: Date,
 ): RetentionResult {
   const cutoff = (n: number) => new Date(now.getTime() - n * DAY_MS).toISOString();
-  const result: RetentionResult = { eventsDeleted: 0, auditDeleted: 0, archive: null };
+  const result: RetentionResult = {
+    eventsDeleted: 0,
+    reviewsDeleted: 0,
+    auditDeleted: 0,
+    archive: null,
+  };
   if (days.eventDays > 0) {
     result.eventsDeleted = store.pruneEvents(cutoff(days.eventDays), MAX_EVENT_ROWS);
+    result.reviewsDeleted = new ReviewStore(store).prune(cutoff(days.eventDays));
   }
   // 記憶體資料庫沒有地方放封存檔，不清。
   if (days.auditDays > 0 && dbPath !== ':memory:') {

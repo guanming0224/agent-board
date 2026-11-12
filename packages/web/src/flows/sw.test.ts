@@ -420,3 +420,44 @@ describe('sw.js update failed (release auto-update)', () => {
     expect(board.messages).toEqual([{ type: 'agent-board.open', url: `${ORIGIN}/#/machines` }]);
   });
 });
+
+describe('sw.js cross review (Codex round 2)', () => {
+  const review = (over: Record<string, unknown> = {}) => ({
+    kind: 'review',
+    event: 'done',
+    reviewId: 'rv-1',
+    at: '2026-11-12T01:00:00.000Z',
+    ...over,
+  });
+
+  it('done: only says the review finished (no review text); opens the review; own tag per review', async () => {
+    const zh = loadWorker('zh-TW');
+    await zh.dispatch('push', pushEvent(review()));
+    expect(zh.shown[0]).toMatchObject({
+      title: '交叉審查',
+      options: {
+        body: '審查完成',
+        tag: 'agent-board-review-rv-1',
+        data: { url: `${ORIGIN}/#/cross-review/rv-1` },
+      },
+    });
+    const en = loadWorker('en');
+    await en.dispatch('push', pushEvent(review()));
+    expect(en.shown[0]).toMatchObject({
+      title: 'Cross review',
+      options: { body: 'Review finished' },
+    });
+  });
+
+  it('requested by a lead: names the lead, never the reason', async () => {
+    const zh = loadWorker('zh-TW');
+    await zh.dispatch(
+      'push',
+      pushEvent(review({ event: 'requested', lead: 'LD', reason: 'should not show' })),
+    );
+    expect(zh.shown[0]!.options.body).toBe('LD 要求交叉審查');
+    const en = loadWorker('en');
+    await en.dispatch('push', pushEvent(review({ event: 'requested' })));
+    expect(en.shown[0]!.options.body).toBe('? asked for a cross review');
+  });
+});

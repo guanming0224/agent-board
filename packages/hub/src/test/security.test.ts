@@ -659,7 +659,7 @@ describe('retention', () => {
     const { store } = hub.running;
     seedAudit(store, 1, 'RECENT');
     const empty = runRetention(store, { eventDays: 0, auditDays: 180 }, hub.dbPath, now);
-    expect(empty).toEqual({ eventsDeleted: 0, auditDeleted: 0, archive: null });
+    expect(empty).toEqual({ eventsDeleted: 0, reviewsDeleted: 0, auditDeleted: 0, archive: null });
     expect(existsSync(archiveDir(hub.dbPath))).toBe(false);
 
     seedAudit(store, 200, 'OLD');

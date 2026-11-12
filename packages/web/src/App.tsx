@@ -21,6 +21,7 @@ import { isSearchShortcut, SearchPanel } from './search';
 import { TeamContent, TeamDrawer } from './team';
 import { MachinesPage } from './machines';
 import { UsagePage } from './usage';
+import { CrossReviewPage } from './review';
 import {
   cameFrom,
   closeModal,
@@ -105,6 +106,7 @@ function ModalContent({ kind }: { kind: ModalKind }) {
   if (kind === 'transcript') return <TranscriptPage />;
   if (kind === 'usage') return <UsagePage />;
   if (kind === 'machines') return <MachinesPage />;
+  if (kind === 'crossReview') return <CrossReviewPage />;
   return <NewSessionPage />;
 }
 
@@ -137,6 +139,7 @@ const MODAL_LABEL: Record<ModalKind, string> = {
   transcript: 'flows.archive.transcript',
   usage: 'usage.title',
   machines: 'machines.title',
+  crossReview: 'review.title',
 };
 
 /** 手機：上一筆歷史就是 app 裡的畫面就上一頁，否則回收件匣（手機的首頁）。 */

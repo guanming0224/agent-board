@@ -40,6 +40,7 @@ import {
 import { codeClass, statusCode } from '../shared/status';
 import { DenyForm } from './DenyForm';
 import { TeamActivitySection } from './TeamActivity';
+import { ReviewInboxSection } from '../review/ReviewInbox';
 import { summarizeTool } from './toolView';
 import { isFault, workItems, type WorkItem } from './workItems';
 
@@ -396,6 +397,7 @@ export function InboxPage() {
           ))}
         </div>
       )}
+      <ReviewInboxSection />
       <TeamActivitySection />
     </Page>
   );

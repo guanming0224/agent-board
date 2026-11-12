@@ -14,6 +14,7 @@ import { PasswordSection } from './PasswordSection';
 import {
   AutoContinueSection,
   AutoStaffSection,
+  ReviewSection,
   DispatchSection,
   MemorySection,
   NotifySection,
@@ -248,6 +249,7 @@ export function SettingsPage() {
                       <AutoContinueSection form={f} />
                       <DispatchSection form={f} />
                       <AutoStaffSection form={f} />
+                      <ReviewSection form={f} />
                       <MemorySection form={f} />
                       <StuckSection form={f} />
                     </>

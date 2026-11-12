@@ -20,6 +20,7 @@ import type {
   RouteQuery,
   RouteResponse,
   TeamActivity,
+  Review,
   User,
 } from '@agent-board/protocol';
 import type {
@@ -296,8 +297,11 @@ class HubConnection implements TerminalStream {
           progress: message.progress,
           presets: message.presets,
           teamActivity: message.teamActivity,
+          reviews: message.reviews,
         });
         return;
+      case 'review.updated':
+        return this.applyReview(message.review);
       case 'team.activity':
         return this.setTeamActivity(message.items);
       case 'board.pause':
@@ -406,6 +410,16 @@ class HubConnection implements TerminalStream {
     this.patch((s) => ({ ...s, progress: upsertCard(s.progress ?? [], clean) }));
   }
 
+  /** 交叉審查（WS review.updated 或 REST 回應）：同 id 換掉，新的放最前面。 */
+  applyReview(review: Review): void {
+    this.patch((s) => ({ ...s, reviews: upsertReview(s.reviews ?? [], review) }));
+  }
+
+  /** 交叉審查清單（REST 標已讀的回應）：整份換掉。 */
+  setReviews(reviews: Review[]): void {
+    this.patch((s) => ({ ...s, reviews }));
+  }
+
   /** 團隊動態（WS team.activity 或 REST 回應）：整份換掉。 */
   setTeamActivity(items: TeamActivity[]): void {
     this.patch((s) => ({ ...s, teamActivity: items }));
@@ -453,6 +467,13 @@ const progressPath = (owner: ProgressOwner) =>
   'teamId' in owner
     ? ({ team: true, id: owner.teamId } as const)
     : ({ team: false, id: owner.sessionId } as const);
+
+/** 交叉審查：同 id 換掉（位置不變）；新的放最前面（清單新的在前）。 */
+export function upsertReview(list: readonly Review[], review: Review): Review[] {
+  return list.some((r) => r.id === review.id)
+    ? list.map((r) => (r.id === review.id ? review : r))
+    : [review, ...list];
+}
 
 function upsert<T extends { id: string }>(list: T[], item: T): T[] {
   return list.some((x) => x.id === item.id)
@@ -585,6 +606,33 @@ export function createHubBackend() {
       const items = await call('teamActivityClear', { body: ids ? { ids } : {} });
       hub.setTeamActivity(items);
       return items;
+    },
+    async getReview(id) {
+      const review = await call('reviewGet', { params: { id } });
+      hub.applyReview(review);
+      return review;
+    },
+    async prepareReview(target, reason) {
+      const review = await call('reviewPrepare', {
+        body: { target, ...(reason ? { reason } : {}) },
+      });
+      hub.applyReview(review);
+      return review;
+    },
+    async startReview(id) {
+      const review = await call('reviewStart', { params: { id } });
+      hub.applyReview(review);
+      return review;
+    },
+    async cancelReview(id) {
+      const review = await call('reviewCancel', { params: { id } });
+      hub.applyReview(review);
+      return review;
+    },
+    async readReviews(ids) {
+      const reviews = await call('reviewRead', { body: ids ? { ids } : {} });
+      hub.setReviews(reviews);
+      return reviews;
     },
     getSettings: () => call('settingsGet'),
     updateSettings: (patch) => call('settingsUpdate', { body: patch }),

@@ -84,6 +84,7 @@ import type { CreateStatusTracker } from './status/types';
 import { SessionStore, type PersistedSession } from './store';
 import { readTranscript } from './transcript';
 import { scanCodexUsage, scanUsage } from './usage';
+import { ReviewRunner } from './review';
 import {
   createWorktree,
   currentBranch,
@@ -135,6 +136,8 @@ export interface DaemonDeps {
   heartbeatMs?: number;
   approvalWaitMs?: number;
   dispatchReplyTimeoutMs?: number;
+  /** 交叉審查每一邊的逾時（測試縮短；預設 REVIEW_TIMEOUT_MS）。 */
+  reviewTimeoutMs?: number;
   authRetryMs?: number;
   revokedGraceMs?: number;
   /** 叫服務管理程式拉起 session host 之後，等它能連的上限（毫秒）。 */
@@ -283,6 +286,8 @@ export class Daemon {
   private readonly mcpSecrets = new Map<string, string>();
   /** 全域搜尋的深層（P3 ③b）：只讀本機對話紀錄與畫面，和對話紀錄檢視分開排隊。 */
   private readonly deepSearch: DeepSearcher;
+  /** 交叉審查（Codex 第二輪）：只在 hub 送 `review.run` 時開 CLI（no-llm 界線，review.ts）。 */
+  private readonly reviews: ReviewRunner;
   private readonly dispatchRequests = new Map<
     string,
     { resolve: (reply: { ok: boolean; text: string }) => void; timer: NodeJS.Timeout }
@@ -381,6 +386,14 @@ export class Daemon {
       },
       send: (message) => this.send(message),
     });
+    this.reviews = new ReviewRunner({
+      claudeBin: config.claudeBin,
+      codexBin: config.codexBin ?? 'codex',
+      env: () => this.childEnv(),
+      send: (message, onResult) => this.hub.sendConfirmed(message, onResult),
+      timeoutMs: deps.reviewTimeoutMs,
+      log,
+    });
     this.hookServer = new HookServer(
       config.dataDir,
       (request, signal) => this.handleHook(request, signal),
@@ -467,6 +480,7 @@ export class Daemon {
     this.mcpSecrets.clear();
     this.settleDispatchRequests('hub_unreachable: Agent Board daemon is shutting down.');
     this.deepSearch.cancelAll();
+    this.reviews.stopAll();
     this.hub.stop();
     await this.hookServer.close();
     this.host?.close();
@@ -978,6 +992,8 @@ export class Daemon {
         DAEMON_FEATURES.search,
         // 偵測到 codex 才宣告：hub 只把 Codex 的 spec 送給有這個旗標的 daemon（§19）。
         ...(this.capabilities.codexVersion ? [DAEMON_FEATURES.codex] : []),
+        // 交叉審查（Codex 第二輪）：產生 diff、跑審查。
+        DAEMON_FEATURES.review,
       ],
       // 發版與自動更新（CONTRACTS §21）
       protocolVersion: this.deps.config.protocolVersionOverride ?? PROTOCOL_VERSION,
@@ -1031,6 +1047,8 @@ export class Daemon {
           message.memory === true,
         );
         for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
+        // 斷線期間跑完的審查結果補送。
+        this.reviews.flush();
         this.settleStaleApprovals();
         for (const [code, text] of this.alerts) {
           this.send({ type: 'daemon.alert', code, message: text.slice(0, 1000) });
@@ -1129,6 +1147,16 @@ export class Daemon {
         return;
       case 'search.cancel':
         this.deepSearch.cancel(message.searchId);
+        return;
+      // 交叉審查（Codex 第二輪）：prepare 只跑 git；run 是 GM 按確認或隊長 request_review 之後 hub 送來的。
+      case 'review.prepare':
+        void this.reviews.prepare(message).then((reply) => this.send(reply));
+        return;
+      case 'review.run':
+        this.reviews.run(message);
+        return;
+      case 'review.cancel':
+        this.reviews.cancel(message.reviewId);
         return;
       case 'dispatch.reply': {
         const pending = this.dispatchRequests.get(message.requestId);

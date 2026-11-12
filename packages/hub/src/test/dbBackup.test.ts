@@ -58,7 +58,7 @@ const backups = () => readdirSync(dir).filter((name) => name.includes('.bak-'));
 
 describe('backup before schema upgrade', () => {
   it('backs up an older database (0600, opens, still the old version) before migrating, and logs the path', () => {
-    expect(SCHEMA_VERSION).toBe(10);
+    expect(SCHEMA_VERSION).toBe(11);
     const path = join(dir, 'hub.db');
     makeV7(path);
     const lines: string[] = [];
@@ -396,13 +396,13 @@ describe('schema v9：工作區', () => {
 
 // P3 整合：三個項目的 v10 片段併成同一個 migration（只升一次）。
 describe('schema v10：P3 只有一個 migration', () => {
-  it('MIGRATIONS 長度 10；v9 升一次就有進度卡、Presets、搜尋索引全部', () => {
-    expect(MIGRATIONS).toHaveLength(10);
-    expect(SCHEMA_VERSION).toBe(10);
+  it('v10 是一個 migration：v9 升一次就有進度卡、Presets、搜尋索引全部（之後還有 v11）', () => {
+    expect(MIGRATIONS).toHaveLength(11);
+    expect(SCHEMA_VERSION).toBe(11);
     const path = join(dir, 'hub.db');
     makeAt(path, 9).close();
     const db = openDatabase(path, { log: () => undefined, now: NOW });
-    expect(db.pragma('user_version', { simple: true })).toBe(10);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     expect(backups()).toEqual([`hub.db.bak-${STAMP}-v9`]);
     const names = (
       db
@@ -473,7 +473,7 @@ describe('schema v10：進度卡', () => {
     before.close();
 
     const db = openDatabase(path, { log: () => undefined, now: NOW });
-    expect(db.pragma('user_version', { simple: true })).toBe(10);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     expect(backups()).toEqual([`hub.db.bak-${STAMP}-v9`]);
     for (const table of ['progress_cards', 'progress_revisions']) {
       expect((db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(0);
@@ -554,7 +554,7 @@ describe('schema v10：全域搜尋的事件索引', () => {
     const path = join(dir, 'hub.db');
     makeV9WithEvents(path);
     const db = openDatabase(path, { log: () => undefined, now: NOW });
-    expect(db.pragma('user_version', { simple: true })).toBe(10);
+    expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
     expect(backups()).toEqual([`hub.db.bak-${STAMP}-v9`]);
     const index = db
       .prepare(

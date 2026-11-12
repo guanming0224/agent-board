@@ -62,6 +62,7 @@ import {
   type LatestUsage,
   type CodexUsage,
   type UsageDetail,
+  type Review,
   type UsageReport,
   type UsageSummary,
   type User,
@@ -81,6 +82,7 @@ import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from '.
 import { AutoContinueEngine, isAutoContinueKey } from './autoContinue';
 import { BroadcastEngine } from './broadcast';
 import { TeamPresets } from './presets';
+import { REVIEW_PREPARE_TIMEOUT_MS, ReviewEngine } from './reviews';
 import { conflict, HttpError, notFound } from './errors';
 import { SafeDelivery, type DeliveryItem } from './delivery';
 import { DispatchEngine, type DispatchDeps } from './dispatch';
@@ -194,7 +196,15 @@ interface PendingCreate {
 /** 一問一答的 daemon 請求（資料夾瀏覽、封存相關）。 */
 type DaemonRequest = Extract<
   HubToDaemon,
-  { type: 'fs.list' | 'fs.mkdir' | 'session.inspect' | 'session.purge' | 'session.transcript' }
+  {
+    type:
+      | 'fs.list'
+      | 'fs.mkdir'
+      | 'session.inspect'
+      | 'session.purge'
+      | 'session.transcript'
+      | 'review.prepare';
+  }
 >;
 type DaemonReply = Extract<
   DaemonToHub,
@@ -203,7 +213,8 @@ type DaemonReply = Extract<
       | 'fs.listResult'
       | 'session.inspectResult'
       | 'session.purgeResult'
-      | 'session.transcriptResult';
+      | 'session.transcriptResult'
+      | 'review.prepared';
   }
 >;
 
@@ -349,6 +360,8 @@ export class Hub {
   private readonly autoContinue: AutoContinueEngine;
   /** session 派工（MCP 工具，CONTRACTS §11）。 */
   private readonly dispatch: DispatchEngine;
+  /** 交叉審查（Codex 第二輪，CONTRACTS §22）。 */
+  readonly reviews: ReviewEngine;
   /** 團隊群發（P2 項目二）：GM 親手下的，走同一條送字佇列，全部暫停不擋。 */
   private readonly broadcasts: BroadcastEngine;
   /** 進度卡（P3 項目一）：REST 與 MCP 工具共用。 */
@@ -509,6 +522,37 @@ export class Hub {
         if (current) this.broadcast({ type: 'team.updated', team: current });
       },
       awaitingChanged: (ids, change, notify) => this.awaitingChanged(ids, change, notify),
+      // 交叉審查（Codex 第二輪）：reviews 在下面才建，呼叫時一定已經有了。
+      requestReview: (input) => this.reviews.requestByLead(input),
+      reviewsLeft: (teamId) => this.reviews.leadRequestsLeft(teamId),
+      reviewLimit: () => this.store.getSettings().review.leadPerHour,
+    });
+    this.reviews = new ReviewEngine({
+      store: deps.store,
+      now: deps.now,
+      delivery: this.delivery,
+      audit: (userId, sessionId, action, detail) => this.audit(userId, sessionId, action, detail),
+      broadcast: (review) => this.broadcast({ type: 'review.updated', review }),
+      features: (machineId) => this.daemonFor(machineId)?.features ?? null,
+      machine: (machineId) => this.store.getMachine(machineId),
+      send: (machineId, message) => {
+        const conn = this.daemonFor(machineId);
+        if (!conn) return false;
+        this.send(conn.ws, message);
+        return true;
+      },
+      prepare: async (machineId, message) => {
+        const reply = await this.askDaemon(
+          machineId,
+          'review.prepared',
+          REVIEW_PREPARE_TIMEOUT_MS,
+          message,
+        );
+        return { diff: reply.diff, error: reply.error };
+      },
+      settings: () => this.store.getSettings().review,
+      notify: (event) => this.notifyReview(event),
+      guarded: (label, fn) => this.guarded(label, fn),
     });
     this.broadcasts = new BroadcastEngine({
       store: deps.store,
@@ -571,6 +615,8 @@ export class Hub {
     // 等隊長：送字佇列沒了，指向已經不在的隊長的記錄清掉；寬限期計時器重排。
     this.store.pruneAwaitingLead();
     this.dispatch.resumeTimers();
+    // 交叉審查：上一輪沒跑完的（hub 重啟後收不到結果）標成失敗。
+    this.reviews.recover();
     this.heartbeat = setInterval(
       () => this.guarded('heartbeat', () => this.tick()),
       deps.timing.heartbeatMs,
@@ -746,7 +792,11 @@ export class Hub {
       case 'session.inspectResult':
       case 'session.purgeResult':
       case 'session.transcriptResult':
+      case 'review.prepared':
         this.onDaemonReply(conn, msg);
+        return;
+      case 'review.side':
+        this.reviews.onSide(conn.machineId, msg.reviewId, msg.side);
         return;
       case 'search.result':
       case 'search.done':
@@ -1065,6 +1115,7 @@ export class Hub {
       progress: this.progress.list(),
       presets: this.presets.list(),
       teamActivity: this.store.listTeamActivity(),
+      reviews: this.reviews.list(),
     };
   }
 
@@ -1088,6 +1139,7 @@ export class Hub {
       role: entry.role,
       reason: entry.reason,
       read: false,
+      ...(entry.reviewId ? { reviewId: entry.reviewId } : {}),
     };
     const items = [item, ...this.store.listTeamActivity()];
     this.store.saveTeamActivity(items);
@@ -3169,6 +3221,8 @@ export class Hub {
    */
   private notifyTeamActivity(item: TeamActivity): void {
     const settings = this.store.getSettings();
+    // 隊長要求審查的推播另外送（notifyReview：「<隊長> 要求交叉審查」），這裡不重複。
+    if (item.kind === 'review_requested') return;
     if (!settings.autoStaff.push || !this.pushAllowed(settings)) return;
     const reason = item.kind === 'member_added' ? 'team_member_added' : 'team_member_released';
     if (settings.notifications.coalesce) {
@@ -3186,6 +3240,24 @@ export class Hub {
         member: item.memberName,
         sessionId: item.memberSessionId,
         at: item.at,
+      }),
+    );
+  }
+
+  /**
+   * 交叉審查的推播（Codex 第二輪）：只說「審查完成」或「<隊長> 要求交叉審查」，不帶審查內容、不帶理由。
+   * 不併進合併通知（不是「等你」），單獨一則，點了開那份審查。
+   */
+  private notifyReview(event: { kind: 'done' | 'requested'; review: Review; lead?: string }): void {
+    const settings = this.store.getSettings();
+    if (!this.pushAllowed(settings)) return;
+    this.sendPush(
+      JSON.stringify({
+        kind: 'review',
+        event: event.kind,
+        reviewId: event.review.id,
+        ...(event.lead ? { lead: event.lead } : {}),
+        at: this.nowIso(),
       }),
     );
   }
@@ -3392,6 +3464,8 @@ export class Hub {
 
   private tick(): void {
     const now = this.nowIso();
+    // 交叉審查跑太久（daemon 重啟、結果送不回來）：標成失敗。只會結束，不會開始任何審查。
+    this.guarded('review expire', () => this.reviews.expire());
     for (const client of this.clients) {
       if (!client.alive) {
         client.ws.terminate();

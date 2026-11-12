@@ -257,9 +257,10 @@ describe('agent-board-mcp', () => {
     const { tools, instructions } = await listed(server, 1);
     expect(tools.map((t) => t.name)).toEqual([...LEGACY_DISPATCH_TOOLS]);
     expect(tools.map((t) => t.name)).not.toContain('release_member');
-    expect(DispatchTool.options.filter((t) => t !== 'release_member')).toEqual([
-      ...LEGACY_DISPATCH_TOOLS,
-    ]);
+    // 新加的 release_member、request_review（交叉審查）都只在新 daemon 明確列出時才出現。
+    expect(
+      DispatchTool.options.filter((t) => t !== 'release_member' && t !== 'request_review'),
+    ).toEqual([...LEGACY_DISPATCH_TOOLS]);
     expect(instructions).not.toContain('get_progress');
     server.send({
       id: 10,

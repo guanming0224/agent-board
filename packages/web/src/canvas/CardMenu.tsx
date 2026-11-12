@@ -8,6 +8,8 @@ import { canResume, errorText, useResume } from '../views';
 import { requestArchive } from './archive';
 import { useTeams } from '../team/store';
 import { moveSessionToZone, useCurrentZoneId, useZones } from '../zones';
+import { newCrossReviewHash } from '../views/overlay';
+import '../review/messages';
 import { useLinkPick } from './linkPick';
 import { useProgressUi } from '../progress/uiStore';
 
@@ -173,6 +175,19 @@ export function CardMenu({
       </button>
       <MoveToZone session={session} onClose={onClose} />
       <ProgressItem session={session} onClose={onClose} />
+      {/* 交叉審查（Codex 第二輪）：這個 session 還沒 commit 的變更，先看檔案清單再確認。 */}
+      <button
+        type="button"
+        role="menuitem"
+        className="sm"
+        onClick={() => {
+          onClose();
+          location.hash = newCrossReviewHash(session.id);
+        }}
+        data-testid="card-cross-review"
+      >
+        {t('review.open')}
+      </button>
       {canResume(session) && (
         <button
           type="button"

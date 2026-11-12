@@ -2,6 +2,7 @@
 import {
   AUDIT_SYSTEM_USER,
   AUTO_STAFF_DEFAULT,
+  REVIEW_SETTINGS_DEFAULT,
   CANVAS_LAYOUT_SET,
   DEFAULT_ZONE_ID,
   DEFAULT_ZONE_NAME,
@@ -70,6 +71,7 @@ import { fakeDeepSearch } from './fakeDeepSearch';
 import { fakeSearch } from './fakeSearch';
 import { createFakeReleases } from './fakeRelease';
 import { demoUsageReport } from './fakeUsage';
+import { createFakeReviews } from './fakeReviews';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -518,6 +520,7 @@ const defaultSettings: Settings = {
   dispatch: true,
   memory: true,
   autoStaff: { ...AUTO_STAFF_DEFAULT },
+  review: { ...REVIEW_SETTINGS_DEFAULT },
 };
 
 /** 測試可以改掉 demoReply，模擬隊長回了無法解析的內容。 */
@@ -778,6 +781,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     progress: [...progress.values()].map((p) => ({ ...p.card, facts: factsOf(p.card) })),
     presets,
     teamActivity,
+    reviews: fakeReviews.list(),
   });
   /** 假的送字：打進終端機、對象開始工作。 */
   const typeInto = (s: Session, text: string) => {
@@ -806,6 +810,12 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     }
   };
   const publish = () => listeners.forEach((l) => l(visible()));
+  const fakeReviews = createFakeReviews({
+    sessions: () => state.sessions,
+    machines: () => state.machines,
+    publish: () => publish(),
+    userName: demoUser.name,
+  });
   /** 群發與進度卡送字共用（和 hub 的 BroadcastEngine.start 一樣：等輸入的送出，其他排隊）。 */
   const startBroadcast = (
     head: Pick<Broadcast, 'teamId' | 'kind' | 'cardKey' | 'text' | 'mentioned'>,
@@ -1500,6 +1510,11 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       publish();
       return teamActivity;
     },
+    getReview: (id) => fakeReviews.get(id),
+    prepareReview: (target, reason) => fakeReviews.prepare(target, reason),
+    startReview: (id) => fakeReviews.start(id),
+    cancelReview: (id) => fakeReviews.cancel(id),
+    readReviews: (ids) => fakeReviews.read(ids),
     getSettings: async () => settings,
     async updateSettings(patch) {
       settings = { ...settings, ...patch };
