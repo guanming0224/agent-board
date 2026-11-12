@@ -36,6 +36,12 @@ if (process.env.FAKE_CODEX_REJECT_MCP && argv.some((arg) => arg.startsWith('mcp_
   process.exit(2);
 }
 
+// 假 codex 一開就因為登入過期結束（和 MCP 無關，不該退回不帶 MCP 重開）。
+if (process.env.FAKE_CODEX_LOGIN_EXPIRED) {
+  console.log('Your access token could not be refreshed. Please log out and sign in again.');
+  process.exit(1);
+}
+
 if (process.env.FAKE_CLAUDE_IGNORE_TERM) process.on('SIGTERM', () => {});
 else process.on('SIGTERM', () => process.exit(0));
 process.on('SIGHUP', () => process.exit(0));

@@ -108,6 +108,18 @@ export function assertE2eCodexHome(env: NodeJS.ProcessEnv, home: string = homedi
   }
 }
 
+/**
+ * Codex 的設定錯誤字樣（複查 S3）：取自 codex-cli 0.167 執行檔裡的字串（`Error loading config.toml`、
+ * `Error loading configuration`、`failed to load configuration`、`Failed to deserialize overridden config`、
+ * serde 的 `unknown field \``／`unknown variant \``／`missing field \``、`MCP client for \``），加上我們帶的設定鍵名。
+ * 只有輸出裡有這些才算 MCP 設定讓它起不來；登入過期、網路錯誤等其他早期失敗照一般結束回報。
+ */
+const CODEX_CONFIG_ERROR =
+  /mcp_servers|default_tools_approval_mode|enabled_tools|Error loading config|failed to load configuration|Failed to deserialize overridden config|unknown field `|unknown variant `|missing field `|MCP client for `|invalid configuration/i;
+
+export const looksLikeCodexConfigError = (output: string): boolean =>
+  CODEX_CONFIG_ERROR.test(output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''));
+
 /** 帶 MCP 開的 Codex 在這段時間內、還沒有任何 hook 就失敗：當成 MCP 設定問題，不帶 MCP 重開（審查 S3）。 */
 const CODEX_MCP_PROBE_MS = 15_000;
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60_000;
@@ -1676,12 +1688,16 @@ export class Daemon {
   ): ManagedSession {
     const { spec, sessionId } = entry;
     // 這一個 PTY 是不是「帶 MCP 一開就失敗、要不帶 MCP 重開」（審查 S3）：結束回報與 exit 處理都跳過。
-    let retrying = false;
-    const shouldRetry = (exitCode: number | null) => {
-      if (!retrying && this.codexMcpRetry(sessionId, exitCode)) retrying = true;
+    // 判斷只做一次、都用 PTY 真正的結束碼（ManagedSession.finalExitCode）：結束時狀態追蹤可能先送出 onRuntime，
+    // 再呼叫 onExit；兩邊看同一個結果，hub 才不會先收到「結束」又看到重開（複查 S3）。
+    let retrying: boolean | null = null;
+    // 帶 MCP 開的 Codex：留最後 8 KB 的輸出，失敗時看是不是 MCP 設定的錯誤。
+    let tail = '';
+    const decide = (): boolean => {
+      retrying ??= this.codexMcpRetry(sessionId, managed.finalExitCode ?? 1, tail);
       return retrying;
     };
-    return new ManagedSession({
+    const managed: ManagedSession = new ManagedSession({
       id: sessionId,
       agent: agentOf(spec),
       bin: this.agentBin(agentOf(spec)),
@@ -1705,7 +1721,7 @@ export class Daemon {
       onRuntime: (session) => {
         if (session.endedAt !== null) {
           // 帶 MCP 開的 Codex 一開就失敗：先不回報結束，handleSessionExit 會不帶 MCP 重開一次（審查 S3）。
-          if (shouldRetry(session.status === 'done' ? 0 : 1)) return;
+          if (decide()) return;
           this.recordEnded(session);
         } else this.send({ type: 'session.runtime', session });
       },
@@ -1721,13 +1737,18 @@ export class Daemon {
         this.saveSnapshot(sessionId);
       },
       onTerminal: (message) => this.send(message),
+      onOutput: (data) => {
+        if (!this.codexMcpLaunches.has(sessionId)) return;
+        tail = (tail + data).slice(-8_192);
+      },
       onClaudeSessionId: (claudeSessionId) => this.store.patch(sessionId, { claudeSessionId }),
       onFirstPromptSent: () => this.store.patch(sessionId, { pendingFirstPrompt: null }),
       onExit: (exitCode) => {
-        if (shouldRetry(exitCode)) this.retryCodexWithoutMcp(sessionId);
+        if (decide()) this.retryCodexWithoutMcp(sessionId);
         else this.handleSessionExit(sessionId, exitCode);
       },
     });
+    return managed;
   }
 
   /** 記下警示（重連後補送），連著 hub 就馬上送。 */
@@ -1737,13 +1758,14 @@ export class Daemon {
   }
 
   /** Codex 帶 MCP 開、還沒有任何 hook、15 秒內以非 0 結束：判定是 MCP 設定讓它起不來（審查 S3）。 */
-  private codexMcpRetry(sessionId: string, exitCode: number | null): boolean {
+  private codexMcpRetry(sessionId: string, exitCode: number, output: string): boolean {
     const launch = this.codexMcpLaunches.get(sessionId);
     return (
       launch !== undefined &&
       !launch.hooked &&
       exitCode !== 0 &&
-      Date.now() - launch.at < CODEX_MCP_PROBE_MS
+      Date.now() - launch.at < CODEX_MCP_PROBE_MS &&
+      looksLikeCodexConfigError(output)
     );
   }
 

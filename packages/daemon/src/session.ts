@@ -277,6 +277,8 @@ export interface ManagedSessionOptions {
   onClaudeSessionId: (claudeSessionId: string) => void;
   onFirstPromptSent: () => void;
   onExit: (exitCode: number) => void;
+  /** agent 的原始輸出（不管有沒有人訂閱終端機；Codex 帶 MCP 一開就失敗時看錯誤字樣用）。 */
+  onOutput?: (data: string) => void;
 }
 
 export class ManagedSession {
@@ -416,6 +418,11 @@ export class ManagedSession {
 
   get agent(): AgentKind {
     return this.options.agent ?? 'claude';
+  }
+
+  /** 結束碼（還沒結束是 null）。 */
+  get finalExitCode(): number | null {
+    return this.exitCode;
   }
 
   get isAlive(): boolean {
@@ -662,6 +669,7 @@ export class ManagedSession {
 
   private handleData(data: string): void {
     if (this.detached) return;
+    this.options.onOutput?.(data);
     if (this.replaying) {
       // 重播的舊輸出：重建畫面；限流偵測要看過（記下舊訊息，之後重畫時不會當成新的）。
       this.seq += 1;

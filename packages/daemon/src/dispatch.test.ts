@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { McpReply } from '@agent-board/protocol';
 import { DAEMON_FEATURES } from '@agent-board/protocol';
+import { looksLikeCodexConfigError } from './daemon';
 import { DISPATCH_TOOL_NAMES, MEMORY_TOOL_NAMES, secretMatches } from './mcpFiles';
 import { FAKE_CAPABILITIES, Harness, waitUntil } from './test-support/harness';
 
@@ -556,5 +557,41 @@ describe.skipIf(process.platform === 'win32')('Codex 掛派工工具', () => {
         .at(-1)!
         .argv.some((a) => a.startsWith('mcp_servers.')),
     ).toBe(false);
+  });
+
+  it('S3 複查：一開就失敗但輸出不是設定錯誤（登入過期）→ 照一般結束回報，不退回、不警示', async () => {
+    h = new Harness();
+    h.hub.dispatch = true;
+    h.hub.codexMcp = true;
+    h.mcpServer = MCP_SERVER;
+    h.extraEnv = { FAKE_CODEX_LOGIN_EXPIRED: '1' };
+    await h.start();
+    await h.restartDaemon({ capabilities: { ...FAKE_CAPABILITIES, codexVersion: '0.167.0' } });
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'req-c6',
+      sessionId: 'c6',
+      spec: h.spec({ agent: 'codex' }),
+    });
+    await h.hub.waitFor('session.created', (m) => m.requestId === 'req-c6');
+    const ended = await h.hub.waitFor(
+      'session.runtime',
+      (m) => m.session.id === 'c6' && m.session.endedAt !== null,
+    );
+    expect(ended.session.status).toBe('error');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const runs = h.runs().filter((r) => r.argv.includes('--dangerously-bypass-hook-trust'));
+    expect(runs).toHaveLength(1);
+    expect(h.hub.received.some((m) => m.type === 'daemon.alert')).toBe(false);
+  });
+
+  it('looksLikeCodexConfigError：設定錯誤字樣才算（含 ANSI 色碼），登入、網路錯誤不算', () => {
+    expect(
+      looksLikeCodexConfigError('\x1b[31mError loading config.toml: unknown field `x`\x1b[0m'),
+    ).toBe(true);
+    expect(looksLikeCodexConfigError('Failed to deserialize overridden config')).toBe(true);
+    expect(looksLikeCodexConfigError('MCP client for `agent-board` failed to start')).toBe(true);
+    expect(looksLikeCodexConfigError('Please log out and sign in again.')).toBe(false);
+    expect(looksLikeCodexConfigError('stream error: connection reset')).toBe(false);
   });
 });
