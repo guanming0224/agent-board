@@ -81,8 +81,10 @@ export const ReviewFile = z.object({
   bytes: z.number().int().nonnegative(),
   /** 超過單檔上限被截斷。 */
   truncated: z.boolean(),
-  /** 整份超過上限，這個檔案沒送內容（只列名稱）。 */
-  omitted: z.boolean(),
+  /**
+   * 沒送內容（只列名稱）：true＝整份超過上限；"sensitive"＝檔名像機密（`.env*`、金鑰、憑證…，審查 W2），一律不送內容。
+   */
+  omitted: z.union([z.boolean(), z.literal('sensitive')]),
 });
 export type ReviewFile = z.infer<typeof ReviewFile>;
 

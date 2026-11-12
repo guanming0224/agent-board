@@ -386,11 +386,13 @@ function FileList({
               </td>
               <td className="num cr-file-size">{f.omitted ? '—' : formatBytes(f.bytes)}</td>
               <td className="cr-file-flag">
-                {f.omitted
-                  ? t('review.file.omitted')
-                  : f.truncated
-                    ? t('review.file.truncated')
-                    : ''}
+                {f.omitted === 'sensitive'
+                  ? t('review.file.sensitive')
+                  : f.omitted
+                    ? t('review.file.omitted')
+                    : f.truncated
+                      ? t('review.file.truncated')
+                      : ''}
               </td>
             </tr>
           ))}

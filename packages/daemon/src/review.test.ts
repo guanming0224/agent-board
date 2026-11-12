@@ -1,7 +1,7 @@
 // 交叉審查（Codex 第二輪）在 daemon 這一段：diff 產生與上限、兩邊並行執行（假 claude／假 codex：成功、失敗、逾時、
 // 一邊失敗另一邊照常）、唯讀參數、輸出解析。真的 git、假的 CLI（web/e2e/fixtures），不呼叫任何模型。
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,7 +13,14 @@ import {
   parseCodexOutput,
   ReviewRunner,
 } from './review';
-import { assemble, branchDiff, sessionDiff, splitDiff } from './reviewDiff';
+import {
+  assemble,
+  branchDiff,
+  isSensitivePath,
+  readUntracked,
+  sessionDiff,
+  splitDiff,
+} from './reviewDiff';
 import { makeTempDir, waitUntil } from './test-support/harness';
 
 const FAKE_CLAUDE = fileURLToPath(
@@ -75,6 +82,51 @@ describe.skipIf(process.platform === 'win32')('reviewDiff', () => {
     expect(text).toContain('(binary file, content not included)');
     expect(text).not.toContain('secret');
     expect(summary.totalBytes).toBe(Buffer.byteLength(text));
+  });
+
+  it('S1：指向 repo 外的符號連結只列目標不讀內容；FIFO 略過不卡住', async () => {
+    const dir = repo();
+    const outside = makeTempDir();
+    temps.push(outside);
+    writeFileSync(join(outside, 'auth.json'), '{"token":"sk-ant-demo-secret"}\n');
+    symlinkSync(join(outside, 'auth.json'), join(dir, 'link.json'));
+    symlinkSync(outside, join(dir, 'linkdir'));
+    execFileSync('mkfifo', [join(dir, 'pipe')]);
+    const started = Date.now();
+    const { text, summary } = await sessionDiff(dir);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(text).not.toContain('sk-ant-demo-secret');
+    expect(text).toContain(`(symlink -> ${join(outside, 'auth.json')}; content not included)`);
+    expect(summary.files.map((f) => f.path)).not.toContain('pipe');
+    // readUntracked 本身：FIFO、資料夾回 null；repo 外的真實路徑不讀。
+    expect(await readUntracked(dir, 'pipe', 1000)).toBeNull();
+  });
+
+  it('W2：檔名像機密的（追蹤中或未追蹤）只列名稱、不送內容，摘要標 sensitive', async () => {
+    const dir = repo();
+    writeFileSync(join(dir, '.env'), 'OLD=1\n');
+    git(dir, 'add', '.env');
+    git(dir, 'commit', '-q', '-m', 'env');
+    writeFileSync(join(dir, '.env'), 'API_KEY=sk-ant-demo-tracked\n');
+    writeFileSync(join(dir, 'server.pem'), 'PRIVATE-untracked\n');
+    mkdirSync(join(dir, '.ssh'));
+    writeFileSync(join(dir, '.ssh', 'config'), 'Host secret-host\n');
+    writeFileSync(join(dir, 'id_utils.ts'), 'export const ok = 1;\n');
+    const { text, summary } = await sessionDiff(dir);
+    for (const secret of ['sk-ant-demo-tracked', 'PRIVATE-untracked', 'secret-host']) {
+      expect(text).not.toContain(secret);
+    }
+    const byPath = Object.fromEntries(summary.files.map((f) => [f.path, f.omitted]));
+    expect(byPath).toMatchObject({
+      '.env': 'sensitive',
+      'server.pem': 'sensitive',
+      '.ssh/config': 'sensitive',
+      'id_utils.ts': false,
+    });
+    expect(text).toContain('look like secrets and were not included: ');
+    expect(isSensitivePath('a/b/id_ed25519')).toBe(true);
+    expect(isSensitivePath('config/credentials.prod.json')).toBe(true);
+    expect(isSensitivePath('src/key.ts')).toBe(false);
   });
 
   it('還沒有 commit 的 repo：和空樹比，照樣列得出來', async () => {

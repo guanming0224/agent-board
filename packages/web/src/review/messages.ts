@@ -22,6 +22,7 @@ export const zhTW: Record<string, string> = {
   'review.files': '要送審的檔案（{n} 個，共 {size}，+{add} −{del}）',
   'review.file.truncated': '已截斷',
   'review.file.omitted': '超過上限，只列名稱',
+  'review.file.sensitive': '像機密檔，不送內容',
   'review.truncatedNote': '有檔案超過大小上限（單檔 200 KB、總共 1 MB），超過的部分不送審。',
   'review.status.modified': '修改',
   'review.status.added': '新增',
@@ -103,6 +104,7 @@ export const en: Record<string, string> = {
   'review.files': 'Files to review ({n}, {size} in total, +{add} −{del})',
   'review.file.truncated': 'Truncated',
   'review.file.omitted': 'Over the limit, name only',
+  'review.file.sensitive': 'Looks like a secret, content not sent',
   'review.truncatedNote':
     'Some files are over the size limit (200 KB per file, 1 MB in total); the rest is not sent.',
   'review.status.modified': 'Modified',
