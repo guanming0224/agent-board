@@ -1048,3 +1048,8 @@ start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀�
 - **Windows（W9）**：審查 CLI 只用 `.exe`（不用 `.cmd`，那要經 cmd.exe、JSON 參數會壞）；結束用 `taskkill /T /F /PID`。仍未在 Windows 實機驗證。
 - **Codex 用量去重（W10）**：整次掃描共用一份去重（事件時間＋累計 `total_tokens`），fork／resume 複製過來的事件只算一次。沒做「路徑＋大小＋mtime」快取。
 - 其他：`tomlString` 跳脫所有控制字元；`POST /api/reviews/prepare`、`/:id/start` 改成 owner 權限；分支審查的 prompt 註明「工作資料夾可能在別的分支，以 diff 為準」（沒有另外檢出 worktree）。
+- **複查（2026-11-13）**：
+  - 讀未追蹤檔開檔後比對 dev／ino 與一開始的 `lstat` 相同、讀完再確認 `realpath` 沒變，否則略過（擋中間資料夾被換成連結）。
+  - Codex 帶 MCP 一開就失敗時，輸出要有設定錯誤字樣（取自 codex 0.167 執行檔：`Error loading config.toml`、`Error loading configuration`、`failed to load configuration`、`Failed to deserialize overridden config`、`` unknown field ` ``、`` unknown variant ` ``、`` missing field ` ``、`` MCP client for ` ``，加上 `mcp_servers`、`default_tools_approval_mode`、`enabled_tools`、`invalid configuration`）才退回不帶 MCP；登入過期、網路錯誤等照一般結束回報。判斷只做一次、`onRuntime` 與 `onExit` 都用 PTY 真正的結束碼。
+  - 網頁：不認得的 session 狀態獨立顯示成 `UNK`（`?`、「不認得的狀態」、錯誤色），算等你、排在待處理最前；正式版也 `console.warn` 一次。
+  - 隊長 `request_review` 的推播（「<隊長> 要求交叉審查」）延到真的開始跑之後；沒有變更、暫停、開始失敗都不推播。
