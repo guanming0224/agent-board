@@ -9,6 +9,7 @@ import {
   attentionQueue,
   codeClass,
   codeWaits,
+  knownStatus,
   STATUS_CODES,
   statusCode,
   statusGlyph,
@@ -63,6 +64,18 @@ const approval = (over: Partial<Approval> & Pick<Approval, 'id' | 'sessionId'>):
 const of = (status: SessionStatus, statusDetail: string | null = null) => ({
   status,
   statusDetail,
+});
+
+describe('不認得的狀態（2026-11-13，flows-boot 的 no-such-status 讓 codeClass 讀到 undefined）', () => {
+  it('當成 offline：代碼 OFF、class、符號、說明都拿得到，不丟例外；不算等你', () => {
+    const broken = session({ id: 'x', status: 'no-such-status' as SessionStatus });
+    expect(statusCode(broken)).toBe('OFF');
+    expect(codeClass(statusCode(broken))).toBe('c-off');
+    expect(statusGlyph(broken)).toBe(statusGlyph(session({ id: 'y', status: 'offline' })));
+    expect(statusLabelKey(broken)).toBe(statusLabelKey(session({ id: 'y', status: 'offline' })));
+    expect(waitsForYou(broken)).toBe(false);
+    expect(knownStatus('running')).toBe('running');
+  });
 });
 
 describe('statusCode', () => {

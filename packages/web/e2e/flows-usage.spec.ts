@@ -1,6 +1,6 @@
 // 用量詳情（GM 2026-11-09）：假後端（demo 資料，shared/fakeUsage.ts），不連外、不呼叫 LLM。
 // demo-studio、demo-gpu 有細項；demo-laptop 失聯、沒回報。「daemon 太舊」用替身把 demo-gpu 的細項拿掉。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './flows-fixture';
 
 async function open(page: Page, route = '#/canvas', patch?: string) {
   await page.goto('about:blank');

@@ -2,7 +2,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Page, type TestInfo } from './flows-fixture';
 import type { Approval, Machine, Session } from '@agent-board/protocol';
 import { en, zhTW } from '../src/flows/messages';
 

@@ -152,8 +152,12 @@ export function resolveReviewBin(
   return null;
 }
 
-export const reviewPrompt = (diff: string): string =>
-  `${REVIEW_INSTRUCTIONS}\n\n===== CHANGE UNDER REVIEW =====\n${diff}`;
+/** 分支審查：工作資料夾可能停在別的分支，檔案內容以 diff 為準（審查建議；沒有另外檢出 worktree）。 */
+export const BRANCH_REVIEW_NOTE =
+  'Note: this is a branch review. The files in the working directory may be checked out at a different branch; treat the diff below as the source of truth for the change.';
+
+export const reviewPrompt = (diff: string, kind: 'session' | 'branch' = 'session'): string =>
+  `${REVIEW_INSTRUCTIONS}${kind === 'branch' ? `\n${BRANCH_REVIEW_NOTE}` : ''}\n\n===== CHANGE UNDER REVIEW =====\n${diff}`;
 
 const clipOutput = (text: string) =>
   text.length > REVIEW_OUTPUT_MAX_CHARS
@@ -265,10 +269,16 @@ interface Running {
 }
 
 export class ReviewRunner {
-  private readonly prepared = new Map<string, { cwd: string; text: string; expiresAt: number }>();
+  private readonly prepared = new Map<
+    string,
+    { cwd: string; text: string; kind: 'session' | 'branch'; expiresAt: number }
+  >();
   private readonly running = new Map<string, Running>();
   /** 滿了在等的（最多 REVIEW_QUEUE_MAX 份）。 */
-  private readonly queue: { message: RunRequest; entry: { cwd: string; text: string } }[] = [];
+  private readonly queue: {
+    message: RunRequest;
+    entry: { cwd: string; text: string; kind: 'session' | 'branch' };
+  }[] = [];
   private preparing = 0;
   /** 還沒確定送到 hub 的結果（斷線時留著，連回來再送）。 */
   private readonly unsent = new Map<string, SideMessage>();
@@ -315,6 +325,7 @@ export class ReviewRunner {
       this.prepared.set(message.reviewId, {
         cwd: message.cwd,
         text: diff.text,
+        kind: message.kind,
         expiresAt: this.now() + REVIEW_PREPARED_TTL_MS,
       });
       return { ...base, diff: diff.summary, error: null };
@@ -361,10 +372,13 @@ export class ReviewRunner {
   }
 
   /** 真的開兩邊（run 或排隊輪到時）。 */
-  private start(message: RunRequest, entry: { cwd: string; text: string }): void {
+  private start(
+    message: RunRequest,
+    entry: { cwd: string; text: string; kind: 'session' | 'branch' },
+  ): void {
     const state: Running = { children: new Set(), cancelled: false };
     this.running.set(message.reviewId, state);
-    const prompt = reviewPrompt(entry.text);
+    const prompt = reviewPrompt(entry.text, entry.kind);
     const env = this.deps.env();
     const sides: Promise<void>[] = [];
     sides.push(

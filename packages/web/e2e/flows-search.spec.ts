@@ -2,7 +2,7 @@
 // 假後端的 search 換成記錄呼叫次數的替身（停 250ms 才送、1 個字不送）；deepSearch 換成記錄送出與取消的替身。
 // 深層（③b）的假後端：demo-studio 300ms 回結果、demo-gpu 慢（1.5 秒）、demo-laptop 失聯。
 // 真 hub 的網路回應遮蔽、指令組權限在 integration.spec.ts 與 hub 的測試。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './flows-fixture';
 
 async function open(page: Page, route = '#/canvas') {
   await page.goto('about:blank');
@@ -165,7 +165,14 @@ test.describe('全域搜尋（桌面）', () => {
   });
 
   test('遮蔽開著：片段裡沒有金鑰；查詢字是金鑰形狀時提示', async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('agent-board.mask-mode', '1'));
+    // about:blank 等拿不到 localStorage 的文件也會跑 init script：包 try，不留下 pageerror。
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('agent-board.mask-mode', '1');
+      } catch {
+        // 不是 app 的頁面
+      }
+    });
     await open(page, '#/search');
     const input = page.getByTestId('search-input');
     await input.fill('token');
@@ -288,7 +295,14 @@ test.describe('全域搜尋（桌面）', () => {
   });
 
   test('深層：遮蔽開著時片段裡沒有金鑰；查詢字像金鑰就不送出', async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('agent-board.mask-mode', '1'));
+    // about:blank 等拿不到 localStorage 的文件也會跑 init script：包 try，不留下 pageerror。
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('agent-board.mask-mode', '1');
+      } catch {
+        // 不是 app 的頁面
+      }
+    });
     await open(page, '#/search');
     const input = page.getByTestId('search-input');
     await input.fill('FEE_TOKEN');

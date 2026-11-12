@@ -1,6 +1,6 @@
 // 隊長自主擴編（GM 2026-11-10）：收件匣的「團隊動態」——隊長新增或封存了成員，只是告知、不算「等你」。
 // 用 demo 假後端（一筆「Write tests 新增了 Fix login」）。不連外、不呼叫 LLM。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './flows-fixture';
 
 const ROW = 'team-activity-activity-demo-1';
 

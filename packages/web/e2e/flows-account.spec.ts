@@ -1,6 +1,6 @@
 // 用量、改密碼、操作紀錄（假後端）。和 flows.spec.ts 同一份設定（flows*.spec.ts），分開檔案免得和別的分支搶同一處。
 import { readFileSync } from 'node:fs';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './flows-fixture';
 import type { Machine } from '@agent-board/protocol';
 
 /** 先到畫布注入替身，再切到要測的畫面（同 flows.spec.ts 的 open）。 */

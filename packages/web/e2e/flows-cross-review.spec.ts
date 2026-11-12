@@ -1,6 +1,6 @@
 // 交叉審查（Codex 第二輪）：從卡片選單發起 → 看檔案清單與大小 → 確認才送 → 左右並排的結果 → 收件匣有項目。
 // 用 demo 假後端（Claude 先完成、Codex 稍後完成；沒裝 codex 的機器 Codex 略過）。不連外、不呼叫 LLM。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './flows-fixture';
 
 async function openCanvas(page: Page) {
   await page.goto('about:blank');

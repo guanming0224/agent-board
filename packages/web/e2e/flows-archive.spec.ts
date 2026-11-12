@@ -1,7 +1,7 @@
 // 已封存清單、舊資料頁、刪除確認框（CONTRACTS §9.5）。用 fakeBackend 的範例資料：
 // s-old-api（有 worktree、git 警告、230 則對話）、s-old-shared（hook 共用、對話已刪）
 // s-old-resumed（worktree 與對話都和畫布上的 Write tests 共用）、s-old-laptop（機器失聯、沒有封存時間）。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './flows-fixture';
 
 const problems = new WeakMap<Page, string[]>();
 

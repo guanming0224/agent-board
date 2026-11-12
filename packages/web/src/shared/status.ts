@@ -82,7 +82,23 @@ const isIdleWaiting = (session: StatusFields): boolean =>
  * 是 NEW，不是 ASK。在等隊長（成員的結果已送回）或等成員結果（隊長還有派出去沒回來的工作）也是 NEW。
  */
 export function statusCode(session: StatusFields): StatusCode {
-  return isIdleWaiting(session) ? 'NEW' : CODE_OF[session.status];
+  return isIdleWaiting(session) ? 'NEW' : (CODE_OF[knownStatus(session.status)] ?? 'OFF');
+}
+
+const warnedStatus = new Set<string>();
+
+/**
+ * 不認得的狀態（較新的 hub、壞掉的資料）一律當 offline（OFF），不讓整張卡片 render 失敗；開發模式下每個值警告一次。
+ * 2026-11-13 查到的來源：flows-boot e2e 故意塞 `status: 'no-such-status'` 測錯誤畫面（11/9 起 vite log 的
+ * `codeClass` TypeError 就是它），正式資料裡沒有找到對不上的狀態。
+ */
+export function knownStatus(status: SessionStatus): SessionStatus {
+  if (Object.hasOwn(CODE_OF, status)) return status;
+  if (import.meta.env?.DEV && !warnedStatus.has(String(status))) {
+    warnedStatus.add(String(status));
+    console.warn(`[agent-board] 不認得的 session 狀態：${String(status)}，當成 offline 顯示`);
+  }
+  return 'offline';
 }
 
 /**
@@ -108,7 +124,7 @@ export const waitsForYou = (session: StatusFields): boolean => codeWaits(statusC
 export function statusGlyph(session: StatusFields): string {
   return isIdleWaiting(session)
     ? STATUS_VISUAL.starting.glyph
-    : STATUS_VISUAL[session.status].glyph;
+    : STATUS_VISUAL[knownStatus(session.status)].glyph;
 }
 
 /** 這個 session 的完整中文（英文）說明的字串 key：分得出錯誤與卡住、啟動中與剛開好、等隊長與等成員結果。 */
@@ -117,7 +133,7 @@ export function statusLabelKey(session: StatusFields): string {
   if (isAwaitingTeam(session)) {
     return session.awaiting === 'members' ? 'status.awaiting_members' : 'status.awaiting_lead';
   }
-  return STATUS_VISUAL[session.status].labelKey;
+  return STATUS_VISUAL[knownStatus(session.status)].labelKey;
 }
 
 /** 代碼本身的說明（側欄圖例用），例如 ERR 是「錯誤或卡住」。 */

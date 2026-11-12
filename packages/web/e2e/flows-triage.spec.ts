@@ -1,7 +1,7 @@
 // 待處理（#/queue）與審核中心（#/review）重新整理後的版面（GM 2026-11-06）：
 // 分組、數量、鍵盤、列上的直接動作、審核中心的清單＋詳細、手機寬度。
 // 不連外、不呼叫 LLM：資料從 dev server 同一個 store 模組注入，後端方法換成記錄用的替身。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './flows-fixture';
 import type { Approval, Machine, Session } from '@agent-board/protocol';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();

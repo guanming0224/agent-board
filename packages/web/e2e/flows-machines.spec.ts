@@ -1,7 +1,7 @@
 // 機器面板（發版與自動更新，docs/release-update-spec.md §7）：假後端（shared/fakeRelease.ts），不連外。
 // demo：canary 0.1.1（6 小時前）、stable 0.1.0；demo-gpu canary 最新、demo-studio 延後（有 session 在等你允許）、
 // demo-laptop 更新失敗已回滾（離線、沒有上一版）。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './flows-fixture';
 
 async function open(page: Page, route = '#/canvas', patch?: string) {
   await page.goto('about:blank');
