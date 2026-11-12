@@ -29,6 +29,10 @@ const STDERR_TAIL_BYTES = 4 * 1024;
 const KILL_GRACE_MS = 5_000;
 /** 同時最多幾份審查在跑（每份兩個 CLI）。 */
 export const REVIEW_CONCURRENCY = 2;
+/** 滿了最多再排幾份；再多就拒絕（busy）。 */
+export const REVIEW_QUEUE_MAX = 2;
+/** 準備好、還沒確認的 diff 最多留幾份。 */
+export const REVIEW_PREPARED_MAX = 10;
 
 export interface ReviewRunnerDeps {
   claudeBin: string;
@@ -230,6 +234,9 @@ interface Running {
 export class ReviewRunner {
   private readonly prepared = new Map<string, { cwd: string; text: string; expiresAt: number }>();
   private readonly running = new Map<string, Running>();
+  /** 滿了在等的（最多 REVIEW_QUEUE_MAX 份）。 */
+  private readonly queue: { message: RunRequest; entry: { cwd: string; text: string } }[] = [];
+  private preparing = 0;
   /** 還沒確定送到 hub 的結果（斷線時留著，連回來再送）。 */
   private readonly unsent = new Map<string, SideMessage>();
 
@@ -249,6 +256,15 @@ export class ReviewRunner {
       requestId: message.requestId,
       reviewId: message.reviewId,
     };
+    // 同時最多 2 個 git diff 在跑（大 repo 很吃 CPU 與記憶體）。
+    if (this.preparing >= REVIEW_CONCURRENCY) {
+      return {
+        ...base,
+        diff: null,
+        error: 'busy: too many reviews being prepared on this machine',
+      };
+    }
+    this.preparing += 1;
     try {
       const diff =
         message.kind === 'session'
@@ -259,6 +275,10 @@ export class ReviewRunner {
               message.base ?? 'main',
               this.deps.limits,
             );
+      // 準備好、還沒確認的 diff 最多留 10 份（最舊的先丟）。
+      while (this.prepared.size >= REVIEW_PREPARED_MAX) {
+        this.prepared.delete(this.prepared.keys().next().value!);
+      }
       this.prepared.set(message.reviewId, {
         cwd: message.cwd,
         text: diff.text,
@@ -269,6 +289,8 @@ export class ReviewRunner {
       const code =
         error instanceof ReviewDiffError ? `${error.code}: ${error.message}` : 'git_failed';
       return { ...base, diff: null, error: code };
+    } finally {
+      this.preparing -= 1;
     }
   }
 
@@ -293,10 +315,20 @@ export class ReviewRunner {
       return;
     }
     if (this.running.size >= REVIEW_CONCURRENCY) {
+      // 審查 W5：滿了先排隊（最多 2 份），一份跑完就接著跑；排不下才拒絕（拒絕的沒有開 CLI、不吃額度）。
+      if (this.queue.length < REVIEW_QUEUE_MAX) {
+        this.queue.push({ message, entry });
+        return;
+      }
       fail('claude', 'busy: too many reviews running on this machine');
       if (message.codex) fail('codex', 'busy: too many reviews running on this machine');
       return;
     }
+    this.start(message, entry);
+  }
+
+  /** 真的開兩邊（run 或排隊輪到時）。 */
+  private start(message: RunRequest, entry: { cwd: string; text: string }): void {
     const state: Running = { children: new Set(), cancelled: false };
     this.running.set(message.reviewId, state);
     const prompt = reviewPrompt(entry.text);
@@ -347,11 +379,24 @@ export class ReviewRunner {
         );
       }
     }
-    void Promise.allSettled(sides).then(() => this.running.delete(message.reviewId));
+    void Promise.allSettled(sides).then(() => {
+      this.running.delete(message.reviewId);
+      const next = this.queue.shift();
+      if (next) this.start(next.message, next.entry);
+    });
   }
 
   cancel(reviewId: string): void {
     this.prepared.delete(reviewId);
+    const queued = this.queue.findIndex((q) => q.message.reviewId === reviewId);
+    if (queued !== -1) {
+      const { message } = this.queue.splice(queued, 1)[0]!;
+      this.report(reviewId, { ...blank('claude'), status: 'failed', error: 'cancelled' });
+      if (message.codex) {
+        this.report(reviewId, { ...blank('codex'), status: 'failed', error: 'cancelled' });
+      }
+      return;
+    }
     const state = this.running.get(reviewId);
     if (!state) return;
     state.cancelled = true;
@@ -360,6 +405,7 @@ export class ReviewRunner {
 
   /** daemon 關閉：跑到一半的全部結束（結果不會送了，hub 那邊逾時標失敗）。 */
   stopAll(): void {
+    this.queue.length = 0;
     for (const id of [...this.running.keys()]) this.cancel(id);
     this.prepared.clear();
   }
@@ -403,11 +449,12 @@ export class ReviewRunner {
     const timeoutMs = this.deps.timeoutMs ?? REVIEW_TIMEOUT_MS;
     return new Promise<void>((resolve) => {
       let child: ChildProcess;
-      const finish = (side: Omit<ReviewSide, 'agent' | 'model' | 'durationMs'>) => {
+      const finish = (side: Omit<ReviewSide, 'agent' | 'model' | 'durationMs' | 'outputChars'>) => {
         this.report(reviewId, {
           ...side,
           agent: input.agent,
           model: input.model,
+          outputChars: side.output === null ? null : side.output.length,
           durationMs: Math.max(0, Math.round(this.now() - started)),
         });
         resolve();
@@ -515,6 +562,7 @@ const blank = (agent: AgentKind): ReviewSide => ({
   inputTokens: null,
   outputTokens: null,
   durationMs: null,
+  outputChars: null,
 });
 
 function killTree(child: ChildProcess, signal: NodeJS.Signals): void {

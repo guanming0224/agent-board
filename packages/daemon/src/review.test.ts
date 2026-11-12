@@ -468,6 +468,27 @@ describe.skipIf(process.platform === 'win32')('ReviewRunner（假 claude／假 c
     expect(t.sides[2]).toMatchObject({ status: 'failed', error: 'claude CLI not found' });
   });
 
+  it('W5：同時 2 份，再來的排隊（最多 2 份）、輪到才開 CLI；排不下的直接拒絕（沒開 CLI、不吃額度）', async () => {
+    const t = runner({ timeoutMs: 1_200 });
+    const ids = ['q1', 'q2', 'q3', 'q4', 'q5'];
+    for (const id of ids) await prepared(t.r, id);
+    for (const id of ids) {
+      t.r.run({
+        type: 'review.run',
+        reviewId: id,
+        claude: { model: 'fake-review-slow', accountProfile: null },
+        codex: null,
+      });
+    }
+    // 第 5 份馬上被拒絕；前 4 份之後各自逾時回報。
+    await waitUntil(() => t.sides.length >= 1, 'busy');
+    expect(t.sides[0]).toMatchObject({ status: 'failed', error: expect.stringMatching(/^busy:/) });
+    await waitUntil(() => t.sides.length === 5, 'all sides', 20_000);
+    expect(t.sides.slice(1).every((s) => s.status === 'timeout')).toBe(true);
+    // 實際開過 CLI 的只有 4 次。
+    expect(t.calls().filter((c) => c.cli === 'claude')).toHaveLength(4);
+  });
+
   it('repo 有自己的 .codex hook 設定：Codex 那邊略過（codex exec 可能執行它們），Claude 照跑', async () => {
     const t = runner();
     const dir = await prepared(t.r, 'r8');

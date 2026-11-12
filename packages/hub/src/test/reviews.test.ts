@@ -213,7 +213,14 @@ describe('GM 發起', () => {
       side: { ...pendingSide('codex'), status: 'failed', error: 'quota' },
     });
     await until(() => reviews().find((r) => r.id === prepared.id)?.status === 'done', 'done');
-    const finished = reviews().find((r) => r.id === prepared.id)!;
+    // 快照、清單、廣播只有摘要（意見換成字數，W7）；全文用 GET /api/reviews/:id。
+    expect(reviews().find((r) => r.id === prepared.id)!.claude).toMatchObject({
+      output: null,
+      outputChars: 'Claude says ok'.length,
+    });
+    const finished = (
+      await hub.api<Review>('GET', `/api/reviews/${prepared.id}`, { cookie: b.cookie })
+    ).body;
     expect(finished).toMatchObject({
       read: false,
       claude: { status: 'done', output: 'Claude says ok' },
@@ -235,6 +242,7 @@ describe('GM 發起', () => {
       () => client.of('review.updated').some((m) => (m.review as Review).status === 'done'),
       'broadcast',
     );
+    expect(JSON.stringify(client.of('review.updated'))).not.toContain('Claude says ok');
     const listed = (await hub.api<Review[]>('GET', '/api/reviews', { cookie: b.cookie })).body;
     expect(listed[0]).toMatchObject({ id: prepared.id, codex: { status: 'failed' } });
     const read = (
@@ -509,5 +517,156 @@ describe('摘要（固定規則，不解讀內容）', () => {
       codex: done('codex', 'ok'),
     } as Review;
     expect(leadSummaryMessage(review)).not.toContain('\x1b');
+  });
+});
+
+describe('審查修正（W1、W3、W4、W5、W6）', () => {
+  async function ask(daemon: Peer, sessionId: string, args: Record<string, unknown>) {
+    const requestId = randomUUID();
+    daemon.send({ type: 'dispatch.request', requestId, sessionId, tool: 'request_review', args });
+    const reply = await daemon.next('dispatch.reply', (m) => m.requestId === requestId);
+    return { ok: reply.ok as boolean, text: reply.text as string };
+  }
+
+  async function leadOnly() {
+    const b = await setup();
+    const lead = await startSession(b, { name: 'LD' });
+    const member = await startSession(b, { name: 'RV', readOnly: true });
+    const res = await hub.api<{ id: string }>('POST', '/api/teams', {
+      cookie: b.cookie,
+      body: {
+        name: 'T',
+        goal: '',
+        doneCriteria: '',
+        color: 'teal',
+        contextMd: '',
+        taskAuto: false,
+      },
+    });
+    for (const [sessionId, role] of [
+      [lead, 'lead'],
+      [member, 'reviewer'],
+    ] as const) {
+      await hub.api('PUT', `/api/teams/${res.body.id}/members/${sessionId}`, {
+        cookie: b.cookie,
+        body: { role },
+      });
+    }
+    b.daemon.clear();
+    return { ...b, lead, member, teamId: res.body.id };
+  }
+
+  it('W1：隊長的 repoPath 只能是自己或成員的 repo；相對路徑不收', async () => {
+    const t = await leadOnly();
+    expect(
+      (await ask(t.daemon, t.lead, { branch: 'x', repoPath: '/etc', reason: 'r' })).text,
+    ).toMatch(/^invalid_repo:/);
+    expect(
+      (await ask(t.daemon, t.lead, { branch: 'x', repoPath: 'relative/dir', reason: 'r' })).text,
+    ).toMatch(/^invalid_arguments:/);
+    expect((await ask(t.daemon, t.lead, { branch: 'x', repoPath: CWD, reason: 'r' })).ok).toBe(
+      true,
+    );
+    const gm = await hub.api('POST', '/api/reviews/prepare', {
+      cookie: t.cookie,
+      body: { target: { kind: 'branch', machineId: t.machineId, repoPath: 'rel', branch: 'x' } },
+    });
+    expect(gm.status).toBe(400);
+  });
+
+  it('W3：意見與錯誤裡的金鑰存檔前遮蔽；送回隊長的摘要也遮', async () => {
+    const t = await leadOnly();
+    const reply = await ask(t.daemon, t.lead, { member: 'RV', reason: 'r' });
+    const { reviewId } = JSON.parse(reply.text) as { reviewId: string };
+    await answerPrepare(t.daemon, DIFF);
+    await t.daemon.next('review.run');
+    const secret = 'sk-ant-demo-0123456789abcdefghijklmnopqrstuv';
+    t.daemon.send({
+      type: 'review.side',
+      reviewId,
+      side: done('claude', `整體結論：remove the key ${secret}`),
+    });
+    t.daemon.send({
+      type: 'review.side',
+      reviewId,
+      side: { ...pendingSide('codex'), status: 'failed', error: `bad token ${secret}` },
+    });
+    const typed = await t.daemon.next(
+      'terminal.input',
+      (m) => m.sessionId === t.lead && String(m.data).startsWith('[Review from'),
+    );
+    expect(String(typed.data)).not.toContain(secret);
+    const stored = hub.running.hub.reviews.get(reviewId);
+    expect(JSON.stringify(stored)).not.toContain(secret);
+    expect(stored.claude.output).toContain('[redacted]');
+  });
+
+  it('W4：diff 準備好之前按了全部暫停：不開始，失敗 board_paused 並告訴隊長', async () => {
+    const t = await leadOnly();
+    const reply = await ask(t.daemon, t.lead, { member: 'RV', reason: 'r' });
+    const { reviewId } = JSON.parse(reply.text) as { reviewId: string };
+    const request = await t.daemon.next('review.prepare');
+    const paused = await hub.api('POST', '/api/board/pause', {
+      cookie: t.cookie,
+      body: { mode: 'finish_turn' },
+    });
+    expect(paused.status, JSON.stringify(paused.body)).toBe(200);
+    t.daemon.send({
+      type: 'review.prepared',
+      requestId: request.requestId,
+      reviewId,
+      diff: DIFF,
+      error: null,
+    });
+    await until(() => hub.running.hub.reviews.get(reviewId).status === 'failed', 'failed');
+    expect(hub.running.hub.reviews.get(reviewId).error).toBe('board_paused');
+    expect(t.daemon.of('review.run')).toHaveLength(0);
+  });
+
+  it('W5：全面板每小時上限（所有隊長合計）；沒真的跑到模型的（沒有變更、忙碌拒絕）不算', async () => {
+    const t = await leadOnly();
+    await hub.api('PATCH', '/api/settings', {
+      cookie: t.cookie,
+      body: {
+        review: {
+          leadPerHour: 20,
+          boardPerHour: 1,
+          claudeModel: null,
+          codexModel: null,
+          codexEffort: null,
+        },
+      },
+    });
+    // 第一次：沒有變更 → 沒跑，不算。
+    expect((await ask(t.daemon, t.lead, { member: 'RV', reason: 'a' })).ok).toBe(true);
+    await answerPrepare(t.daemon, { ...DIFF, files: [] });
+    await until(() => reviews().some((r) => r.error === 'no_changes'), 'no changes');
+    // 第二次：真的跑。
+    expect((await ask(t.daemon, t.lead, { member: 'RV', reason: 'b' })).ok).toBe(true);
+    await answerPrepare(t.daemon, DIFF);
+    await t.daemon.next('review.run');
+    expect((await ask(t.daemon, t.lead, { member: 'RV', reason: 'c' })).text).toMatch(
+      /^review_board_rate_limit:/,
+    );
+  });
+
+  it('W6：等確認超過 30 分鐘 → expired', async () => {
+    let now = Date.parse('2026-11-12T00:00:00Z');
+    hub = await startHub({ now: () => new Date(now) });
+    const cookie = await hub.setupOwner();
+    const { daemon, machineId } = await hub.onlineDaemon(cookie, { features: FEATURES });
+    const pending = hub.api<Review>('POST', '/api/reviews/prepare', {
+      cookie,
+      body: { target: { kind: 'branch', machineId, repoPath: '/r', branch: 'x' } },
+    });
+    await answerPrepare(daemon, DIFF);
+    const prepared = (await pending).body;
+    expect(prepared.status).toBe('awaiting_confirm');
+    now += 31 * 60_000;
+    hub.running.hub.reviews.expire();
+    expect(hub.running.hub.reviews.get(prepared.id)).toMatchObject({
+      status: 'failed',
+      error: 'expired',
+    });
   });
 });

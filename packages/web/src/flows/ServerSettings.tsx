@@ -10,6 +10,7 @@ import {
   TEAM_SIZE_MAX,
   TEAM_SIZE_MIN,
   REVIEW_LEAD_RATE_MAX,
+  REVIEW_BOARD_RATE_MAX,
   type Settings,
 } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
@@ -632,6 +633,8 @@ export function ReviewSection({ form }: { form: ServerSettingsForm }) {
   const review = draft.review;
   const [perHour, setPerHour] = useState(String(review.leadPerHour));
   useEffect(() => setPerHour(String(review.leadPerHour)), [review.leadPerHour]);
+  const [boardPerHour, setBoardPerHour] = useState(String(review.boardPerHour));
+  useEffect(() => setBoardPerHour(String(review.boardPerHour)), [review.boardPerHour]);
   const model = (value: string) => value.trim().slice(0, 100) || null;
   return (
     <Section id="review" title={t('review.settings.title')} dirty={form.isDirty('review')}>
@@ -653,6 +656,24 @@ export function ReviewSection({ form }: { form: ServerSettingsForm }) {
             const n = /^\d+$/.test(text) ? Number(text) : null;
             if (n !== null && n >= 0 && n <= REVIEW_LEAD_RATE_MAX) {
               patch({ review: { ...review, leadPerHour: n } });
+            }
+          }}
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="st-review-board-per-hour">{t('review.settings.boardPerHour')}</label>
+        <input
+          id="st-review-board-per-hour"
+          className="short num"
+          inputMode="numeric"
+          data-testid="review-board-per-hour"
+          value={boardPerHour}
+          onChange={(e) => {
+            setBoardPerHour(e.target.value);
+            const text = e.target.value.trim();
+            const n = /^\d+$/.test(text) ? Number(text) : null;
+            if (n !== null && n >= 0 && n <= REVIEW_BOARD_RATE_MAX) {
+              patch({ review: { ...review, boardPerHour: n } });
             }
           }}
         />

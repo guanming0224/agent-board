@@ -215,9 +215,11 @@ function useReview(id: string): { review: Review | null; missing: boolean } {
   const fromBoard = useBoard((s) => s.reviews?.find((r) => r.id === id) ?? null);
   const [loaded, setLoaded] = useState<Review | null>(null);
   const [missing, setMissing] = useState(false);
+  // 快照與 review.updated 只帶摘要（意見全文換成字數，審查 W7）：打開時、狀態變了時向 hub 讀一次全文。
+  const version = fromBoard
+    ? `${fromBoard.status}:${fromBoard.claude.status}:${fromBoard.codex.status}`
+    : '';
   useEffect(() => {
-    // 快照只帶最近幾筆；更舊的（推播點進來）向 hub 讀一次。
-    if (fromBoard) return;
     let live = true;
     backend.getReview(id).then(
       (r) => live && setLoaded(r),
@@ -226,8 +228,14 @@ function useReview(id: string): { review: Review | null; missing: boolean } {
     return () => {
       live = false;
     };
-  }, [backend, id, fromBoard]);
-  return { review: fromBoard ?? loaded, missing: !fromBoard && !loaded && missing };
+  }, [backend, id, version]);
+  const full = loaded && loaded.id === id ? loaded : null;
+  // 讀回來的全文比摘要舊時（狀態已經往前走），先顯示摘要的狀態，全文下一次讀回來再補上。
+  const review =
+    full && (!fromBoard || version === `${full.status}:${full.claude.status}:${full.codex.status}`)
+      ? { ...full, read: fromBoard?.read ?? full.read }
+      : (fromBoard ?? full);
+  return { review, missing: !fromBoard && !full && missing };
 }
 
 function ReviewView({ id }: { id: string }) {

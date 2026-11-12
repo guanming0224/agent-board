@@ -70,6 +70,7 @@ export const zhTW: Record<string, string> = {
   'review.settings.hint':
     '把同一份變更交給 Claude 與 Codex 各審一次（唯讀）。只有你在網頁按確認，或隊長用派工工具要求時才會跑；隊長要求時會推播通知你。',
   'review.settings.leadPerHour': '隊長每小時最多要求幾次（每隊，0＝隊長不能發起）',
+  'review.settings.boardPerHour': '所有隊長合計每小時最多幾次（全面板）',
   'review.settings.claudeModel': 'Claude 模型（空白＝CLI 預設）',
   'review.settings.codexModel': 'Codex 模型（空白＝CLI 預設）',
   'review.settings.codexEffort': 'Codex 推理強度',
@@ -154,6 +155,7 @@ export const en: Record<string, string> = {
   'review.settings.hint':
     'Claude and Codex each review the same change (read-only). Runs only when you confirm on the web or a team lead asks through the dispatch tools; you are notified when a lead asks.',
   'review.settings.leadPerHour': 'Lead requests per hour (per team, 0 = leads cannot ask)',
+  'review.settings.boardPerHour': 'Lead requests per hour, all teams together',
   'review.settings.claudeModel': 'Claude model (blank = CLI default)',
   'review.settings.codexModel': 'Codex model (blank = CLI default)',
   'review.settings.codexEffort': 'Codex reasoning effort',

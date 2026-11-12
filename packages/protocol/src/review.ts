@@ -45,13 +45,17 @@ export const ReviewRef = z
   .regex(/^(?!-)[A-Za-z0-9._/@^~+-]+$/)
   .refine((ref) => !ref.includes('..'), 'ref must not contain ..');
 
+/** 絕對路徑（POSIX `/…`、Windows `C:\…`、UNC `\\…`）；protocol 不能用 node:path，自己判斷（審查 W1）。 */
+export const isAbsolutePath = (path: string): boolean =>
+  path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\');
+
 /** 要審的東西。session：那個 session 的工作資料夾裡還沒 commit 的變更；branch：repo 的分支相對 base。 */
 export const ReviewTargetInput = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session'), sessionId: Id }),
   z.object({
     kind: z.literal('branch'),
     machineId: Id,
-    repoPath: z.string().min(1).max(4096),
+    repoPath: z.string().min(1).max(4096).refine(isAbsolutePath, 'repoPath must be absolute'),
     branch: ReviewRef,
     base: ReviewRef.default('main'),
   }),
@@ -121,8 +125,25 @@ export const ReviewSide = z.object({
   inputTokens: z.number().int().nonnegative().nullable(),
   outputTokens: z.number().int().nonnegative().nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
+  /**
+   * 意見全文的字數。快照、`review.updated`、清單只送摘要（`output` 是 null、這裡是字數，審查 W7）；
+   * 全文用 `GET /api/reviews/:id` 讀。
+   */
+  outputChars: z.number().int().nonnegative().nullable().default(null),
 });
 export type ReviewSide = z.infer<typeof ReviewSide>;
+
+/** 摘要版：意見全文換成字數（快照、廣播、清單用）。 */
+export const summarizeReview = <T extends { claude: ReviewSide; codex: ReviewSide }>(
+  review: T,
+): T => {
+  const side = (s: ReviewSide): ReviewSide => ({
+    ...s,
+    output: null,
+    outputChars: s.output === null ? s.outputChars : s.output.length,
+  });
+  return { ...review, claude: side(review.claude), codex: side(review.codex) };
+};
 
 export const pendingSide = (agent: AgentKind): ReviewSide => ({
   agent,
@@ -133,6 +154,7 @@ export const pendingSide = (agent: AgentKind): ReviewSide => ({
   inputTokens: null,
   outputTokens: null,
   durationMs: null,
+  outputChars: null,
 });
 
 /**

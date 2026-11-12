@@ -11,12 +11,14 @@ import {
   Review,
   REVIEW_BOARD_KEEP,
   REVIEW_INSTRUCTIONS_VERSION,
+  REVIEW_PREPARED_TTL_MS,
   REVIEW_TIMEOUT_MS,
   ReviewDiffSummary,
   ReviewRequester,
   ReviewSide,
   reviewSideFinished,
   ReviewTarget,
+  summarizeReview,
   type HubToDaemon,
   type Machine,
   type ReviewSettings,
@@ -26,6 +28,7 @@ import {
 import { z } from 'zod';
 import type { SafeDelivery } from './delivery';
 import { conflict, HttpError, notFound } from './errors';
+import { redactSecrets } from './audit';
 import { cleanLine } from './handoff';
 import type { Store } from './store';
 
@@ -159,19 +162,25 @@ export class ReviewStore {
   prune(cutoff: string): number {
     return this.store.db
       .prepare(
-        "DELETE FROM reviews WHERE created_at < ? AND status IN ('done', 'failed', 'cancelled')",
+        "DELETE FROM reviews WHERE created_at < ? AND status IN ('done', 'failed', 'cancelled', 'awaiting_confirm')",
       )
       .run(cutoff).changes;
   }
 
-  /** 隊長發起的次數（頻率上限用）：這一隊在 since 之後建立的。 */
-  countLeadRequests(teamId: string, since: string): number {
+  /**
+   * 隊長發起的次數（頻率上限用）：since 之後建立的；teamId 是 null＝全面板。沒真的跑到模型的不算
+   * （審查 W5：沒有變更、git 失敗、暫停擋下、取消、daemon 忙碌拒絕——都沒有吃額度）。
+   */
+  countLeadRequests(teamId: string | null, since: string): number {
     const row = this.store.db
       .prepare(
-        `SELECT count(*) AS n FROM reviews WHERE team_id = ? AND created_at >= ?
-           AND json_extract(requested_by, '$.kind') = 'lead'`,
+        `SELECT count(*) AS n FROM reviews WHERE created_at >= ?
+           AND json_extract(requested_by, '$.kind') = 'lead'
+           AND (? IS NULL OR team_id = ?)
+           AND NOT (status IN ('failed', 'cancelled') AND started_at IS NULL)
+           AND coalesce(json_extract(claude, '$.error'), '') NOT LIKE 'busy%'`,
       )
-      .get(teamId, since) as { n: number };
+      .get(since, teamId, teamId) as { n: number };
     return row.n;
   }
 }
@@ -203,6 +212,10 @@ export interface ReviewDeps {
     message: (requestId: string) => Extract<HubToDaemon, { type: 'review.prepare' }>,
   ): Promise<{ diff: ReviewDiffSummary | null; error: string | null }>;
   settings(): ReviewSettings;
+  /** 全部暫停中（隊長發起的在開始前再查一次，審查 W4）。 */
+  paused(): boolean;
+  /** 這一隊有全隊暫停／停止記錄。 */
+  teamHeld(teamId: string): boolean;
   /** 推播（只說「審查完成」或「隊長要求審查」，不帶內容）。 */
   notify(event: { kind: 'done' | 'requested'; review: Review; lead?: string }): void;
   guarded(label: string, fn: () => void): void;
@@ -215,12 +228,15 @@ export function verdictLine(side: ReviewSide): string {
   if (side.status !== 'done') {
     return side.status === 'skipped'
       ? `skipped (${side.error ?? 'not run'})`
-      : `${side.status}${side.error ? ` (${cleanLine(side.error).slice(0, 120)})` : ''}`;
+      : `${side.status}${side.error ? ` (${cleanLine(redactSecrets(side.error)).slice(0, 120)})` : ''}`;
   }
   const text = side.output ?? '';
   const at = text.search(/整體結論|verdict/i);
   const tail = at >= 0 ? text.slice(at).replace(/^[^\n:：]*[:：]?/, '') : '';
-  const lines = (tail || text).split('\n').map(cleanLine).filter(Boolean);
+  const lines = redactSecrets(tail || text)
+    .split('\n')
+    .map(cleanLine)
+    .filter(Boolean);
   const pick = (at >= 0 ? lines[0] : lines.at(-1)) ?? '';
   const chars = [...pick];
   return chars.length > LEAD_SUMMARY_CHARS
@@ -249,8 +265,9 @@ export class ReviewEngine {
     this.table = new ReviewStore(deps.store);
   }
 
-  list(): Review[] {
-    return this.table.list();
+  /** 摘要（快照、清單）：意見全文換成字數（審查 W7）。 */
+  list(limit?: number): Review[] {
+    return this.table.list(limit).map(summarizeReview);
   }
 
   get(id: string): Review {
@@ -261,7 +278,7 @@ export class ReviewEngine {
 
   private update(review: Review): Review {
     this.table.save(review);
-    this.deps.broadcast(review);
+    this.deps.broadcast(summarizeReview(review));
     return review;
   }
 
@@ -472,7 +489,7 @@ export class ReviewEngine {
       if (!review.read) this.update({ ...review, read: true });
     }
     this.deps.audit(userId, null, 'review.read', JSON.stringify({ ids: ids ?? 'all' }));
-    return this.table.list();
+    return this.list();
   }
 
   /** daemon 回報某一邊的狀態（hub 已確認來源機器）。兩邊都結束 → done、進收件匣、推播、送回隊長。 */
@@ -482,7 +499,14 @@ export class ReviewEngine {
     const key = side.agent;
     // 已經結束的那一邊不再改（例如逾時後晚到的結果）。
     if (reviewSideFinished(review[key])) return;
-    const next: Review = { ...review, [key]: { ...side, agent: key } };
+    // 審查 W3：模型的意見與錯誤訊息可能引用 diff 裡的金鑰：存檔、廣播前先遮蔽。
+    const clean: ReviewSide = {
+      ...side,
+      agent: key,
+      output: side.output === null ? null : redactSecrets(side.output),
+      error: side.error === null ? null : redactSecrets(side.error),
+    };
+    const next: Review = { ...review, [key]: clean };
     if (!reviewSideFinished(next.claude) || !reviewSideFinished(next.codex)) {
       this.update(next);
       return;
@@ -496,11 +520,17 @@ export class ReviewEngine {
    */
   expire(): void {
     const now = this.deps.now().getTime();
-    for (const review of this.table.listByStatus(['preparing', 'running'])) {
+    for (const review of this.table.listByStatus(['preparing', 'awaiting_confirm', 'running'])) {
       const since = Date.parse(review.startedAt ?? review.createdAt);
+      // 審查 W6：等確認太久（daemon 記憶體裡的 diff 也過期了）→ expired。
+      if (review.status === 'awaiting_confirm') {
+        if (now - since > REVIEW_PREPARED_TTL_MS) this.failReview(review, 'expired');
+        continue;
+      }
+      // running：daemon 同時只跑 2 份，第 3、4 份會排隊等一份跑完（審查 W5），所以給兩倍的逾時。
       const limit =
         review.status === 'running'
-          ? REVIEW_TIMEOUT_MS + REVIEW_EXPIRE_GRACE_MS
+          ? 2 * REVIEW_TIMEOUT_MS + REVIEW_EXPIRE_GRACE_MS
           : REVIEW_PREPARE_TIMEOUT_MS + REVIEW_EXPIRE_GRACE_MS;
       if (now - since > limit) this.failReview(review, 'no_result');
     }
@@ -580,12 +610,25 @@ export class ReviewEngine {
 
   // ── 隊長的 request_review ─────────────────────────────
 
-  /** 這一隊這個小時還能發起幾次。 */
+  /** 這一隊這個小時還能發起幾次；全面板（所有隊長合計，審查 W5）也有上限，取兩者較小。 */
   leadRequestsLeft(teamId: string): number {
+    const since = new Date(this.deps.now().getTime() - HOUR_MS).toISOString();
+    const settings = this.deps.settings();
+    return Math.max(
+      0,
+      Math.min(
+        settings.leadPerHour - this.table.countLeadRequests(teamId, since),
+        settings.boardPerHour - this.table.countLeadRequests(null, since),
+      ),
+    );
+  }
+
+  /** 全面板這個小時用完了沒（回錯誤時說是哪一層）。 */
+  boardRequestsLeft(): number {
     const since = new Date(this.deps.now().getTime() - HOUR_MS).toISOString();
     return Math.max(
       0,
-      this.deps.settings().leadPerHour - this.table.countLeadRequests(teamId, since),
+      this.deps.settings().boardPerHour - this.table.countLeadRequests(null, since),
     );
   }
 
@@ -614,6 +657,16 @@ export class ReviewEngine {
         if (prepared.status !== 'awaiting_confirm') {
           // diff 產生不了（沒有變更、git 失敗）：告訴隊長，GM 在收件匣看得到。
           this.deliverToLead(prepared, input.lead.id);
+          return;
+        }
+        // 審查 W4：產生 diff 的期間 GM 按了全部暫停或全隊暫停：不開始，告訴隊長。
+        const blocked = this.deps.paused()
+          ? 'board_paused'
+          : this.deps.teamHeld(input.teamId)
+            ? 'team_held'
+            : null;
+        if (blocked) {
+          this.deliverToLead(this.failReview(prepared, blocked), input.lead.id);
           return;
         }
         try {

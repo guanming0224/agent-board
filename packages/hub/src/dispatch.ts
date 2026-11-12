@@ -21,6 +21,7 @@ import {
   TeamRole,
   type AutoStaff,
   PermissionMode,
+  isAbsolutePath,
   ReviewRef,
   sameWorkingTree,
   type DispatchTool,
@@ -171,7 +172,7 @@ const ReviewArgs = z.object({
   member: z.string().min(1).optional(),
   branch: ReviewRef.optional(),
   base: ReviewRef.optional(),
-  repoPath: z.string().min(1).max(4096).optional(),
+  repoPath: z.string().min(1).max(4096).refine(isAbsolutePath).optional(),
   reason: z.string(),
 });
 
@@ -322,6 +323,8 @@ export interface DispatchDeps {
   reviewsLeft?(teamId: string): number;
   /** 設定的每小時上限（0＝隊長不能發起）。 */
   reviewLimit?(): number;
+  /** 全面板（所有隊長合計）這個小時還能要求幾次（審查 W5）。 */
+  boardReviewsLeft?(): number;
   /** 團隊成員變了：推 team.updated（畫面不等輪詢）。 */
   teamChanged(team: Team): void;
   /**
@@ -984,6 +987,13 @@ export class DispatchEngine {
         'The user does not allow team leads to request cross reviews. Ask the user if you need one.',
       );
     }
+    if ((this.deps.boardReviewsLeft?.() ?? 1) <= 0) {
+      this.blockedTool(caller, 'request_review', 'review_board_rate_limit');
+      return fail(
+        'review_board_rate_limit',
+        'All teams together have used the cross reviews allowed this hour (limit set by the user). Try again later, or continue without one.',
+      );
+    }
     if (left <= 0) {
       this.blockedTool(caller, 'request_review', 'review_rate_limit');
       return fail(
@@ -999,10 +1009,25 @@ export class DispatchEngine {
       targetSession = found;
       target = { kind: 'session', sessionId: found.id };
     } else {
+      // 審查 W1：隊長只能審自己或自己團隊成員所在的 repo（repoRoot／cwd），不能指定這台機器上任意資料夾。
+      const allowed = new Set<string>();
+      for (const s of [caller, ...this.reachable(caller)]) {
+        if (s.machineId !== caller.machineId) continue;
+        if (s.repoRoot) allowed.add(s.repoRoot);
+        allowed.add(s.cwd);
+      }
+      const repoPath = args.repoPath ?? caller.repoRoot ?? caller.cwd;
+      if (!allowed.has(repoPath)) {
+        this.blockedTool(caller, 'request_review', 'invalid_repo');
+        return fail(
+          'invalid_repo',
+          `repoPath must be your own repository or one of your members' (${[...allowed].join(', ')}).`,
+        );
+      }
       target = {
         kind: 'branch',
         machineId: caller.machineId,
-        repoPath: args.repoPath ?? caller.repoRoot ?? caller.cwd,
+        repoPath,
         branch: args.branch!,
         base: args.base ?? 'main',
       };

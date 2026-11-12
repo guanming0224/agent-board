@@ -525,6 +525,7 @@ export class Hub {
       // 交叉審查（Codex 第二輪）：reviews 在下面才建，呼叫時一定已經有了。
       requestReview: (input) => this.reviews.requestByLead(input),
       reviewsLeft: (teamId) => this.reviews.leadRequestsLeft(teamId),
+      boardReviewsLeft: () => this.reviews.boardRequestsLeft(),
       reviewLimit: () => this.store.getSettings().review.leadPerHour,
     });
     this.reviews = new ReviewEngine({
@@ -551,6 +552,8 @@ export class Hub {
         return { diff: reply.diff, error: reply.error };
       },
       settings: () => this.store.getSettings().review,
+      paused: () => this.pause !== null,
+      teamHeld: (teamId) => this.store.getTeam(teamId)?.hold != null,
       notify: (event) => this.notifyReview(event),
       guarded: (label, fn) => this.guarded(label, fn),
     });

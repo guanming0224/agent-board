@@ -725,11 +725,20 @@ export const AUTO_STAFF_DEFAULT: AutoStaff = {
 /** 隊長 `request_review` 的預設頻率上限：同一隊每小時最多幾次（設定頁可改，Codex 第二輪）。 */
 export const REVIEW_LEAD_RATE_DEFAULT = 3;
 export const REVIEW_LEAD_RATE_MAX = 20;
+export const REVIEW_BOARD_RATE_DEFAULT = 10;
+export const REVIEW_BOARD_RATE_MAX = 60;
 
 /** 交叉審查的設定（`Settings.review`，Codex 第二輪，docs/codex-round2-spec.md §2）。 */
 export const ReviewSettings = z.object({
   /** 隊長 `request_review` 同一隊每小時最多幾次；0＝隊長不能發起。 */
   leadPerHour: z.number().int().min(0).max(REVIEW_LEAD_RATE_MAX).default(REVIEW_LEAD_RATE_DEFAULT),
+  /** 全面板（所有隊長合計）每小時最多幾次（審查 W5）。 */
+  boardPerHour: z
+    .number()
+    .int()
+    .min(0)
+    .max(REVIEW_BOARD_RATE_MAX)
+    .default(REVIEW_BOARD_RATE_DEFAULT),
   /** Claude 那一邊的模型；null＝CLI 自己的預設。 */
   claudeModel: z.string().max(100).nullable().default(null),
   /** Codex 那一邊的模型；null＝CLI 自己的預設。 */
@@ -740,6 +749,7 @@ export const ReviewSettings = z.object({
 export type ReviewSettings = z.infer<typeof ReviewSettings>;
 export const REVIEW_SETTINGS_DEFAULT: ReviewSettings = {
   leadPerHour: REVIEW_LEAD_RATE_DEFAULT,
+  boardPerHour: REVIEW_BOARD_RATE_DEFAULT,
   claudeModel: null,
   codexModel: null,
   codexEffort: null,
