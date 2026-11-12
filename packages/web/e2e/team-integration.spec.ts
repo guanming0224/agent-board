@@ -808,6 +808,9 @@ test('隊長自主擴編（真 hub、真 MCP server）：spawn_member → 新成
   );
 
   // release_member：成員封存（停 session、對話保留，可以還原）。
+  // 先等成員的結果送回隊長：結果打進隊長終端機的同時又打 release 指令，兩行會混在一起（偶發失敗的原因，2026-11-13）。
+  await screenOf(page, staffLead.id).toContain('GOT [Result from staff-ld-RS]');
+  await expectStatus(page.request, staffLead.id, 'waiting_input');
   await typeInto(
     page,
     staffLead.id,
@@ -995,8 +998,12 @@ test('交叉審查（Codex 第二輪，真 hub、真 daemon、真 git、假 clau
       'review-me.ts',
       'untracked',
     ]);
-    expect(review!.claude.output).toContain('Claude 假審查');
-    expect(review!.codex.output).toContain('Codex 假審查');
+    // 清單只有摘要（意見換成字數，審查 W7）；全文讀單一份。
+    expect(review!.claude.output).toBeNull();
+    expect(review!.claude.outputChars).toBeGreaterThan(0);
+    const full = (await (await page.request.get(`/api/reviews/${review!.id}`)).json()) as Review;
+    expect(full.claude.output).toContain('Claude 假審查');
+    expect(full.codex.output).toContain('Codex 假審查');
     // 摘要送回隊長（固定格式，每邊一句結論）。
     await screenOf(page, cxLead.id).toContain(
       'GOT [Review from Agent Board] cx-ld-RV: uncommitted changes | Claude: Claude 假審查：可以合併。 | Codex: Codex 假審查：可以合併。',
