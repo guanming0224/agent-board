@@ -103,6 +103,27 @@ describe.skipIf(process.platform === 'win32')('reviewDiff', () => {
     expect(await readUntracked(dir, 'pipe', 1000)).toBeNull();
   });
 
+  it('S1 TOCTOU：檢查後中間的資料夾被換成指向 repo 外的連結 → 開到的不是同一個檔，略過不讀', async () => {
+    const dir = repo();
+    const outside = makeTempDir();
+    temps.push(outside);
+    mkdirSync(join(dir, 'sub'));
+    writeFileSync(join(dir, 'sub', 'a.txt'), 'inside\n');
+    writeFileSync(join(outside, 'a.txt'), 'sk-ant-demo-outside\n');
+    const read = await readUntracked(dir, 'sub/a.txt', 1000, {
+      beforeOpen: () => {
+        rmSync(join(dir, 'sub'), { recursive: true });
+        symlinkSync(outside, join(dir, 'sub'));
+      },
+    });
+    expect(read).toBeNull();
+    // 沒被換掉時照常讀。
+    rmSync(join(dir, 'sub'));
+    mkdirSync(join(dir, 'sub'));
+    writeFileSync(join(dir, 'sub', 'a.txt'), 'inside\n');
+    expect((await readUntracked(dir, 'sub/a.txt', 1000))?.text).toBe('inside\n');
+  });
+
   it('W2：檔名像機密的（追蹤中或未追蹤）只列名稱、不送內容，摘要標 sensitive', async () => {
     const dir = repo();
     writeFileSync(join(dir, '.env'), 'OLD=1\n');

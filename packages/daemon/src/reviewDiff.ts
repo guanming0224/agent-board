@@ -190,6 +190,8 @@ export async function readUntracked(
   root: string,
   path: string,
   max: number,
+  /** 測試用：檢查完、開檔前呼叫（模擬中間的資料夾被換掉）。 */
+  testHooks?: { beforeOpen?(): Promise<void> | void },
 ): Promise<{ text: string; size: number; symlink: boolean } | null> {
   const full = join(root, path);
   const info = await lstat(full);
@@ -199,15 +201,21 @@ export async function readUntracked(
   }
   if (!info.isFile()) return null;
   const realRoot = await realpath(root);
+  const inRepo = (real: string) => real === realRoot || real.startsWith(realRoot + sep);
   const real = await realpath(full);
-  if (real !== realRoot && !real.startsWith(realRoot + sep)) return null;
+  if (!inRepo(real)) return null;
+  await testHooks?.beforeOpen?.();
   const handle = await open(full, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
+    // 複查 S1（TOCTOU）：O_NOFOLLOW 只管最後一層；中間的資料夾在檢查後被換成連結時，開到的會是別的檔案。
+    // 開到的檔案必須和一開始 lstat 的是同一個（dev、ino），讀完 realpath 也要沒變，否則略過。
     const opened = await handle.stat();
-    if (!opened.isFile()) return null;
+    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) return null;
     const size = opened.size;
     const buffer = Buffer.alloc(Math.min(size, max + 1));
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const after = await realpath(full).catch(() => null);
+    if (after !== real) return null;
     const head = buffer.subarray(0, bytesRead);
     if (head.includes(0))
       return { text: '(binary file, content not included)\n', size, symlink: false };
