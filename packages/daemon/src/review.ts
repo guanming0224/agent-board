@@ -15,6 +15,7 @@ import {
   type HubToDaemon,
   type ReviewSide,
 } from '@agent-board/protocol';
+import { codexProjectHookFiles } from './codex';
 import { branchDiff, ReviewDiffError, sessionDiff, type ReviewDiffLimits } from './reviewDiff';
 
 type PrepareRequest = Extract<HubToDaemon, { type: 'review.prepare' }>;
@@ -43,28 +44,60 @@ export interface ReviewRunnerDeps {
   log?: { warn(message: string): void; info(message: string): void };
 }
 
+/** Claude 審查端唯一可用的工具（只讀）。 */
+export const CLAUDE_REVIEW_TOOLS = ['Read', 'Grep', 'Glob'] as const;
+/** 一律拒絕的工具（第二層，`--tools` 已經只給讀檔工具）。 */
+export const CLAUDE_REVIEW_DENIED = [
+  'Bash',
+  'Edit',
+  'MultiEdit',
+  'Write',
+  'NotebookEdit',
+  'WebFetch',
+  'WebSearch',
+  'Task',
+  'mcp__*',
+] as const;
+
 /**
- * Claude 那一邊的參數：非互動、輸出 JSON、唯讀（plan 模式＋拿掉改檔工具）。prompt 從 stdin 給（不在 argv，
- * `ps` 看不到 diff）。
+ * Claude 那一邊的參數（審查 S2，claude 2.1.322 的 `--help` 確認過參數名）。層層唯讀：
+ * - `--restricted`：拿掉跑指令的工具與 WebFetch、**不讀 user／project／local 設定檔**（repo 的 `.claude/settings*.json`
+ *   裡的 hooks 不會載入）、檔案工具限在工作資料夾；
+ * - `--tools Read,Grep,Glob`＋`--allowedTools`：可用的工具只有讀檔三個；`--disallowedTools` 再明列拒絕；
+ * - `--strict-mcp-config --mcp-config {"mcpServers":{}}`：不載入任何 MCP server（含 repo 的 `.mcp.json`）；
+ * - `--permission-mode plan`：第三層；`--no-session-persistence`：不留對話紀錄。
+ * 在 repo 資料夾執行（模型要讀得到程式碼）：設定檔與 MCP 已經都不載入，所以不必另開暫存資料夾。
+ * prompt 從 stdin 給（不在 argv，`ps` 看不到 diff）。
  */
 export function claudeReviewArgs(model: string | null): string[] {
   return [
     '-p',
     '--output-format',
     'json',
+    '--restricted',
+    '--tools',
+    CLAUDE_REVIEW_TOOLS.join(','),
+    '--allowedTools',
+    ...CLAUDE_REVIEW_TOOLS,
+    '--disallowedTools',
+    ...CLAUDE_REVIEW_DENIED,
+    '--strict-mcp-config',
+    '--mcp-config',
+    '{"mcpServers":{}}',
     '--permission-mode',
     'plan',
-    '--disallowedTools',
-    'Edit',
-    'Write',
-    'NotebookEdit',
+    '--no-session-persistence',
     ...(model ? ['--model', model] : []),
   ];
 }
 
+/** 推理強度只收這幾個字（不會被拿來注入別的設定）。 */
+const CODEX_EFFORTS = new Set(['minimal', 'low', 'medium', 'high']);
+
 /**
- * Codex 那一邊：`codex exec --json`、唯讀沙盒、從不詢問、prompt 從 stdin（`-`）。
+ * Codex 那一邊：`codex exec --json`、唯讀沙盒、從不詢問、不留對話紀錄（`--ephemeral`）、prompt 從 stdin（`-`）。
  * codex-cli 0.167 的 `exec` 沒有 `-a`（只有互動模式有），所以用設定覆寫 `approval_policy="never"`（同 `-a never`）。
+ * 沒用 `--ignore-user-config`：會連使用者自己的 provider／登入相關設定一起略過（未驗證影響），先不帶。
  */
 export function codexReviewArgs(model: string | null, effort: string | null): string[] {
   return [
@@ -75,8 +108,9 @@ export function codexReviewArgs(model: string | null, effort: string | null): st
     '-c',
     'approval_policy="never"',
     '--skip-git-repo-check',
+    '--ephemeral',
     ...(model ? ['-m', model] : []),
-    ...(effort && /^[a-z]+$/.test(effort) ? ['-c', `model_reasoning_effort="${effort}"`] : []),
+    ...(effort && CODEX_EFFORTS.has(effort) ? ['-c', `model_reasoning_effort="${effort}"`] : []),
     '-',
   ];
 }
@@ -284,7 +318,9 @@ export class ReviewRunner {
     );
     const platform = this.deps.platform ?? process.platform;
     if (message.codex) {
-      if (platform === 'win32' || !this.deps.codexBin) {
+      // 專案自己有 Codex hook 設定（.codex/hooks.json、config.toml）：codex exec 可能會執行它們，不跑（同 §19.2）。
+      const projectHooks = codexProjectHookFiles(entry.cwd);
+      if (platform === 'win32' || !this.deps.codexBin || projectHooks.length > 0) {
         // hub 已經擋了 Windows 與沒有 codex 的機器；這裡是保險。
         this.report(message.reviewId, {
           ...blank('codex'),
@@ -292,7 +328,9 @@ export class ReviewRunner {
           error:
             platform === 'win32'
               ? 'windows: Codex is not available on Windows machines yet.'
-              : 'codex_unavailable',
+              : !this.deps.codexBin
+                ? 'codex_unavailable'
+                : 'project_codex_hooks: this repository has its own .codex hook settings; Codex review was not run.',
         });
       } else {
         sides.push(

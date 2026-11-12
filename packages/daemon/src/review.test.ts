@@ -187,20 +187,38 @@ describe.skipIf(process.platform === 'win32')('reviewDiff', () => {
 });
 
 describe('審查參數與輸出解析', () => {
-  it('Claude：-p、JSON、plan、拿掉改檔工具；Codex：exec、唯讀沙盒、從不詢問、prompt 從 stdin', () => {
+  it('參數快照（完全相等，S2）：Claude 只讀三工具＋restricted＋不載 MCP＋plan；Codex 唯讀沙盒、從不詢問、不留紀錄', () => {
     expect(claudeReviewArgs('opus')).toEqual([
       '-p',
       '--output-format',
       'json',
-      '--permission-mode',
-      'plan',
+      '--restricted',
+      '--tools',
+      'Read,Grep,Glob',
+      '--allowedTools',
+      'Read',
+      'Grep',
+      'Glob',
       '--disallowedTools',
+      'Bash',
       'Edit',
+      'MultiEdit',
       'Write',
       'NotebookEdit',
+      'WebFetch',
+      'WebSearch',
+      'Task',
+      'mcp__*',
+      '--strict-mcp-config',
+      '--mcp-config',
+      '{"mcpServers":{}}',
+      '--permission-mode',
+      'plan',
+      '--no-session-persistence',
       '--model',
       'opus',
     ]);
+    expect(claudeReviewArgs(null).slice(-2)).toEqual(['plan', '--no-session-persistence']);
     expect(codexReviewArgs(null, 'low')).toEqual([
       'exec',
       '--json',
@@ -209,14 +227,29 @@ describe('審查參數與輸出解析', () => {
       '-c',
       'approval_policy="never"',
       '--skip-git-repo-check',
+      '--ephemeral',
       '-c',
       'model_reasoning_effort="low"',
       '-',
     ]);
-    // 推理強度只收單字（不會被拿來注入其他設定）。
-    expect(codexReviewArgs(null, 'x" ; sandbox_mode="danger')).not.toContain(
+    expect(codexReviewArgs('gpt-x', null)).toEqual([
+      'exec',
+      '--json',
+      '-s',
+      'read-only',
+      '-c',
+      'approval_policy="never"',
+      '--skip-git-repo-check',
+      '--ephemeral',
+      '-m',
+      'gpt-x',
+      '-',
+    ]);
+    // 推理強度只收固定的幾個字（不會被拿來注入其他設定）。
+    expect(codexReviewArgs(null, 'x" ; sandbox_mode="danger').join(' ')).not.toContain(
       'model_reasoning_effort',
     );
+    expect(codexReviewArgs(null, 'xhigh').join(' ')).not.toContain('model_reasoning_effort');
   });
 
   it('Claude JSON：成功、is_error、讀不懂', () => {
@@ -433,6 +466,25 @@ describe.skipIf(process.platform === 'win32')('ReviewRunner（假 claude／假 c
     });
     await waitUntil(() => t.sides.length === 3, 'missing cli');
     expect(t.sides[2]).toMatchObject({ status: 'failed', error: 'claude CLI not found' });
+  });
+
+  it('repo 有自己的 .codex hook 設定：Codex 那邊略過（codex exec 可能執行它們），Claude 照跑', async () => {
+    const t = runner();
+    const dir = await prepared(t.r, 'r8');
+    mkdirSync(join(dir, '.codex'));
+    writeFileSync(join(dir, '.codex', 'hooks.json'), '{}');
+    t.r.run({
+      type: 'review.run',
+      reviewId: 'r8',
+      claude: { model: null, accountProfile: null },
+      codex: { model: null, effort: null },
+    });
+    await waitUntil(() => t.sides.length === 2, 'two sides', 20_000);
+    expect(t.sides.find((s) => s.agent === 'codex')).toMatchObject({
+      status: 'skipped',
+      error: expect.stringMatching(/^project_codex_hooks:/),
+    });
+    expect(t.sides.find((s) => s.agent === 'claude')).toMatchObject({ status: 'done' });
   });
 
   it('取消：跑到一半的結束；斷線時的結果連回來再送（flush）', async () => {

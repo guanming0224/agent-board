@@ -262,22 +262,67 @@ problems.push(
 {
   const text = readFileSync(join(root, NON_INTERACTIVE_FILE), 'utf8');
   const REVIEW_FLAGS = new Set([
-    // claude：非互動、JSON、plan 模式、拿掉改檔工具、模型
+    // claude：非互動、JSON、restricted（不讀設定檔、拿掉跑指令的工具）、只給讀檔工具、明列拒絕、不載 MCP、plan、
+    // 不留對話紀錄、模型（審查 S2）
     '-p',
     '--output-format',
-    '--permission-mode',
+    '--restricted',
+    '--tools',
+    '--allowedTools',
     '--disallowedTools',
+    '--strict-mcp-config',
+    '--mcp-config',
+    '--permission-mode',
+    '--no-session-persistence',
     '--model',
-    // codex：exec、JSONL、唯讀沙盒、設定覆寫（approval_policy／推理強度）、模型、略過 repo 檢查
+    // codex：exec、JSONL、唯讀沙盒、設定覆寫（只准下面的白名單）、模型、略過 repo 檢查、不留紀錄
     '--json',
     '-s',
     '-c',
     '-m',
     '--skip-git-repo-check',
+    '--ephemeral',
   ]);
   for (const [, flag] of text.matchAll(/'(--?[a-zA-Z][\w-]*)'/g)) {
     if (!REVIEW_FLAGS.has(flag))
       problems.push(`${NON_INTERACTIVE_FILE}：審查參數 ${flag} 不在允許清單`);
+  }
+  // `-c` 後面只准這兩個（審查 W8：白名單，不是黑名單）。
+  const REVIEW_CONFIG = new Set([
+    '\'approval_policy="never"\'',
+    '`model_reasoning_effort="${effort}"`',
+  ]);
+  for (const [, value] of text.matchAll(/'-c',\s*([^,\]\n]+)/g)) {
+    if (!REVIEW_CONFIG.has(value.trim())) {
+      problems.push(`${NON_INTERACTIVE_FILE}：codex -c ${value.trim()} 不在白名單`);
+    }
+  }
+  // Claude 只給讀檔工具，拒絕清單至少要有會改檔、跑指令的那幾個（審查 S2）。
+  const listOf = (name) =>
+    [
+      ...(new RegExp(`const ${name} = \\[([^\\]]*)\\]`).exec(text)?.[1] ?? '').matchAll(
+        /'([^']+)'/g,
+      ),
+    ].map((m) => m[1]);
+  const tools = listOf('CLAUDE_REVIEW_TOOLS');
+  if (tools.length === 0 || tools.some((t) => !['Read', 'Grep', 'Glob'].includes(t))) {
+    problems.push(
+      `${NON_INTERACTIVE_FILE}：Claude 審查只能用 Read／Grep／Glob（目前 ${tools.join(', ')}）`,
+    );
+  }
+  const denied = listOf('CLAUDE_REVIEW_DENIED');
+  for (const must of ['Bash', 'Edit', 'Write', 'MultiEdit']) {
+    if (!denied.includes(must)) {
+      problems.push(`${NON_INTERACTIVE_FILE}：Claude 審查的 --disallowedTools 少了 ${must}`);
+    }
+  }
+  for (const must of [
+    "'--restricted'",
+    "'--strict-mcp-config'",
+    "'--ephemeral'",
+    "'--no-session-persistence'",
+  ]) {
+    if (!text.includes(must)) problems.push(`${NON_INTERACTIVE_FILE}：審查參數少了 ${must}`);
   }
   for (const banned of [
     'bypassPermissions',
