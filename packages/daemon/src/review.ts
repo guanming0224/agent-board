@@ -4,7 +4,9 @@
 // `request_review` 時才送 `review.run`（scripts/check-no-llm.mjs 檢查呼叫點）。跑的是使用者自己登入的官方 CLI，
 // 吃使用者自己的訂閱額度，和開一個 session 一樣；中控台不呼叫任何模型 API、不讀任何憑證。
 // 兩邊都唯讀：Claude 用 plan 模式並拿掉改檔工具；Codex 用唯讀沙盒、從不詢問。一邊失敗、逾時不影響另一邊。
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { statSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import {
   REVIEW_INSTRUCTIONS,
   REVIEW_OUTPUT_MAX_CHARS,
@@ -117,6 +119,37 @@ export function codexReviewArgs(model: string | null, effort: string | null): st
     ...(effort && CODEX_EFFORTS.has(effort) ? ['-c', `model_reasoning_effort="${effort}"`] : []),
     '-',
   ];
+}
+
+/**
+ * 審查 W9：Windows 上只認 `.exe`（不用 `.cmd`／`.bat`：那要經 cmd.exe，`--mcp-config '{…}'` 這種參數會被 cmd 拆壞）。
+ * 有路徑就照用（是 .cmd 也拒絕）；只有名字就在 PATH 找 `<名字>.exe`。其他平台原樣交給 spawn。找不到回 null。
+ */
+export function resolveReviewBin(
+  bin: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== 'win32') return bin;
+  const isFile = (path: string) => {
+    try {
+      return statSync(path).isFile();
+    } catch {
+      return false;
+    }
+  };
+  if (/[\\/]/.test(bin)) {
+    if (/\.exe$/i.test(bin)) return isFile(bin) ? bin : null;
+    return isFile(`${bin}.exe`) ? `${bin}.exe` : null;
+  }
+  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+  const name = /\.exe$/i.test(bin) ? bin : `${bin}.exe`;
+  for (const dir of (env[pathKey] ?? '').split(platform === 'win32' ? ';' : delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, name);
+    if (isFile(candidate)) return candidate;
+  }
+  return null;
 }
 
 export const reviewPrompt = (diff: string): string =>
@@ -459,8 +492,18 @@ export class ReviewRunner {
         });
         resolve();
       };
+      const bin = resolveReviewBin(input.bin, input.env, this.deps.platform ?? process.platform);
+      if (bin === null) {
+        finish({
+          ...counts(null),
+          status: 'failed',
+          output: null,
+          error: `${input.agent} CLI not found`,
+        });
+        return;
+      }
       try {
-        child = spawn(input.bin, input.args, {
+        child = spawn(bin, input.args, {
           cwd: input.cwd,
           env: input.env,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -567,6 +610,16 @@ const blank = (agent: AgentKind): ReviewSide => ({
 
 function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.exitCode !== null || child.signalCode !== null) return;
+  // 審查 W9：Windows 沒有程序群組訊號，用 taskkill /T /F 結束整棵子程序樹。
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    execFile(
+      'taskkill',
+      ['/T', '/F', '/PID', String(child.pid)],
+      { windowsHide: true },
+      () => undefined,
+    );
+    return;
+  }
   try {
     if (process.platform !== 'win32' && child.pid !== undefined) process.kill(-child.pid, signal);
     else child.kill(signal);

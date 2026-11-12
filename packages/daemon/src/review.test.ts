@@ -11,6 +11,7 @@ import {
   codexReviewArgs,
   parseClaudeOutput,
   parseCodexOutput,
+  resolveReviewBin,
   ReviewRunner,
 } from './review';
 import {
@@ -186,6 +187,20 @@ describe.skipIf(process.platform === 'win32')('reviewDiff', () => {
   });
 });
 
+describe('resolveReviewBin（W9）', () => {
+  it('Windows 只找 .exe，不用 .cmd；有路徑照用；其他平台原樣', () => {
+    const dir = makeTempDir();
+    temps.push(dir);
+    writeFileSync(join(dir, 'claude.cmd'), '');
+    expect(resolveReviewBin('claude', { PATH: dir }, 'win32')).toBeNull();
+    writeFileSync(join(dir, 'claude.exe'), '');
+    expect(resolveReviewBin('claude', { Path: dir }, 'win32')).toBe(join(dir, 'claude.exe'));
+    expect(resolveReviewBin(join(dir, 'claude.cmd'), {}, 'win32')).toBeNull();
+    expect(resolveReviewBin(join(dir, 'claude'), {}, 'win32')).toBe(join(dir, 'claude.exe'));
+    expect(resolveReviewBin('claude', {}, 'darwin')).toBe('claude');
+  });
+});
+
 describe('審查參數與輸出解析', () => {
   it('參數快照（完全相等，S2）：Claude 只讀三工具＋restricted＋不載 MCP＋plan；Codex 唯讀沙盒、從不詢問、不留紀錄', () => {
     expect(claudeReviewArgs('opus')).toEqual([
@@ -302,8 +317,15 @@ describe.skipIf(process.platform === 'win32')('ReviewRunner（假 claude／假 c
     const sides: ReviewSide[] = [];
     const sent: boolean[] = [];
     let connected = true;
+    // Windows 只認 .exe（W9）：做一個叫 claude.exe 的包裝（在 macOS／Linux 上是 shell 腳本，照樣執行得起來）。
+    let claudeBin = FAKE_CLAUDE;
+    if (options.platform === 'win32') {
+      claudeBin = join(dir, 'claude.exe');
+      writeFileSync(claudeBin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_CLAUDE}" "$@"\n`);
+      chmodSync(claudeBin, 0o755);
+    }
     const r = new ReviewRunner({
-      claudeBin: FAKE_CLAUDE,
+      claudeBin,
       codexBin: FAKE_CODEX,
       env: () => ({ PATH: process.env.PATH ?? '', AB_FAKE_REVIEW_LOG: log }),
       send: (message, onResult) => {
