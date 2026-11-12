@@ -15,7 +15,9 @@ import {
   DAEMON_FEATURES,
   platformKey,
   PROTOCOL_VERSION,
+  type AgentBoardTool,
   type AgentKind,
+  type CodexMcpServer,
   type DaemonAlertCode,
   type DaemonToHub,
   type Approval,
@@ -63,6 +65,7 @@ import {
   toolFullName,
   secretMatches,
   writeMcpFiles,
+  type McpLaunch,
 } from './mcpFiles';
 import { probeCapabilities, ResourceMonitor, type ResourceMonitorOptions } from './resources';
 import { localPtyBackend, type PtyBackend } from './pty';
@@ -1542,7 +1545,8 @@ export class Daemon {
     let args: string[];
     let launchEntry = entry;
     if (agent === 'codex') {
-      // 第一句用官方的 `codex [PROMPT]` 帶入（不必等 SessionStart 再打字）；派工工具第一版不給 Codex。
+      // 第一句用官方的 `codex [PROMPT]` 帶入（不必等 SessionStart 再打字）。
+      // 派工／進度卡工具（Codex 第二輪）：同一支 MCP server、同一套密鑰，用 -c 帶入（不寫 ~/.codex）。
       // 本機清單裡的第一句等 Codex 回報 UserPromptSubmit 才清（handleHook）：開起來就崩潰的話，重啟會再帶一次。
       const resumeId = 'resumeId' in how ? how.resumeId : null;
       args = buildCodexArgs({
@@ -1556,6 +1560,7 @@ export class Daemon {
           socketPath: this.hookServer.path,
           keyFile: this.hookServer.keyPath,
         },
+        mcp: this.prepareCodexMcp(sessionId),
       });
       // 已經在參數裡了，不要再用送字佇列打一次。
       if (entry.pendingFirstPrompt !== null) launchEntry = { ...entry, pendingFirstPrompt: null };
@@ -1695,6 +1700,19 @@ export class Daemon {
   private prepareMcp(
     sessionId: string,
   ): { configPath: string; allowedTools: readonly string[] } | null {
+    const launch = this.writeMcp(sessionId);
+    if (!launch) return null;
+    const { tools } = launch;
+    return { configPath: launch.configPath, allowedTools: tools.map(toolFullName) };
+  }
+
+  /** Codex 第二輪：和 Claude 同一支 MCP server、同一份 env（密鑰檔、hook 密鑰檔），換成 `-c` 帶入。 */
+  private prepareCodexMcp(sessionId: string): CodexMcpServer | null {
+    const launch = this.writeMcp(sessionId);
+    return launch && { ...launch.server, tools: launch.tools };
+  }
+
+  private writeMcp(sessionId: string): (McpLaunch & { tools: AgentBoardTool[] }) | null {
     this.dropMcp(sessionId);
     const server = this.deps.config.mcpServer;
     const tools = enabledTools({ dispatch: this.dispatchEnabled, memory: this.memoryEnabled });
@@ -1709,7 +1727,7 @@ export class Daemon {
         this.hookServer.keyPath,
       );
       this.mcpSecrets.set(sessionId, launch.secret);
-      return { configPath: launch.configPath, allowedTools: tools.map(toolFullName) };
+      return { ...launch, tools };
     } catch (error) {
       log.warn(`無法寫入派工設定，這個 session 不掛派工工具：${errorMessage(error)}`);
       return null;

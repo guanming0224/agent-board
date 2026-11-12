@@ -7,6 +7,8 @@
 // 守則文字（擴編節奏）在 protocol/src/leadGuide.ts，只放在工具說明與回傳裡，不會自己送字。
 import { randomUUID } from 'node:crypto';
 import {
+  agentOf,
+  AgentKind,
   AUTOSTAFF_OFF_GUIDE,
   DISPATCH_ROLES,
   DISPATCH_SPAWN_RATE_MAX,
@@ -156,6 +158,8 @@ const SpawnArgs = z.object({
   permissionMode: PermissionMode.optional(),
   useWorktree: z.boolean().optional(),
   model: z.string().max(100).optional(),
+  /** Codex 第二輪：開哪種 agent；沒給＝和呼叫者同一種。 */
+  agent: AgentKind.optional(),
 });
 const SendArgs = z.object({ member: z.string().min(1), text: z.string().min(1) });
 const MemberArgs = z.object({ member: z.string().min(1) });
@@ -610,11 +614,17 @@ export class DispatchEngine {
       this.blockedTool(caller, 'spawn_member', 'team_held');
       return fail('team_held', TEAM_HELD_GUIDE);
     }
-    if (this.deps.accountLimited(caller)) {
+    // Codex 第二輪：預設和呼叫者同一種 agent，隊長可以指定另一種（例如 Claude 隊長開 Codex 審查員）。
+    // 帳號跟著 agent 走：Codex 沒有帳號資料夾；Codex 隊長開 Claude 用預設帳號。
+    const callerAgent = agentOf(caller);
+    const agent = args.agent ?? callerAgent;
+    const accountProfile =
+      agent === 'claude' && callerAgent === 'claude' ? caller.accountProfile : null;
+    if (this.deps.accountLimited({ ...caller, agent, accountProfile })) {
       this.blockedTool(caller, 'spawn_member', 'account_rate_limited');
       return fail(
         'account_rate_limited',
-        'This Claude account is rate-limited on this machine right now; a new member would stop at the same limit. Do not add members until the limit resets; continue with the current members or yourself.',
+        `This ${agent === 'codex' ? 'Codex' : 'Claude'} account is rate-limited on this machine right now; a new member would stop at the same limit. Do not add members until the limit resets; continue with the current members or yourself.`,
       );
     }
     // 從這裡的人數檢查到下面 upsertTeamMember 必須保持同步（中間不能 await）：Node 單執行緒，
@@ -694,8 +704,14 @@ export class DispatchEngine {
           cwd: caller.cwd,
           useWorktree,
           permissionMode: mode,
-          model: args.model ? cleanLine(args.model) || caller.model : caller.model,
-          accountProfile: caller.accountProfile,
+          // 模型名稱各家不同：換了 agent 就不沿用呼叫者的，用那個 CLI 自己的預設。
+          model: args.model
+            ? cleanLine(args.model) || (agent === callerAgent ? caller.model : null)
+            : agent === callerAgent
+              ? caller.model
+              : null,
+          accountProfile,
+          ...(agent === 'codex' ? { agent } : {}),
           resumeClaudeSessionId: null,
           firstPrompt: message,
           readOnly,
@@ -740,6 +756,7 @@ export class DispatchEngine {
       useWorktree,
       readOnly,
       reason,
+      agent,
       teamSize: size + 1,
       teamLimit,
     };
@@ -761,6 +778,7 @@ export class DispatchEngine {
       team: team.name,
       ...(created ? { teamCreated: true } : {}),
       role: args.role,
+      agent,
       permissionMode: mode,
       ...(clamped ? { note: `permissionMode lowered to ${mode} (cannot exceed yours)` } : {}),
       readOnly,

@@ -7,6 +7,8 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import {
   codexHookOverrides,
+  codexMcpOverrides,
+  type CodexMcpServer,
   codexPermissionArgs,
   type CodexHookTarget,
   type HookEventName,
@@ -24,6 +26,8 @@ export interface CodexArgsInput {
   firstPrompt?: string | null;
   /** 這個 session 的 hook 位址，寫進每個 hook 指令。 */
   hookTarget: CodexHookTarget;
+  /** agent-board MCP server（派工、進度卡，Codex 第二輪）；設定都關著或找不到 server 時不掛。 */
+  mcp?: CodexMcpServer | null;
 }
 
 /**
@@ -38,6 +42,7 @@ export function buildCodexArgs(input: CodexArgsInput): string[] {
   if (input.model) args.push('-m', input.model);
   args.push('--dangerously-bypass-hook-trust');
   for (const override of codexHookOverrides(input.hookTarget)) args.push('-c', override);
+  if (input.mcp) for (const override of codexMcpOverrides(input.mcp)) args.push('-c', override);
   // `--` 之後才是提示：提示以 - 開頭也不會被當成參數。
   if (!input.resumeId && input.firstPrompt) args.push('--', input.firstPrompt);
   return args;

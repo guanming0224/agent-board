@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { McpReply } from '@agent-board/protocol';
 import { DAEMON_FEATURES } from '@agent-board/protocol';
 import { DISPATCH_TOOL_NAMES, MEMORY_TOOL_NAMES, secretMatches } from './mcpFiles';
-import { Harness, waitUntil } from './test-support/harness';
+import { FAKE_CAPABILITIES, Harness, waitUntil } from './test-support/harness';
 
 const MCP_SERVER = fileURLToPath(new URL('../../hook/src/mcp.ts', import.meta.url));
 
@@ -426,5 +426,71 @@ describe('派工工具：密鑰與轉送', () => {
     } finally {
       child.kill();
     }
+  });
+});
+
+// Codex 第二輪（GM 2026-11-12）：Codex session 用 -c 帶入同一支 MCP server、同一套密鑰。
+describe.skipIf(process.platform === 'win32')('Codex 掛派工工具', () => {
+  it('-c mcp_servers.agent-board.*：同一支 server、env 只有密鑰檔路徑、只露出開著的工具、免核准；密鑰驗證同 Claude', async () => {
+    h = new Harness();
+    h.hub.dispatch = true;
+    h.mcpServer = MCP_SERVER;
+    await h.start();
+    const daemon = await h.restartDaemon({
+      capabilities: { ...FAKE_CAPABILITIES, codexVersion: '0.167.0' },
+    });
+    await h.createAndSubscribe('c1', { agent: 'codex', firstPrompt: 'hi' });
+    const { argv } = h.runs().at(-1)!;
+    const overrides = argv.filter((_, i) => argv[i - 1] === '-c');
+    const mcp = overrides.filter((o) => o.startsWith('mcp_servers.agent-board.'));
+    expect(mcp.map((o) => o.split('=')[0])).toEqual([
+      'mcp_servers.agent-board.command',
+      'mcp_servers.agent-board.args',
+      'mcp_servers.agent-board.env',
+      'mcp_servers.agent-board.enabled_tools',
+      'mcp_servers.agent-board.default_tools_approval_mode',
+    ]);
+    expect(mcp[1]).toContain('mcp.ts');
+    const secretFile = join(h.dataDir, 'mcp', 'c1.key');
+    const secret = readFileSync(secretFile, 'utf8');
+    expect(mode(secretFile)).toBe(0o600);
+    // 密鑰不在 argv（ps 看得到），只有檔案路徑。
+    expect(argv.join(' ')).not.toContain(secret);
+    expect(mcp[2]).toContain('AGENT_BOARD_MCP_SECRET_FILE=');
+    expect(mcp[2]).toContain('AGENT_BOARD_SESSION_ID="c1"');
+    expect(mcp[2]).toContain('AGENT_BOARD_HOOK_KEY_FILE=');
+    expect(mcp[3]).toBe(
+      'mcp_servers.agent-board.enabled_tools=["list_members","spawn_member","send_task","get_result","release_member"]',
+    );
+    expect(mcp[4]).toBe('mcp_servers.agent-board.default_tools_approval_mode="approve"');
+    // 提示仍在最後（-- 之後）。
+    expect(argv.slice(-2)).toEqual(['--', 'hi']);
+
+    const pending = askDaemon(daemon.hookSocketPath, {
+      sessionId: 'c1',
+      secret,
+      tool: 'list_members',
+      args: {},
+    });
+    const request = await h.hub.waitFor('dispatch.request', (m) => m.sessionId === 'c1');
+    h.hub.send({ type: 'dispatch.reply', requestId: request.requestId, ok: true, text: '{}' });
+    expect(await pending).toEqual({ ok: true, text: '{}' });
+  });
+
+  it('派工與進度卡都關：Codex 也完全不掛', async () => {
+    h = new Harness();
+    h.hub.dispatch = false;
+    h.hub.memory = false;
+    h.mcpServer = MCP_SERVER;
+    await h.start();
+    await h.restartDaemon({ capabilities: { ...FAKE_CAPABILITIES, codexVersion: '0.167.0' } });
+    await h.createAndSubscribe('c2', { agent: 'codex' });
+    expect(
+      h
+        .runs()
+        .at(-1)!
+        .argv.some((a) => a.startsWith('mcp_servers.')),
+    ).toBe(false);
+    expect(existsSync(join(h.dataDir, 'mcp', 'c2.key'))).toBe(false);
   });
 });

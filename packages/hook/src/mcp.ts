@@ -65,7 +65,17 @@ const ALL_TOOLS = [
           type: 'boolean',
           description: 'Optional. Workers and testers default to true (needs a git repo).',
         },
-        model: { type: 'string', description: 'Optional model; defaults to yours.' },
+        model: {
+          type: 'string',
+          description:
+            "Optional model; defaults to yours (or to that CLI's default when agent differs from yours).",
+        },
+        agent: {
+          type: 'string',
+          enum: ['claude', 'codex'],
+          description:
+            'Optional. Which CLI the member runs: claude (Claude Code) or codex (Codex CLI). Defaults to the same as yours. Use the other one for an independent second opinion (for example a codex reviewer under a claude lead).',
+        },
       },
       required: ['role', 'prompt', 'reason'],
       additionalProperties: false,

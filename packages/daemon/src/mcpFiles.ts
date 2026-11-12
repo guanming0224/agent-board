@@ -49,6 +49,8 @@ export interface McpServerCommand {
 export interface McpLaunch {
   configPath: string;
   secret: string;
+  /** 設定檔裡同一份 server 設定（Codex 用 `-c mcp_servers.…` 帶入，Codex 第二輪）。 */
+  server: { command: string; args: string[]; env: Record<string, string> };
 }
 
 export const mcpDir = (dataDir: string) => join(dataDir, 'mcp');
@@ -78,25 +80,26 @@ export function writeMcpFiles(
   const secretPath = join(dir, `${sessionId}.key`);
   const configPath = join(dir, `${sessionId}.json`);
   writePrivate(secretPath, secret);
+  const env: Record<string, string> = {
+    [HOOK_ENV.sessionId]: sessionId,
+    [HOOK_ENV.socket]: socketPath,
+    [MCP_ENV.secretFile]: secretPath,
+    // MCP server 的 tools/list 只列、tools/call 只接受這些（設定關著的工具不出現）。
+    [MCP_ENV.tools]: tools.join(','),
+    ...(keyFile ? { [HOOK_ENV.keyFile]: keyFile } : {}),
+  };
   const config = {
     mcpServers: {
       [DISPATCH_MCP_SERVER]: {
         type: 'stdio',
         command: server.command,
         args: server.args,
-        env: {
-          [HOOK_ENV.sessionId]: sessionId,
-          [HOOK_ENV.socket]: socketPath,
-          [MCP_ENV.secretFile]: secretPath,
-          // MCP server 的 tools/list 只列、tools/call 只接受這些（設定關著的工具不出現）。
-          [MCP_ENV.tools]: tools.join(','),
-          ...(keyFile ? { [HOOK_ENV.keyFile]: keyFile } : {}),
-        },
+        env,
       },
     },
   };
   writePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`);
-  return { configPath, secret };
+  return { configPath, secret, server: { command: server.command, args: server.args, env } };
 }
 
 export function removeMcpFiles(dataDir: string, sessionId: string): void {

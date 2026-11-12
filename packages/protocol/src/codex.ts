@@ -9,7 +9,7 @@ import {
   HOOK_TIMEOUT_SECONDS,
   type HookEventName,
 } from './hook';
-import type { PermissionMode } from './models';
+import { DISPATCH_MCP_SERVER, type PermissionMode } from './models';
 
 /**
  * 中控台替 Codex 開的 hook 事件。以 `-c hooks.<Event>=[...]` 在每次啟動時帶入（不寫進 `~/.codex`、
@@ -140,4 +140,45 @@ export function codexPermissionArgs(mode: PermissionMode, readOnly = false): str
   const permission = codexPermission(mode, readOnly);
   if (permission.bypass) return ['--dangerously-bypass-approvals-and-sandbox'];
   return ['-s', permission.sandbox ?? 'read-only', '-a', permission.approval ?? 'on-request'];
+}
+
+// ── agent-board MCP server（Codex 第二輪，GM 2026-11-12）──────────────
+
+/** Codex 掛 agent-board MCP server 要的東西：和 Claude 的 `--mcp-config` 設定檔同一支程式、同一組環境變數。 */
+export interface CodexMcpServer {
+  /** node 執行檔。 */
+  command: string;
+  /** MCP server 程式（發布檔 daemon/dist/agent-board-mcp.mjs）。 */
+  args: readonly string[];
+  /** 同 Claude 設定檔的 env：session id、hook socket、密鑰**檔案路徑**、工具清單、hook 密鑰檔（W5）。 */
+  env: Readonly<Record<string, string>>;
+  /** 這次開著的工具（短名稱）。 */
+  tools: readonly string[];
+}
+
+/** TOML 的 key：英數、底線、連字號直接寫，其他加引號。 */
+const tomlKey = (key: string) => (/^[A-Za-z0-9_-]+$/.test(key) ? key : `"${tomlString(key)}"`);
+const tomlStrings = (values: readonly string[]) =>
+  `[${values.map((v) => `"${tomlString(v)}"`).join(',')}]`;
+
+/**
+ * `-c mcp_servers.agent-board.<key>=<TOML>`：只在這次啟動有效，不寫 `~/.codex/config.toml`（GM 決策 1）。
+ * - `enabled_tools`：只露出開著的工具（同 Claude 的 `--allowedTools` 只列這幾個）。
+ * - `default_tools_approval_mode="approve"`：這些工具呼叫不跳 Codex 的核准（同 Claude 事先允許的理由，§11.1）。
+ *   值取自 Codex 官方設定文件（`auto | prompt | writes | approve`，文件範例用 `approve` 對單一工具免核准）；
+ *   **未用真的 codex 驗證**。
+ * 密鑰本身不在 argv：env 只有密鑰檔路徑（`ps` 看得到 argv，§11.1）。
+ */
+export function codexMcpOverrides(server: CodexMcpServer): string[] {
+  const prefix = `mcp_servers.${DISPATCH_MCP_SERVER}`;
+  const env = Object.entries(server.env)
+    .map(([key, value]) => `${tomlKey(key)}="${tomlString(value)}"`)
+    .join(',');
+  return [
+    `${prefix}.command="${tomlString(server.command)}"`,
+    `${prefix}.args=${tomlStrings(server.args)}`,
+    `${prefix}.env={${env}}`,
+    `${prefix}.enabled_tools=${tomlStrings(server.tools)}`,
+    `${prefix}.default_tools_approval_mode="approve"`,
+  ];
 }
