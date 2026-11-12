@@ -730,6 +730,31 @@ export function MemorySection({ form }: { form: ServerSettingsForm }) {
 }
 
 /**
+ * Codex 掛派工工具（Codex 第二輪，審查 S3）：預設關。`-c mcp_servers…` 的設定還沒用真的 codex 驗證，
+ * 猜錯會讓 Codex 開不起來（daemon 會不帶 MCP 重開一次並警示），所以實測後再開。
+ */
+export function CodexMcpSection({ form }: { form: ServerSettingsForm }) {
+  const t = useT();
+  const { draft, patch } = form;
+  return (
+    <Section id="codexMcp" title={t('flows.settings.codexMcp')} dirty={form.isDirty('codexMcp')}>
+      <div className="field">
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="codex-mcp-toggle"
+            checked={draft.codexMcp}
+            onChange={(e) => patch({ codexMcp: e.target.checked })}
+          />
+          {t('flows.codexMcp.label')}
+        </label>
+        <p className="hint">{t('flows.codexMcp.hint')}</p>
+      </div>
+    </Section>
+  );
+}
+
+/**
  * 唯一的儲存按鈕：一次存三個分類的修改。
  * 有欄位不合法而且不在眼前這個分類時，先切過去，使用者才看得到哪裡標紅。
  */

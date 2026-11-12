@@ -930,6 +930,7 @@ export class Hub {
       stuckMinutes: settings.stuckMinutes,
       dispatch: settings.dispatch,
       memory: settings.memory,
+      codexMcp: settings.codexMcp,
       protocolVersion: PROTOCOL_VERSION,
       release: this.release.targetFor(machineId),
     };
@@ -3165,6 +3166,7 @@ export class Hub {
       prev.stuckMinutes !== next.stuckMinutes ||
       prev.dispatch !== next.dispatch ||
       prev.memory !== next.memory ||
+      prev.codexMcp !== next.codexMcp ||
       JSON.stringify(prev.dangerRules) !== JSON.stringify(next.dangerRules);
     if (changed) {
       for (const conn of this.daemons.values()) {

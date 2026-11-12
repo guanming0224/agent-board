@@ -918,6 +918,9 @@ test('Codex 成員（Codex 第二輪，真 hub、真 MCP server、假 codex）�
   page,
 }) => {
   await page.goto('/#/canvas');
+  // Codex 掛 MCP 預設關（審查 S3：還沒用真 codex 驗證），這裡打開才測得到 -c 帶入。
+  const patched = await page.request.patch('/api/settings', { data: { codexMcp: true } });
+  expect(patched.ok()).toBe(true);
   const cxLead = await createSession(page, 'cx-ld', false);
   await typeInto(
     page,

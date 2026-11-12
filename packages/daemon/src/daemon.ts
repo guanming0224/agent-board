@@ -95,6 +95,8 @@ import {
 } from './worktree';
 
 const USAGE_INTERVAL_MS = 15 * 60_000;
+/** 帶 MCP 開的 Codex 在這段時間內、還沒有任何 hook 就失敗：當成 MCP 設定問題，不帶 MCP 重開（審查 S3）。 */
+const CODEX_MCP_PROBE_MS = 15_000;
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60_000;
 /** 結束的 session 還留著畫面給人看，超過就丟最舊的。 */
 const MAX_ENDED_SESSIONS = 20;
@@ -284,6 +286,15 @@ export class Daemon {
   private memoryEnabled: boolean;
   /** 每個活著的 session 這次 PTY 的派工密鑰（只在記憶體，檔案另存 0600）。 */
   private readonly mcpSecrets = new Map<string, string>();
+  /** hub 的 `codexMcp`（審查 S3）：開著才給新開的 Codex 掛 MCP。 */
+  private codexMcpEnabled = false;
+  /** 這個 daemon 試過帶 MCP 開 Codex 而失敗：之後都不掛。 */
+  private codexMcpBroken = false;
+  /** 帶 MCP 開的 Codex：還沒有 hook 前一開就失敗要不帶 MCP 重開。 */
+  private readonly codexMcpLaunches = new Map<
+    string,
+    { at: number; how: { resumeId: string } | { newSessionId: string | null }; hooked: boolean }
+  >();
   /** 全域搜尋的深層（P3 ③b）：只讀本機對話紀錄與畫面，和對話紀錄檢視分開排隊。 */
   private readonly deepSearch: DeepSearcher;
   /** 交叉審查（Codex 第二輪）：只在 hub 送 `review.run` 時開 CLI（no-llm 界線，review.ts）。 */
@@ -1046,6 +1057,8 @@ export class Daemon {
           message.dispatch === true,
           message.memory === true,
         );
+        // Codex 掛 MCP（審查 S3）：只記在記憶體，hub 沒明確開就不掛（daemon 重啟、還沒連上前一律不掛）。
+        this.codexMcpEnabled = message.codexMcp === true;
         for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
         // 斷線期間跑完的審查結果補送。
         this.reviews.flush();
@@ -1557,6 +1570,7 @@ export class Daemon {
   private async launch(
     entry: PersistedSession,
     how: { resumeId: string } | { newSessionId: string | null },
+    options: { noMcp?: boolean } = {},
   ): Promise<ManagedSession> {
     const { spec, sessionId } = entry;
     // 接續同一個 session：上一輪還沒送出的結果已不適用，不可蓋掉新的狀態。
@@ -1572,6 +1586,7 @@ export class Daemon {
     const agent = agentOf(spec);
     let args: string[];
     let launchEntry = entry;
+    const withMcp = !options.noMcp && this.codexMcpEnabled && !this.codexMcpBroken;
     if (agent === 'codex') {
       // 第一句用官方的 `codex [PROMPT]` 帶入（不必等 SessionStart 再打字）。
       // 派工／進度卡工具（Codex 第二輪）：同一支 MCP server、同一套密鑰，用 -c 帶入（不寫 ~/.codex）。
@@ -1588,8 +1603,14 @@ export class Daemon {
           socketPath: this.hookServer.path,
           keyFile: this.hookServer.keyPath,
         },
-        mcp: this.prepareCodexMcp(sessionId),
+        mcp: withMcp ? this.prepareCodexMcp(sessionId) : null,
       });
+      // 帶 MCP 開：記下來，開起來就以錯誤結束（例如設定鍵猜錯）時不帶 MCP 重開一次（審查 S3）。
+      if (args.some((arg) => arg.startsWith('mcp_servers.'))) {
+        this.codexMcpLaunches.set(sessionId, { at: Date.now(), how, hooked: false });
+      } else {
+        this.codexMcpLaunches.delete(sessionId);
+      }
       // 已經在參數裡了，不要再用送字佇列打一次。
       if (entry.pendingFirstPrompt !== null) launchEntry = { ...entry, pendingFirstPrompt: null };
     } else {
@@ -1640,6 +1661,12 @@ export class Daemon {
     reattach?: ConstructorParameters<typeof ManagedSession>[0]['reattach'],
   ): ManagedSession {
     const { spec, sessionId } = entry;
+    // 這一個 PTY 是不是「帶 MCP 一開就失敗、要不帶 MCP 重開」（審查 S3）：結束回報與 exit 處理都跳過。
+    let retrying = false;
+    const shouldRetry = (exitCode: number | null) => {
+      if (!retrying && this.codexMcpRetry(sessionId, exitCode)) retrying = true;
+      return retrying;
+    };
     return new ManagedSession({
       id: sessionId,
       agent: agentOf(spec),
@@ -1662,8 +1689,11 @@ export class Daemon {
       terminateGraceMs: this.deps.terminateGraceMs,
       idleResizeMs: this.deps.idleResizeMs,
       onRuntime: (session) => {
-        if (session.endedAt !== null) this.recordEnded(session);
-        else this.send({ type: 'session.runtime', session });
+        if (session.endedAt !== null) {
+          // 帶 MCP 開的 Codex 一開就失敗：先不回報結束，handleSessionExit 會不帶 MCP 重開一次（審查 S3）。
+          if (shouldRetry(session.status === 'done' ? 0 : 1)) return;
+          this.recordEnded(session);
+        } else this.send({ type: 'session.runtime', session });
       },
       onStatusChange: (change) => {
         this.emitEvent(sessionId, 'status', {
@@ -1679,11 +1709,53 @@ export class Daemon {
       onTerminal: (message) => this.send(message),
       onClaudeSessionId: (claudeSessionId) => this.store.patch(sessionId, { claudeSessionId }),
       onFirstPromptSent: () => this.store.patch(sessionId, { pendingFirstPrompt: null }),
-      onExit: (exitCode) => this.handleSessionExit(sessionId, exitCode),
+      onExit: (exitCode) => {
+        if (shouldRetry(exitCode)) this.retryCodexWithoutMcp(sessionId);
+        else this.handleSessionExit(sessionId, exitCode);
+      },
+    });
+  }
+
+  /** 記下警示（重連後補送），連著 hub 就馬上送。 */
+  private raiseAlert(code: DaemonAlertCode, text: string): void {
+    this.alerts.set(code, text);
+    if (this.hub.connected) this.send({ type: 'daemon.alert', code, message: text.slice(0, 1000) });
+  }
+
+  /** Codex 帶 MCP 開、還沒有任何 hook、15 秒內以非 0 結束：判定是 MCP 設定讓它起不來（審查 S3）。 */
+  private codexMcpRetry(sessionId: string, exitCode: number | null): boolean {
+    const launch = this.codexMcpLaunches.get(sessionId);
+    return (
+      launch !== undefined &&
+      !launch.hooked &&
+      exitCode !== 0 &&
+      Date.now() - launch.at < CODEX_MCP_PROBE_MS
+    );
+  }
+
+  /** 不帶 MCP 重開一次，這個 daemon 之後開的 Codex 都不帶，並回報警示（設定頁看得到）。 */
+  private retryCodexWithoutMcp(sessionId: string): void {
+    const launch = this.codexMcpLaunches.get(sessionId);
+    this.codexMcpLaunches.delete(sessionId);
+    if (!launch) return;
+    this.codexMcpBroken = true;
+    this.approvals.cancelSession(sessionId);
+    this.dropMcp(sessionId);
+    const text =
+      'Codex 帶 agent-board MCP（-c mcp_servers.agent-board.*）開起來就結束了，已改成不掛 MCP 重開；這台之後開的 Codex 都不掛。請在設定關掉「Codex 掛派工工具」或回報。';
+    log.warn(`session ${sessionId}：${text}`);
+    this.raiseAlert('codex_mcp_failed', text);
+    const entry = this.store.sessions.find((s) => s.sessionId === sessionId);
+    if (!entry) return;
+    void this.launch(entry, launch.how, { noMcp: true }).catch((error: unknown) => {
+      log.warn(`Codex 不帶 MCP 重開也失敗：${errorMessage(error)}`);
+      const session = this.sessions.get(sessionId);
+      if (session) this.recordEnded(session.runtime());
     });
   }
 
   private handleSessionExit(sessionId: string, exitCode: number): void {
+    this.codexMcpLaunches.delete(sessionId);
     this.approvals.cancelSession(sessionId);
     // 結束的 session 的派工密鑰立刻作廢（CONTRACTS §11）。
     this.dropMcp(sessionId);
@@ -1870,6 +1942,9 @@ export class Daemon {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.onHook(event, payload);
+      // Codex 已經有 hook 回報：開起來了，之後結束不算 MCP 設定問題。
+      const mcpLaunch = this.codexMcpLaunches.get(sessionId);
+      if (mcpLaunch) mcpLaunch.hooked = true;
       // Codex 的第一句在啟動參數裡：真的送進去了（UserPromptSubmit）才從本機清單清掉。
       if (session.agent === 'codex' && event === 'UserPromptSubmit') {
         this.clearPendingFirstPrompt(sessionId);

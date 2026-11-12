@@ -107,6 +107,7 @@ export const SettingsPatch = Settings.extend({
   autoContinue: z.boolean(),
   dispatch: z.boolean(),
   memory: z.boolean(),
+  codexMcp: z.boolean(),
   autoStaff: AutoStaff,
   review: ReviewSettings,
 }).partial();

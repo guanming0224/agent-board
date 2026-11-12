@@ -439,6 +439,7 @@ describe.skipIf(process.platform === 'win32')('Codex 掛派工工具', () => {
   it('-c mcp_servers.agent-board.*：同一支 server、env 只有密鑰檔路徑、只露出開著的工具、免核准；密鑰驗證同 Claude', async () => {
     h = new Harness();
     h.hub.dispatch = true;
+    h.hub.codexMcp = true;
     h.mcpServer = MCP_SERVER;
     await h.start();
     const daemon = await h.restartDaemon({
@@ -497,5 +498,63 @@ describe.skipIf(process.platform === 'win32')('Codex 掛派工工具', () => {
         .argv.some((a) => a.startsWith('mcp_servers.')),
     ).toBe(false);
     expect(existsSync(join(h.dataDir, 'mcp', 'c2.key'))).toBe(false);
+  });
+
+  it('S3：hub 沒開 codexMcp（預設關）就不掛；開了但 Codex 一開就以設定錯誤結束 → 不帶 MCP 重開一次並警示', async () => {
+    h = new Harness();
+    h.hub.dispatch = true;
+    h.mcpServer = MCP_SERVER;
+    await h.start();
+    await h.restartDaemon({ capabilities: { ...FAKE_CAPABILITIES, codexVersion: '0.167.0' } });
+    await h.createAndSubscribe('c3', { agent: 'codex' });
+    expect(
+      h
+        .runs()
+        .at(-1)!
+        .argv.some((a) => a.startsWith('mcp_servers.')),
+    ).toBe(false);
+    await h.cleanup();
+
+    h = new Harness();
+    h.hub.dispatch = true;
+    h.hub.codexMcp = true;
+    h.mcpServer = MCP_SERVER;
+    h.extraEnv = { FAKE_CODEX_REJECT_MCP: '1' };
+    await h.start();
+    await h.restartDaemon({ capabilities: { ...FAKE_CAPABILITIES, codexVersion: '0.167.0' } });
+    h.hub.send({
+      type: 'session.create',
+      requestId: 'req-c4',
+      sessionId: 'c4',
+      spec: h.spec({ agent: 'codex', firstPrompt: 'hi' }),
+    });
+    await h.hub.waitFor('session.created', (m) => m.requestId === 'req-c4');
+    const codexRuns = () =>
+      h.runs().filter((r) => r.argv.includes('--dangerously-bypass-hook-trust'));
+    await waitUntil(() => codexRuns().length === 2, 'relaunched without MCP');
+    h.hub.send({ type: 'terminal.subscribe', sessionId: 'c4' });
+    await h.waitForOutput('c4', 'FAKE READY');
+    const runs = codexRuns();
+    expect(runs).toHaveLength(2);
+    expect(runs[0]!.argv.some((a) => a.startsWith('mcp_servers.'))).toBe(true);
+    expect(runs[1]!.argv.some((a) => a.startsWith('mcp_servers.'))).toBe(false);
+    // 第一句照樣帶（重開時沒送出的第一句還在）。
+    expect(runs[1]!.argv.slice(-2)).toEqual(['--', 'hi']);
+    const alert = await h.hub.waitFor('daemon.alert', (m) => m.code === 'codex_mcp_failed');
+    expect(alert.message).toContain('不掛 MCP');
+    // 沒有把第一次的失敗當成 session 結束回報給 hub。
+    expect(
+      h.hub.received.some(
+        (m) => m.type === 'session.runtime' && m.session.id === 'c4' && m.session.endedAt !== null,
+      ),
+    ).toBe(false);
+    // 之後開的 Codex 都不掛。
+    await h.createAndSubscribe('c5', { agent: 'codex' });
+    expect(
+      h
+        .runs()
+        .at(-1)!
+        .argv.some((a) => a.startsWith('mcp_servers.')),
+    ).toBe(false);
   });
 });

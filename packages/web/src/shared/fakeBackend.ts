@@ -519,6 +519,7 @@ const defaultSettings: Settings = {
   autoContinue: false,
   dispatch: true,
   memory: true,
+  codexMcp: false,
   autoStaff: { ...AUTO_STAFF_DEFAULT },
   review: { ...REVIEW_SETTINGS_DEFAULT },
 };

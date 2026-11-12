@@ -315,6 +315,10 @@ export const zhTW: Record<string, string> = {
     '推播只寫誰新增或封存了誰（合併通知開著時併進同一則），理由在收件匣的「團隊動態」看。關掉只停推播，收件匣照樣記。',
   'flows.settings.memory': '讓 session 讀寫進度卡（MCP 工具）',
   'flows.memory.label': '讓 session 讀寫進度卡（MCP 工具）',
+  'flows.settings.codexMcp': 'Codex 掛派工工具',
+  'flows.codexMcp.label': '讓 Codex session 也掛派工與進度卡工具（MCP）',
+  'flows.codexMcp.hint':
+    '預設關：Codex 的 MCP 設定還沒用真的 Codex 實測過，設定不對會讓 Codex 開不起來（會自動改成不掛工具重開一次並警示）。實測後再開。只影響之後開的 Codex session。',
   'flows.memory.hint':
     '開著時，新開或接續的 session 會掛上 get_progress、update_progress 兩個工具：Claude 開始工作或對話被清空後可以自己讀團隊的進度卡，做完一段後寫回狀態、下一步、阻礙（只有隊長能寫，GM 備註它改不了）。工具本身不花額度、不會自己動。關掉後新開的 session 不掛這兩個工具，已經掛著的呼叫一律被拒絕。預設開。',
   'flows.settings.language': '語言',
@@ -1079,6 +1083,10 @@ export const en: Record<string, string> = {
     'The notification only says who added or released whom (merged into one notification when merging is on); the reason is under "Team activity" in the inbox. Turning this off stops the notifications only; the inbox still records them.',
   'flows.settings.memory': 'Let sessions read and write progress cards (MCP tools)',
   'flows.memory.label': 'Let sessions read and write progress cards (MCP tools)',
+  'flows.settings.codexMcp': 'Agent Board tools for Codex',
+  'flows.codexMcp.label': 'Give Codex sessions the dispatch and progress tools (MCP)',
+  'flows.codexMcp.hint':
+    'Off by default: the Codex MCP settings have not been tested with a real Codex yet; if they are wrong Codex will not start (Agent Board retries once without the tools and shows a warning). Turn on after testing. Only affects Codex sessions started afterwards.',
   'flows.memory.hint':
     'When on, new and resumed sessions get two tools, get_progress and update_progress: Claude can read its team progress card when it starts work or after the conversation was cleared, and write back status, next step and blockers after a chunk of work (only the lead writes; it cannot change GM notes). The tools use no quota and never act on their own. When off, new sessions do not get them and calls from sessions that already have them are refused. On by default.',
   'flows.settings.language': 'Language',

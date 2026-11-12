@@ -188,7 +188,12 @@ export type SessionRuntime = z.infer<typeof SessionRuntime>;
 
 // ── daemon → hub ─────────────────────────────────────────────
 /** daemon.alert 的種類：session host 證明不了自己；hook pipe 被別的程序占了（daemon 改用備用名稱）。 */
-export const DaemonAlertCode = z.enum(['session_host_unauthorized', 'hook_pipe_squatted']);
+/** codex_mcp_failed：Codex 帶 agent-board MCP 開起來就結束，daemon 改成不掛 MCP 重開（Codex 第二輪，審查 S3）。 */
+export const DaemonAlertCode = z.enum([
+  'session_host_unauthorized',
+  'hook_pipe_squatted',
+  'codex_mcp_failed',
+]);
 export type DaemonAlertCode = z.infer<typeof DaemonAlertCode>;
 
 export const DaemonToHub = z.discriminatedUnion('type', [
@@ -342,6 +347,8 @@ export const HubToDaemon = z.discriminatedUnion('type', [
     dispatch: z.boolean().optional(),
     /** `Settings.memory`：新開的 claude 要不要掛進度卡工具（P3 項目一）。舊版 hub 不送 → 不掛。 */
     memory: z.boolean().optional(),
+    /** `Settings.codexMcp`：新開的 Codex 要不要掛 agent-board MCP（Codex 第二輪）。不送＝不掛。 */
+    codexMcp: z.boolean().optional(),
     /** hub 的協定版本（CONTRACTS §21.4）。舊 hub 不送。 */
     protocolVersion: z.number().int().positive().optional(),
     /** 這台的更新目標（依通道）；null＝沒有。舊 hub 不送。 */

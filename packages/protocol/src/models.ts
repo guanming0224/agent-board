@@ -792,6 +792,12 @@ export const Settings = z.object({
    * push：新增或封存成員時推播（收件匣的「團隊動態」不受影響）。舊設定沒有這個鍵＝全部預設。
    */
   autoStaff: AutoStaff.default(AUTO_STAFF_DEFAULT),
+  /**
+   * Codex session 掛 agent-board MCP（派工、進度卡，Codex 第二輪，審查 S3）。`-c mcp_servers…` 的
+   * `enabled_tools`、`default_tools_approval_mode` 還沒用真的 codex 驗證，猜錯會讓 Codex 開不起來，所以**預設關**，
+   * 實測後再開。關著＝Codex 照第一版只有 hook。
+   */
+  codexMcp: z.boolean().default(false),
   /** 交叉審查（Codex 第二輪）：隊長頻率上限、兩邊的模型。舊設定沒有這個鍵＝預設。 */
   review: ReviewSettings.default(REVIEW_SETTINGS_DEFAULT),
 });

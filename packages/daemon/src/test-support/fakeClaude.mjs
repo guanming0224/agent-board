@@ -30,6 +30,12 @@ if (process.env.FAKE_CLAUDE_LOG) {
   );
 }
 
+// 假 codex 不認得 -c 帶入的 MCP 設定（Codex 第二輪，審查 S3）：馬上以設定錯誤結束。
+if (process.env.FAKE_CODEX_REJECT_MCP && argv.some((arg) => arg.startsWith('mcp_servers.'))) {
+  console.log('Error loading config: unknown field `default_tools_approval_mode`');
+  process.exit(2);
+}
+
 if (process.env.FAKE_CLAUDE_IGNORE_TERM) process.on('SIGTERM', () => {});
 else process.on('SIGTERM', () => process.exit(0));
 process.on('SIGHUP', () => process.exit(0));

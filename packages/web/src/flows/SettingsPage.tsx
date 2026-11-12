@@ -17,6 +17,7 @@ import {
   ReviewSection,
   DispatchSection,
   MemorySection,
+  CodexMcpSection,
   NotifySection,
   QuotaSection,
   SaveBar,
@@ -251,6 +252,7 @@ export function SettingsPage() {
                       <AutoStaffSection form={f} />
                       <ReviewSection form={f} />
                       <MemorySection form={f} />
+                      <CodexMcpSection form={f} />
                       <StuckSection form={f} />
                     </>
                   ))}
