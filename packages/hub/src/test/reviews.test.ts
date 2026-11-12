@@ -424,6 +424,9 @@ describe('隊長 request_review', () => {
     expect(reply.ok, reply.text).toBe(true);
     const body = JSON.parse(reply.text) as { reviewId: string; reviewsLeftThisHour: number };
     expect(body.reviewsLeftThisHour).toBe(2);
+    // 複查 4：diff 還沒好、還沒開始跑：不推播。
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(pushes()).toHaveLength(0);
     const request = await answerPrepare(t.daemon, DIFF);
     expect(request.reviewId).toBe(body.reviewId);
     const run = await t.daemon.next('review.run');
@@ -693,6 +696,9 @@ describe('審查修正（W1、W3、W4、W5、W6）', () => {
     await until(() => hub.running.hub.reviews.get(reviewId).status === 'failed', 'failed');
     expect(hub.running.hub.reviews.get(reviewId).error).toBe('board_paused');
     expect(t.daemon.of('review.run')).toHaveLength(0);
+    // 複查 4：沒開始跑就不推播「隊長要求交叉審查」。
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(pushes().filter((p) => p.event === 'requested')).toHaveLength(0);
   });
 
   it('W5：全面板每小時上限（所有隊長合計）；沒真的跑到模型的（沒有變更、忙碌拒絕）不算', async () => {
@@ -713,6 +719,8 @@ describe('審查修正（W1、W3、W4、W5、W6）', () => {
     expect((await ask(t.daemon, t.lead, { member: 'RV', reason: 'a' })).ok).toBe(true);
     await answerPrepare(t.daemon, { ...DIFF, files: [] });
     await until(() => reviews().some((r) => r.error === 'no_changes'), 'no changes');
+    // 複查 4：沒有變更（沒跑）不推播。
+    expect(pushes().filter((p) => p.event === 'requested')).toHaveLength(0);
     // 第二次：真的跑。
     expect((await ask(t.daemon, t.lead, { member: 'RV', reason: 'b' })).ok).toBe(true);
     await answerPrepare(t.daemon, DIFF);

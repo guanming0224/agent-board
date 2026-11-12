@@ -633,8 +633,8 @@ export class ReviewEngine {
   }
 
   /**
-   * 隊長發起（dispatch.ts 已檢查身分、理由、頻率）：建好紀錄馬上回（工具不等 diff），推播通知 GM，
-   * 之後在背景產生 diff、直接開始（跳過 GM 確認）。對象不在、機器離線、daemon 太舊時丟 HttpError。
+   * 隊長發起（dispatch.ts 已檢查身分、理由、頻率）：建好紀錄馬上回（工具不等 diff），之後在背景產生 diff、
+   * 直接開始（跳過 GM 確認），真的開始了才推播通知 GM。對象不在、機器離線、daemon 太舊時丟 HttpError。
    */
   requestByLead(input: {
     lead: Session;
@@ -649,9 +649,6 @@ export class ReviewEngine {
       reason: input.reason,
       teamId: input.teamId,
     });
-    this.deps.guarded('review notify', () =>
-      this.deps.notify({ kind: 'requested', review, lead: input.lead.name }),
-    );
     void this.fillDiff(review).then((prepared) =>
       this.deps.guarded('review start', () => {
         if (prepared.status !== 'awaiting_confirm') {
@@ -670,7 +667,11 @@ export class ReviewEngine {
           return;
         }
         try {
-          this.startReview(prepared.id, requestedBy);
+          const started = this.startReview(prepared.id, requestedBy);
+          // 複查 4：真的開始跑了才推播（沒有變更、暫停、daemon 斷線等沒跑的不推播）。
+          this.deps.guarded('review notify', () =>
+            this.deps.notify({ kind: 'requested', review: started, lead: input.lead.name }),
+          );
         } catch (error) {
           const code = error instanceof HttpError ? error.code : 'start_failed';
           this.deliverToLead(this.failReview(prepared, code), input.lead.id);
