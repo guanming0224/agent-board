@@ -6,9 +6,13 @@
 //      出現新的位置就失敗：先審查，確認不是呼叫 LLM、不是自動送 prompt，再加進清單與審查文件。
 //   3. daemon 給 claude 的參數只能是互動模式用的那幾個，不能有 -p／--print（非互動，直接耗用模型）。
 //      codex 同樣只能用互動式 TUI 的參數，不能用 exec／review 這類非互動子指令（2026-11-10 Codex 接口第一版）。
+//      例外（Codex 第二輪，2026-11-12）：交叉審查 packages/daemon/src/review.ts 用 `claude -p`、`codex exec`，
+//      而且只能由使用者動作（GM 按確認）或隊長的 request_review 觸發，不能由排程或自動流程觸發：
+//      scripts/no-llm-review-boundary.mjs 把整條呼叫路徑列成白名單逐點檢查。
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { collectShipped } from './release-shipped.mjs';
+import { checkReviewBoundary, NON_INTERACTIVE_FILE } from './no-llm-review-boundary.mjs';
 
 const root = join(import.meta.dirname, '..');
 
@@ -101,6 +105,10 @@ const CALL_SITES = new Set([
   // 發版（2026-11-11，CONTRACTS §21）：hub 機器上已登入的 gh CLI（子程序）查／下載 Release；
   // 拿掉環境裡的 GH_TOKEN 等權杖、不讀權杖檔，只用 gh 自己的登入。
   'packages/hub/src/release.ts child-process',
+  // 交叉審查（Codex 第二輪，2026-11-12）：reviewDiff.ts 只跑 git 讀 diff（不改 repo）；review.ts 開使用者自己登入的
+  // `claude -p`／`codex exec`（唯讀），只在 hub 送 review.run 時（GM 按確認或隊長 request_review）。
+  'packages/daemon/src/reviewDiff.ts child-process',
+  'packages/daemon/src/review.ts child-process',
   // web：同源 API 與 WebSocket；使用者按下送出的 prompt
   'packages/web/src/shared/hubBackend.ts fetch',
   'packages/web/src/shared/hubBackend.ts websocket',
@@ -241,9 +249,49 @@ for (const file of ['packages/daemon/src/session.ts', 'packages/daemon/src/resou
     }
   }
 }
-for (const file of sources.filter((f) => rel(f).startsWith('packages/daemon/'))) {
-  if (/'(-p|--print)'/.test(readFileSync(file, 'utf8'))) {
-    problems.push(`${rel(file)}：出現 -p／--print，daemon 不能用非互動模式跑 claude`);
+// -p／--print 與 codex exec 只准出現在交叉審查（review.ts），而且觸發點有白名單（no-llm-review-boundary.mjs）。
+problems.push(
+  ...checkReviewBoundary(
+    sources
+      // hub、daemon 才有觸發點（網頁只是呼叫 REST；GM 按確認＝reviewStart 路由）。
+      .filter((f) => /^packages\/(hub|daemon)\//.test(rel(f)))
+      .map((f) => ({ path: rel(f), text: readFileSync(f, 'utf8') })),
+  ),
+);
+// 交叉審查的參數只能是唯讀的那幾個（review.ts）。
+{
+  const text = readFileSync(join(root, NON_INTERACTIVE_FILE), 'utf8');
+  const REVIEW_FLAGS = new Set([
+    // claude：非互動、JSON、plan 模式、拿掉改檔工具、模型
+    '-p',
+    '--output-format',
+    '--permission-mode',
+    '--disallowedTools',
+    '--model',
+    // codex：exec、JSONL、唯讀沙盒、設定覆寫（approval_policy／推理強度）、模型、略過 repo 檢查
+    '--json',
+    '-s',
+    '-c',
+    '-m',
+    '--skip-git-repo-check',
+  ]);
+  for (const [, flag] of text.matchAll(/'(--?[a-zA-Z][\w-]*)'/g)) {
+    if (!REVIEW_FLAGS.has(flag))
+      problems.push(`${NON_INTERACTIVE_FILE}：審查參數 ${flag} 不在允許清單`);
+  }
+  for (const banned of [
+    'bypassPermissions',
+    'acceptEdits',
+    'workspace-write',
+    'danger-full-access',
+    '--dangerously',
+  ]) {
+    if (text.includes(banned)) {
+      problems.push(`${NON_INTERACTIVE_FILE}：審查必須唯讀，不能出現 ${banned}`);
+    }
+  }
+  if (!text.includes("'read-only'") || !text.includes("'plan'")) {
+    problems.push(`${NON_INTERACTIVE_FILE}：審查要用 codex 唯讀沙盒與 claude plan 模式`);
   }
 }
 
@@ -260,11 +308,6 @@ for (const file of CODEX_FILES) {
     problems.push(`${file}：出現非互動的 codex 子指令或參數，daemon 只能開互動式 codex`);
   }
 }
-for (const file of sources.filter((f) => rel(f).startsWith('packages/daemon/'))) {
-  if (/['"]exec['"],\s*['"]--json['"]|codex exec/.test(readFileSync(file, 'utf8'))) {
-    problems.push(`${rel(file)}：出現 codex exec，daemon 不能用非互動模式跑 codex`);
-  }
-}
 
 // 3b. `--allowedTools` 只能列 agent-board 自己的工具（docs/no-llm-review.md「什麼會打破這個保證」）。
 // 工具清單的唯一來源是 protocol 的 DispatchTool＋MemoryTool；daemon 一律用 mcp__<server>__<tool> 組全名。
@@ -275,6 +318,8 @@ const AGENT_BOARD_TOOLS = [
   'get_result',
   // 隊長自主擴編（GM 2026-11-10）：隊長封存自己團隊的成員（走 hub 既有的封存流程，不送字）。
   'release_member',
+  // 交叉審查（Codex 第二輪，2026-11-12）：隊長要求 Claude 與 Codex 唯讀審查（理由必填、每隊每小時上限、推播 GM）。
+  'request_review',
   'get_progress',
   'update_progress',
 ];
@@ -308,6 +353,14 @@ const AGENT_BOARD_TOOLS = [
     problems.push(
       'packages/daemon/src/daemon.ts：--allowedTools 不是由 enabledTools 的 agent-board 工具組成',
     );
+  }
+  // Codex 第二輪：Codex 的 enabled_tools 用同一份工具清單（writeMcp 的 tools＝enabledTools）、免核准只對這個 server。
+  if (!/tools: launch\.tools/.test(daemon)) {
+    problems.push('packages/daemon/src/daemon.ts：Codex 的 enabled_tools 不是由 enabledTools 組成');
+  }
+  const codexProtocol = readFileSync(join(root, 'packages/protocol/src/codex.ts'), 'utf8');
+  if (!/mcp_servers\.\$\{DISPATCH_MCP_SERVER\}/.test(codexProtocol)) {
+    problems.push('packages/protocol/src/codex.ts：Codex 的 MCP 覆寫不是 mcp_servers.agent-board');
   }
 }
 

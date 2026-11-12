@@ -389,13 +389,14 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 
 ### 11.2 工具（回覆是 JSON，失敗是 `<code>: <給 Claude 看的說明>`，`isError: true`）
 
-| 工具             | 參數                                                                                                                                              | 行為                                                                                                                                                                                                                                                                                                                                                       |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list_members`   | —                                                                                                                                                 | 呼叫者所在的每個團隊：成員 `name`、`role`、`kind`、`status`（結束的寫 `ended`）、`task`（進行中的任務 `#n 標題`）、`lastLine`、`readOnly`（`isReadOnlyMember`）、`branch`、`dispatchedBy`（名稱）、`working`（還欠呼叫者結果）、`addedReason`（隊長新增時的理由）、自己標 `you`；每個團隊另有 `staffing`（§11.7）。沒有團隊就 `teams: []` 加一句 `guide`。 |
-| `spawn_member`   | `role`（worker／researcher／reviewer／tester）、`prompt`、**`reason`（必填，2026-11-10）**、選填 `name`、`permissionMode`、`useWorktree`、`model` | 見 11.3、11.7。成功回 `name`、`status`（可能是 `queued`）、`team`、`teamCreated`、`permissionMode`、`reason`、`teamSize`（`人數/上限`）、被降級時 `note`。                                                                                                                                                                                                 |
-| `send_task`      | `member`（名稱不分大小寫，或 session id）、`text`                                                                                                 | 對象只能是**呼叫者當隊長的團隊的成員**或**它開的成員**（不含自己）。送 `[From <呼叫者>] <text>`（一行、清控制字元、4000 字截斷）進 `SafeDelivery`，key `dispatch:<呼叫者>:<成員>`（還沒送出又送，新的蓋舊的，回覆 `note`）。回 `state: sent／queued`。                                                                                                     |
-| `get_result`     | `member`                                                                                                                                          | 同上的範圍。最後一則回覆的一句摘要、上次派工之後偵測到的改檔（最多 20）、分支、`working`、狀態。                                                                                                                                                                                                                                                           |
-| `release_member` | `member`、`reason`（必填）                                                                                                                        | 2026-11-10。見 11.7。成功回 `released`、`team`、`teamSize`、`note`（可以在設定→已封存還原）。                                                                                                                                                                                                                                                              |
+| 工具             | 參數                                                                                                                                                                | 行為                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_members`   | —                                                                                                                                                                   | 呼叫者所在的每個團隊：成員 `name`、`role`、`kind`、`status`（結束的寫 `ended`）、`task`（進行中的任務 `#n 標題`）、`lastLine`、`readOnly`（`isReadOnlyMember`）、`branch`、`dispatchedBy`（名稱）、`working`（還欠呼叫者結果）、`addedReason`（隊長新增時的理由）、自己標 `you`；每個團隊另有 `staffing`（§11.7）。沒有團隊就 `teams: []` 加一句 `guide`。 |
+| `spawn_member`   | `role`（worker／researcher／reviewer／tester）、`prompt`、**`reason`（必填，2026-11-10）**、選填 `name`、`permissionMode`、`useWorktree`、`model`、`agent`（§22.2） | 見 11.3、11.7。成功回 `name`、`status`（可能是 `queued`）、`team`、`teamCreated`、`permissionMode`、`reason`、`teamSize`（`人數/上限`）、被降級時 `note`。                                                                                                                                                                                                 |
+| `send_task`      | `member`（名稱不分大小寫，或 session id）、`text`                                                                                                                   | 對象只能是**呼叫者當隊長的團隊的成員**或**它開的成員**（不含自己）。送 `[From <呼叫者>] <text>`（一行、清控制字元、4000 字截斷）進 `SafeDelivery`，key `dispatch:<呼叫者>:<成員>`（還沒送出又送，新的蓋舊的，回覆 `note`）。回 `state: sent／queued`。                                                                                                     |
+| `get_result`     | `member`                                                                                                                                                            | 同上的範圍。最後一則回覆的一句摘要、上次派工之後偵測到的改檔（最多 20）、分支、`working`、狀態。                                                                                                                                                                                                                                                           |
+| `request_review` | `member` 或 `branch`（`base`、`repoPath` 選填）、`reason`（必填）                                                                                                   | Codex 第二輪（§22.3.6）。隊長要求 Claude 與 Codex 唯讀交叉審查；馬上回 `reviewId`，兩邊做完摘要送回隊長。                                                                                                                                                                                                                                                  |
+| `release_member` | `member`、`reason`（必填）                                                                                                                                          | 2026-11-10。見 11.7。成功回 `released`、`team`、`teamSize`、`note`（可以在設定→已封存還原）。                                                                                                                                                                                                                                                              |
 
 錯誤代碼：`dispatch_disabled`、`caller_inactive`（封存、結束、不認得、不是這台機器）、`invalid_arguments`、`permission_not_allowed`、`nested_spawn`、`read_only_caller`、`machine_offline`、（§11.7）`reason_required`、`autostaff_disabled`、`not_lead`、`team_full`、`spawn_rate_limit`、`account_rate_limited`、`member_busy`、`team_held`、`board_paused`（只有 spawn）、`cannot_release_self`、`worktree_unavailable`、`worktree_required`、`not_your_member`、`member_ended`、`rate_limit`，以及 `hub.createSession` 的 409 代碼（例如 `session_deleting`）。daemon 端另有 `unauthorized`、`hub_unreachable`、`timeout`（等 hub 30 秒）、`invalid_request`；MCP server 端 `not_configured`、`daemon_unreachable`、`timeout`（45 秒）。
 
@@ -596,7 +597,7 @@ hub／protocol 在 P2 第一輪；前端（底部指令列、暫停提示列、�
 
 ## 19. Codex 節點（Codex 接口第一版，GM 2026-11-10）
 
-決策與範圍見 `../docs/dispatch/2026-11-10_核對與決策.md`「Codex 接口第一版」。Codex 和 Claude Code 一樣是使用者自己登入的官方互動式 CLI，由 daemon 開在 PTY 裡；PTY、送字佇列、approvals、危險規則、終端機串流全部共用，只有下面幾件事依 agent 分開。**第一版不做**：派工／進度卡 MCP 工具給 Codex、用量統計、交叉審查、Windows（hook 設定預留 `commandWindows`，還沒帶）、帳號資料夾（`CODEX_HOME`）。
+決策與範圍見 `../docs/dispatch/2026-11-10_核對與決策.md`「Codex 接口第一版」。Codex 和 Claude Code 一樣是使用者自己登入的官方互動式 CLI，由 daemon 開在 PTY 裡；PTY、送字佇列、approvals、危險規則、終端機串流全部共用，只有下面幾件事依 agent 分開。**第一版不做**：派工／進度卡 MCP 工具給 Codex、用量統計、交叉審查、Windows（hook 設定預留 `commandWindows`，還沒帶）、帳號資料夾（`CODEX_HOME`）。前三項在 Codex 第二輪（§22，2026-11-12）補上。
 
 ### 19.1 資料與協定
 
@@ -947,3 +948,85 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
 
 - **已驗證**（2026-11-11，Apple Silicon Mac、系統 Node 24.17，假 launchctl 照真的語意）：`test:install`（含回歸測試）、`smoke:release`、`e2e:update`（真的 0.1.0 → 0.1.1 自帶 Node 成品＋host plist 手動改回系統 node → 開著 session 手動升 0.1.2：host 沒重啟、agent 還在、三個服務都在系統 node；再自動更新、壞版回滾；daemon 用 `AGENT_BOARD_TEST_NODE_VERSION` 假裝 Node 26 照樣拿到目標；`E2E_LEGACY_AUTO=1` 走舊 daemon 自動更新）。
 - **未驗證**：真的 launchd 的時序（只用照語意寫的假 launchctl；修正是保守的「等到卸載完」）；真的 Node 26 機器（只用回報值模擬）；TCC 的確切規則；Windows、Linux systemd。
+
+## 22. Codex 第二輪：Codex 用量、Codex 派工、交叉審查（GM 2026-11-12）
+
+規格與 GM 決策：`docs/codex-round2-spec.md`。三件事照 §6 的順序做。原則不變：**中控台不呼叫 LLM**；交叉審查是 daemon 在 GM 或隊長明確要求時開使用者自己登入的官方 CLI（`claude -p`、`codex exec`），吃使用者自己的訂閱額度（界線見 22.3.6、`docs/no-llm-review.md`「交叉審查」）。不讀、不複製 `~/.claude` 與 `~/.codex/auth.json`；不改 `~/.codex`，Codex 的設定一律在啟動時用 `-c` 帶入。
+
+### 22.1 Codex 用量
+
+- **daemon**（`daemon/src/usage.ts` 的 `scanCodexUsage`／`codexFile`）：和 Claude 同一次 `reportUsage`、同一套彙總（`scanFiles`：30 天總數＋90 天「日期 × 模型 × session」細項、上限、「其他」），讀 `$CODEX_HOME/sessions/`（沒設是 `~/.codex/sessions/`）底下的 `rollout-…-<thread id>.jsonl`。只讀 sessions 資料夾，不碰 `auth.json`、不呼叫任何 API；讀不懂的行、檔案略過。
+- **格式**（2026-11-12 用本機 144 個真檔確認，codex-cli 0.130–0.167，只看欄位結構）：
+  - `{"type":"session_meta","payload":{"cwd",…}}`：工作資料夾（第一個）。
+  - `{"type":"turn_context","payload":{"model",…}}`：之後的 token 算在這個模型上。
+  - `{"type":"event_msg","timestamp","payload":{"type":"token_count","info":{"last_token_usage":{input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, cache_write_input_tokens, total_tokens},"total_token_usage":{同上}}}}`；`info` 可能是 null（只帶額度資訊，略過）。同一檔裡 `total_token_usage.total_tokens` 和上一則一樣的是重複送的（實測 4,529 則裡 45 則），略過；其餘 `last_token_usage` 加總＝最後的 total（144 檔全部相等）。
+  - 0.167 起另有 `token_usage_record`（與 token_count 重複），不讀。
+  - session id 一律取檔名裡的 thread id（`Session.claudeSessionId` 存的就是它，§19.1）。
+- **換算成 Claude 的四欄**：輸入＝`input_tokens − cached_input_tokens`（Codex 的 input 含快取，Claude 的不含）、快取讀＝`cached_input_tokens`、輸出＝`output_tokens`（已含推理）、快取寫＝`cache_write_input_tokens`（目前都是 0）。
+- **WS**：`usage` 多一個選用欄位 `codex: { summary, detail }`（`CodexUsage`，`.catch(undefined)`：壞掉當沒送）；偵測到 codex 或資料夾裡有紀錄才送。舊 hub 不認得就忽略，Claude 的總數與細項照收。**頁首「近 30 天」仍只算 Claude**（Codex 是不同方案）。
+- **hub**：`StoredUsage.codex`（settings `usage:<機器>`，不升 schema；舊資料沒有＝null）。`buildUsageReport` 依 agent 分開對：Codex 的細項只對 `agent: 'codex'` 的看板 session（thread id），各自有自己的「其他」。`UsageReportSession.agent`（預設 `claude`）、`UsageReportMachine.codexSummary`／`codexOtherSessions`。
+- **網頁**（`usage/`）：有 Codex 用量時篩選列多一個「代理」（合計／Claude Code／Codex，管下面全部），分布多「依代理」。沒有 Codex 用量時畫面和以前一樣。
+- 已知：Codex 的 fork（同一檔多個 session_meta）會不會把上一段的 token 帶進來未驗證（實測加總和 total 一致）；交叉審查跑的 `codex exec` 也會留紀錄，算進「中控台外」。
+
+### 22.2 Codex 也能派工
+
+- **MCP 帶入**（`protocol/src/codex.ts` 的 `codexMcpOverrides`，`daemon/src/codex.ts` 的 `buildCodexArgs({ mcp })`）：和 Claude 同一支 `agent-board-mcp`、同一份 env（`AGENT_BOARD_SESSION_ID`、`AGENT_BOARD_SOCKET`、密鑰**檔案路徑** `AGENT_BOARD_MCP_SECRET_FILE`、`AGENT_BOARD_MCP_TOOLS`、`AGENT_BOARD_HOOK_KEY_FILE`），同一套密鑰（`writeMcpFiles`，每次開 PTY 換新），改成啟動參數：
+  ```
+  -c mcp_servers.agent-board.command="<node>"
+  -c mcp_servers.agent-board.args=["<agent-board-mcp>"]
+  -c mcp_servers.agent-board.env={AGENT_BOARD_SESSION_ID="…",…}
+  -c mcp_servers.agent-board.enabled_tools=["list_members",…]     # 只露出開著的工具（同 --allowedTools）
+  -c mcp_servers.agent-board.default_tools_approval_mode="approve" # 這些工具不跳 Codex 的核准
+  ```
+  `default_tools_approval_mode` 的值（`auto | prompt | writes | approve`）取自 Codex 官方設定文件與 0.167 執行檔裡的設定鍵名（`RawMcpServerConfig`）；文件範例用 `approve` 讓單一工具免核准。**未用真的 codex 驗證**：`-c` 帶入的 MCP server 會不會要求信任、`approve` 是否真的不跳核准、`enabled_tools` 是否生效（列入 GM 實測清單）。設定都關著或找不到 MCP server 時不帶。密鑰不在 argv（只有檔案路徑），和 Claude 一樣。
+- **spawn_member**：新參數 `agent`（`claude`／`codex`，選填，**預設和隊長同一種**）。換 agent 時不沿用隊長的模型（各家模型名稱不同，用那個 CLI 的預設；有明確給 `model` 照用）；帳號資料夾只在 Claude 開 Claude 時沿用（Codex 沒有、Codex 開 Claude 用預設帳號）；`account_rate_limited` 看目標 agent 的帳號。那台沒有 codex → `codex_unavailable`、Windows → `codex_windows_unsupported`（`hub.createSession` 的 409，剛開的空團隊收掉）。回覆與 audit 多 `agent`。
+- **Codex 當隊長或成員**：工具全部照 §11（`list_members`、`spawn_member`、`send_task`、`get_result`、`release_member`、`get_progress`／`update_progress`、`request_review`）。結果送回：Codex 的 `Stop` hook 一樣帶 `last_assistant_message`，hub 的 `DispatchEngine.onEvent` 不分 agent，照 §11.4 送回隊長，「等隊長／等成員結果」照常。送進 Codex 的工作、結果一樣走 SafeDelivery（等輸入才送）。
+- 上架：hub、daemon、hook 一起更新（新工具 `request_review` 與 Codex 的 MCP 參數）。舊 daemon 不給 Codex 掛 MCP：Codex session 照第一版只有 hook。
+
+### 22.3 交叉審查
+
+#### 22.3.1 流程
+
+```
+GM：網頁發起（session 或 分支）→ POST /api/reviews/prepare → hub 建紀錄（preparing）→ WS review.prepare → daemon 只跑 git 產生 diff
+     → review.prepared（摘要）→ awaiting_confirm：GM 看檔案清單與大小 → 按確認 POST /api/reviews/:id/start
+隊長：MCP request_review（理由必填、頻率上限）→ 同上，但 diff 好了就自動 start（跳過確認），推播通知 GM
+start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀、逾時）→ 各自 review.side → 兩邊都結束：done
+     → 收件匣、推播「審查完成」、隊長發起的把摘要送回隊長（SafeDelivery）
+```
+
+#### 22.3.2 對象與 diff（`daemon/src/reviewDiff.ts`，只跑 git、不改 repo）
+
+- **session**：那個 session 的工作資料夾（worktree 或 cwd）`git diff HEAD`（含 staged；還沒 commit 過的 repo 和空樹比）＋未追蹤檔（`ls-files --others --exclude-standard`，`.gitignore` 的不算；二進位不送內容；最多 500 個；Agent Board 自己裝的 `.claude/settings.local.json` 不算）。
+- **branch**：指定機器上的 repo 路徑＋分支，`git diff <base>...<branch>`（base 預設 `main`）。分支名稱 `ReviewRef`：不能以 `-` 開頭、不能有空白與 `..`（不會被當成 git 參數），git 也先 `rev-parse --verify` 確認存在（`unknown_ref`）。
+- **上限**：單檔 `REVIEW_FILE_MAX_BYTES` 200 KB 截斷並在內容裡標明；整份 `REVIEW_TOTAL_MAX_BYTES` 1 MB，超過的檔案只列名稱（`omitted`）並在內容最後列出。git 輸出超過 64 MB 當失敗（`diff_too_large`）。
+- 整份 diff 只留在 daemon 記憶體（`REVIEW_PREPARED_TTL_MS` 30 分鐘，跑過就丟）；hub 只存摘要 `ReviewDiffSummary`（檔案、狀態、+/- 行數、位元組、截斷／略過）。沒有變更 → `failed`／`no_changes`。
+
+#### 22.3.3 執行（`daemon/src/review.ts`，`ReviewRunner`）
+
+- 在 diff 所在的資料夾、兩邊並行，prompt＝固定審查指示（`protocol/src/review.ts` 的 `REVIEW_INSTRUCTIONS`，版本 `REVIEW_INSTRUCTIONS_VERSION`＝1；要求繁中三段：嚴重問題、建議、整體結論；不要求 JSON）＋diff，**經 stdin**（不在 argv）。
+  - Claude：`claude -p --output-format json --permission-mode plan --disallowedTools Edit Write NotebookEdit [--model <設定>]`。審查對象是 Claude session 時用它的帳號資料夾（`CLAUDE_CONFIG_DIR`）。結果讀 `{ result, is_error, usage }`。
+  - Codex：`codex exec --json -s read-only -c approval_policy="never" --skip-git-repo-check [-m <設定>] [-c model_reasoning_effort="<設定>"] -`。**偏離規格**：規格寫 `-a never`，但 codex-cli 0.167 的 `exec --help` 沒有 `-a`（只有互動模式有），所以用等效的設定覆寫。結果讀 JSONL：最後一則 `item.completed`（`agent_message`）的 text、`turn.completed.usage`；`turn.failed`／`error` 是失敗。事件格式取自官方文件與社群整理，**未用真的 codex 驗證**。
+- 逾時 `REVIEW_TIMEOUT_MS` 10 分鐘：整個程序群組 SIGTERM、5 秒後 SIGKILL，標 `timeout`。一邊失敗、逾時不影響另一邊。同一台最多 2 份同時跑（再多回 `busy`）。意見文字最多 6 萬字。
+- **Windows 機器只跑 Claude**：hub 送 `codex: null`、Codex 那邊 `skipped`，原因「windows: …」寫在結果上（daemon 也擋一次）。沒有 codex 的機器同樣 `skipped`／`codex_unavailable`。
+- 結果 `review.side` 斷線時留著，連回 hub（welcome）後補送；hub 只收 `running` 中、同一台機器、還沒結束那一邊的結果。daemon 停止時跑到一半的全部結束。hub 心跳把跑太久的（逾時＋2 分鐘，daemon 重啟、結果沒回來）標 `failed`／`no_result`；hub 重啟時沒跑完的標 `hub_restarted`。
+
+#### 22.3.4 資料（schema v11，`hub/src/db.ts`，**只加表**）
+
+`reviews`：`id`、`requested_by`（JSON `{kind: user|lead, id, name}`）、`team_id`、`reason`、`machine_id`、`target`（JSON：`kind`、`label`、`sessionId`、`cwd`、`branch`、`base`）、`status`（preparing／awaiting_confirm／running／done／failed／cancelled）、`error`、`diff`（摘要 JSON）、`claude`／`codex`（`ReviewSide` JSON：狀態、意見文字、錯誤、模型、輸入／輸出 token、耗時）、`instructions_version`、`read`、`created_at`、`started_at`、`completed_at`；索引 `reviews_created`。不設外鍵（session、機器刪掉後紀錄照樣看得到）。保留：和 `session_events` 同一個期限（`AGENT_BOARD_EVENT_RETENTION_DAYS`，預設 30 天），只刪已結束的（`retention.ts`）。升級走既有的「升級前自動備份」（`hub.db.bak-<時間>-v10`）。降級：v10 hub 拒絕 v11 資料庫並指出 `-v10` 備份；回退＝停 hub → 換回舊版 → 還原備份（升級後的審查紀錄遺失）。
+
+#### 22.3.5 介面
+
+- **REST**（auth user）：`GET /api/reviews`（新的在前 100 筆）、`GET /api/reviews/:id`、`POST /api/reviews/prepare { target: ReviewTargetInput, reason? }`、`POST /api/reviews/:id/start`（只有 `awaiting_confirm` 可以，否則 409 `review_not_ready`）、`POST /api/reviews/:id/cancel`、`POST /api/reviews/read { ids? }`。機器離線 409 `machine_offline`；daemon 沒宣告 `review.v1` 409 `review_unsupported`。
+- **WS**：daemon hello `features` 多 `review.v1`（`DAEMON_FEATURES.review`）；hub → daemon `review.prepare`／`review.run`／`review.cancel`；daemon → hub `review.prepared`／`review.side`；hub → web `board.state.reviews`（最近 50 筆）、`review.updated`。
+- **audit**：`review.prepare`、`review.start`、`review.cancel`、`review.done`、`review.read`、`review.result_delivered`／`review.result_blocked`；隊長的另有 `dispatch.review`（含理由）、被擋的 `dispatch.blocked`（`tool: request_review`）。
+- **推播**（不併進合併通知，不是「等你」）：`{ kind: 'review', event: 'done' | 'requested', reviewId, lead?, at }`——只說「審查完成」或「<隊長> 要求交叉審查」，**不帶審查內容、不帶理由**；點了開那份審查。
+- **網頁**：發起流程（先看檔案清單與大小，按確認才送，◈ 耗額度）、左右並排兩家意見的疊加面板（手機上下）、從卡片／團隊面板／收件匣開；完成的進收件匣「交叉審查」區塊（不算等你）；團隊動態顯示隊長的要求（`TeamActivityKind` 多 `review_requested`、`TeamActivity.reviewId`）；設定頁「交叉審查」（`Settings.review`：`leadPerHour` 預設 3（0–20，0＝隊長不能發起）、`claudeModel`、`codexModel`、`codexEffort`，null＝CLI 預設）。
+
+#### 22.3.6 隊長的 `request_review` 與 no-llm 界線
+
+- 參數：`member`（自己團隊的成員：它的未 commit 變更）**或** `branch`（`base` 預設 main、`repoPath` 預設隊長的 repo），`reason` 必填（一行、200 字截斷；進 audit 與團隊動態，不進推播）。
+- 依序擋：`reason_required` → `invalid_arguments`（兩個都給或都沒給、分支名稱不合法）→ `board_paused` → `not_lead` → `team_held` → `review_disabled`（設定 0）→ `review_rate_limit`（同一隊一小時內已達 `Settings.review.leadPerHour`，預設 3，算資料庫裡這一隊隊長發起的筆數）→ `not_your_member` → hub 的 409（`machine_offline`、`review_unsupported`）。
+- 成功馬上回 `{ reviewId, status, target, reviewsLeftThisHour }`，diff 與兩邊在背景跑；做完把一行摘要 `[Review from Agent Board] <對象> | Claude: <整體結論那段的第一句> | Codex: … | Full review is in the Agent Board inbox.` 送回隊長（SafeDelivery，只在它等輸入時送；摘要是固定規則取字，不解讀內容；沒跑成是 `| not run: <原因>`）。送回的摘要不是新的派工，不會觸發任何自動送字。
+- **界線**（`docs/no-llm-review.md`「交叉審查」、`scripts/no-llm-review-boundary.mjs`）：非互動 CLI 只在 `daemon/src/review.ts`；daemon 只在 `case 'review.run'` 呼叫 `ReviewRunner.run`；hub 只有 `ReviewEngine.startReview` 會送 `review.run`，而 `startReview` 只有兩個呼叫點：GM 的 REST `reviewStart`、隊長的 `requestByLead`（只從 `DispatchDeps.requestReview` → `dispatch.ts` 的 `request_review` 處理呼叫）。白名單以外、或呼叫點和所在函式之間有計時器，`check:no-llm` 一律失敗。排程（hub 心跳）只會把審查**結束**（逾時），不會開始。
+- **上架影響**：schema v10 → v11（只加表、升級前自動備份、不中斷 agent：session host 不受影響，hub 重啟期間 session 照跑）；hub、daemon、hook 要一起更新（`request_review` 進 `--allowedTools`／`enabled_tools`；舊 daemon 不宣告 `review.v1`，GM 發起回 `review_unsupported`）。

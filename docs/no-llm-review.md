@@ -27,6 +27,9 @@
   更新失敗的推播只帶機器名稱、版本與原因代碼。
   Node（2026-11-11，CONTRACTS §21.10）：0.1.1 曾在建置時從 nodejs.org 下載 Node 放進發布檔；0.1.2 拿掉，建置與
   執行都不再下載 Node，服務用各機的系統 node。install.sh 驗下載內容改用系統的 `shasum`／`sha256sum`。
+  Codex 第二輪（2026-11-12，CONTRACTS §22）：Codex 用量只讀 `$CODEX_HOME/sessions/` 的對話紀錄（不碰 `auth.json`）；
+  Codex 也掛派工 MCP（同一支 server、`-c` 帶入，見下）；**交叉審查**是唯一用非互動模式開 CLI 的地方
+  （`claude -p`、`codex exec`，唯讀），只能由 GM 在網頁按確認或隊長呼叫 `request_review` 觸發，見「交叉審查」一節。
 
 ## 重跑
 
@@ -174,6 +177,46 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
   對話紀錄是否存在（不讀檔案內容）。開 Codex 前只檢查 cwd 到 repo 根目錄的 `.codex/hooks.json`、`.codex/config.toml`
   在不在（不讀內容），有就不開。
 
+## 交叉審查：唯一的非互動 CLI（Codex 第二輪，2026-11-12）
+
+GM 決定（`docs/codex-round2-spec.md` §1）：交叉審查是 daemon 在 GM 或隊長**明確要求**時，於那台機器上開使用者自己
+登入的官方 CLI，吃使用者自己的訂閱額度——性質和開一個 session 相同。中控台本身仍不呼叫任何模型 API、不帶 API key、
+不讀憑證。
+
+- **呼叫點只有一個檔**：`packages/daemon/src/review.ts`（`ReviewRunner.runSide`，`child_process.spawn`）。
+  - Claude：`claude -p --output-format json --permission-mode plan --disallowedTools Edit Write NotebookEdit [--model …]`。
+  - Codex：`codex exec --json -s read-only -c approval_policy="never" --skip-git-repo-check [-m …] [-c model_reasoning_effort="…"] -`。
+  - 兩邊都唯讀（plan＋拿掉改檔工具；唯讀沙盒、從不詢問）。prompt＝固定審查指示（`protocol/src/review.ts`
+    `REVIEW_INSTRUCTIONS`）＋daemon 自己用 git 產生的 diff，經 stdin。逾時 10 分鐘整組結束。
+  - 環境同開 session（`childEnv`：拿掉 daemon 自己的秘密），不加任何 API key、不改 `~/.claude`、`~/.codex`。
+  - `packages/daemon/src/reviewDiff.ts` 只跑 `git`（`rev-parse`、`diff`、`ls-files`）讀變更，不改 repo。
+- **觸發界線**：只能由使用者動作或隊長的 MCP 工具觸發，**不能由排程、規則或任何自動流程觸發**。整條路：
+  - GM：網頁「確認送出審查」→ REST `POST /api/reviews/:id/start`（`rest.ts` 的 `reviewStart`）→
+    `ReviewEngine.startReview`（`hub/src/reviews.ts`）→ WS `review.run`。之前的 `prepare` 只產生 diff，不跑模型。
+  - 隊長：Claude／Codex 自己呼叫 `request_review`（理由必填、每隊每小時上限 `Settings.review.leadPerHour` 預設 3、
+    推播通知 GM、audit `dispatch.review`）→ `dispatch.ts` 的 `requestReview` → `DispatchDeps.requestReview`
+    （`hub.ts`）→ `ReviewEngine.requestByLead` → `startReview`。
+  - daemon：只在收到 `review.run` 時（`daemon.ts` 的 `case 'review.run'`）呼叫 `ReviewRunner.run`。
+  - hub 心跳只會把跑太久的審查**標成失敗**，不會開始任何審查；任務自動執行、交接規則、自動接續都碰不到這條路。
+- **檢查**：`scripts/no-llm-review-boundary.mjs`（`check:no-llm` 呼叫）把上面每個呼叫點列成白名單（檔案＋所在函式）：
+  `.startReview(`、`.requestByLead(`、`.deps.requestReview(`、hub 送出的 `type: 'review.run',`、`.reviews.run(`、
+  `new ReviewRunner(`。白名單以外出現、或呼叫點和所在函式開頭之間有 `setTimeout`／`setInterval`／`setImmediate`，
+  一律失敗；`'-p'`／`'--print'`、`codex exec` 出現在 `review.ts` 以外的 daemon 檔案也失敗；`review.ts` 的參數只能是
+  唯讀的那幾個（不能有 `bypassPermissions`、`acceptEdits`、`workspace-write`、`--dangerously…`），也不能有
+  `setInterval`。`scripts/no-llm-review-boundary.test.mjs` 用假的違反（從心跳呼叫、包在計時器裡、自動流程檔呼叫、
+  其他 daemon 檔帶 `-p`）確認抓得到。
+- **結果**：兩邊的意見只存 hub `reviews` 表、給 GM 在網頁看；推播只說「審查完成」。隊長發起的，摘要（每邊「整體
+  結論」那段的第一句，固定規則取字）用 SafeDelivery 送回隊長一次——這是新的一種送字來源（見下表），送回去不算新的派工、
+  不觸發任何自動送字。
+
+## Codex 掛 agent-board MCP（Codex 第二輪，2026-11-12）
+
+Codex session 也掛同一支 `agent-board-mcp`（派工、進度卡、`request_review`）：`buildCodexArgs` 多帶
+`-c mcp_servers.agent-board.command/args/env/enabled_tools/default_tools_approval_mode`（`protocol/src/codex.ts`
+`codexMcpOverrides`）。env 和 Claude 的 `--mcp-config` 設定檔同一份（密鑰只有檔案路徑，不在 argv）；`enabled_tools`
+只列開著的工具（同 `--allowedTools`，`check:no-llm` 確認它由同一份 `enabledTools` 組成）；`default_tools_approval_mode="approve"`
+只作用在這個 server。不寫 `~/.codex`、不建專案 `.codex`。
+
 ## 送進 `claude` 的字從哪裡來（全部）
 
 PTY 只有兩個寫入點：`ManagedSession.write`（`packages/daemon/src/session.ts:295`）與
@@ -195,6 +238,7 @@ PTY 只有兩個寫入點：`ManagedSession.write`（`packages/daemon/src/sessio
 | session 派工（GM 2026-11-06）                         | owner 設定「允許 session 派工（MCP 工具）」（`Settings.dispatch`，預設開，標 ◈；關掉後新開的 session 不掛工具）；之後由 session 裡的 Claude 自己決定呼叫 `spawn_member`／`send_task` | `packages/hub/src/dispatch.ts` 的 `DispatchEngine`。`spawn_member` 走 `hub.createSession`（第一個指令＝`[From <呼叫者>] <Claude 寫的工作>`，一行、清控制字元、4000 字截斷，daemon 照一般 firstPrompt 送）；`send_task` 同樣一行，排進同一條 `SafeDelivery`。成員做完那一回合（`Stop`）時，把**固定格式**的 `[Result from <成員>] Summary: <最後回覆的一句> \| Detected file edits: … \| Branch: …`（`reportParts`，和交接同一套）送回呼叫者，一份工作只送一次；結果不算新工作，不會再觸發任何自動送字。上限：團隊總人數（設定 `autoStaff.teamLimit`，預設 12，2026-11-10 取代「每個呼叫者同時 4 個」）、同團隊 10 分鐘最多新增 4 位、權限不比它寬、不能 bypassPermissions、成員不能再開成員、10 分鐘最多 20 則工作與 10 則結果。內容都是 session 裡的模型自己寫的（使用者叫它派工），中控台只轉送、不產生文字、不呼叫模型；每一步寫 audit `dispatch.*` |
 | 帶入進度卡（P3 項目一，2026-11-08）                   | 使用者在進度卡上按「帶入進度卡 ▾」、選一個 session                                                                                                                                   | `packages/hub/src/progress.ts` 的 `deliver`：內容是卡片欄位組成的**一行** `[Progress card: <團隊名>] Status: … \| Next: … \| Blockers: … \| GM notes: …`（`protocol/src/progress.ts` 的 `progressLine`：空欄位略過、清控制字元、4000 字截斷），欄位是 GM 打的字或 session 裡的 Claude 用 `update_progress` 寫的字，中控台不產生文字。走團隊群發同一條 `SafeDelivery`（`DeliveryItem.manual`：只在對象等輸入時送、忙就排隊、全部暫停不擋），audit `progress.deliver`，送字照舊寫 `terminal.input`                                                                                                                                                                                                                                                                                                                                                       |
 | 請隊長更新 ◈（P3 項目一，2026-11-08）                 | 使用者在團隊進度卡上按「請隊長更新」（標 ◈ 耗額度）                                                                                                                                  | `progress.ts` 的 `askUpdate`：**固定的一行** `PROGRESS_ASK_UPDATE_PROMPT`（`[Board] Please update the team progress card with update_progress (status, next, blockers).`）送給隊長，同一條 `SafeDelivery manual`，audit `progress.ask_update`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 交叉審查結果摘要（Codex 第二輪，2026-11-12）          | 隊長自己呼叫 `request_review`（理由必填、每隊每小時上限）；兩邊做完送回一行固定格式的摘要 `[Review from Agent Board] …`（SafeDelivery，只送一次）                                    |
 | 終端機訊號                                            | 使用者按 Esc／Ctrl+C／停止                                                                                                                                                           | `daemon.ts:335-339`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 全部 `type: 'terminal.input'` 的產生點只有 `hubBackend.ts:282-284`、`controller.ts:169`（網頁，
@@ -225,9 +269,10 @@ Claude Code 決定，不在中控台範圍。
 以下任何一項出現，就要重新審查並更新本文件與 `scripts/check-no-llm.mjs` 的 `CALL_SITES`：
 
 - 加入任何 LLM SDK 或直接打 LLM API（例如用模型產生交接摘要、拆解任務、偵測狀態）。
-- daemon 用 `claude -p`／`--print`、`--input-format stream-json` 等非互動模式，或在背景開
-  `claude` 做事。
-- daemon 用 `codex exec`、`codex review`、`codex app-server` 驅動 Codex，或在背景開 `codex` 做事；
+- daemon 在 `review.ts`（交叉審查）以外用 `claude -p`／`--print`、`--input-format stream-json` 等非互動模式，或在背景開
+  `claude` 做事；交叉審查改成由排程、規則、任務自動執行、交接或任何自動流程觸發（目前只有 GM 按確認與隊長的
+  `request_review`），拿掉隊長的理由必填或頻率上限，或審查參數不再唯讀。
+- daemon 在交叉審查以外用 `codex exec`、`codex review`、`codex app-server` 驅動 Codex，或在背景開 `codex` 做事；
   Codex 的 hook 改用 `prompt`／`agent` 型別、輸出 `additionalContext`，或 Stop hook 回 `decision: block`（會自動送新 prompt）。
 - hub 或 daemon 在使用者沒有動作、也沒有啟用規則的情況下送字進 PTY（例如自動回答對話框、
   自動 `/clear`、自動 `/compact`、定時「繼續」）。額度恢復後自動接續是唯一的「繼續」，
@@ -235,7 +280,7 @@ Claude Code 決定，不在中控台範圍。
 - 額度恢復後自動接續預設開啟、設定關著也送、讀不出重置時間時用猜的，或內容改成帶對話。
 - 派工工具在設定關著時仍然掛上或仍然能開成員、成員上限或權限上限被拿掉、結果改成帶完整對話，或結果送進呼叫者後又自動觸發新的工作。
 - 隊長守則改成用 hook `additionalContext` 注入、session 開好後自動送進對話，或 hub 在收到任務／卡住時自動替隊長呼叫 `spawn_member`（目前只有 Claude 自己呼叫工具才會新增或封存成員）；團隊人數上限或「設定關掉＝不能新增也不能封存」被拿掉。
-- daemon 給 claude 加 `--strict-mcp-config`、把 `--allowedTools` 放寬到 agent-board 工具（派工 5 個＋進度卡 2 個）以外，或 MCP server 改成連 daemon 以外的地方。
+- daemon 給 claude 加 `--strict-mcp-config`、把 `--allowedTools`（或 Codex 的 `enabled_tools`／`default_tools_approval_mode`）放寬到 agent-board 工具（派工 6 個＋進度卡 2 個）以外，或 MCP server 改成連 daemon 以外的地方。
 - 進度卡寫入改成會觸發送字（例如每回合結束自動提醒更新、寫入後自動帶入），或改用 hook `additionalContext`／寫檔案進專案資料夾把卡片塞進對話，或「帶入進度卡」「請隊長更新」改成沒有使用者按就送。
 - 交接規則預設啟用，或內容改成帶完整對話。
 - 全域搜尋改成用模型做語意搜尋或摘要、把對話紀錄或終端機內容存進 hub 或建索引、daemon 搜尋時開行程（例如叫 `claude` 或 `rg`）或往 PTY 送字，或改成打字時就自動對各台 daemon 搜（目前只有按 Enter 才搜）。
