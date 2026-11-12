@@ -520,6 +520,78 @@ describe('摘要（固定規則，不解讀內容）', () => {
   });
 });
 
+describe('W8 執行期：自動流程不會開始審查', () => {
+  it('有一份等確認的審查時，跑 hub 心跳、recover／expire、自動接續、交接規則、全隊暫停／繼續：都沒送出 review.run', async () => {
+    const b = await setup();
+    const lead = await startSession(b, { name: 'LD' });
+    const other = await startSession(b, { name: 'RV', readOnly: true });
+    const pending = hub.api<Review>('POST', '/api/reviews/prepare', {
+      cookie: b.cookie,
+      body: { target: { kind: 'session', sessionId: lead } },
+    });
+    await answerPrepare(b.daemon, DIFF);
+    expect((await pending).body.status).toBe('awaiting_confirm');
+    const team = await hub.api<{ id: string }>('POST', '/api/teams', {
+      cookie: b.cookie,
+      body: {
+        name: 'T',
+        goal: '',
+        doneCriteria: '',
+        color: 'teal',
+        contextMd: '',
+        taskAuto: false,
+      },
+    });
+    await hub.api('PUT', `/api/teams/${team.body.id}/members/${lead}`, {
+      cookie: b.cookie,
+      body: { role: 'lead' },
+    });
+    await hub.api('PUT', `/api/teams/${team.body.id}/members/${other}`, {
+      cookie: b.cookie,
+      body: { role: 'reviewer' },
+    });
+    const rule = await hub.api('POST', `/api/teams/${team.body.id}/handoff-rules`, {
+      cookie: b.cookie,
+      body: {
+        fromSessionId: lead,
+        trigger: 'on_done',
+        action: { toSessionId: other },
+        enabled: true,
+      },
+    });
+    expect(rule.status, JSON.stringify(rule.body)).toBe(200);
+    await hub.api('PATCH', '/api/settings', { cookie: b.cookie, body: { autoContinue: true } });
+
+    const internal = hub.running.hub as unknown as {
+      tick(): void;
+      autoContinue: { restore(): void };
+      reviews: { recover(): void; expire(): void };
+    };
+    internal.tick();
+    internal.reviews.expire();
+    internal.autoContinue.restore();
+    // 交接規則：隊長回合結束（Stop）。
+    b.daemon.send({
+      type: 'session.event',
+      event: {
+        id: randomUUID(),
+        sessionId: lead,
+        type: 'hook',
+        payload: { event: 'Stop', last_assistant_message: 'done' },
+        at: new Date().toISOString(),
+      },
+    });
+    await hub.api('POST', `/api/teams/${team.body.id}/hold`, {
+      cookie: b.cookie,
+      body: { mode: 'pause' },
+    });
+    await hub.api('POST', `/api/teams/${team.body.id}/resume`, { cookie: b.cookie });
+    internal.reviews.recover();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(b.daemon.of('review.run')).toHaveLength(0);
+  });
+});
+
 describe('審查修正（W1、W3、W4、W5、W6）', () => {
   async function ask(daemon: Peer, sessionId: string, args: Record<string, unknown>) {
     const requestId = randomUUID();

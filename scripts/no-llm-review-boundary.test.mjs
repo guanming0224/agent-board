@@ -91,3 +91,40 @@ test('daemon 其他檔案出現 -p 或 codex exec：抓到；review.ts 不能 se
   ]);
   assert.equal(problems.length, 3);
 });
+
+test('W8：.then、queueMicrotask、事件監聽延後呼叫也抓得到；request_review 與 dispatch.handle 只在白名單位置', () => {
+  const problems = checkReviewBoundary([
+    {
+      path: 'packages/hub/src/rest.ts',
+      text: [
+        'const handlers = {',
+        '    reviewStart: (ctx) => {',
+        '      void later().then(() => hub.reviews.startReview(param(ctx), by));',
+        '    },',
+        '};',
+      ].join('\n'),
+    },
+    {
+      path: 'packages/hub/src/dispatch.ts',
+      text: [
+        'export class DispatchEngine {',
+        '  handle(caller, tool, args) {',
+        '    switch (tool) {',
+        "      case 'request_review':",
+        "        this.events.on('tick', () => this.requestReview(caller, args));",
+        '        return null;',
+        '    }',
+        '  }',
+        '  onTaskDone(caller) {',
+        '    queueMicrotask(() => this.requestReview(caller, {}));',
+        '  }',
+        '}',
+      ].join('\n'),
+    },
+    {
+      path: 'packages/hub/src/tasks.ts',
+      text: 'export class T {\n  run() {\n    this.hub.dispatch.handle(id, "request_review", {});\n  }\n}',
+    },
+  ]);
+  assert.equal(problems.length, 4, problems.join('\n'));
+});

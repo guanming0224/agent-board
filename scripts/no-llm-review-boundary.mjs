@@ -2,10 +2,13 @@
 // daemon 開非互動 CLI（`claude -p`、`codex exec`）只能由兩種動作觸發：GM 在網頁按確認（REST reviewStart）、
 // 隊長呼叫 MCP 工具 request_review。不能由排程、規則或任何自動流程觸發。這裡把整條路的每個呼叫點列成白名單：
 //   GM：rest.ts reviewStart → ReviewEngine.startReview → `type: 'review.run'`
-//   隊長：dispatch.ts handle（case 'request_review'）→ requestReview → deps.requestReview
+//   隊長：hub.ts `case 'dispatch.request'` → onDispatchRequest → dispatch.handle
+//         → dispatch.ts `case 'request_review'` → requestReview → deps.requestReview
 //         → hub.ts 的 DispatchDeps 接線 → ReviewEngine.requestByLead → startReview
 //   daemon：daemon.ts `case 'review.run':` → ReviewRunner.run（review.ts，唯一開審查 CLI 的地方）
-// 白名單以外出現這些呼叫、或呼叫點和所在函式開頭之間有計時器（setTimeout／setInterval／setImmediate），一律算違反。
+// 白名單以外出現這些呼叫、或呼叫點和所在函式開頭之間有延後執行（setTimeout／setInterval／setImmediate、
+// queueMicrotask、process.nextTick、`.then(`、事件監聽 `.on(`／`.once(`），一律算違反（審查 W8）。
+// 唯一的例外是 requestByLead：diff 產生好（`.then`）才開始，標 allowDeferred。
 
 /** 每一種呼叫：在哪個檔案、哪個函式（或物件鍵）裡才可以出現。 */
 export const REVIEW_TRIGGER_RULES = [
@@ -13,8 +16,20 @@ export const REVIEW_TRIGGER_RULES = [
     call: /\.startReview\(/g,
     allowed: [
       { file: 'packages/hub/src/rest.ts', within: 'reviewStart' },
-      { file: 'packages/hub/src/reviews.ts', within: 'requestByLead' },
+      { file: 'packages/hub/src/reviews.ts', within: 'requestByLead', allowDeferred: true },
     ],
+  },
+  {
+    call: /\.onDispatchRequest\(/g,
+    allowed: [{ file: 'packages/hub/src/hub.ts', within: "case 'dispatch.request'" }],
+  },
+  {
+    call: /\.dispatch\.handle\(/g,
+    allowed: [{ file: 'packages/hub/src/hub.ts', within: 'onDispatchRequest' }],
+  },
+  {
+    call: /this\.requestReview\(/g,
+    allowed: [{ file: 'packages/hub/src/dispatch.ts', within: "case 'request_review'" }],
   },
   {
     call: /\.requestByLead\(/g,
@@ -42,7 +57,8 @@ export const REVIEW_TRIGGER_RULES = [
 /** 這些檔案以外不准出現非互動 CLI 的參數（`'-p'`／`'--print'`、`'exec'`＋`'--json'`）。 */
 export const NON_INTERACTIVE_FILE = 'packages/daemon/src/review.ts';
 
-const TIMER = /\b(setTimeout|setInterval|setImmediate)\s*\(/;
+const TIMER =
+  /\b(setTimeout|setInterval|setImmediate|queueMicrotask)\s*\(|process\.nextTick\s*\(|\.then\s*\(|\.(on|once|addListener|addEventListener)\s*\(/;
 
 /**
  * 呼叫點往上找所在的函式（靠 prettier 排好的縮排：縮排比目前少的行才是外層）：class method
@@ -88,14 +104,15 @@ export function checkReviewBoundary(files) {
       for (const match of text.matchAll(rule.call)) {
         const line = text.slice(0, match.index).split('\n').length;
         const where = enclosing(text, match.index);
-        const ok = rule.allowed.some((a) => a.file === path && a.within === where.name);
+        const allowed = rule.allowed.find((a) => a.file === path && a.within === where.name);
+        const ok = allowed !== undefined;
         if (!ok) {
           problems.push(
             `${path}:${line} 在 ${where.name ?? '（頂層）'} 裡出現 ${rule.call.source}：交叉審查只能由使用者動作（reviewStart）或隊長的 request_review 觸發`,
           );
           continue;
         }
-        if (TIMER.test(text.slice(where.index, match.index))) {
+        if (!allowed.allowDeferred && TIMER.test(text.slice(where.index, match.index))) {
           problems.push(
             `${path}:${line} ${rule.call.source} 在計時器裡：交叉審查不能由排程或自動流程觸發`,
           );
