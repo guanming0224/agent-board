@@ -434,7 +434,7 @@ const record = (value: unknown): Record<string, unknown> | null =>
  * - 0.167 起另有 `token_usage_record`，和 token_count 重複，不讀。
  * session 一律用檔名裡的 thread id（`Session.claudeSessionId` 存的就是它，§19.1）。讀不懂的行略過。
  */
-export function codexFile(file: string): FileReader {
+export function codexFile(file: string, seen: Set<string> = new Set()): FileReader {
   let model = '';
   let cwd: string | null = null;
   let previousTotal: number | null = null;
@@ -474,6 +474,12 @@ export function codexFile(file: string): FileReader {
       const totalTokens = typeof total?.total_tokens === 'number' ? total.total_tokens : null;
       if (totalTokens !== null && totalTokens === previousTotal) return null;
       if (totalTokens !== null) previousTotal = totalTokens;
+      // 審查 W10：fork／resume 出來的檔可能整段複製上一個檔的事件。整次掃描共用一份去重（時間＋累計 total）。
+      if (typeof row.timestamp === 'string' && totalTokens !== null) {
+        const key = `${row.timestamp}\0${totalTokens}`;
+        if (seen.has(key)) return null;
+        seen.add(key);
+      }
       const input = tokenCount(last.input_tokens);
       const cached = Math.min(tokenCount(last.cached_input_tokens), input);
       const at = typeof row.timestamp === 'string' ? Date.parse(row.timestamp) : NaN;
@@ -502,7 +508,13 @@ export async function scanCodexUsage(
   now: Date,
   options: UsageScanOptions = {},
 ): Promise<UsageScan> {
-  return scanFiles(jsonlFiles(join(codexHome, 'sessions')), codexFile, now, options);
+  const seen = new Set<string>();
+  return scanFiles(
+    jsonlFiles(join(codexHome, 'sessions')),
+    (file) => codexFile(file, seen),
+    now,
+    options,
+  );
 }
 
 /** 只要總數（舊介面，測試沿用）。 */

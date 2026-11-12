@@ -789,7 +789,7 @@ export const routes = {
   reviewPrepare: route({
     method: 'POST',
     path: '/api/reviews/prepare',
-    auth: 'user',
+    auth: 'owner',
     body: z.object({
       target: ReviewTargetInput,
       reason: z.string().max(REVIEW_REASON_MAX).optional(),
@@ -799,7 +799,7 @@ export const routes = {
   reviewStart: route({
     method: 'POST',
     path: '/api/reviews/:id/start',
-    auth: 'user',
+    auth: 'owner',
     response: Review,
   }),
   reviewCancel: route({

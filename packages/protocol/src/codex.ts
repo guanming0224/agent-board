@@ -55,8 +55,16 @@ function shellArg(value: string): string {
 }
 
 /** TOML basic string 的內容（雙引號裡面）。 */
-function tomlString(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+export function tomlString(value: string): string {
+  // 反斜線、雙引號，以及所有控制字元（TOML basic string 不能直接放，改成 \n 或 \uXXXX；審查建議）。
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(
+      /[\u0000-\u001f\u007f]/g,
+      (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    );
 }
 
 /** 每個 session 自己的 hook 位址，直接寫進 hook 指令（不依賴 Codex 有沒有把環境變數傳給 hook）。 */

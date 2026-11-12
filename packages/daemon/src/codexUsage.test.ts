@@ -127,6 +127,20 @@ describe('scanCodexUsage', () => {
     expect(UsageDetail.safeParse(detail).success).toBe(true);
   });
 
+  it('W10：fork 出來的檔複製了上一個檔的事件（同時間、同累計 total）只算一次', async () => {
+    const home = codexHome();
+    const shared = tokens('2026-11-08T02:00:00.000Z', { input: 100, cached: 0, output: 10 }, 110);
+    rollout(home, '2026-11-08', T1, [meta('/w'), turn('m'), shared]);
+    rollout(home, '2026-11-08', T2, [
+      meta('/w'),
+      turn('m'),
+      shared,
+      tokens('2026-11-08T03:00:00.000Z', { input: 5, cached: 0, output: 1 }, 116),
+    ]);
+    const { summary } = await scanCodexUsage(home, NOW, { timeZone: 'UTC' });
+    expect(summary).toMatchObject({ inputTokens: 105, outputTokens: 11 });
+  });
+
   it('沒有 sessions 資料夾：空的、不丟例外', async () => {
     const result = await scanCodexUsage(join(codexHome(), 'missing'), NOW, { timeZone: 'UTC' });
     expect(result.detail.rows).toEqual([]);

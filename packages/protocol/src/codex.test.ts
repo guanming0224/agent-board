@@ -1,6 +1,13 @@
 // Codex 第二輪：agent-board MCP server 的 -c 覆寫（TOML 跳脫、只露出開著的工具、免核准）。
 import { describe, expect, it } from 'vitest';
-import { codexMcpOverrides } from './codex';
+import { codexMcpOverrides, tomlString } from './codex';
+
+describe('tomlString', () => {
+  it('控制字元一律換成 \\uXXXX（不會在 -c 值裡斷行或混進終端機控制碼）', () => {
+    expect(tomlString('a\tb\rc\x1b[31m\x7f')).toBe('a\\u0009b\\u000dc\\u001b[31m\\u007f');
+    expect(tomlString('x\n"y"\\')).toBe('x\\n\\"y\\"\\\\');
+  });
+});
 
 describe('codexMcpOverrides', () => {
   it('每個 key 一個 -c 值；路徑的空白、中文、反斜線、雙引號都照 TOML basic string 跳脫', () => {
