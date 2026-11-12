@@ -9,8 +9,7 @@ import {
   statusCode,
   statusGlyph,
   statusLabelKey,
-  knownStatus,
-  STATUS_VISUAL,
+  visualOf,
   type StatusCode,
 } from '../shared/status';
 import { useBoard } from '../shared/store';
@@ -244,9 +243,7 @@ export function Age({ session }: { session: Session }) {
   let at: string | null = session.statusSince;
 
   // 剛開好（NEW）不是在等你回覆，只寫「多久前」（views.age.since）。
-  switch (
-    statusCode(session) === 'NEW' ? 'agent' : STATUS_VISUAL[knownStatus(session.status)].holder
-  ) {
+  switch (statusCode(session) === 'NEW' ? 'agent' : visualOf(session.status).holder) {
     case 'you':
       text = t('views.age.waiting', { span: span(session.statusSince) });
       break;

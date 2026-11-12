@@ -5,6 +5,7 @@ import {
   codeLabelKey,
   statusCode,
   STATUS_VISUAL,
+  UNKNOWN_VISUAL,
   type HandsLine,
   type StatusCode,
 } from '../shared/status';
@@ -44,6 +45,7 @@ const LEGEND_GLYPH: Record<StatusCode, string> = {
   QUE: STATUS_VISUAL.queued.glyph,
   DONE: STATUS_VISUAL.done.glyph,
   OFF: STATUS_VISUAL.offline.glyph,
+  UNK: UNKNOWN_VISUAL.glyph,
 };
 
 const HANDS_ORDER: HandsLine[] = ['dotted', 'dashed', 'solid', 'heavy', 'bypass'];

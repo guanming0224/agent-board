@@ -2,13 +2,7 @@
 // 共用 views/session.tsx 的 CodeChip（樣式在 shared/styles/status.css）。
 import type { SessionStatus } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
-import {
-  knownStatus,
-  statusCode,
-  statusLabelKey,
-  STATUS_VISUAL,
-  type StatusCode,
-} from '../shared/status';
+import { statusCode, statusLabelKey, type StatusCode, visualOf } from '../shared/status';
 import { CodeChip } from '../views/session';
 import type { ReviewGroup, TriageKind } from './triage';
 
@@ -57,7 +51,7 @@ export function StatusBadge({ kind }: { kind: BadgeKind }) {
   ) : (
     <CodeChip
       code={statusCode(session)}
-      glyph={STATUS_VISUAL[knownStatus(status)].glyph}
+      glyph={visualOf(status).glyph}
       label={t(statusLabelKey(session))}
       badge
       data={{ 'data-kind': kind }}

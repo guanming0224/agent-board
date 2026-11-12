@@ -21,6 +21,10 @@
 .c-plan {
   --sc: var(--c-plan);
 }
+/* 不認得的狀態（UNK）：和錯誤同色，一定看得到。 */
+.c-unk {
+  --sc: var(--c-err);
+}
 .c-err {
   --sc: var(--c-err);
 }

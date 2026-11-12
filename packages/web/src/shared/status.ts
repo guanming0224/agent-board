@@ -53,7 +53,29 @@ export const STATUS_CODES = [
   'DONE',
   'OFF',
 ] as const;
-export type StatusCode = (typeof STATUS_CODES)[number];
+/**
+ * UNK：不認得的狀態（較新的 hub、壞掉的資料，複查 2026-11-13）。不在圖例裡（正常不會出現），但算「等你」、
+ * 排在待處理最前面（像 ERR），讓人一定看得到。
+ */
+export type StatusCode = (typeof STATUS_CODES)[number] | 'UNK';
+
+/** 不認得的狀態用的符號與說明。 */
+export const UNKNOWN_VISUAL = {
+  glyph: '?',
+  holder: 'fault' as BallHolder,
+  labelKey: 'status.unknown',
+};
+
+/** 狀態的符號、球在誰手上、說明；不認得的狀態回 UNKNOWN_VISUAL（並記一次 warn）。 */
+export function visualOf(status: SessionStatus): {
+  glyph: string;
+  holder: BallHolder;
+  labelKey: string;
+} {
+  return Object.hasOwn(STATUS_VISUAL, status)
+    ? STATUS_VISUAL[status]
+    : (reportUnknown(status), UNKNOWN_VISUAL);
+}
 
 const CODE_OF: Record<SessionStatus, StatusCode> = {
   starting: 'NEW',
@@ -82,23 +104,24 @@ const isIdleWaiting = (session: StatusFields): boolean =>
  * 是 NEW，不是 ASK。在等隊長（成員的結果已送回）或等成員結果（隊長還有派出去沒回來的工作）也是 NEW。
  */
 export function statusCode(session: StatusFields): StatusCode {
-  return isIdleWaiting(session) ? 'NEW' : (CODE_OF[knownStatus(session.status)] ?? 'OFF');
+  if (isIdleWaiting(session)) return 'NEW';
+  if (Object.hasOwn(CODE_OF, session.status)) return CODE_OF[session.status];
+  reportUnknown(session.status);
+  return 'UNK';
 }
 
 const warnedStatus = new Set<string>();
 
 /**
- * 不認得的狀態（較新的 hub、壞掉的資料）一律當 offline（OFF），不讓整張卡片 render 失敗；開發模式下每個值警告一次。
+ * 不認得的狀態：獨立顯示成 UNK（?、算等你），不讓整張卡片 render 失敗；正式版也記一次 console.warn（每個值一次）。
  * 2026-11-13 查到的來源：flows-boot e2e 故意塞 `status: 'no-such-status'` 測錯誤畫面（11/9 起 vite log 的
  * `codeClass` TypeError 就是它），正式資料裡沒有找到對不上的狀態。
  */
-export function knownStatus(status: SessionStatus): SessionStatus {
-  if (Object.hasOwn(CODE_OF, status)) return status;
-  if (import.meta.env?.DEV && !warnedStatus.has(String(status))) {
-    warnedStatus.add(String(status));
-    console.warn(`[agent-board] 不認得的 session 狀態：${String(status)}，當成 offline 顯示`);
-  }
-  return 'offline';
+function reportUnknown(status: unknown): void {
+  const key = String(status);
+  if (warnedStatus.has(key)) return;
+  warnedStatus.add(key);
+  console.warn(`[agent-board] 不認得的 session 狀態：${key}，顯示成 UNK（未知）`);
 }
 
 /**
@@ -106,6 +129,7 @@ export function knownStatus(status: SessionStatus): SessionStatus {
  * 沒有 rank 的代碼不算等你（NEW、RUN、QUE、QUOTA、DONE、OFF）。
  */
 const WAIT_RANK: Partial<Record<StatusCode, number>> = {
+  UNK: 0,
   ERR: 0,
   PERM: 1,
   PLAN: 2,
@@ -122,9 +146,7 @@ export const waitsForYou = (session: StatusFields): boolean => codeWaits(statusC
 
 /** 這個 session 的符號：NEW 的 waiting_input（剛開好、等隊長、等成員結果）用啟動中的符號，其餘照 STATUS_VISUAL。 */
 export function statusGlyph(session: StatusFields): string {
-  return isIdleWaiting(session)
-    ? STATUS_VISUAL.starting.glyph
-    : STATUS_VISUAL[knownStatus(session.status)].glyph;
+  return isIdleWaiting(session) ? STATUS_VISUAL.starting.glyph : visualOf(session.status).glyph;
 }
 
 /** 這個 session 的完整中文（英文）說明的字串 key：分得出錯誤與卡住、啟動中與剛開好、等隊長與等成員結果。 */
@@ -133,7 +155,7 @@ export function statusLabelKey(session: StatusFields): string {
   if (isAwaitingTeam(session)) {
     return session.awaiting === 'members' ? 'status.awaiting_members' : 'status.awaiting_lead';
   }
-  return STATUS_VISUAL[knownStatus(session.status)].labelKey;
+  return visualOf(session.status).labelKey;
 }
 
 /** 代碼本身的說明（側欄圖例用），例如 ERR 是「錯誤或卡住」。 */

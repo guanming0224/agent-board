@@ -1,6 +1,6 @@
 // @vitest-environment node
 // 狀態代碼（GM 2026-11-08）：代碼對應、「等你」的範圍與待處理順序。
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { IDLE_START_DETAIL, waitingSessions } from '@agent-board/protocol';
 import type { Approval, Session, SessionStatus } from '@agent-board/protocol';
 import { nextInQueue, pendingQueue } from '../views/queue';
@@ -9,7 +9,6 @@ import {
   attentionQueue,
   codeClass,
   codeWaits,
-  knownStatus,
   STATUS_CODES,
   statusCode,
   statusGlyph,
@@ -67,14 +66,24 @@ const of = (status: SessionStatus, statusDetail: string | null = null) => ({
 });
 
 describe('不認得的狀態（2026-11-13，flows-boot 的 no-such-status 讓 codeClass 讀到 undefined）', () => {
-  it('當成 offline：代碼 OFF、class、符號、說明都拿得到，不丟例外；不算等你', () => {
-    const broken = session({ id: 'x', status: 'no-such-status' as SessionStatus });
-    expect(statusCode(broken)).toBe('OFF');
-    expect(codeClass(statusCode(broken))).toBe('c-off');
-    expect(statusGlyph(broken)).toBe(statusGlyph(session({ id: 'y', status: 'offline' })));
-    expect(statusLabelKey(broken)).toBe(statusLabelKey(session({ id: 'y', status: 'offline' })));
-    expect(waitsForYou(broken)).toBe(false);
-    expect(knownStatus('running')).toBe('running');
+  it('獨立顯示成 UNK（?、不認得的狀態），算等你、排在待處理最前面；正式版也只 warn 一次', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const broken = session({
+      id: 'x',
+      status: 'brand-new-status' as SessionStatus,
+      statusSince: at(1),
+    });
+    expect(statusCode(broken)).toBe('UNK');
+    expect(codeClass(statusCode(broken))).toBe('c-unk');
+    expect(statusGlyph(broken)).toBe('?');
+    expect(statusLabelKey(broken)).toBe('status.unknown');
+    expect(waitsForYou(broken)).toBe(true);
+    const asking = session({ id: 'y', status: 'waiting_input', statusSince: at(30) });
+    expect(attentionQueue([asking, broken]).map((s) => s.id)).toEqual(['x', 'y']);
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('brand-new-status'))).toHaveLength(
+      1,
+    );
+    warn.mockRestore();
   });
 });
 
