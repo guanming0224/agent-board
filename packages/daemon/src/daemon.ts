@@ -51,9 +51,6 @@ import type { DaemonConfig } from './config';
 import { DeepSearcher } from './deepSearch';
 import { listDirectory, makeDirectory } from './fsList';
 import { gitInitFolder, isInside } from './gitInit';
-
-/** git init 成功後多久再補掃一次 session（§24 N7）。 */
-const GIT_INIT_RESCAN_MS = 2_000;
 import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { downMarkerPath, HookServer, type HookOutput } from './hookServer';
 import { attachTimeoutFor, HostPtyBackend } from './hostPty';
@@ -97,6 +94,9 @@ import {
   repoInfo,
   type WorktreeInfo,
 } from './worktree';
+
+/** git init 成功後多久再補掃一次 session（§24 N7）。 */
+const GIT_INIT_RESCAN_MS = 2_000;
 
 const USAGE_INTERVAL_MS = 15 * 60_000;
 /**
@@ -1689,10 +1689,6 @@ export class Daemon {
     return session;
   }
 
-  /**
-   * 一鍵 git init（CONTRACTS §24）。成功後，在那個資料夾（或子資料夾）裡、沒有自己 worktree 的 session
-   * 換上新的 repo 與分支並回報 hub（agent 照跑、不中斷），隊長馬上就能 spawn_member 開 worktree。
-   */
   /** root 裡（含子資料夾）沒有自己 worktree、還當成「不是 git」的活 session：換上新的 repo 與分支並回報 hub。 */
   private async refreshReposIn(root: string): Promise<void> {
     for (const [sessionId, dir] of [...this.sessionDirs]) {
@@ -1711,6 +1707,10 @@ export class Daemon {
     }
   }
 
+  /**
+   * 一鍵 git init（CONTRACTS §24）。成功後，在那個資料夾（或子資料夾）裡、沒有自己 worktree 的 session
+   * 換上新的 repo 與分支並回報 hub（agent 照跑、不中斷），隊長馬上就能 spawn_member 開 worktree。
+   */
   private async gitInit(requestId: string, path: string): Promise<void> {
     let result: Awaited<ReturnType<typeof gitInitFolder>>;
     try {

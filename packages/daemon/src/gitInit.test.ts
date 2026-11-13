@@ -20,8 +20,8 @@ import {
   GIT_INIT_FALLBACK_EMAIL,
   GIT_INIT_FALLBACK_NAME,
 } from '@agent-board/protocol';
-import { excludeLine, gitInitFolder, isInside, tooBroadReason } from './gitInit';
-import { gitEnv as cleanGitEnv } from './worktree';
+import { excludeLine, GIT_C_LOCALE, gitInitFolder, isInside, tooBroadReason } from './gitInit';
+import { git, gitEnv as cleanGitEnv } from './worktree';
 
 let base: string;
 let home: string;
@@ -314,14 +314,47 @@ describe('小工具', () => {
     expect(excludeLine('a\nb')).toBeNull();
   });
 
-  it('git 的環境變數拿掉 GIT_DIR／GIT_WORK_TREE／GIT_INDEX_FILE，不會被帶到別的 repo', () => {
+  it('git 的環境變數拿掉 GIT_DIR／GIT_WORK_TREE／GIT_INDEX_FILE 等，不會被帶到別的 repo', () => {
     const env = cleanGitEnv({
       PATH: '/bin',
       GIT_DIR: '/x/.git',
       GIT_WORK_TREE: '/x',
       GIT_INDEX_FILE: '/x/i',
+      GIT_COMMON_DIR: '/x/.git',
+      GIT_OBJECT_DIRECTORY: '/x/.git/objects',
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: '/y/objects',
+      GIT_PREFIX: 'sub/',
+      GIT_NAMESPACE: 'ns',
     });
     expect(env).toEqual({ PATH: '/bin', GIT_TERMINAL_PROMPT: '0' });
+  });
+
+  it('git() 帶得進額外環境變數（判斷「不是 repo」用 LC_ALL=C 固定英文訊息，複查 S1）', async () => {
+    expect(GIT_C_LOCALE).toEqual({ LC_ALL: 'C', LANG: 'C', LANGUAGE: 'C' });
+    // 用 git 自己的 GIT_CONFIG_COUNT 確認 options.env 真的送進子程序。
+    const value = await git(['config', '--get', 'agentboard.probe'], {
+      env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'agentboard.probe', GIT_CONFIG_VALUE_0: 'yes' },
+    });
+    expect(value).toBe('yes');
+  });
+
+  it('使用者語系是德文時，不是 repo 的資料夾照樣能 init（訊息固定英文才比對得到）', async () => {
+    const dir = join(home, 'proj-de');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'a.txt'), 'a');
+    const saved = { LC_ALL: process.env.LC_ALL, LANGUAGE: process.env.LANGUAGE, LANG: process.env.LANG };
+    process.env.LC_ALL = 'de_DE.UTF-8';
+    process.env.LANGUAGE = 'de';
+    process.env.LANG = 'de_DE.UTF-8';
+    try {
+      const result = await gitInitFolder(dir, opts());
+      expect(result.ok).toBe(true);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it('isInside：同一個或子資料夾；Windows 不分大小寫', () => {

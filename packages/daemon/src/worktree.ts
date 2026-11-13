@@ -15,6 +15,8 @@ export interface GitOptions {
   maxBuffer?: number;
   /** 預設去掉頭尾空白；`-z` 的輸出要原樣（檔名可能以空白開頭）。 */
   raw?: boolean;
+  /** 額外環境變數（蓋在 gitEnv() 上），例如固定英文訊息的 LC_ALL=C。 */
+  env?: Record<string, string>;
 }
 
 /**
@@ -27,9 +29,19 @@ export interface GitOptions {
  */
 export function gitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base, GIT_TERMINAL_PROMPT: '0' };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
+  // 從 hook 之類的地方繼承到這些，所有指令都會打到別的 repo（§24 審查 N6、複查 N-c）。
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_PREFIX',
+    'GIT_NAMESPACE',
+  ]) {
+    delete env[key];
+  }
   return env;
 }
 
@@ -37,7 +49,7 @@ export async function git(args: string[], options: GitOptions = {}): Promise<str
   const { stdout } = await execFileAsync('git', args, {
     timeout: options.timeoutMs ?? GIT_TIMEOUT_MS,
     ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}),
-    env: gitEnv(),
+    env: { ...gitEnv(), ...options.env },
     windowsHide: true,
   });
   return options.raw ? stdout : stdout.trim();

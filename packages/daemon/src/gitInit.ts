@@ -198,7 +198,13 @@ export function excludeLine(relPath: string): string | null {
   return `/${escaped}`;
 }
 
-/** 在 dir 跑 git：一律不跑 hook、不用 fsmonitor（只對這一次指令，不寫設定檔）。 */
+/**
+ * git 訊息固定英文（複查 S1）：Linux 發行版、Homebrew、Git for Windows 的 git 會依語系翻譯訊息，
+ * 比對「not a git repository」、回給網頁的錯誤細節都要固定語言。
+ */
+export const GIT_C_LOCALE: Record<string, string> = { LC_ALL: 'C', LANG: 'C', LANGUAGE: 'C' };
+
+/** 在 dir 跑 git：一律不跑 hook、不用 fsmonitor（只對這一次指令，不寫設定檔）、訊息固定英文。 */
 function gitIn(dir: string, args: string[], options?: GitOptions): Promise<string> {
   return git(
     [
@@ -210,7 +216,7 @@ function gitIn(dir: string, args: string[], options?: GitOptions): Promise<strin
       dir,
       ...args,
     ],
-    options,
+    { ...options, env: { ...GIT_C_LOCALE, ...options?.env } },
   );
 }
 
@@ -304,7 +310,7 @@ async function initLocked(dir: string, options: GitInitOptions): Promise<GitInit
   // 已在 repo 裡（含上層）→ 不動。只有 git 明說「not a git repository」才繼續；
   // 其他失敗（dubious ownership、權限…）一律停下，不然會在別人的 repo 裡 init 出巢狀 repo。
   try {
-    const gitDir = await git(['-C', dir, 'rev-parse', '--absolute-git-dir']);
+    const gitDir = await git(['-C', dir, 'rev-parse', '--absolute-git-dir'], { env: GIT_C_LOCALE });
     return fail(dir, 'already_repo', `This folder is already inside the git repository ${gitDir}`);
   } catch (error) {
     if (isMissing(error)) {
