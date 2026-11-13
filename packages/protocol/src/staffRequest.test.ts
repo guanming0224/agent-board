@@ -8,7 +8,10 @@ import {
   routes,
   STAFF_REQUEST_PENDING_GUIDE,
   STAFF_REQUEST_TTL_MS,
+  SPAWN_PROMPT_MAX,
+  StaffActivity,
   StaffRequest,
+  StaffRequestDetail,
   TEAM_FULL_GUIDE,
   TeamActivity,
 } from './index';
@@ -28,6 +31,7 @@ const request = {
   role: 'tester',
   reason: 'Nobody tests the parser yet.',
   promptPreview: 'Write regression tests.',
+  promptChars: 23,
   status: 'pending',
 };
 
@@ -53,7 +57,7 @@ describe('staff request (CONTRACTS §23)', () => {
     });
   });
 
-  it('team activity: staff kinds may have no member yet; older kinds still parse', () => {
+  it('staff activity is stored apart; TeamActivity keeps the 0.1.8 shape (member fields required, no staff kinds)', () => {
     const base = {
       id: 'a-1',
       at: '2026-11-13T01:00:00.000Z',
@@ -67,10 +71,12 @@ describe('staff request (CONTRACTS §23)', () => {
     };
     for (const kind of ['staff_requested', 'staff_rejected', 'staff_expired', 'staff_failed']) {
       expect(
-        TeamActivity.safeParse({ ...base, kind, staffRequestId: 'sr-1', limit: 'spawn_rate' })
+        StaffActivity.safeParse({ ...base, kind, staffRequestId: 'sr-1', limit: 'spawn_rate' })
           .success,
       ).toBe(true);
+      expect(TeamActivity.safeParse({ ...base, kind }).success).toBe(false);
     }
+    expect(TeamActivity.safeParse({ ...base, kind: 'member_added' }).success).toBe(false);
     expect(
       TeamActivity.safeParse({
         ...base,
@@ -79,6 +85,28 @@ describe('staff request (CONTRACTS §23)', () => {
         memberName: 'BD1',
       }).success,
     ).toBe(true);
+  });
+
+  it('a board snapshot with fields a client does not know still parses (zod strips them)', () => {
+    const parsed = HubToClient.parse({
+      type: 'board.state',
+      machines: [],
+      sessions: [],
+      approvals: [],
+      someFutureField: [{ x: 1 }],
+    });
+    expect(parsed).not.toHaveProperty('someFutureField');
+  });
+
+  it('full prompt only in the owner-only detail route; prompt cap is 20,000', () => {
+    expect(routes.staffRequestGet).toMatchObject({
+      method: 'GET',
+      path: '/api/staff-requests/:id',
+      auth: 'owner',
+    });
+    expect(StaffRequestDetail.safeParse({ ...request, prompt: 'full' }).success).toBe(true);
+    expect(SPAWN_PROMPT_MAX).toBe(20_000);
+    expect(StaffRequest.safeParse({ ...request, status: 'approving' }).success).toBe(true);
   });
 
   it('approve and reject are owner-only; the list is for any signed-in user', () => {

@@ -6,6 +6,7 @@ import {
   AgentKind,
   TeamActivity,
   StaffRequest,
+  StaffActivity,
   Approval,
   BoardPauseState,
   Broadcast,
@@ -508,7 +509,13 @@ export const HubToClient = z.discriminatedUnion('type', [
     reviews: z.array(Review).default([]),
     /** 待處理的加開申請（CONTRACTS §23），舊的在前。舊版 hub 不送＝空。 */
     staffRequests: z.array(StaffRequest).default([]),
+    /**
+     * 加開申請的動態（§23），新的在前。和 teamActivity 分開：舊版網頁不認得這個欄位，zod 預設會丟掉（不會讓快照失敗）。
+     */
+    staffActivity: z.array(StaffActivity).default([]),
   }),
+  /** 加開申請的動態變了：整份推給每個 client。 */
+  z.object({ type: z.literal('staff.activity'), items: z.array(StaffActivity) }),
   /** 待處理的加開申請變了（新申請、同意、拒絕、失效）：整份推給每個 client。 */
   z.object({ type: z.literal('staff.requests'), items: z.array(StaffRequest) }),
   /** 一則交叉審查變了（新建、diff 準備好、某一邊開始或結束、取消、已讀）。 */

@@ -40,6 +40,8 @@ import type {
   TeamResumeResult,
   TeamActivity,
   StaffRequest,
+  StaffRequestDetail,
+  StaffActivity,
   Review,
   ReviewTargetInput,
   TeamPreset,
@@ -103,6 +105,8 @@ export interface BoardSnapshot {
   reviews?: Review[];
   /** 待處理的加開申請（CONTRACTS §23），舊的在前。舊版 hub 沒有＝undefined（不顯示）。 */
   staffRequests?: StaffRequest[];
+  /** 加開申請的動態（§23，和團隊動態分開存），新的在前。舊版 hub 沒有＝undefined。網頁和 teamActivity 合在一起顯示。 */
+  staffActivity?: StaffActivity[];
 }
 
 /** 團隊建立、修改（含換工作區）或刪除：hub 用 WS 推，不等輪詢。 */
@@ -376,6 +380,11 @@ export interface BoardBackend {
    */
   approveStaffRequest(id: string): Promise<StaffRequest>;
   rejectStaffRequest(id: string): Promise<StaffRequest>;
+  /** 一件申請的 prompt 全文（owner）。 */
+  getStaffRequest(id: string): Promise<StaffRequestDetail>;
+  /** 加開申請的動態：標已讀、清除（ids 沒給＝全部）。 */
+  readStaffActivity(ids?: string[]): Promise<StaffActivity[]>;
+  clearStaffActivity(ids?: string[]): Promise<StaffActivity[]>;
 
   /**
    * 交叉審查（Codex 第二輪，CONTRACTS §22）。prepare 只請 daemon 產生 diff（不跑模型）；GM 看過檔案清單

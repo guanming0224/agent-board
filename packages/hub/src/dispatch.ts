@@ -18,6 +18,7 @@ import {
   LEAD_STAFFING_REMINDER,
   MEMBER_STAFFING_GUIDE,
   STAFFING_REASON_MAX,
+  SPAWN_PROMPT_MAX,
   STAFF_REQUEST_PENDING_GUIDE,
   TEAM_FULL_GUIDE,
   TEAM_HELD_GUIDE,
@@ -162,7 +163,7 @@ export function resultMessage(
 export const SpawnArgs = z.object({
   name: z.string().max(NAME_MAX_CHARS).optional(),
   role: z.enum(DISPATCH_ROLES),
-  prompt: z.string().min(1),
+  prompt: z.string().min(1).max(SPAWN_PROMPT_MAX),
   reason: z.string(),
   permissionMode: PermissionMode.optional(),
   useWorktree: z.boolean().optional(),
@@ -372,6 +373,12 @@ export interface StaffRequestPort {
   }): StaffRequest;
 }
 
+/** spawnInner 開好成員時的回傳。 */
+interface Spawned {
+  reply: DispatchReply;
+  member: Session;
+}
+
 /** 開始做事的狀態：成員從這裡開始新的回合，「等隊長」就結束（GM 2026-11-11）。 */
 const TURN_STARTED: ReadonlySet<Session['status']> = new Set([
   'running',
@@ -385,9 +392,6 @@ export class DispatchEngine {
   private readonly results = new Map<string, number[]>();
   /** 每個團隊（還沒有團隊時是呼叫者）10 分鐘內新增成員的時間。 */
   private readonly adds = new Map<string, number[]>();
-
-  /** spawnApproved 用：剛開好的成員（spawn 是同步的，開好就讀走）。 */
-  private spawned: Session | null = null;
 
   /** 寬限期到時重算成員與隊長的 awaiting（成員 id → 計時器）。 */
   private readonly graceTimers = new Map<string, NodeJS.Timeout>();
@@ -536,38 +540,51 @@ export class DispatchEngine {
   }
 
   /**
-   * GM 同意加開申請（§23）：照申請時記下的參數開成員，只略過 `bypass`（申請時超過的上限）；
-   * 全面板暫停、全隊暫停／停止、帳號限流、設定關掉等其他擋法照舊。開好回傳成員，被擋回傳原因（給隊長看的英文）。
+   * GM 同意加開申請（§23）：照申請時記下的參數，開進**申請時的團隊**（`teamId`），只略過 `bypass`（申請時超過的上限）；
+   * 全面板暫停、全隊暫停／停止、帳號限流、設定關掉等其他擋法照舊。團隊不在了、呼叫者不再是那一隊的隊長 →
+   * team_changed（絕不另開新團隊）。開好回傳成員，被擋回傳原因（給隊長看的英文）。
    */
   spawnApproved(
     leadId: string,
+    teamId: string,
     args: Record<string, unknown>,
     bypass: readonly StaffRequestLimit[],
   ): { member: Session } | { code: string; message: string } {
-    const reply = this.spawnChecked(leadId, args, bypass);
-    const member = this.spawned;
-    this.spawned = null;
-    if (reply.ok && member) return { member };
-    const at = reply.text.indexOf(': ');
+    const result = this.spawnChecked(leadId, teamId, args, bypass);
+    if ('member' in result) return { member: result.member };
+    const at = result.text.indexOf(': ');
     return at > 0
-      ? { code: reply.text.slice(0, at), message: reply.text.slice(at + 2) }
-      : { code: 'spawn_failed', message: reply.text };
+      ? { code: result.text.slice(0, at), message: result.text.slice(at + 2) }
+      : { code: 'spawn_failed', message: result.text };
   }
 
   private spawnChecked(
     leadId: string,
+    teamId: string,
     args: Record<string, unknown>,
     bypass: readonly StaffRequestLimit[],
-  ): DispatchReply {
-    this.spawned = null;
+  ): DispatchReply | Spawned {
     if (!this.deps.enabled()) {
       return fail('dispatch_disabled', 'Session dispatch is turned off in Agent Board settings.');
     }
-    const caller = this.deps.store.getSession(leadId);
+    const { store } = this.deps;
+    const caller = store.getSession(leadId);
     if (!caller || !isLive(caller) || caller.status === 'done') {
       return fail('caller_inactive', 'This session is archived or has ended.');
     }
-    return this.spawn(caller, args, bypass);
+    const team = store.getTeam(teamId);
+    const stillLead =
+      team !== null &&
+      store.listTeamMembers(team.id).some((m) => m.sessionId === caller.id && m.role === 'lead');
+    if (!team || !stillLead) {
+      return fail(
+        'team_changed',
+        team
+          ? `You are no longer the lead of team ${clip(team.name, NAME_MAX_CHARS)}, so nothing was started.`
+          : 'The team you asked for no longer exists, so nothing was started.',
+      );
+    }
+    return this.spawnInner(caller, args, { bypass, team });
   }
 
   private underLimit(map: Map<string, number[]>, key: string, max: number): boolean {
@@ -658,14 +675,22 @@ export class DispatchEngine {
     return team;
   }
 
+  /** 隊長自己呼叫 spawn_member。 */
+  private spawn(caller: Session, raw: Record<string, unknown>): DispatchReply {
+    const result = this.spawnInner(caller, raw, null);
+    return 'member' in result ? result.reply : result;
+  }
+
   /**
-   * `bypass`：GM 同意加開申請時要略過的上限（null＝隊長自己呼叫：碰到上限就改成申請）。
+   * 開成員。`approved`：GM 同意加開申請（§23）時要略過的上限與申請時的團隊；null＝隊長自己呼叫（碰到上限就改成申請）。
+   * 開好回傳 `{ reply, member }`，被擋回傳 DispatchReply。
    */
-  private spawn(
+  private spawnInner(
     caller: Session,
     raw: Record<string, unknown>,
-    bypass: readonly StaffRequestLimit[] | null = null,
-  ): DispatchReply {
+    approved: { bypass: readonly StaffRequestLimit[]; team: Team } | null,
+  ): DispatchReply | Spawned {
+    const bypass = approved?.bypass ?? null;
     if (this.deps.paused?.()) {
       const detail = { fromSessionId: caller.id, tool: 'spawn_member', reason: 'board_paused' };
       this.deps.audit(caller.id, 'dispatch.blocked', JSON.stringify(detail));
@@ -690,7 +715,7 @@ export class DispatchEngine {
     if (!parsed.success) {
       return fail(
         'invalid_arguments',
-        `role must be one of ${DISPATCH_ROLES.join(', ')}, and prompt and reason are required. ${parsed.error.issues
+        `role must be one of ${DISPATCH_ROLES.join(', ')}, and prompt (at most ${SPAWN_PROMPT_MAX} characters) and reason are required. ${parsed.error.issues
           .map((i) => `${i.path.join('.')}: ${i.message}`)
           .join('; ')}`,
       );
@@ -724,7 +749,7 @@ export class DispatchEngine {
       );
     }
     // 團隊層級的全隊暫停／停止（CONTRACTS §17）：新成員一開就會照 prompt 跑，所以也擋。
-    if (this.teamOf(caller)?.hold) {
+    if ((approved?.team ?? this.teamOf(caller))?.hold) {
       this.blockedTool(caller, 'spawn_member', 'team_held');
       return fail('team_held', TEAM_HELD_GUIDE);
     }
@@ -758,7 +783,7 @@ export class DispatchEngine {
       );
     }
     // 先檢查完才動資料庫：被擋下時不留下空的團隊。
-    const existing = this.teamOf(caller);
+    const existing = approved?.team ?? this.teamOf(caller);
     const members: TeamMember[] = existing
       ? store.listTeamMembers(existing.id)
       : [{ teamId: '', sessionId: caller.id, role: 'lead' }];
@@ -893,23 +918,25 @@ export class DispatchEngine {
       reason,
     });
     this.deps.teamChanged(team);
-    this.spawned = member;
-    return okJson({
-      name,
-      status: member.status,
-      team: team.name,
-      ...(created ? { teamCreated: true } : {}),
-      role: args.role,
-      agent,
-      permissionMode: mode,
-      ...(clamped ? { note: `permissionMode lowered to ${mode} (cannot exceed yours)` } : {}),
-      readOnly,
-      useWorktree,
-      reason,
-      teamSize: `${size + 1}/${teamLimit}`,
-      result:
-        'The prompt will be typed in once the session starts. Its result comes back to you automatically as "[Result from …]" when it finishes the turn. It is typed in only after your current turn ends, so end your turn now: do not sleep, poll or keep working just to wait for it.',
-    });
+    return {
+      member,
+      reply: okJson({
+        name,
+        status: member.status,
+        team: team.name,
+        ...(created ? { teamCreated: true } : {}),
+        role: args.role,
+        agent,
+        permissionMode: mode,
+        ...(clamped ? { note: `permissionMode lowered to ${mode} (cannot exceed yours)` } : {}),
+        readOnly,
+        useWorktree,
+        reason,
+        teamSize: `${size + 1}/${teamLimit}`,
+        result:
+          'The prompt will be typed in once the session starts. Its result comes back to you automatically as "[Result from …]" when it finishes the turn. It is typed in only after your current turn ends, so end your turn now: do not sleep, poll or keep working just to wait for it.',
+      }),
+    };
   }
 
   /**

@@ -144,6 +144,7 @@ async function addRequest(page: Page, over: Record<string, unknown> = {}) {
         name: 'Parser-QA',
         reason: 'Nobody tests the parser yet.',
         promptPreview: 'Write regression tests for the parser.',
+        promptChars: 38,
         status: 'pending',
         ...over,
       });
@@ -191,6 +192,48 @@ test.describe('加開申請（桌面收件匣抽屜）', () => {
     await expect(
       activity.locator('.activity-row[data-kind="staff_approved"] .activity-text'),
     ).toHaveText('已同意 Write tests 的加開申請，開好 Parser-QA（測試）');
+  });
+
+  test('prompt 超過摘要：標「共 N 字」，owner 可以展開全文、再收合', async ({ page }) => {
+    await openInbox(page);
+    const prompt = `Write regression tests. ${'Check every branch. '.repeat(20)}Done.`;
+    await addRequest(page, {
+      promptPreview: prompt.slice(0, 40),
+      promptChars: prompt.length,
+      prompt,
+    });
+    const row = page.getByTestId('inbox-drawer').getByTestId(`staff-request-${REQUEST_ID}`);
+    await expect(row.getByTestId(`staff-request-chars-${REQUEST_ID}`)).toHaveText(
+      `共 ${prompt.length} 字`,
+    );
+    const toggle = row.getByTestId(`staff-request-full-${REQUEST_ID}`);
+    await expect(toggle).toHaveText('展開全文');
+    await toggle.click();
+    await expect(row.getByTestId(`staff-request-prompt-${REQUEST_ID}`)).toHaveText(
+      `工作內容：${prompt.trim()}`,
+    );
+    await expect(toggle).toHaveText('收合');
+    await toggle.click();
+    await expect(row.getByTestId(`staff-request-prompt-${REQUEST_ID}`)).toHaveText(
+      `工作內容：${prompt.slice(0, 40)}`,
+    );
+  });
+
+  test('已經處理過（hub 回 409）：顯示「已經處理過」', async ({ page }) => {
+    await openInbox(page);
+    await addRequest(page);
+    await page.evaluate(async () => {
+      const path = '/src/shared/store.ts';
+      const { useBoard } = await import(/* @vite-ignore */ path);
+      useBoard.getState().backend.approveStaffRequest = async () => {
+        throw Object.assign(new Error('decided'), { status: 409, code: 'request_decided' });
+      };
+    });
+    const drawer = page.getByTestId('inbox-drawer');
+    await drawer.getByTestId(`staff-request-approve-${REQUEST_ID}`).click();
+    await expect(drawer.getByTestId('staff-requests')).toContainText(
+      '這件申請已經處理過（或已失效）。',
+    );
   });
 
   test('拒絕：拿掉申請，團隊動態記一筆；10 分鐘上限的文字', async ({ page }) => {

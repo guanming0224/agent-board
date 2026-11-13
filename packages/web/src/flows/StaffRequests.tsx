@@ -25,6 +25,23 @@ function RequestRow({
   const t = useT();
   const locale = useLocale((s) => s.locale);
   const mask = useMaskText();
+  const backend = useBoard((s) => s.backend);
+  /** owner 按「展開全文」才向 hub 讀 prompt 全文（清單只帶 300 字摘要）。 */
+  const [full, setFull] = useState<{ text: string | null; error: string | null } | null>(null);
+  const truncated = request.promptChars > [...request.promptPreview].length;
+  const loadFull = async () => {
+    if (full?.text) {
+      setFull(null);
+      return;
+    }
+    setFull({ text: null, error: null });
+    try {
+      const detail = await backend.getStaffRequest(request.id);
+      setFull({ text: detail.prompt, error: null });
+    } catch (e) {
+      setFull({ text: null, error: errorText(e) });
+    }
+  };
   const at = new Date(request.at);
   const expires = new Date(request.expiresAt).toLocaleTimeString(locale, {
     hour: '2-digit',
@@ -48,12 +65,12 @@ function RequestRow({
       </time>
       <span className="activity-text">
         {t('flows.staff.request', {
-          lead: request.leadName,
+          lead: mask(request.leadName),
           role: t(`flows.teamActivity.role.${request.role}`),
           limit: t(`flows.staff.limit.${request.limit}`),
         })}
       </span>
-      <span className="activity-team">{request.teamName}</span>
+      <span className="activity-team">{mask(request.teamName)}</span>
       <span className="activity-reason">
         {t('flows.staff.size', { size: request.teamSize, limit: request.teamLimit })}
       </span>
@@ -61,10 +78,29 @@ function RequestRow({
         {t('flows.staff.reason', { reason: mask(request.reason) })}
       </span>
       {request.name && (
-        <span className="activity-reason">{t('flows.staff.name', { name: request.name })}</span>
+        <span className="activity-reason">
+          {t('flows.staff.name', { name: mask(request.name) })}
+        </span>
       )}
       <span className="activity-reason" data-testid={`staff-request-prompt-${request.id}`}>
-        {t('flows.staff.prompt', { prompt: mask(request.promptPreview) })}
+        {t('flows.staff.prompt', { prompt: mask(full?.text ?? request.promptPreview) })}
+      </span>
+      <span className="activity-reason staff-prompt-meta">
+        <span data-testid={`staff-request-chars-${request.id}`}>
+          {t('flows.staff.chars', { n: request.promptChars })}
+        </span>
+        {owner && truncated && (
+          <button
+            type="button"
+            className="link"
+            onClick={() => void loadFull()}
+            disabled={full !== null && full.text === null && full.error === null}
+            data-testid={`staff-request-full-${request.id}`}
+          >
+            {full?.text ? t('flows.staff.collapse') : t('flows.staff.expand')}
+          </button>
+        )}
+        {full?.error && <span role="alert">{t('flows.staff.failed', { error: full.error })}</span>}
       </span>
       <span className="activity-reason">{t('flows.staff.expires', { time: expires })}</span>
       {owner && (
@@ -117,7 +153,13 @@ export function StaffRequestsSection({ owner }: { owner: boolean }) {
             : { text: t('flows.staff.rejected'), tone: 'ok' },
       );
     } catch (e) {
-      setNote({ text: t('flows.staff.failed', { error: errorText(e) }), tone: 'err' });
+      // 409 request_decided：別的分頁或別人已經處理過（或已失效），畫面還沒更新。
+      const decided = (e as { code?: unknown }).code === 'request_decided';
+      setNote(
+        decided
+          ? { text: t('flows.staff.decided'), tone: 'err' }
+          : { text: t('flows.staff.failed', { error: errorText(e) }), tone: 'err' },
+      );
     } finally {
       setBusy(false);
     }

@@ -15,6 +15,8 @@ import {
   MemberAdded,
   TEAM_ACTIVITY_KEEP,
   TeamActivity,
+  StaffActivity,
+  STAFF_ACTIVITY_KEEP,
   EMPTY_PROGRESS_FIELDS,
   ProgressFieldRevisions,
   ProgressFields,
@@ -60,6 +62,10 @@ const TEAM_HOLD_PREFIX = 'teamHold:';
 const MEMBER_ADDED_PREFIX = 'memberAdded:';
 /** 團隊動態（同上）：settings 表 `teamActivity`，新的在前，最多 TEAM_ACTIVITY_KEEP 筆。 */
 const TEAM_ACTIVITY_KEY = 'teamActivity';
+/** 加開申請的動態（CONTRACTS §23）：和團隊動態分開存，settings 表 `staffActivity`，新的在前。 */
+const STAFF_ACTIVITY_KEY = 'staffActivity';
+/** 加開申請本身（staffRequests.ts）：settings 表 `staffRequest:<id>`。getSettings 不讀（可能有很長的 prompt）。 */
+const STAFF_REQUEST_PREFIX = 'staffRequest:';
 /**
  * session 跑的是哪個 CLI（Codex 接口第一版，GM 2026-11-10）：settings 表 `sessionAgent:<sessionId>`，不升 schema。
  * 只有 Codex 才寫；沒有這個鍵＝Claude Code（舊資料都是）。
@@ -1512,18 +1518,37 @@ export class Store {
     this.addedCache = null;
   }
 
-  /** 團隊動態，新的在前。讀不懂的當沒有。 */
+  /**
+   * 團隊動態，新的在前。逐筆讀：讀不懂的那一筆略過，其他照常（將來加新種類、退回舊版時不會整份讀成空的再被蓋掉）。
+   */
   listTeamActivity(): TeamActivity[] {
-    const row = this.db
-      .prepare('SELECT value FROM settings WHERE key = ?')
-      .get(TEAM_ACTIVITY_KEY) as { value: string } | undefined;
+    return this.listEach(TEAM_ACTIVITY_KEY, TeamActivity);
+  }
+
+  /** 加開申請的動態（§23），新的在前。逐筆讀，讀不懂的略過。 */
+  listStaffActivity(): StaffActivity[] {
+    return this.listEach(STAFF_ACTIVITY_KEY, StaffActivity);
+  }
+
+  saveStaffActivity(items: readonly StaffActivity[]): void {
+    this.setRaw(STAFF_ACTIVITY_KEY, items.slice(0, STAFF_ACTIVITY_KEEP));
+  }
+
+  private listEach<T extends z.ZodTypeAny>(key: string, schema: T): z.infer<T>[] {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+      { value: string } | undefined;
     if (!row) return [];
+    let raw: unknown;
     try {
-      const parsed = z.array(TeamActivity).safeParse(JSON.parse(row.value));
-      return parsed.success ? parsed.data : [];
+      raw = JSON.parse(row.value);
     } catch {
       return [];
     }
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((item) => {
+      const parsed = schema.safeParse(item);
+      return parsed.success ? [parsed.data as z.infer<T>] : [];
+    });
   }
 
   saveTeamActivity(items: readonly TeamActivity[]): void {
@@ -1819,7 +1844,8 @@ export class Store {
       .prepare(
         `SELECT key, value FROM settings WHERE key NOT LIKE '${USAGE_KEY_PREFIX}%'
            AND key NOT LIKE '${MEMBER_ADDED_PREFIX}%' AND key != '${TEAM_ACTIVITY_KEY}'
-           AND key NOT LIKE '${SESSION_AGENT_PREFIX}%' AND key NOT LIKE '${AWAITING_LEAD_PREFIX}%'`,
+           AND key NOT LIKE '${SESSION_AGENT_PREFIX}%' AND key NOT LIKE '${AWAITING_LEAD_PREFIX}%'
+           AND key NOT LIKE '${STAFF_REQUEST_PREFIX}%' AND key != '${STAFF_ACTIVITY_KEY}'`,
       )
       .all() as {
       key: string;

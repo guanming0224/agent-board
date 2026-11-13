@@ -1605,7 +1605,7 @@ describe('加開申請：超過上限改成向使用者申請', () => {
     const created = audits('staff_request.created');
     expect(created).toHaveLength(1);
     expect(JSON.parse(created[0]!.detail)).toMatchObject({ limit: 'team_full', reason: REASON });
-    expect(hub.running.store.listTeamActivity()[0]).toMatchObject({
+    expect(hub.running.store.listStaffActivity()[0]).toMatchObject({
       kind: 'staff_requested',
       leadName: 'Lead',
       memberName: 'Parser-QA',
@@ -1614,7 +1614,7 @@ describe('加開申請：超過上限改成向使用者申請', () => {
       staffRequestId: reply.requestId,
       limit: 'team_full',
     });
-    expect(hub.running.store.listTeamActivity()[0]!.memberSessionId).toBeUndefined();
+    expect(hub.running.store.listStaffActivity()[0]!.memberSessionId).toBeUndefined();
 
     // 推播：只有隊長名稱與上限種類，不帶理由、prompt。
     await until(() => staffPushes().length === 1, 'staff push');
@@ -1680,7 +1680,7 @@ describe('加開申請：超過上限改成向使用者申請', () => {
     expect(audits('staff_request.approved')).toHaveLength(1);
     expect(audits('staff_request.approved')[0]!.userId).not.toBeNull();
     await until(() => audits('staff_request.notice_delivered').length === 1, 'delivered');
-    const activity = hub.running.store.listTeamActivity();
+    const activity = hub.running.store.listStaffActivity();
     expect(activity.find((a) => a.kind === 'staff_approved')).toMatchObject({
       memberSessionId: create.sessionId,
       memberName: 'Parser-QA',
@@ -1690,7 +1690,7 @@ describe('加開申請：超過上限改成向使用者申請', () => {
     // 通知送到後就不留在 settings 表。
     expect(hub.running.store.listRawJson('staffRequest:')).toEqual([]);
     const twice = await hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
-    expect(twice.status).toBe(404);
+    expect(twice.status).toBe(409);
     // 第一次的 session.create 已被 confirmCreate 取走：沒有第二次。
     await settle();
     expect(b.daemon.of('session.create')).toHaveLength(0);
@@ -1732,7 +1732,7 @@ describe('加開申請：超過上限改成向使用者申請', () => {
     await settle();
     expect(b.daemon.of('session.create')).toHaveLength(0);
     expect(audits('staff_request.rejected')).toHaveLength(1);
-    expect(hub.running.store.listTeamActivity()[0]).toMatchObject({ kind: 'staff_rejected' });
+    expect(hub.running.store.listStaffActivity()[0]).toMatchObject({ kind: 'staff_rejected' });
     expect(pending()).toEqual([]);
   });
 
@@ -1745,10 +1745,10 @@ describe('加開申請：超過上限改成向使用者申請', () => {
     );
     expect(audits('staff_request.expired')).toHaveLength(1);
     expect(audits('staff_request.expired')[0]!.userId).toBeNull();
-    expect(hub.running.store.listTeamActivity()[0]).toMatchObject({ kind: 'staff_expired' });
+    expect(hub.running.store.listStaffActivity()[0]).toMatchObject({ kind: 'staff_expired' });
     expect(pending()).toEqual([]);
     const late = await hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
-    expect([404, 409]).toContain(late.status);
+    expect(late.status).toBe(409);
     expect(b.daemon.of('session.create')).toHaveLength(0);
   });
 
@@ -1769,7 +1769,7 @@ describe('加開申請：超過上限改成向使用者申請', () => {
     await settle();
     expect(b.daemon.of('session.create')).toHaveLength(0);
     expect(audits('staff_request.failed')).toHaveLength(1);
-    expect(hub.running.store.listTeamActivity()[0]).toMatchObject({
+    expect(hub.running.store.listStaffActivity()[0]).toMatchObject({
       kind: 'staff_failed',
       error: 'team_held',
     });
@@ -1821,5 +1821,207 @@ describe('加開申請：超過上限改成向使用者申請', () => {
     await until(() => noticesTo(b).length === 1, 'expired notice after restart');
     expect(noticesTo(b)[0]).toMatch(/expired/);
     expect(pending()).toEqual([]);
+  });
+
+  // ── 審查後的修正（S1、W1–W3、N1–N6）────────────────────
+
+  const failedCodes = () => audits('staff_request.failed').map((a) => JSON.parse(a.detail).code);
+
+  it('S1 團隊被刪：待處理的申請直接失敗（team_deleted）、告訴隊長；之後按同意是 409、不開新團隊', async () => {
+    const { b, teamId } = await fullTeam();
+    const id = json(await askSpawn(b)).requestId as string;
+    const del = await hub.api('DELETE', `/api/teams/${teamId}`, { cookie: b.cookie });
+    expect(del.status).toBe(200);
+    expect(failedCodes()).toEqual(['team_deleted']);
+    expect(pending()).toEqual([]);
+    await until(() => noticesTo(b).length === 1, 'withdrawn notice');
+    expect(noticesTo(b)[0]).toMatch(
+      /^\[Agent Board\] Your request to add a tester member was withdrawn because the team was deleted\./,
+    );
+    const late = await hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
+    expect(late.status).toBe(409);
+    expect(hub.running.store.listTeams()).toEqual([]);
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+  });
+
+  it('S1 隊長被封存：待處理的申請直接失敗（lead_inactive）', async () => {
+    const { b } = await fullTeam();
+    json(await askSpawn(b));
+    const archived = await hub.api('PATCH', `/api/sessions/${b.caller}`, {
+      cookie: b.cookie,
+      body: { archived: true },
+    });
+    expect(archived.status).toBe(200);
+    await until(() => failedCodes().length === 1, 'failed on archive');
+    expect(failedCodes()).toEqual(['lead_inactive']);
+    expect(pending()).toEqual([]);
+    expect(hub.running.store.listStaffActivity()[0]).toMatchObject({
+      kind: 'staff_failed',
+      error: 'lead_inactive',
+    });
+  });
+
+  it('S1 隊長不再是隊長（GM 改了角色）：待處理的申請直接失敗（not_lead）', async () => {
+    const { b, teamId } = await fullTeam();
+    json(await askSpawn(b));
+    const put = await hub.api('PUT', `/api/teams/${teamId}/members/${b.caller}`, {
+      cookie: b.cookie,
+      body: { role: 'worker' },
+    });
+    expect(put.status).toBe(200);
+    expect(failedCodes()).toEqual(['not_lead']);
+    await until(() => noticesTo(b).length === 1, 'withdrawn notice');
+    expect(noticesTo(b)[0]).toMatch(/no longer the lead of that team/);
+  });
+
+  it('S1 同意時才發現團隊變了（沒經過 revalidate 的改法）：failed／team_changed，不另開團隊', async () => {
+    const { b, teamId } = await fullTeam();
+    const id = json(await askSpawn(b)).requestId as string;
+    hub.running.store.deleteTeamMember(teamId, b.caller);
+    const res = await hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
+    expect(res.body).toMatchObject({ status: 'failed', error: 'team_changed' });
+    await until(() => noticesTo(b).length === 1, 'failed notice');
+    expect(noticesTo(b)[0]).toMatch(
+      /could not be started: team_changed: You are no longer the lead/,
+    );
+    expect(hub.running.store.listTeams()).toHaveLength(1);
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+  });
+
+  it('S1 隊長帶兩隊：同意後開進申請時的那一隊，不是另一隊', async () => {
+    const { b, teamId } = await fullTeam();
+    const id = json(await askSpawn(b)).requestId as string;
+    // 之後隊長又當了另一隊（名稱排在前面，teamOf 會先挑到它）的隊長。
+    const other = await hub.api('POST', '/api/teams', {
+      cookie: b.cookie,
+      body: { name: 'Alpha', goal: '', doneCriteria: '', color: 'teal', contextMd: '' },
+    });
+    await hub.api('PUT', `/api/teams/${other.body.id}/members/${b.caller}`, {
+      cookie: b.cookie,
+      body: { role: 'lead' },
+    });
+    expect(pending().map((r) => r.id)).toEqual([id]);
+    const approve = hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
+    const create = await confirmCreate(b, 'Parser-QA');
+    expect((await approve).body).toMatchObject({ status: 'approved' });
+    const memberId = create.sessionId as string;
+    expect(hub.running.store.listTeamMembers(teamId).map((m) => m.sessionId)).toContain(memberId);
+    expect(
+      hub.running.store.listTeamMembers(other.body.id as string).map((m) => m.sessionId),
+    ).not.toContain(memberId);
+  });
+
+  it('W2 同意途中 hub 掛掉（紀錄停在 approving）：重啟後標 failed／interrupted、告訴隊長，不自動重開', async () => {
+    const { b } = await fullTeam();
+    const id = json(await askSpawn(b)).requestId as string;
+    const key = `staffRequest:${id}`;
+    const raw = hub.running.store.getRawJson(key) as Record<string, unknown>;
+    hub.running.store.setRawJson(key, { ...raw, status: 'approving', decidedBy: 'owner' });
+    expect(pending()).toEqual([]);
+    await restart(b);
+    await until(() => noticesTo(b).length === 1, 'interrupted notice');
+    expect(noticesTo(b)[0]).toMatch(/Agent Board restarted while starting it/);
+    expect(failedCodes()).toEqual(['interrupted']);
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+  });
+
+  it('W2 待處理（或同意中）時同一隊不能再申請', async () => {
+    const { b } = await fullTeam();
+    const id = json(await askSpawn(b)).requestId as string;
+    const key = `staffRequest:${id}`;
+    const raw = hub.running.store.getRawJson(key) as Record<string, unknown>;
+    hub.running.store.setRawJson(key, { ...raw, status: 'approving' });
+    const again = await askSpawn(b);
+    expect(again.text).toMatch(/^request_pending:/);
+  });
+
+  it('W3 owner 讀得到 prompt 全文與字數，一般使用者 403；prompt 超過 20,000 字回 invalid_arguments', async () => {
+    const { b } = await fullTeam();
+    const long = `Start. ${'x'.repeat(600)} End.`;
+    const id = json(await askSpawn(b, { prompt: long })).requestId as string;
+    const [summary] = pending();
+    expect(summary!.promptChars).toBe([...long].length);
+    expect(summary!.promptPreview.length).toBeLessThan(long.length);
+    const full = await hub.api('GET', `/api/staff-requests/${id}`, { cookie: b.cookie });
+    expect(full.status).toBe(200);
+    expect(full.body).toMatchObject({ id, prompt: long, promptChars: [...long].length });
+    expect(full.body).not.toHaveProperty('args');
+    const user = await hub.createMember(b.cookie, 'viewer');
+    const denied = await hub.api('GET', `/api/staff-requests/${id}`, { cookie: user.cookie });
+    expect(denied.status).toBe(403);
+    // 太長的 prompt：直接拒絕，不產生申請。
+    const huge = await ask(b, 'spawn_member', {
+      role: 'researcher',
+      prompt: 'y'.repeat(20_001),
+      reason: 'x',
+    });
+    expect(huge.text).toMatch(/^invalid_arguments: .*at most 20000 characters/);
+    // settings API 不受申請紀錄影響（getSettings 不讀 staffRequest:）。
+    const settings = await hub.api('GET', '/api/settings', { cookie: b.cookie });
+    expect(JSON.stringify(settings.body)).not.toContain('staffRequest');
+  });
+
+  it('W1 加開申請的動態和團隊動態分開存；團隊動態格式維持舊版（成員欄位必填），讀不懂的那一筆略過', async () => {
+    const { b } = await fullTeam();
+    json(await askSpawn(b));
+    expect(hub.running.store.listStaffActivity()).toHaveLength(1);
+    expect(hub.running.store.listTeamActivity()).toEqual([]);
+    // 逐筆讀：一筆壞掉的不會讓整份變空。
+    const good = {
+      id: 'a-1',
+      at: '2026-11-13T01:00:00.000Z',
+      kind: 'member_added',
+      teamId: 't',
+      teamName: 'T',
+      leadSessionId: 'l',
+      leadName: 'L',
+      memberSessionId: 'm',
+      memberName: 'M',
+      role: 'worker',
+      reason: 'r',
+      read: false,
+    };
+    hub.running.store.setRawJson('teamActivity', [{ ...good, kind: 'future_kind' }, good]);
+    expect(hub.running.store.listTeamActivity().map((a) => a.id)).toEqual(['a-1']);
+    // REST：標已讀、清除。
+    const read = await hub.api('POST', '/api/staff-activity/read', { cookie: b.cookie, body: {} });
+    expect(read.body).toEqual([expect.objectContaining({ read: true })]);
+    const cleared = await hub.api('POST', '/api/staff-activity/clear', {
+      cookie: b.cookie,
+      body: {},
+    });
+    expect(cleared.body).toEqual([]);
+  });
+
+  it('N1 通知打進去、Enter 前隊長不再等輸入：留著重送，下次等輸入時送到', async () => {
+    const { b } = await fullTeam({ handoffEnterDelayMs: 400 });
+    const id = json(await askSpawn(b)).requestId as string;
+    await hub.api('POST', `/api/staff-requests/${id}/reject`, { cookie: b.cookie });
+    await until(() => noticesTo(b).length === 1, 'first try typed');
+    await setStatus(b, b.caller, 'running');
+    await until(() => audits('staff_request.notice_retry').length === 1, 'retry recorded');
+    expect(hub.running.store.getRawJson(`staffRequest:${id}`)).toMatchObject({
+      noticeAttempts: 1,
+    });
+    await setStatus(b, b.caller, 'waiting_input');
+    await until(() => audits('staff_request.notice_delivered').length === 1, 'delivered on retry');
+    expect(noticesTo(b)).toHaveLength(2);
+    expect(hub.running.store.getRawJson(`staffRequest:${id}`)).toBeNull();
+  });
+
+  it('N5 hub 重啟時超過 24 小時的紀錄直接刪，不通知', async () => {
+    const { b } = await fullTeam();
+    const id = json(await askSpawn(b)).requestId as string;
+    const key = `staffRequest:${id}`;
+    const raw = hub.running.store.getRawJson(key) as Record<string, unknown>;
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    hub.running.store.setRawJson(key, { ...raw, at: old });
+    await restart(b);
+    expect(hub.running.store.getRawJson(key)).toBeNull();
+    await settle();
+    expect(noticesTo(b)).toEqual([]);
   });
 });

@@ -1,8 +1,9 @@
 // 收件匣的「團隊動態」（隊長自主擴編，GM 2026-11-10，CONTRACTS §11.1）：隊長新增或封存了成員。
-// 加開申請（§23）的申請、同意、拒絕、失效、開不起來也記在這裡（要處理的申請在 StaffRequests.tsx）。
+// 加開申請（§23）的申請、同意、拒絕、失效、開不起來也列在這裡（要處理的申請在 StaffRequests.tsx）：hub 分開存
+// （快照的 staffActivity，退回舊版時舊的團隊動態不受影響），這裡依時間合在一起顯示，標已讀／清除各自送回原本那份。
 // 只是告知、不需要動作，不算在「等你」裡；可以標已讀、清除。桌面抽屜（InboxBoard）與手機收件匣（InboxPage）共用。
 import { useState } from 'react';
-import type { TeamActivity } from '@agent-board/protocol';
+import type { StaffActivity, TeamActivity } from '@agent-board/protocol';
 import { useMaskText } from '../security';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
@@ -11,7 +12,11 @@ import { errorText, Msg, type Note } from './common';
 import { crossReviewHash } from '../views/overlay';
 import '../review/messages';
 
-const TEXT_KEY: Record<TeamActivity['kind'], string> = {
+/** 兩份合在一起的一筆。 */
+type Item = TeamActivity | StaffActivity;
+const isStaff = (item: Item): item is StaffActivity => item.kind.startsWith('staff_');
+
+const TEXT_KEY: Record<Item['kind'], string> = {
   member_added: 'flows.teamActivity.added',
   member_released: 'flows.teamActivity.released',
   review_requested: 'review.activity',
@@ -32,7 +37,7 @@ function ActivityRow({
   onRead,
   onClear,
 }: {
-  item: TeamActivity;
+  item: Item;
   busy: boolean;
   canvas: boolean;
   onRead: () => void;
@@ -42,13 +47,14 @@ function ActivityRow({
   const locale = useLocale((s) => s.locale);
   const mask = useMaskText();
   const at = new Date(item.at);
+  const staff = isStaff(item) ? item : null;
   const vars = {
     lead: item.leadName,
     member: item.memberName ?? '',
     role: t(`flows.teamActivity.role.${item.role}`),
     team: item.teamName,
-    limit: item.limit ? t(`flows.staff.limit.${item.limit}`) : '',
-    error: item.error ?? '',
+    limit: staff ? t(`flows.staff.limit.${staff.limit}`) : '',
+    error: staff?.error ?? '',
   };
   const memberId = item.memberSessionId;
   return (
@@ -78,7 +84,7 @@ function ActivityRow({
         {t('flows.teamActivity.reason', { reason: mask(item.reason) })}
       </span>
       <span className="activity-acts">
-        {item.kind === 'review_requested' && item.reviewId && (
+        {!staff && item.kind === 'review_requested' && item.reviewId && (
           <a
             className="link"
             href={crossReviewHash(item.reviewId)}
@@ -129,7 +135,11 @@ export function TeamActivitySection({ canvas = false }: { canvas?: boolean }) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
   const connected = useBoard((s) => s.connected);
-  const items = useBoard((s) => s.teamActivity) ?? [];
+  const team = useBoard((s) => s.teamActivity);
+  const staffItems = useBoard((s) => s.staffActivity);
+  const items: Item[] = [...(team ?? []), ...(staffItems ?? [])].sort((a, b) =>
+    b.at.localeCompare(a.at),
+  );
   const [all, setAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
@@ -169,7 +179,15 @@ export function TeamActivitySection({ canvas = false }: { canvas?: boolean }) {
               type="button"
               className="sm"
               disabled={off}
-              onClick={() => void run(() => backend.readTeamActivity())}
+              onClick={() =>
+                void run(() =>
+                  Promise.all([
+                    backend.readTeamActivity(),
+                    // 沒有加開申請的動態就不打這支（舊版 hub 沒有這條路由）。
+                    staffItems?.length ? backend.readStaffActivity() : null,
+                  ]),
+                )
+              }
               data-testid="team-activity-read-all"
             >
               {t('flows.teamActivity.markAllRead')}
@@ -179,7 +197,14 @@ export function TeamActivitySection({ canvas = false }: { canvas?: boolean }) {
             type="button"
             className="sm"
             disabled={off}
-            onClick={() => void run(() => backend.clearTeamActivity())}
+            onClick={() =>
+              void run(() =>
+                Promise.all([
+                  backend.clearTeamActivity(),
+                  staffItems?.length ? backend.clearStaffActivity() : null,
+                ]),
+              )
+            }
             data-testid="team-activity-clear-all"
           >
             {t('flows.teamActivity.clearAll')}
@@ -194,8 +219,20 @@ export function TeamActivitySection({ canvas = false }: { canvas?: boolean }) {
             item={item}
             busy={off}
             canvas={canvas}
-            onRead={() => void run(() => backend.readTeamActivity([item.id]))}
-            onClear={() => void run(() => backend.clearTeamActivity([item.id]))}
+            onRead={() =>
+              void run(() =>
+                isStaff(item)
+                  ? backend.readStaffActivity([item.id])
+                  : backend.readTeamActivity([item.id]),
+              )
+            }
+            onClear={() =>
+              void run(() =>
+                isStaff(item)
+                  ? backend.clearStaffActivity([item.id])
+                  : backend.clearTeamActivity([item.id]),
+              )
+            }
           />
         ))}
       </ol>

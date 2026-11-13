@@ -7,6 +7,9 @@ import {
   TEAM_ACTIVITY_KEEP,
   TeamActivity,
   StaffRequest,
+  StaffRequestDetail,
+  StaffActivity,
+  STAFF_ACTIVITY_KEEP,
   Broadcast,
   BROADCAST_TEXT_MAX,
   BoardHeld,
@@ -787,6 +790,13 @@ export const routes = {
     auth: 'user',
     response: z.array(StaffRequest),
   }),
+  /** 一件申請的完整內容（含 prompt 全文），owner。已處理且通知送到後紀錄刪掉＝404。 */
+  staffRequestGet: route({
+    method: 'GET',
+    path: '/api/staff-requests/:id',
+    auth: 'owner',
+    response: StaffRequestDetail,
+  }),
   staffRequestApprove: route({
     method: 'POST',
     path: '/api/staff-requests/:id/approve',
@@ -798,6 +808,23 @@ export const routes = {
     path: '/api/staff-requests/:id/reject',
     auth: 'owner',
     response: StaffRequest,
+  }),
+  /**
+   * 加開申請的動態（§23，和團隊動態分開存）：標已讀／清除，ids 沒給＝全部。回傳整份新清單；變了也推 staff.activity。
+   */
+  staffActivityRead: route({
+    method: 'POST',
+    path: '/api/staff-activity/read',
+    auth: 'user',
+    body: z.object({ ids: z.array(Id).max(STAFF_ACTIVITY_KEEP).optional() }),
+    response: z.array(StaffActivity),
+  }),
+  staffActivityClear: route({
+    method: 'POST',
+    path: '/api/staff-activity/clear',
+    auth: 'user',
+    body: z.object({ ids: z.array(Id).max(STAFF_ACTIVITY_KEEP).optional() }),
+    response: z.array(StaffActivity),
   }),
   /**
    * 交叉審查（Codex 第二輪，CONTRACTS §22）。prepare 只請 daemon 產生 diff（不跑模型），回傳檔案清單與大小；

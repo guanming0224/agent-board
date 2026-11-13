@@ -472,6 +472,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       // 團隊沒了：成員留在團隊原本的工作區（P2 §2.2）。
       for (const sessionId of memberIds) hub.leaveTeamZone(sessionId, team);
       hub.broadcastTeam(team.id);
+      // 加開申請（§23 S1）：這一隊待處理的申請直接失敗、告訴隊長。
+      hub.staffRequests.revalidate();
       return ok;
     },
     teamHold: (ctx) => hub.holdTeam(requireTeam(param(ctx)).id, ctx.body.mode, ctx.user),
@@ -508,6 +510,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
         }
       }
       store.upsertTeamMember(member);
+      // 隊長改成別的角色：它在這一隊待處理的加開申請直接失敗（§23 S1）。
+      hub.staffRequests.revalidate();
       return member;
     },
     teamMembersDelete: (ctx) => {
@@ -517,6 +521,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
         throw notFound('Team member');
       }
       hub.leaveTeamZone(sessionId, team);
+      hub.staffRequests.revalidate();
       return ok;
     },
     teamBroadcast: (ctx) =>
@@ -594,6 +599,9 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     teamActivityRead: (ctx) => hub.readTeamActivity(ctx.body.ids, ctx.user),
     // 加開申請（CONTRACTS §23）：GM 同意 → 照申請開成員；拒絕 → 告訴隊長。audit 由 StaffRequestEngine 寫。
     staffRequestList: () => hub.staffRequests.list(),
+    staffRequestGet: (ctx) => hub.staffRequests.detail(param(ctx)),
+    staffActivityRead: (ctx) => hub.readStaffActivity(ctx.body.ids, ctx.user),
+    staffActivityClear: (ctx) => hub.clearStaffActivity(ctx.body.ids, ctx.user),
     staffRequestApprove: (ctx) => hub.staffRequests.approve(param(ctx), ctx.user),
     staffRequestReject: (ctx) => hub.staffRequests.reject(param(ctx), ctx.user),
     // 交叉審查（Codex 第二輪）：GM 的動作。start 是 GM 按確認，跑模型只有這裡與隊長的 request_review（no-llm 界線）。

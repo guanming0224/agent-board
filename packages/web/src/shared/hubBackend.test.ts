@@ -148,6 +148,7 @@ describe('hubBackend 加開申請（CONTRACTS §23）', () => {
     role: 'tester',
     reason: 'Need tests.',
     promptPreview: 'Write tests.',
+    promptChars: 12,
     status: 'pending',
   });
 
@@ -168,6 +169,32 @@ describe('hubBackend 加開申請（CONTRACTS §23）', () => {
     pending[1]!.resolve(json({ ...request('b'), status: 'rejected' }));
     expect(await rejected).toMatchObject({ status: 'rejected' });
     expect(snapshot()?.staffRequests).toEqual([]);
+  });
+
+  it('加開申請的動態分開放（staff.activity），不動 teamActivity；全文走 owner 的 GET', async () => {
+    const { backend, ws, snapshot } = await connect();
+    const item = {
+      id: 'sa-1',
+      at: '2026-11-13T01:00:00.000Z',
+      kind: 'staff_requested',
+      staffRequestId: 'a',
+      teamId: 't',
+      teamName: 'Squad',
+      leadSessionId: 's-lead',
+      leadName: 'Lead',
+      role: 'tester',
+      limit: 'team_full',
+      reason: 'Need tests.',
+      read: false,
+    };
+    ws.push({ type: 'staff.activity', items: [item] });
+    expect(snapshot()?.staffActivity).toEqual([item]);
+    expect(snapshot()?.teamActivity ?? []).toEqual([]);
+    const detail = backend.getStaffRequest('a');
+    await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0));
+    expect(String(pending[0]!.body)).toContain('/api/staff-requests/a');
+    pending[0]!.resolve(json({ ...request('a'), prompt: 'Full prompt text.' }));
+    expect(await detail).toMatchObject({ prompt: 'Full prompt text.' });
   });
 });
 

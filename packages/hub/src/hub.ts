@@ -70,6 +70,7 @@ import {
   type ZoneNotEmpty,
   type TeamActivity,
   type StaffRequest,
+  type StaffActivity,
   STAFF_REQUEST_TTL_MS,
 } from '@agent-board/protocol';
 import type { z } from 'zod';
@@ -547,7 +548,8 @@ export class Hub {
       ttlMs: deps.timing.staffRequestTtlMs,
       delivery: this.delivery,
       audit: (userId, sessionId, action, detail) => this.audit(userId, sessionId, action, detail),
-      spawn: (leadId, args, bypass) => this.dispatch.spawnApproved(leadId, args, bypass),
+      spawn: (leadId, teamId, args, bypass) =>
+        this.dispatch.spawnApproved(leadId, teamId, args, bypass),
       activity: (entry) => this.recordStaffActivity(entry),
       changed: (items) => this.broadcast({ type: 'staff.requests', items }),
       notify: (request) => this.notifyStaffRequest(request),
@@ -1148,6 +1150,7 @@ export class Hub {
       teamActivity: this.store.listTeamActivity(),
       reviews: this.reviews.list(),
       staffRequests: this.staffRequests.list(),
+      staffActivity: this.store.listStaffActivity(),
     };
   }
 
@@ -1184,32 +1187,54 @@ export class Hub {
    * 推播另外送（notifyStaffRequest，只有新申請），這裡不推。
    */
   private recordStaffActivity(entry: {
-    kind: TeamActivity['kind'];
+    kind: StaffActivity['kind'];
     request: StaffRequest;
     member?: Session;
     error?: string;
   }): void {
     const { request, member } = entry;
     const memberName = member?.name ?? request.memberName ?? request.name;
-    const item: TeamActivity = {
+    const item: StaffActivity = {
       id: randomUUID(),
       at: this.nowIso(),
       kind: entry.kind,
+      staffRequestId: request.id,
       teamId: request.teamId,
       teamName: request.teamName,
       leadSessionId: request.leadSessionId,
       leadName: request.leadName,
+      role: request.role,
+      limit: request.limit,
+      reason: request.reason,
       ...(member ? { memberSessionId: member.id } : {}),
       ...(memberName ? { memberName } : {}),
-      role: request.role,
-      reason: request.reason,
-      read: false,
-      staffRequestId: request.id,
-      limit: request.limit,
       ...(entry.error ? { error: entry.error } : {}),
+      read: false,
     };
-    this.store.saveTeamActivity([item, ...this.store.listTeamActivity()]);
-    this.broadcast({ type: 'team.activity', items: this.store.listTeamActivity() });
+    this.store.saveStaffActivity([item, ...this.store.listStaffActivity()]);
+    this.broadcast({ type: 'staff.activity', items: this.store.listStaffActivity() });
+  }
+
+  /** 加開申請的動態標已讀：ids 沒給＝全部。 */
+  readStaffActivity(ids: readonly string[] | undefined, user: User): StaffActivity[] {
+    const pick = ids ? new Set(ids) : null;
+    const items = this.store
+      .listStaffActivity()
+      .map((a) => (!pick || pick.has(a.id) ? { ...a, read: true } : a));
+    this.store.saveStaffActivity(items);
+    this.audit(user.id, null, 'staff_activity.read', JSON.stringify({ ids: ids ?? 'all' }));
+    this.broadcast({ type: 'staff.activity', items });
+    return items;
+  }
+
+  /** 加開申請的動態清除：ids 沒給＝全部。 */
+  clearStaffActivity(ids: readonly string[] | undefined, user: User): StaffActivity[] {
+    const pick = ids ? new Set(ids) : null;
+    const items = pick ? this.store.listStaffActivity().filter((a) => !pick.has(a.id)) : [];
+    this.store.saveStaffActivity(items);
+    this.audit(user.id, null, 'staff_activity.clear', JSON.stringify({ ids: ids ?? 'all' }));
+    this.broadcast({ type: 'staff.activity', items });
+    return items;
   }
 
   /** 標已讀：ids 沒給＝全部。回傳新清單。 */
@@ -2040,6 +2065,10 @@ export class Hub {
     this.guarded('handoff', () => this.handoff.onSessionChange(prev, next, mayNotify && entered));
     this.guarded('auto continue', () => this.autoContinue.onSessionChange(prev, next));
     this.guarded('dispatch', () => this.dispatch.onSessionChange(prev, next));
+    // 加開申請（§23 S1）：隊長被封存或結束，它的待處理申請直接失敗。
+    if (prev.archived !== next.archived || prev.endedAt !== next.endedAt) {
+      this.guarded('staff requests', () => this.staffRequests.revalidate());
+    }
     if (next.endedAt !== null || next.archived) {
       this.roundLimits.delete(next.id);
       this.inputReady.delete(next.id);

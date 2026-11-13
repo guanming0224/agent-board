@@ -1,20 +1,22 @@
 // 加開申請（GM 2026-11-13，CONTRACTS §23）：隊長 spawn_member 碰到團隊總人數上限（team_full）或同隊 10 分鐘
 // 新增上限（spawn_rate）時，dispatch.ts 不直接拒絕，改成在這裡記一件申請，GM 在收件匣同意或拒絕。
-//   - 申請時記下完整的 spawn 參數；GM 同意 → 照參數再走一次 DispatchEngine 的 spawn，只略過申請時超過的上限
-//     （全面板暫停、全隊暫停／停止、帳號限流、設定關掉等照舊，被擋就算失敗）。
-//   - 拒絕、30 分鐘沒處理（失效）、開不起來都告訴隊長。
+//   - 申請時記下完整的 spawn 參數與團隊；GM 同意 → 照參數、開進申請時的團隊（DispatchEngine.spawnApproved），
+//     只略過申請時超過的上限（全面板暫停、全隊暫停／停止、帳號限流、設定關掉等照舊，被擋就算失敗）。
+//   - 同意時先存成 approving 再開：hub 在開的途中掛掉，重啟後一律標 failed／interrupted，不自動重試（不會開兩位）。
+//   - 拒絕、30 分鐘沒處理（失效）、開不起來、團隊被刪／隊長被封存或不再是隊長（直接失敗，不等 30 分鐘）都告訴隊長。
 //   - 送給隊長的字一律走 SafeDelivery（只在隊長等輸入時送），開頭固定 `[Agent Board]`，內容是固定英文＋名稱與代碼，
 //     不帶 Claude 寫的 prompt；推播只有隊長名稱與上限種類（不帶理由、prompt）。
 //   - 同一隊同時最多一件待處理。存在 settings 表 `staffRequest:<id>`（不升 schema）：待處理的、以及已處理但通知
-//     還沒送到隊長的；hub 重啟後重排失效計時器、重新排送通知。通知送到（或隊長已結束）就刪掉這一列。
+//     還沒送到隊長的；hub 重啟後重排失效計時器、重新排送通知（超過 24 小時的直接刪）。通知送到（或隊長已結束）就刪。
 // 中控台不呼叫模型：這裡只有固定規則與固定文字（docs/no-llm-review.md）。
 import { randomUUID } from 'node:crypto';
 import {
   STAFF_PROMPT_PREVIEW_MAX,
   StaffRequest,
   type Session,
+  type StaffActivityKind,
+  type StaffRequestDetail,
   type StaffRequestLimit,
-  type TeamActivityKind,
   type User,
 } from '@agent-board/protocol';
 import { z } from 'zod';
@@ -27,6 +29,10 @@ import type { Store } from './store';
 export const STAFF_REQUEST_PREFIX = 'staffRequest:';
 const NAME_MAX = 60;
 const MESSAGE_DETAIL_MAX = 300;
+/** 通知打進去、Enter 前隊長不再等輸入（aborted）時最多重送幾次。 */
+export const STAFF_NOTICE_MAX_ATTEMPTS = 3;
+/** hub 重啟時超過這麼久的紀錄直接刪、不通知（隊長多半早就不在那個情境了）。 */
+const RESTORE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** 存在 settings 表的樣子：給 GM 看的欄位，加上完整的 spawn 參數與還沒送到的通知。 */
 const StoredStaffRequest = StaffRequest.extend({
@@ -34,6 +40,8 @@ const StoredStaffRequest = StaffRequest.extend({
   args: z.record(z.string(), z.unknown()),
   /** 已處理、還沒送到隊長的通知（一行，`[Agent Board]` 開頭）。 */
   notice: z.string().optional(),
+  /** 通知已經被打斷（aborted）幾次。 */
+  noticeAttempts: z.number().int().nonnegative().default(0),
 });
 type StoredStaffRequest = z.infer<typeof StoredStaffRequest>;
 
@@ -50,6 +58,9 @@ const LIMIT_TEXT: Record<StaffRequestLimit, string> = {
 /** 給 GM 看的：zod 預設丟掉 schema 以外的欄位，完整參數（args）與通知（notice）不會出去。 */
 const publicView = (r: StoredStaffRequest): StaffRequest => StaffRequest.parse(r);
 
+/** 待處理（擋住同一隊的新申請）：還在等 GM，或 GM 剛按同意、正在開。 */
+const isOpen = (r: StoredStaffRequest) => r.status === 'pending' || r.status === 'approving';
+
 export interface StaffRequestDeps {
   store: Store;
   now(): Date;
@@ -57,15 +68,16 @@ export interface StaffRequestDeps {
   ttlMs: number;
   delivery: SafeDelivery;
   audit(userId: string | null, sessionId: string | null, action: string, detail: string): void;
-  /** 照申請開成員（hub 接到 DispatchEngine.spawnApproved）。 */
+  /** 照申請開成員，開進 teamId（hub 接到 DispatchEngine.spawnApproved）。 */
   spawn(
     leadId: string,
+    teamId: string,
     args: Record<string, unknown>,
     bypass: readonly StaffRequestLimit[],
   ): { member: Session } | { code: string; message: string };
-  /** 記一筆團隊動態（收件匣）。 */
+  /** 記一筆加開申請的動態（收件匣，和團隊動態分開存）。 */
   activity(entry: {
-    kind: TeamActivityKind;
+    kind: StaffActivityKind;
     request: StaffRequest;
     member?: Session;
     error?: string;
@@ -109,7 +121,7 @@ export class StaffRequestEngine implements StaffRequestPort {
     this.deps.store.setRawJson(`${STAFF_REQUEST_PREFIX}${id}`, null);
   }
 
-  /** 待處理的（舊的在前）。 */
+  /** 等 GM 處理的（舊的在前）。 */
   list(): StaffRequest[] {
     return this.all()
       .filter((r) => r.status === 'pending')
@@ -117,8 +129,16 @@ export class StaffRequestEngine implements StaffRequestPort {
   }
 
   pendingFor(teamId: string): StaffRequest | null {
-    const found = this.all().find((r) => r.status === 'pending' && r.teamId === teamId);
+    const found = this.all().find((r) => isOpen(r) && r.teamId === teamId);
     return found ? publicView(found) : null;
+  }
+
+  /** 一件的完整內容（含 prompt 全文），給 owner 看。 */
+  detail(id: string): StaffRequestDetail {
+    const request = this.get(id);
+    if (!request) throw notFound('Staff request');
+    const prompt = typeof request.args.prompt === 'string' ? request.args.prompt : '';
+    return { ...publicView(request), prompt };
   }
 
   // ── 申請 ────────────────────────────────────────────
@@ -147,8 +167,10 @@ export class StaffRequestEngine implements StaffRequestPort {
       ...(args.model ? { model: clip(args.model, 100) } : {}),
       reason,
       promptPreview: clip(args.prompt, STAFF_PROMPT_PREVIEW_MAX),
+      promptChars: [...args.prompt].length,
       status: 'pending',
       args: { ...args, reason },
+      noticeAttempts: 0,
     };
     this.save(request);
     this.deps.audit(
@@ -176,10 +198,15 @@ export class StaffRequestEngine implements StaffRequestPort {
 
   // ── GM 處理 ─────────────────────────────────────────
 
-  /** 還在等的才能處理；到期了（計時器還沒跑到）先標成失效。 */
+  /**
+   * 還在等的才能處理；到期了（計時器還沒跑到）先標成失效。已處理（含通知送到後紀錄已刪）一律 409 request_decided，
+   * 網頁顯示「已處理」。
+   */
   private pending(id: string): StoredStaffRequest {
     const request = this.get(id);
-    if (!request) throw notFound('Staff request');
+    if (!request) {
+      throw conflict('request_decided', 'This request is no longer waiting (already handled).');
+    }
     if (
       request.status === 'pending' &&
       Date.parse(request.expiresAt) <= this.deps.now().getTime()
@@ -196,57 +223,46 @@ export class StaffRequestEngine implements StaffRequestPort {
   approve(id: string, user: User): StaffRequest {
     const request = this.pending(id);
     this.clearTimer(id);
-    const decided = {
-      decidedAt: this.deps.now().toISOString(),
-      decidedBy: user.name,
-    };
+    const decided = { decidedAt: this.deps.now().toISOString(), decidedBy: user.name };
+    // 先存成 approving：開的途中 hub 掛掉，重啟後當 interrupted，不會再開一次。
+    this.save({ ...request, ...decided, status: 'approving' });
     let result: ReturnType<StaffRequestDeps['spawn']>;
     try {
-      result = this.deps.spawn(request.leadSessionId, request.args, request.limits);
+      result = this.deps.spawn(request.leadSessionId, request.teamId, request.args, request.limits);
     } catch {
-      // 意料外的錯（不是 HttpError）：當成開不起來，申請不能卡在「待處理」。
+      // 意料外的錯（不是 HttpError）：當成開不起來，申請不能卡在 approving。
       result = { code: 'internal', message: 'Agent Board could not start the member.' };
     }
-    let next: StoredStaffRequest;
-    if ('member' in result) {
-      const member = result.member;
-      next = {
-        ...request,
-        ...decided,
-        status: 'approved',
+    if (!('member' in result)) {
+      return this.failRequest(
+        { ...request, ...decided },
+        result.code,
+        `[Agent Board] The user approved your request to add a ${request.role} member, but it could not be started: ${clip(result.code, 100)}: ${clip(result.message, MESSAGE_DETAIL_MAX)}`,
+        user.id,
+      );
+    }
+    const member = result.member;
+    const next: StoredStaffRequest = {
+      ...request,
+      ...decided,
+      status: 'approved',
+      memberSessionId: member.id,
+      memberName: member.name,
+      notice: `[Agent Board] The user approved your request to add a member (${LIMIT_TEXT[request.limit]}). ${clip(member.name, NAME_MAX)} (${request.role}) has been started with your prompt; its result comes back to you as "[Result from ${clip(member.name, NAME_MAX)}] …" when it finishes its turn.`,
+    };
+    this.deps.audit(
+      user.id,
+      request.leadSessionId,
+      'staff_request.approved',
+      JSON.stringify({
+        requestId: id,
+        teamId: request.teamId,
+        limits: request.limits,
         memberSessionId: member.id,
         memberName: member.name,
-        notice: `[Agent Board] The user approved your request to add a member (${LIMIT_TEXT[request.limit]}). ${clip(member.name, NAME_MAX)} (${request.role}) has been started with your prompt; its result comes back to you as "[Result from ${clip(member.name, NAME_MAX)}] …" when it finishes its turn.`,
-      };
-      this.deps.audit(
-        user.id,
-        request.leadSessionId,
-        'staff_request.approved',
-        JSON.stringify({
-          requestId: id,
-          teamId: request.teamId,
-          limits: request.limits,
-          memberSessionId: member.id,
-          memberName: member.name,
-        }),
-      );
-      this.deps.activity({ kind: 'staff_approved', request: publicView(next), member });
-    } else {
-      next = {
-        ...request,
-        ...decided,
-        status: 'failed',
-        error: clip(result.code, 100),
-        notice: `[Agent Board] The user approved your request to add a ${request.role} member, but it could not be started: ${clip(result.code, 100)}: ${clip(result.message, MESSAGE_DETAIL_MAX)}`,
-      };
-      this.deps.audit(
-        user.id,
-        request.leadSessionId,
-        'staff_request.failed',
-        JSON.stringify({ requestId: id, teamId: request.teamId, code: result.code }),
-      );
-      this.deps.activity({ kind: 'staff_failed', request: publicView(next), error: next.error });
-    }
+      }),
+    );
+    this.deps.activity({ kind: 'staff_approved', request: publicView(next), member });
     this.finish(next);
     return publicView(next);
   }
@@ -293,6 +309,61 @@ export class StaffRequestEngine implements StaffRequestPort {
     this.finish(next);
   }
 
+  /** 標成 failed（開不起來、團隊變了、hub 中途掛掉）：記 audit 與動態、告訴隊長。 */
+  private failRequest(
+    request: StoredStaffRequest,
+    code: string,
+    notice: string,
+    userId: string | null,
+  ): StaffRequest {
+    this.clearTimer(request.id);
+    const next: StoredStaffRequest = {
+      ...request,
+      status: 'failed',
+      decidedAt: request.decidedAt ?? this.deps.now().toISOString(),
+      error: clip(code, 100),
+      notice,
+    };
+    this.deps.audit(
+      userId,
+      request.leadSessionId,
+      'staff_request.failed',
+      JSON.stringify({ requestId: request.id, teamId: request.teamId, code }),
+    );
+    this.deps.activity({ kind: 'staff_failed', request: publicView(next), error: next.error });
+    this.finish(next);
+    return publicView(next);
+  }
+
+  /**
+   * 團隊被刪、隊長被封存／結束或不再是那一隊的隊長（S1）：待處理的申請直接失敗、告訴隊長，不用等 30 分鐘。
+   * hub 在刪團隊、改團隊成員、session 封存或結束時呼叫。
+   */
+  revalidate(): void {
+    const { store } = this.deps;
+    for (const r of this.all()) {
+      if (r.status !== 'pending') continue;
+      const team = store.getTeam(r.teamId);
+      const lead = store.getSession(r.leadSessionId);
+      const why = !team
+        ? { code: 'team_deleted', text: 'the team was deleted' }
+        : !lead || lead.archived || lead.endedAt !== null
+          ? { code: 'lead_inactive', text: 'you were archived or ended' }
+          : !store
+                .listTeamMembers(team.id)
+                .some((m) => m.sessionId === r.leadSessionId && m.role === 'lead')
+            ? { code: 'not_lead', text: 'you are no longer the lead of that team' }
+            : null;
+      if (!why) continue;
+      this.failRequest(
+        r,
+        why.code,
+        `[Agent Board] Your request to add a ${r.role} member was withdrawn because ${why.text}. Nothing was started.`,
+        null,
+      );
+    }
+  }
+
   /** 已處理：存下（等通知送到才刪）、排送通知、推新的待處理清單。 */
   private finish(next: StoredStaffRequest): void {
     this.save(next);
@@ -308,25 +379,40 @@ export class StaffRequestEngine implements StaffRequestPort {
       return;
     }
     const leadId = r.leadSessionId;
-    const done = (action: string | null, reason?: string) => {
-      this.remove(r.id);
-      if (action) {
-        this.deps.audit(
-          null,
-          leadId,
-          action,
-          JSON.stringify({ requestId: r.id, ...(reason ? { reason } : {}) }),
-        );
-      }
-    };
+    const audit = (action: string, reason?: string) =>
+      this.deps.audit(
+        null,
+        leadId,
+        action,
+        JSON.stringify({ requestId: r.id, ...(reason ? { reason } : {}) }),
+      );
     this.deps.delivery.enqueue({
       key: `staff-request:${r.id}`,
       targetId: leadId,
       message: r.notice,
       check: () => null,
-      dropped: (reason) => done('staff_request.notice_dropped', reason),
-      aborted: () => done('staff_request.notice_dropped', 'target_busy'),
-      delivered: () => done('staff_request.notice_delivered'),
+      dropped: (reason) => {
+        this.remove(r.id);
+        audit('staff_request.notice_dropped', reason);
+      },
+      // 打進去了、Enter 前隊長不再等輸入：留著這一列，等它下次等輸入時重送（最多 STAFF_NOTICE_MAX_ATTEMPTS 次）。
+      aborted: () => {
+        const current = this.get(r.id);
+        const attempts = (current?.noticeAttempts ?? r.noticeAttempts) + 1;
+        if (!current || attempts >= STAFF_NOTICE_MAX_ATTEMPTS) {
+          this.remove(r.id);
+          audit('staff_request.notice_dropped', 'target_busy');
+          return;
+        }
+        const next = { ...current, noticeAttempts: attempts };
+        this.save(next);
+        audit('staff_request.notice_retry', 'target_busy');
+        this.enqueueNotice(next);
+      },
+      delivered: () => {
+        this.remove(r.id);
+        audit('staff_request.notice_delivered');
+      },
     });
   }
 
@@ -349,11 +435,26 @@ export class StaffRequestEngine implements StaffRequestPort {
     this.timers.delete(id);
   }
 
-  /** hub 啟動：待處理的重排失效計時器（已過期的馬上失效）；已處理但通知還沒送到的重新排進送字佇列。 */
+  /**
+   * hub 啟動：超過 24 小時的紀錄直接刪（不通知）；待處理的重排失效計時器（已過期的馬上失效）；
+   * 同意途中掛掉的（approving）標 failed／interrupted 並告訴隊長、不重試；已處理但通知還沒送到的重新排送。
+   */
   restore(): void {
+    const now = this.deps.now().getTime();
     for (const r of this.all()) {
+      if (now - Date.parse(r.at) > RESTORE_MAX_AGE_MS) {
+        this.remove(r.id);
+        continue;
+      }
       if (r.status === 'pending') this.schedule(r);
-      else this.enqueueNotice(r);
+      else if (r.status === 'approving') {
+        this.failRequest(
+          r,
+          'interrupted',
+          `[Agent Board] The user approved your request to add a ${r.role} member, but Agent Board restarted while starting it, so it may not have been started. Check list_members before asking again.`,
+          null,
+        );
+      } else this.enqueueNotice(r);
     }
   }
 

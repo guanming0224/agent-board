@@ -1067,10 +1067,13 @@ start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀�
 - **只有已經有團隊的隊長**：還沒有團隊（第一次開人）時理論上不會超限；真的碰到（例如團隊剛被刪）照舊回 `team_full`／`spawn_rate_limit`。
 - **同一隊同時最多一件待處理**：已有一件時再超限回 `request_pending`（錯誤，記 audit `dispatch.blocked`、reason `request_pending`），不記新申請、**不再推播**。
 - **兩道都超過**：`limit` 是 `team_full`，`limits` 兩個都列；同意時兩道都略過。
-- **申請時記下完整的 spawn 參數**（role、prompt、reason、name、permissionMode、useWorktree、model、agent，和原本 `spawn_member` 一樣），同意時照用，不再問隊長。
-- **同意**：hub 用申請時的參數再走一次 `DispatchEngine.spawn`（`spawnApproved`），**只略過 `limits` 裡的上限**；其他擋法照舊（全部暫停、全隊暫停／停止、帳號限流、設定關、派工關、隊長已封存／結束、機器離線、`hub.createSession` 的錯…），又碰到別道上限也照舊擋。被擋＝申請 `failed`，`error` 是代碼，告訴隊長原因。開好＝申請 `approved`，成員和一般 `spawn_member` 開的完全一樣（`dispatch.spawn` audit、session 事件、`member_added` 團隊動態與推播、派工工作記在隊長名下，結果照常 `[Result from …]` 送回隊長、算進 10 分鐘頻率）。
+- **申請時記下完整的 spawn 參數與團隊**（role、prompt、reason、name、permissionMode、useWorktree、model、agent，和原本 `spawn_member` 一樣；`teamId`），同意時照用，不再問隊長。`spawn_member` 的 prompt 上限 20,000 字（`SPAWN_PROMPT_MAX`，超過回 `invalid_arguments`，不產生申請；送進成員時仍照 §11 的 4000 字截斷）。
+- **同意**：先把紀錄存成 `approving`，再用申請時的參數、**開進申請時的團隊**（`spawnApproved(leadId, teamId, …)`）走一次 `DispatchEngine` 的開成員流程，**只略過 `limits` 裡的上限**。開始前確認那一隊還在、呼叫者還是它的隊長，否則 `failed`／`team_changed`（絕不另開新團隊；隊長帶多隊時也不會開進別隊）。其他擋法照舊（全部暫停、全隊暫停／停止、帳號限流、設定關、派工關、隊長已封存／結束、機器離線、`hub.createSession` 的錯…），又碰到別道上限也照舊擋。被擋＝申請 `failed`，`error` 是代碼，告訴隊長原因。開好＝申請 `approved`，成員和一般 `spawn_member` 開的完全一樣（`dispatch.spawn` audit、session 事件、`member_added` 團隊動態與推播、派工工作記在隊長名下，結果照常 `[Result from …]` 送回隊長、算進 10 分鐘頻率）。
 - **拒絕**：不開，告訴隊長。
-- **失效**：`expiresAt`（申請時間＋30 分鐘，`STAFF_REQUEST_TTL_MS`；hub `Timing.staffRequestTtlMs` 測試縮短）到了還沒處理 → `expired`，告訴隊長。到期後才按同意／拒絕 → 409 `request_decided`（或 404，見 23.3）。
+- **團隊或隊長變了**（審查 S1）：團隊被刪（REST `teamsDelete`）、團隊成員被改（`teamMembersPut`／`teamMembersDelete`，隊長不再是 `lead`）、隊長被封存或結束時，hub 重新檢查（`StaffRequestEngine.revalidate`），這一隊待處理的申請直接 `failed`（`team_deleted`／`not_lead`／`lead_inactive`），告訴隊長「was withdrawn because …」，不用等 30 分鐘。沒經過這些路的變動（例如直接改資料庫），同意時的 `team_changed` 檢查兜底。
+- **同意途中 hub 掛掉**（審查 W2）：重啟時還是 `approving` 的一律 `failed`／`interrupted`，告訴隊長「Agent Board restarted while starting it, so it may not have been started. Check list_members before asking again.」，**不自動重試**（避免開兩位）。`approving` 也算「同一隊待處理」，擋新申請。
+- **失效**：`expiresAt`（申請時間＋30 分鐘，`STAFF_REQUEST_TTL_MS`；hub `Timing.staffRequestTtlMs` 測試縮短）到了還沒處理 → `expired`，告訴隊長。到期後或已處理後才按同意／拒絕 → 409 `request_decided`（紀錄已刪也一樣回 409，網頁顯示「已經處理過」）。
+- **同意後的動態**：開好的成員和一般 `spawn_member` 一樣會記一筆團隊動態 `member_added`（推播設定開著時也會有一則「新增了成員」推播），另外加開申請的動態記一筆 `staff_approved`，所以收件匣會看到兩筆。
 
 ### 23.2 給隊長的字
 
@@ -1082,27 +1085,33 @@ start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀�
   - 同意但開不起來：`[Agent Board] The user approved your request to add a <role> member, but it could not be started: <代碼>: <原因（固定英文，300 字截斷）>`
   - 拒絕：`[Agent Board] The user rejected your request to add a <role> member. Nothing was started. Continue with your current members (send_task) or do the work yourself.`
   - 失效：`[Agent Board] Your request to add a <role> member expired: the user did not answer within 30 minutes. Nothing was started. …`
+  - 團隊或隊長變了：`[Agent Board] Your request to add a <role> member was withdrawn because the team was deleted|you were archived or ended|you are no longer the lead of that team. Nothing was started.`
+  - hub 中途重啟：見 23.1。
+- 通知打進去、按 Enter 前隊長不再等輸入（SafeDelivery 的 `aborted`）時，紀錄留著、`noticeAttempts` 加一、重新排隊，等隊長下次等輸入時重送；最多 3 次（`STAFF_NOTICE_MAX_ATTEMPTS`），之後放棄（audit `staff_request.notice_dropped`、reason `target_busy`）。注意：被打斷的那一次文字可能留在隊長的輸入框（同 SafeDelivery 的既有行為）。
 - 守則（`protocol/src/leadGuide.ts`）：`LEAD_STAFFING_RHYTHM` 多一段「上限與申請」、`TEAM_FULL_GUIDE` 說滿了再開會變成申請、`spawn_member` 工具說明改寫。
 
 ### 23.3 資料與 API
 
-- 型別（`protocol/src/models.ts`）：`StaffRequest { id, at, expiresAt, teamId, teamName, leadSessionId, leadName, limit, limits, teamSize, teamLimit, role, name?, agent?, permissionMode?, useWorktree?, model?, reason, promptPreview, status: pending|approved|rejected|expired|failed, decidedAt?, decidedBy?, memberSessionId?, memberName?, error? }`。`promptPreview` 是 prompt 的一行、前 300 字（`STAFF_PROMPT_PREVIEW_MAX`）；完整 prompt 只存在 hub。
-- 持久化：**不升 schema（仍是 v11）**。settings 表 `staffRequest:<id>`，值是 `StaffRequest` 加 `args`（完整 spawn 參數）與 `notice`（還沒送到的通知）。待處理的一直留著；處理後（同意／拒絕／失效／失敗）留到通知送到隊長（或隊長已結束、通知被丟掉）就刪。hub 啟動時（`StaffRequestEngine.restore`）待處理的重排失效計時器（已過期的馬上失效）、已處理但通知還沒送到的重新排進送字佇列。讀不懂的列略過。
+- 型別（`protocol/src/models.ts`）：`StaffRequest { id, at, expiresAt, teamId, teamName, leadSessionId, leadName, limit, limits, teamSize, teamLimit, role, name?, agent?, permissionMode?, useWorktree?, model?, reason, promptPreview, promptChars, status: pending|approving|approved|rejected|expired|failed, decidedAt?, decidedBy?, memberSessionId?, memberName?, error? }`。`promptPreview` 是 prompt 的一行、前 300 字（`STAFF_PROMPT_PREVIEW_MAX`），`promptChars` 是全文字數；全文用 `StaffRequestDetail`（多 `prompt`）。
+- 持久化：**不升 schema（仍是 v11）**。settings 表 `staffRequest:<id>`，值是 `StaffRequest` 加 `args`（完整 spawn 參數）、`notice`（還沒送到的通知）、`noticeAttempts`。待處理的一直留著；處理後（同意／拒絕／失效／失敗）留到通知送到隊長（或隊長已結束、通知被丟掉）就刪。hub 啟動時（`StaffRequestEngine.restore`）：`at` 超過 24 小時的直接刪、不通知；待處理的重排失效計時器（已過期的馬上失效）；`approving` 的標 `interrupted`（見 23.1）；已處理但通知還沒送到的重新排進送字佇列。讀不懂的列略過。`getSettings` 不讀 `staffRequest:*` 與 `staffActivity`（不會每次讀設定都 parse 長 prompt）。
 - REST（`protocol/src/rest.ts`）：
   - `GET /api/staff-requests`（user）：待處理的，舊的在前。
+  - `GET /api/staff-requests/:id`（owner）：`StaffRequestDetail`，含 prompt 全文；紀錄已刪 → 404。
   - `POST /api/staff-requests/:id/approve`（owner）：同意並開；回處理後的 `StaffRequest`（`approved` 或 `failed`＋`error`）。
   - `POST /api/staff-requests/:id/reject`（owner）：拒絕；回 `rejected` 的 `StaffRequest`。
-  - 不認得（含已處理且通知已送到、紀錄已刪）→ 404 `not_found`；已處理或已到期 → 409 `request_decided`。
-- WebSocket：`board.state.staffRequests`（待處理的；舊版 hub 不送＝空）；變了推 `{ type: 'staff.requests', items }`（整份）。
-- 團隊動態（`TeamActivity`）多五種：`staff_requested`、`staff_approved`（`memberSessionId`／`memberName` 是開出來的成員）、`staff_rejected`、`staff_expired`、`staff_failed`（`error` 代碼），都帶 `staffRequestId`、`limit`；這幾種的 `memberSessionId` 可能沒有（`memberSessionId`、`memberName` 改成 optional）。注意：退回舊版 hub 時舊版讀不懂這幾種，整份團隊動態會當成空的（未驗證，資料不會壞，新版再讀得回來）。
-- audit（全部 `session_id` 是隊長）：`staff_request.created`（user null；detail：requestId、teamId、limit、limits、role、reason、teamSize、teamLimit）、`staff_request.approved`（GM；memberSessionId、memberName）、`staff_request.rejected`（GM）、`staff_request.expired`（user null）、`staff_request.failed`（GM；code）、`staff_request.notice_delivered`／`staff_request.notice_dropped`（通知送到／沒送到）。開好的成員另有原本的 `dispatch.spawn`。
+  - 同意／拒絕：已處理、已到期、或紀錄已刪（處理完、通知送到後就刪）→ 409 `request_decided`。
+  - `POST /api/staff-activity/read`、`/clear`（user，body `{ ids? }`）：加開申請的動態標已讀／清除，回整份新清單。
+- WebSocket：`board.state.staffRequests`（待處理的）與 `board.state.staffActivity`（加開申請的動態，新的在前）；舊版 hub 不送＝空。變了推 `{ type: 'staff.requests', items }`、`{ type: 'staff.activity', items }`（整份）。
+- **加開申請的動態和團隊動態分開存**（審查 W1）：`StaffActivity { id, at, kind: staff_requested|staff_approved|staff_rejected|staff_expired|staff_failed, staffRequestId, teamId, teamName, leadSessionId, leadName, role, limit, reason, memberSessionId?, memberName?, error?, read }`，存在 settings 表 `staffActivity`（最多 100 筆，`STAFF_ACTIVITY_KEEP`）。`TeamActivity` 的格式和 0.1.8 完全一樣（成員欄位必填、只有原本三種）。網頁把兩份依時間合在一起顯示，標已讀／清除各自送回原本那份。
+- **退回舊版的相容性**（審查 W1，2026-11-13 用 `dec9f93` 的 protocol 實際檢查過）：舊版 `HubToClient` 的 `board.state` 沒有 `.strict()`，zod 預設把不認得的 `staffRequests`、`staffActivity` 丟掉，快照照常解析；舊版收到 `staff.requests`／`staff.activity` 這兩種 WS 訊息時 `safeParse` 失敗、直接略過（舊版 `hubBackend.ts` 只處理解析成功的）；`teamActivity` 仍是舊格式，舊版 hub 讀得懂。舊版 `getSettings` 會讀到 `staffRequest:*`／`staffActivity` 列但會被 `Settings` schema 濾掉。新版 `listTeamActivity` 改成逐筆 `safeParse`，將來再加種類時讀不懂的那一筆略過、其他照常。
+- audit（全部 `session_id` 是隊長）：`staff_request.created`（user null；detail：requestId、teamId、limit、limits、role、reason、teamSize、teamLimit）、`staff_request.approved`（GM；memberSessionId、memberName）、`staff_request.rejected`（GM）、`staff_request.expired`（user null）、`staff_request.failed`（GM；code）（失敗也可能是 user null：`team_deleted`、`not_lead`、`lead_inactive`、`interrupted`）、`staff_request.notice_delivered`／`staff_request.notice_retry`／`staff_request.notice_dropped`（通知送到／被打斷要重送／放棄）、`staff_activity.read`／`staff_activity.clear`。開好的成員另有原本的 `dispatch.spawn`。
 - 推播（只有新申請，不併進合併通知、不看 `autoStaff.push`，看一般的推播開關與勿擾時段）：`{ kind: 'staff_request', requestId, lead, limit, at }`。`sw.js` 顯示固定文字「加開申請／<隊長> 請求加開成員（超過人數上限）」或「（10 分鐘內新增太多）」，英文「Member request／<lead> asks to add a member (…)」，點了開收件匣；**不帶理由、prompt**（同 §11.7 推播不帶 Claude 寫的字）。同意、拒絕、失效不推播。
 
 ### 23.4 網頁
 
-- 收件匣（桌面抽屜 `InboxBoard`、手機 `InboxPage`）在交叉審查與團隊動態上面多一區「加開申請」（`flows/StaffRequests.tsx`，`data-testid="staff-requests"`），沒有待處理時不顯示。每件顯示：隊長、角色、上限種類、團隊、目前人數／上限、理由、指定名稱、prompt 摘要、失效時間；理由與 prompt 摘要經遮蔽模式（`useMaskText`）。
-- 「同意並開成員」（`.primary.act`）與「拒絕」（`.act`）只有 owner 看得到（不是 owner 顯示「只有擁有者能同意或拒絕」）。桌面標準 36px，手機 `.act` 56px（STYLE §5.1）。按下後顯示結果（已開好 <名稱>／開不起來（代碼）／已拒絕）。
-- 團隊動態列出五種 staff 事件；`staff_approved` 在桌面有「在畫布上看」。
+- 收件匣（桌面抽屜 `InboxBoard`、手機 `InboxPage`）在交叉審查與團隊動態上面多一區「加開申請」（`flows/StaffRequests.tsx`，`data-testid="staff-requests"`），沒有待處理時不顯示。每件顯示：隊長、角色、上限種類、團隊、目前人數／上限、理由、指定名稱、prompt 摘要與「共 N 字」、失效時間；摘要比全文短時 owner 有「展開全文」（讀 `GET /api/staff-requests/:id`）、再按「收合」。理由、prompt、隊長名稱、團隊名稱、指定名稱都經遮蔽模式（`useMaskText`）。
+- 「同意並開成員」（`.primary.act`）與「拒絕」（`.act`）只有 owner 看得到（不是 owner 顯示「只有擁有者能同意或拒絕」）。桌面標準 36px，手機 `.act` 56px（STYLE §5.1）。按下後顯示結果（已開好 <名稱>／開不起來（代碼）／已拒絕）；hub 回 409 `request_decided` 時顯示「這件申請已經處理過（或已失效）」。
+- 團隊動態區把 `teamActivity` 與 `staffActivity` 合在一起列（五種 staff 事件）；`staff_approved` 在桌面有「在畫布上看」。
 
 ### 23.5 不呼叫模型
 

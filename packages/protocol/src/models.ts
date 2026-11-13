@@ -510,21 +510,7 @@ export type TeamMember = z.infer<typeof TeamMember>;
  * 只是告知、不需要動作；可以標已讀、清除。存在 settings 表 `teamActivity`（最多 `TEAM_ACTIVITY_KEEP` 筆，舊的先丟）。
  */
 /** review_requested：隊長用 `request_review` 要求交叉審查（Codex 第二輪；成員欄位是審查對象，分支審查時是隊長自己）。 */
-/**
- * staff_*：加開申請（CONTRACTS §23，GM 2026-11-13）。隊長超過上限時提出申請（staff_requested）、GM 同意後開好
- * （staff_approved，成員欄位是開出來的成員）、GM 拒絕（staff_rejected）、30 分鐘沒處理失效（staff_expired）、
- * GM 同意了但開不起來（staff_failed，`error` 是代碼）。除了 staff_approved，成員欄位可能沒有（成員還不存在）。
- */
-export const TeamActivityKind = z.enum([
-  'member_added',
-  'member_released',
-  'review_requested',
-  'staff_requested',
-  'staff_approved',
-  'staff_rejected',
-  'staff_expired',
-  'staff_failed',
-]);
+export const TeamActivityKind = z.enum(['member_added', 'member_released', 'review_requested']);
 export type TeamActivityKind = z.infer<typeof TeamActivityKind>;
 export const TeamActivity = z.object({
   id: Id,
@@ -534,20 +520,14 @@ export const TeamActivity = z.object({
   teamName: z.string(),
   leadSessionId: Id,
   leadName: z.string(),
-  /** 加開申請（staff_*，staff_approved 除外）時可能沒有：成員還不存在。其他種類一定有。 */
-  memberSessionId: Id.optional(),
-  /** staff_*：隊長指定的名稱（沒指定就沒有）或開出來的成員名稱。 */
-  memberName: z.string().optional(),
+  memberSessionId: Id,
+  memberName: z.string(),
   role: TeamRole,
   /** 隊長給的理由（Claude 寫的一句，已清控制字元、截斷）。 */
   reason: z.string(),
   read: z.boolean(),
   /** review_requested 的審查 id（點了開結果）。 */
   reviewId: Id.optional(),
-  /** staff_*：哪一件加開申請、碰到哪一道上限；staff_failed 的失敗代碼。 */
-  staffRequestId: Id.optional(),
-  limit: z.enum(['team_full', 'spawn_rate']).optional(),
-  error: z.string().max(100).optional(),
 });
 export type TeamActivity = z.infer<typeof TeamActivity>;
 export const TEAM_ACTIVITY_KEEP = 100;
@@ -555,16 +535,27 @@ export const TEAM_ACTIVITY_KEEP = 100;
 /**
  * 加開申請（CONTRACTS §23，GM 2026-11-13）：隊長 `spawn_member` 碰到團隊總人數上限（team_full）或同隊 10 分鐘新增
  * 上限（spawn_rate）時，不直接拒絕，改成向 GM 申請。GM 在收件匣同意 → hub 照申請時記下的參數開成員（只略過觸發申請的
- * 上限）；拒絕或 30 分鐘沒處理（失效）→ 告訴隊長。同一隊同時最多一件待處理。存在 settings 表 `staffRequest:<id>`，不升 schema。
+ * 上限）；拒絕、30 分鐘沒處理（失效）或開不起來 → 告訴隊長。同一隊同時最多一件待處理。存在 settings 表
+ * `staffRequest:<id>`，不升 schema。
  */
 export const StaffRequestLimit = z.enum(['team_full', 'spawn_rate']);
 export type StaffRequestLimit = z.infer<typeof StaffRequestLimit>;
-export const StaffRequestStatus = z.enum(['pending', 'approved', 'rejected', 'expired', 'failed']);
+/** approving：GM 按了同意、正在開（hub 在這時掛掉，重啟後一律當 failed／interrupted，不自動重試）。 */
+export const StaffRequestStatus = z.enum([
+  'pending',
+  'approving',
+  'approved',
+  'rejected',
+  'expired',
+  'failed',
+]);
 export type StaffRequestStatus = z.infer<typeof StaffRequestStatus>;
 /** 沒處理多久失效。 */
 export const STAFF_REQUEST_TTL_MS = 30 * 60 * 1000;
-/** 收件匣顯示的 prompt 摘要長度（字元）。完整的 prompt 只存在 hub，同意時照用。 */
+/** 收件匣清單裡的 prompt 摘要長度（字元）。全文用 GET /api/staff-requests/:id（owner）讀。 */
 export const STAFF_PROMPT_PREVIEW_MAX = 300;
+/** spawn_member 的 prompt 上限（字元）；超過回 invalid_arguments（送進成員時仍照原本截斷）。 */
+export const SPAWN_PROMPT_MAX = 20_000;
 export const StaffRequest = z.object({
   id: Id,
   at: IsoTime,
@@ -592,6 +583,8 @@ export const StaffRequest = z.object({
   reason: z.string(),
   /** 隊長寫的 prompt 的開頭（一行、截斷到 STAFF_PROMPT_PREVIEW_MAX）。 */
   promptPreview: z.string(),
+  /** prompt 全文的字數（UI 標「共 N 字」）。 */
+  promptChars: z.number().int().nonnegative(),
   status: StaffRequestStatus,
   decidedAt: IsoTime.optional(),
   /** 同意、拒絕的使用者名稱（失效時沒有）。 */
@@ -599,10 +592,50 @@ export const StaffRequest = z.object({
   /** approved：開出來的成員。 */
   memberSessionId: Id.optional(),
   memberName: z.string().optional(),
-  /** failed：開不起來的代碼（例如 board_paused、team_held）。 */
+  /** failed：代碼（例如 board_paused、team_held、team_changed、interrupted）。 */
   error: z.string().optional(),
 });
 export type StaffRequest = z.infer<typeof StaffRequest>;
+/** GET /api/staff-requests/:id（owner）：加上 prompt 全文。 */
+export const StaffRequestDetail = StaffRequest.extend({ prompt: z.string() });
+export type StaffRequestDetail = z.infer<typeof StaffRequestDetail>;
+
+/**
+ * 加開申請的動態（§23）：申請、同意（成員欄位是開出來的成員）、拒絕、失效、開不起來。
+ * 和 `TeamActivity` 分開存（settings 表 `staffActivity`、快照的 `staffActivity`）：0.1.8 以前的 hub／網頁對整份
+ * teamActivity 做 safeParse，多出不認得的種類會讓整份讀成空的；分開存，退回舊版時舊的團隊動態不受影響。
+ * 網頁把兩份合在一起顯示。
+ */
+export const StaffActivityKind = z.enum([
+  'staff_requested',
+  'staff_approved',
+  'staff_rejected',
+  'staff_expired',
+  'staff_failed',
+]);
+export type StaffActivityKind = z.infer<typeof StaffActivityKind>;
+export const StaffActivity = z.object({
+  id: Id,
+  at: IsoTime,
+  kind: StaffActivityKind,
+  staffRequestId: Id,
+  teamId: Id,
+  teamName: z.string(),
+  leadSessionId: Id,
+  leadName: z.string(),
+  role: TeamRole,
+  limit: StaffRequestLimit,
+  /** 隊長給的理由。 */
+  reason: z.string(),
+  /** staff_approved：開出來的成員；其他：隊長指定的名稱（沒指定就沒有）。 */
+  memberSessionId: Id.optional(),
+  memberName: z.string().optional(),
+  /** staff_failed 的代碼。 */
+  error: z.string().max(100).optional(),
+  read: z.boolean(),
+});
+export type StaffActivity = z.infer<typeof StaffActivity>;
+export const STAFF_ACTIVITY_KEEP = 100;
 
 /** 審查退回幾次就停下等使用者（GM 2026-11-06）。 */
 export const TASK_REJECT_LIMIT = 3;

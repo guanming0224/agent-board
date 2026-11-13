@@ -27,6 +27,7 @@ import {
 import type {
   TeamActivity,
   StaffRequest,
+  StaffActivity,
   Approval,
   AuditEntry,
   BoardHeld,
@@ -575,7 +576,7 @@ export interface FakeBackendControls {
     patch: Partial<Pick<ProgressCard, 'updatedAt'>> & { facts?: Partial<ProgressFacts> },
   ): void;
   /** 模擬隊長超過上限、hub 記了一件加開申請（CONTRACTS §23）。 */
-  addStaffRequest(request: StaffRequest): void;
+  addStaffRequest(request: StaffRequest & { prompt?: string }): void;
 }
 
 /** 假隊長的回覆，請隊長拆解在 demo 模式下也能走完。帶 role 的照縮寫指派，最後一項沒標。 */
@@ -664,7 +665,11 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   ];
   /** 待處理的加開申請（§23）。demo 一開始沒有；測試用 addStaffRequest 加。 */
   let staffRequests: StaffRequest[] = [];
-  /** 假的處理：拿掉待處理的那一件、記一筆團隊動態（不真的開 session）。 */
+  /** 申請的 prompt 全文（getStaffRequest）；沒給就用摘要。 */
+  const staffPrompts = new Map<string, string>();
+  /** 加開申請的動態（和團隊動態分開存，同 hub）。 */
+  let staffActivity: StaffActivity[] = [];
+  /** 假的處理：拿掉待處理的那一件、記一筆加開申請的動態（不真的開 session）。 */
   const decideStaff = (id: string, approve: boolean): StaffRequest => {
     const request = staffRequests.find((r) => r.id === id);
     if (!request) throw apiError(409, 'request_decided', 'This request is already decided.');
@@ -678,23 +683,23 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       decidedBy: demoUser.name,
       ...(approve ? { memberName } : {}),
     };
-    teamActivity = [
+    staffActivity = [
       {
         id: crypto.randomUUID(),
         at,
         kind: approve ? 'staff_approved' : 'staff_rejected',
+        staffRequestId: request.id,
         teamId: request.teamId,
         teamName: request.teamName,
         leadSessionId: request.leadSessionId,
         leadName: request.leadName,
-        ...(approve ? { memberName } : {}),
         role: request.role,
-        reason: request.reason,
-        read: false,
-        staffRequestId: request.id,
         limit: request.limit,
+        reason: request.reason,
+        ...(approve ? { memberName } : {}),
+        read: false,
       },
-      ...teamActivity,
+      ...staffActivity,
     ];
     publish();
     return decided;
@@ -824,6 +829,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     teamActivity,
     reviews: fakeReviews.list(),
     staffRequests,
+    staffActivity,
   });
   /** 假的送字：打進終端機、對象開始工作。 */
   const typeInto = (s: Session, text: string) => {
@@ -1554,6 +1560,23 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     },
     approveStaffRequest: async (id) => decideStaff(id, true),
     rejectStaffRequest: async (id) => decideStaff(id, false),
+    async getStaffRequest(id) {
+      const request = staffRequests.find((r) => r.id === id);
+      if (!request) throw apiError(404, 'not_found', 'Staff request not found');
+      return { ...request, prompt: staffPrompts.get(id) ?? request.promptPreview };
+    },
+    async readStaffActivity(ids) {
+      staffActivity = staffActivity.map((a) =>
+        !ids || ids.includes(a.id) ? { ...a, read: true } : a,
+      );
+      publish();
+      return staffActivity;
+    },
+    async clearStaffActivity(ids) {
+      staffActivity = ids ? staffActivity.filter((a) => !ids.includes(a.id)) : [];
+      publish();
+      return staffActivity;
+    },
     getReview: (id) => fakeReviews.get(id),
     prepareReview: (target, reason) => fakeReviews.prepare(target, reason),
     startReview: (id) => fakeReviews.start(id),
@@ -1869,7 +1892,9 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       }
     },
     addStaffRequest(request) {
-      staffRequests = [...staffRequests, request];
+      const { prompt, ...rest } = request;
+      if (prompt !== undefined) staffPrompts.set(rest.id, prompt);
+      staffRequests = [...staffRequests, rest];
       publish();
     },
     patchProgress(owner, patch) {
