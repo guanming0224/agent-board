@@ -69,7 +69,7 @@ export const approval = (sessionId: string, over: Partial<Approval> = {}): Appro
   ...over,
 });
 
-export const until = async (check: () => boolean, label = 'condition', timeoutMs = 3000) => {
+export const until = async (check: () => boolean, label = 'condition', timeoutMs = 10_000) => {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${label}`);

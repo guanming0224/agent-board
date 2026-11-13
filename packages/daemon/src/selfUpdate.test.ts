@@ -236,7 +236,7 @@ describe('SelfUpdater', () => {
     const same = harness({ hostProtocol: 1 });
     same.setStatuses(['running']);
     same.updater.onTarget(target(), false);
-    await settle();
+    await until(() => same.spawned.length > 0);
     expect(same.spawned).toHaveLength(1);
     same.updater.dispose();
   });
@@ -255,7 +255,7 @@ describe('SelfUpdater', () => {
     const h = harness({ bundledNode: '24.22.2', nodeBin: '/usr/local/bin/node' });
     h.setStatuses(['running']);
     h.updater.onTarget(target(), false);
-    await settle();
+    await until(() => h.spawned.length > 0);
     expect(h.spawned).toHaveLength(1);
     expect(h.spawned[0]!.node).toBe('/usr/local/bin/node');
     h.updater.dispose();
@@ -265,7 +265,7 @@ describe('SelfUpdater', () => {
     rmSync(join(data, 'update-state.json'), { force: true });
     const plain = harness();
     plain.updater.onTarget(target(), false);
-    await settle();
+    await until(() => plain.spawned.length > 0);
     expect(plain.spawned[0]!.node).toBeUndefined();
     plain.updater.dispose();
   });
@@ -303,7 +303,7 @@ describe('SelfUpdater', () => {
     await settle();
     expect(h.fetches).toEqual([]);
     h.updater.onTarget(target(), true);
-    await settle();
+    await until(() => h.spawned.length > 0);
     expect(h.spawned).toHaveLength(1);
   });
 
@@ -383,7 +383,7 @@ describe('SelfUpdater：卡住的狀態（S1）', () => {
     await settle();
     expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
     h.updater.onTarget(target(), false);
-    await settle();
+    await until(() => h.spawned.length > 0);
     expect(h.spawned).toHaveLength(1);
     h.updater.dispose();
   });
@@ -650,7 +650,7 @@ describe('SelfUpdater：延後', () => {
   it('更新程式因 session 忙碌寫成 deferred/host_busy：照延後規則再試（W5）', async () => {
     const h = harness({ deferRetryMs: 200 });
     h.updater.onTarget(target(), false);
-    await settle();
+    await until(() => h.spawned.length > 0);
     expect(h.spawned).toHaveLength(1);
     // 更新程式（假的）把狀態寫成延後。
     await writeUpdateState(
@@ -708,7 +708,7 @@ describe('SelfUpdater：手動回滾後的保險（M1）', () => {
     await settle();
     expect(h.fetches).toEqual([]);
     h.updater.onTarget(target(), true);
-    await settle();
+    await until(() => h.spawned.length > 0);
     expect(h.spawned).toHaveLength(1);
     h.updater.dispose();
   });
