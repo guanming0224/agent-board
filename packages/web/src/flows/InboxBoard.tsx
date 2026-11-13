@@ -35,6 +35,7 @@ import { SessionReviewCards } from './ReviewCards';
 import { badgeCode, StatusBadge } from './StatusBadge';
 import { DenyForm } from './DenyForm';
 import { TeamActivitySection } from './TeamActivity';
+import { StaffRequestsSection } from './StaffRequests';
 import { ReviewInboxSection } from '../review/ReviewInbox';
 import { summarizeTool } from './toolView';
 import {
@@ -827,6 +828,7 @@ export function InboxBoard({
           </div>
         </>
       )}
+      <StaffRequestsSection owner={me.data?.role === 'owner'} />
       <ReviewInboxSection />
       <TeamActivitySection canvas />
       <DecisionHistory me={me} />

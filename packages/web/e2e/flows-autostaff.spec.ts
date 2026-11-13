@@ -116,3 +116,133 @@ test.describe('Team activity (English)', () => {
     );
   });
 });
+
+// ── 加開申請（GM 2026-11-13，CONTRACTS §23）：隊長超過上限時向 GM 申請，收件匣同意／拒絕 ──
+
+const REQUEST_ID = 'staff-demo-1';
+
+/** 模擬 hub 記了一件加開申請（假後端的 addStaffRequest）。 */
+async function addRequest(page: Page, over: Record<string, unknown> = {}) {
+  await page.evaluate(
+    async ({ id, over }) => {
+      const path = '/src/shared/store.ts';
+      const { useBoard } = await import(/* @vite-ignore */ path);
+      const now = Date.now();
+      useBoard.getState().backend.addStaffRequest({
+        id,
+        at: new Date(now).toISOString(),
+        expiresAt: new Date(now + 30 * 60 * 1000).toISOString(),
+        teamId: 'team-demo-auth',
+        teamName: '登入重構',
+        leadSessionId: 's-tests',
+        leadName: 'Write tests',
+        limit: 'team_full',
+        limits: ['team_full'],
+        teamSize: 12,
+        teamLimit: 12,
+        role: 'tester',
+        name: 'Parser-QA',
+        reason: 'Nobody tests the parser yet.',
+        promptPreview: 'Write regression tests for the parser.',
+        status: 'pending',
+        ...over,
+      });
+    },
+    { id: REQUEST_ID, over },
+  );
+}
+
+test.describe('加開申請（桌面收件匣抽屜）', () => {
+  test.use({ locale: 'zh-TW', viewport: { width: 1280, height: 900 } });
+
+  test('沒有申請時不顯示；有申請時列出理由、prompt 摘要；同意後拿掉並記進團隊動態', async ({
+    page,
+  }) => {
+    await openInbox(page);
+    const drawer = page.getByTestId('inbox-drawer');
+    await expect(drawer.getByTestId('team-activity')).toBeVisible();
+    await expect(drawer.getByTestId('staff-requests')).toHaveCount(0);
+    await addRequest(page);
+    const section = drawer.getByTestId('staff-requests');
+    await expect(section.locator('h2')).toContainText('加開申請');
+    await expect(section.getByTestId('staff-requests-count')).toHaveText('1');
+    const row = section.getByTestId(`staff-request-${REQUEST_ID}`);
+    await expect(row.locator('.activity-text')).toHaveText(
+      'Write tests 請求加開測試（超過人數上限）',
+    );
+    await expect(row.getByTestId(`staff-request-reason-${REQUEST_ID}`)).toHaveText(
+      '理由：Nobody tests the parser yet.',
+    );
+    await expect(row.getByTestId(`staff-request-prompt-${REQUEST_ID}`)).toHaveText(
+      '工作內容：Write regression tests for the parser.',
+    );
+    await expect(row).toContainText('名稱：Parser-QA');
+    await expect(row).toContainText('目前 12／上限 12 人');
+    // 桌面：標準按鈕 36px（STYLE §5.1）。
+    const approve = row.getByTestId(`staff-request-approve-${REQUEST_ID}`);
+    await expect(approve).toHaveText('同意並開成員');
+    const box = await approve.boundingBox();
+    expect(Math.round(box!.height)).toBe(36);
+
+    await approve.click();
+    await expect(section.getByTestId(`staff-request-${REQUEST_ID}`)).toHaveCount(0);
+    await expect(section).toContainText('已同意，開好 Parser-QA。');
+    const activity = drawer.getByTestId('team-activity');
+    await expect(
+      activity.locator('.activity-row[data-kind="staff_approved"] .activity-text'),
+    ).toHaveText('已同意 Write tests 的加開申請，開好 Parser-QA（測試）');
+  });
+
+  test('拒絕：拿掉申請，團隊動態記一筆；10 分鐘上限的文字', async ({ page }) => {
+    await openInbox(page);
+    await addRequest(page, { limit: 'spawn_rate', limits: ['spawn_rate'] });
+    const drawer = page.getByTestId('inbox-drawer');
+    const row = drawer.getByTestId(`staff-request-${REQUEST_ID}`);
+    await expect(row.locator('.activity-text')).toHaveText(
+      'Write tests 請求加開測試（10 分鐘內新增太多）',
+    );
+    await row.getByTestId(`staff-request-reject-${REQUEST_ID}`).click();
+    await expect(drawer.getByTestId('staff-requests')).toContainText('已拒絕，會通知隊長。');
+    await expect(
+      drawer
+        .getByTestId('team-activity')
+        .locator('.activity-row[data-kind="staff_rejected"] .activity-text'),
+    ).toHaveText('已拒絕 Write tests 的加開申請（測試）');
+  });
+});
+
+test.describe('加開申請（手機收件匣）', () => {
+  test.use({ locale: 'zh-TW', viewport: { width: 375, height: 760 }, hasTouch: true });
+
+  test('手機：同意／拒絕至少 44px（會開 session 的動作 56），不撐出水平捲軸', async ({ page }) => {
+    await openInbox(page);
+    await addRequest(page);
+    const row = page.getByTestId(`staff-request-${REQUEST_ID}`);
+    await expect(row).toBeVisible();
+    for (const id of ['approve', 'reject']) {
+      const box = await row.getByTestId(`staff-request-${id}-${REQUEST_ID}`).boundingBox();
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+    }
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+});
+
+test.describe('Member requests (English)', () => {
+  test.use({ locale: 'en-US', viewport: { width: 1280, height: 900 } });
+
+  test('English labels', async ({ page }) => {
+    await openInbox(page);
+    await addRequest(page);
+    const section = page.getByTestId('inbox-drawer').getByTestId('staff-requests');
+    await expect(section.locator('h2')).toContainText('Member requests');
+    await expect(
+      section.getByTestId(`staff-request-${REQUEST_ID}`).locator('.activity-text'),
+    ).toHaveText('Write tests asks to add a tester (over the team size limit)');
+    await expect(section.getByTestId(`staff-request-approve-${REQUEST_ID}`)).toHaveText(
+      'Approve and start',
+    );
+  });
+});

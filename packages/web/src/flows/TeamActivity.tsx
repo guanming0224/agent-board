@@ -1,4 +1,5 @@
 // 收件匣的「團隊動態」（隊長自主擴編，GM 2026-11-10，CONTRACTS §11.1）：隊長新增或封存了成員。
+// 加開申請（§23）的申請、同意、拒絕、失效、開不起來也記在這裡（要處理的申請在 StaffRequests.tsx）。
 // 只是告知、不需要動作，不算在「等你」裡；可以標已讀、清除。桌面抽屜（InboxBoard）與手機收件匣（InboxPage）共用。
 import { useState } from 'react';
 import type { TeamActivity } from '@agent-board/protocol';
@@ -9,6 +10,17 @@ import { useViewsUi } from '../views';
 import { errorText, Msg, type Note } from './common';
 import { crossReviewHash } from '../views/overlay';
 import '../review/messages';
+
+const TEXT_KEY: Record<TeamActivity['kind'], string> = {
+  member_added: 'flows.teamActivity.added',
+  member_released: 'flows.teamActivity.released',
+  review_requested: 'review.activity',
+  staff_requested: 'flows.teamActivity.staffRequested',
+  staff_approved: 'flows.teamActivity.staffApproved',
+  staff_rejected: 'flows.teamActivity.staffRejected',
+  staff_expired: 'flows.teamActivity.staffExpired',
+  staff_failed: 'flows.teamActivity.staffFailed',
+};
 
 /** 一開始顯示幾筆；其餘按「顯示全部」。 */
 export const TEAM_ACTIVITY_SHOWN = 5;
@@ -32,10 +44,13 @@ function ActivityRow({
   const at = new Date(item.at);
   const vars = {
     lead: item.leadName,
-    member: item.memberName,
+    member: item.memberName ?? '',
     role: t(`flows.teamActivity.role.${item.role}`),
     team: item.teamName,
+    limit: item.limit ? t(`flows.staff.limit.${item.limit}`) : '',
+    error: item.error ?? '',
   };
+  const memberId = item.memberSessionId;
   return (
     <li
       className={`activity-row${item.read ? '' : ' unread'}`}
@@ -56,14 +71,7 @@ function ActivityRow({
         {!item.read && (
           <span className="activity-dot" aria-label={t('flows.teamActivity.unread')} />
         )}
-        {t(
-          item.kind === 'review_requested'
-            ? 'review.activity'
-            : item.kind === 'member_added'
-              ? 'flows.teamActivity.added'
-              : 'flows.teamActivity.released',
-          vars,
-        )}
+        {t(TEXT_KEY[item.kind], vars)}
       </span>
       <span className="activity-team">{item.teamName}</span>
       <span className="activity-reason">
@@ -79,11 +87,11 @@ function ActivityRow({
             {t('review.activity.open')}
           </a>
         )}
-        {canvas && item.kind === 'member_added' && (
+        {canvas && (item.kind === 'member_added' || item.kind === 'staff_approved') && memberId && (
           <button
             type="button"
             className="link"
-            onClick={() => useViewsUi.getState().focusSession(item.memberSessionId)}
+            onClick={() => useViewsUi.getState().focusSession(memberId)}
             data-testid={`team-activity-show-${item.id}`}
           >
             {t('flows.teamActivity.show')}

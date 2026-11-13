@@ -12,6 +12,7 @@ export const LEAD_STAFFING_RHYTHM =
   '(3) Write the split of work into the progress card (update_progress next), send_task to members, and wait for their results. ' +
   '(4) While the work runs, if you are stuck, the workload is too large, or a skill is missing, add a member the same way. ' +
   '(5) When a member is done and will not be needed again, release_member to free its slot. ' +
+  'Limits: the team size limit set by the user (list_members shows it) and at most 4 new members per team in 10 minutes. Past either limit, spawn_member does not start the member: it sends the user a request to approve instead (status "pending_approval"; only one request per team can wait at a time). Then end your turn; the decision is typed back to you as "[Agent Board] …" (approved: the member has been started for you; rejected, or expired after 30 minutes unanswered: continue with the current members). ' +
   'Do not add members for work you can finish yourself in a few minutes. The user is notified of every member you add or release, with your reason.';
 
 /** 不是隊長的成員：不能自己開人，向隊長回報。 */
@@ -26,9 +27,16 @@ export const LEAD_STAFFING_REMINDER =
 export const AUTOSTAFF_OFF_GUIDE =
   'The user turned off lead auto-staffing: you cannot add or release members now. Work with the current members (send_task), or ask the user.';
 
-/** 團隊滿了時多加的一句。 */
+/** 團隊滿了時多加的一句（GM 2026-11-13：超過上限改成向使用者申請，CONTRACTS §23）。 */
 export const TEAM_FULL_GUIDE =
-  'The team is at its size limit: release_member a finished member before adding another.';
+  'The team is at its size limit: release_member a finished member before adding another. If you still need one more, spawn_member sends the user a request to approve instead of starting it; then end your turn (the decision is typed back to you as "[Agent Board] …").';
+
+/**
+ * 加開申請送出後給隊長的說明（spawn_member 回 pending_approval 時的 result）。說「end your turn」而不是「wait」：
+ * 實測說 wait 會讓模型在回合裡 sleep 互等（CONTRACTS §22.4）。
+ */
+export const STAFF_REQUEST_PENDING_GUIDE =
+  'This was sent to the user as a request to add a member; nothing has been started yet. The decision is typed back to you as "[Agent Board] …" after your current turn ends, so end your turn now: do not sleep, poll or keep working just to wait for it. If the user approves, the member is started with exactly the arguments of this call. The request expires after 30 minutes without an answer. Meanwhile you may keep using your current members (send_task).';
 
 /** GM 對這一隊按了全隊暫停／停止（CONTRACTS §17）時，新增、封存都擋。 */
 export const TEAM_HELD_GUIDE =
@@ -51,7 +59,7 @@ export const DISPATCH_TOOL_DESCRIPTIONS = {
   list_members:
     'List the members of your Agent Board team(s): name, role, status, current task, last screen line, read-only, branch, who added them and why, and whether they still owe you a result. For a team you lead it also returns staffing: team size, the size limit, free slots, members per role (and how many are running), how many members you may still add in the next 10 minutes, and a reminder. Call it when you receive a task, to decide whether the team has the roles the work needs. Empty if you have no team.',
   spawn_member:
-    'Add a member to the team you lead: start a new Claude Code session in the same machine and project folder and give it a first prompt. Use it when you receive a task and a needed role is missing, or while working when you are stuck, the workload is too large, or a skill is missing. role worker edits files (gets its own git worktree by default); tester writes and runs tests (also its own worktree, asks before each step by default); researcher and reviewer are read-only and share the folder. reason is required: one short sentence on why the team needs this member (shown to the user). Its permission mode cannot exceed yours. The whole team (lead included) is capped by a size limit the user sets (list_members shows it); when full, release_member a finished member first. Refused while the board or this team is paused, while this account is rate-limited, or when the user turned auto-staffing off. Only the team lead can add members. The result comes back to you automatically when it finishes the turn.',
+    'Add a member to the team you lead: start a new Claude Code session in the same machine and project folder and give it a first prompt. Use it when you receive a task and a needed role is missing, or while working when you are stuck, the workload is too large, or a skill is missing. role worker edits files (gets its own git worktree by default); tester writes and runs tests (also its own worktree, asks before each step by default); researcher and reviewer are read-only and share the folder. reason is required: one short sentence on why the team needs this member (shown to the user). Its permission mode cannot exceed yours. The whole team (lead included) is capped by a size limit the user sets (list_members shows it), and at most 4 members can be added per team in 10 minutes. Past either limit the call does not start anyone: it becomes a request the user must approve (status "pending_approval", one per team at a time); end your turn, and the decision is typed back to you as "[Agent Board] …" (approved: the member has been started). Releasing a finished member first avoids the request. Refused while the board or this team is paused, while this account is rate-limited, or when the user turned auto-staffing off. Only the team lead can add members. The result comes back to you automatically when it finishes the turn.',
   send_task:
     'Give one of your members (a member of a team you lead, or one you spawned) a new task. It is typed in when the member is waiting for input; if it is busy the task waits in a queue. The result comes back to you automatically after your current turn ends; end your turn instead of sleeping or polling.',
   get_result:

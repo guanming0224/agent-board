@@ -5,6 +5,8 @@
 // 隊長自主擴編（GM 2026-11-10，§11.1）：隊長自己新增（spawn_member，理由必填）、封存（release_member）成員；
 // 團隊總人數上限看設定 `autoStaff.teamLimit`；每次都記 audit、session 事件、團隊動態（收件匣）並通知 GM。
 // 守則文字（擴編節奏）在 protocol/src/leadGuide.ts，只放在工具說明與回傳裡，不會自己送字。
+// 加開申請（GM 2026-11-13，CONTRACTS §23）：碰到團隊總人數上限或 10 分鐘新增上限時不拒絕，改成向 GM 申請
+// （staffRequests.ts）；GM 同意後 hub 照申請時的參數再走一次這裡的 spawn，只略過觸發申請的上限。
 import { randomUUID } from 'node:crypto';
 import {
   agentOf,
@@ -16,6 +18,7 @@ import {
   LEAD_STAFFING_REMINDER,
   MEMBER_STAFFING_GUIDE,
   STAFFING_REASON_MAX,
+  STAFF_REQUEST_PENDING_GUIDE,
   TEAM_FULL_GUIDE,
   TEAM_HELD_GUIDE,
   TeamRole,
@@ -31,6 +34,8 @@ import {
   type Session,
   type SessionEvent,
   type SessionSpec,
+  type StaffRequest,
+  type StaffRequestLimit,
   type Team,
   type TeamActivityKind,
   type TeamMember,
@@ -154,7 +159,7 @@ export function resultMessage(
   ].join(' ');
 }
 
-const SpawnArgs = z.object({
+export const SpawnArgs = z.object({
   name: z.string().max(NAME_MAX_CHARS).optional(),
   role: z.enum(DISPATCH_ROLES),
   prompt: z.string().min(1),
@@ -228,8 +233,10 @@ export function staffingView(input: {
   isLead: boolean;
   autoStaff: AutoStaff;
   addsLeft: number;
+  /** 這一隊待處理的加開申請（§23）。 */
+  pendingRequest?: StaffRequest | null;
 }): Record<string, unknown> {
-  const { store, team, isLead, autoStaff, addsLeft } = input;
+  const { store, team, isLead, autoStaff, addsLeft, pendingRequest } = input;
   if (!isLead) return { guide: MEMBER_STAFFING_GUIDE };
   const roles = Object.fromEntries(
     TeamRole.options.map((r) => [r, { members: 0, running: 0 }]),
@@ -255,6 +262,17 @@ export function staffingView(input: {
     free,
     roles,
     addsLeftThis10Minutes: autoStaff.enabled ? Math.min(addsLeft, free) : 0,
+    ...(pendingRequest
+      ? {
+          pendingRequest: {
+            id: pendingRequest.id,
+            role: pendingRequest.role,
+            limit: pendingRequest.limit,
+            expiresAt: pendingRequest.expiresAt,
+            note: 'Waiting for the user to approve or reject. The decision is typed back to you as "[Agent Board] …"; do not ask again.',
+          },
+        }
+      : {}),
     guide,
   };
 }
@@ -328,10 +346,30 @@ export interface DispatchDeps {
   /** 團隊成員變了：推 team.updated（畫面不等輪詢）。 */
   teamChanged(team: Team): void;
   /**
+   * 加開申請（§23）：碰到上限時改成向 GM 申請。沒給＝這個 hub 不支援（測試），碰到上限照舊拒絕。
+   */
+  staffRequests?: StaffRequestPort;
+  /**
    * 等隊長／等成員結果（`Session.awaiting`，GM 2026-11-11）可能變了：hub 先記下 `ids` 現在的樣子、跑 `change`，
    * 有變的重新廣播；`notify` 時剛變成「等你」的照常推播。沒給＝直接跑 `change`（測試）。
    */
   awaitingChanged?(ids: readonly string[], change: () => void, notify: boolean): void;
+}
+
+/** 加開申請引擎（staffRequests.ts）給派工用的部分。 */
+export interface StaffRequestPort {
+  /** 這一隊待處理的申請（同一隊同時最多一件）。 */
+  pendingFor(teamId: string): StaffRequest | null;
+  /** 記下申請（含完整的 spawn 參數）、記 audit 與團隊動態、推播。 */
+  create(input: {
+    team: Team;
+    lead: Session;
+    limits: StaffRequestLimit[];
+    teamSize: number;
+    teamLimit: number;
+    args: z.infer<typeof SpawnArgs>;
+    reason: string;
+  }): StaffRequest;
 }
 
 /** 開始做事的狀態：成員從這裡開始新的回合，「等隊長」就結束（GM 2026-11-11）。 */
@@ -347,6 +385,9 @@ export class DispatchEngine {
   private readonly results = new Map<string, number[]>();
   /** 每個團隊（還沒有團隊時是呼叫者）10 分鐘內新增成員的時間。 */
   private readonly adds = new Map<string, number[]>();
+
+  /** spawnApproved 用：剛開好的成員（spawn 是同步的，開好就讀走）。 */
+  private spawned: Session | null = null;
 
   /** 寬限期到時重算成員與隊長的 awaiting（成員 id → 計時器）。 */
   private readonly graceTimers = new Map<string, NodeJS.Timeout>();
@@ -490,7 +531,43 @@ export class DispatchEngine {
       isLead,
       autoStaff: this.deps.autoStaff(),
       addsLeft: this.addsLeft(team.id),
+      pendingRequest: this.deps.staffRequests?.pendingFor(team.id) ?? null,
     });
+  }
+
+  /**
+   * GM 同意加開申請（§23）：照申請時記下的參數開成員，只略過 `bypass`（申請時超過的上限）；
+   * 全面板暫停、全隊暫停／停止、帳號限流、設定關掉等其他擋法照舊。開好回傳成員，被擋回傳原因（給隊長看的英文）。
+   */
+  spawnApproved(
+    leadId: string,
+    args: Record<string, unknown>,
+    bypass: readonly StaffRequestLimit[],
+  ): { member: Session } | { code: string; message: string } {
+    const reply = this.spawnChecked(leadId, args, bypass);
+    const member = this.spawned;
+    this.spawned = null;
+    if (reply.ok && member) return { member };
+    const at = reply.text.indexOf(': ');
+    return at > 0
+      ? { code: reply.text.slice(0, at), message: reply.text.slice(at + 2) }
+      : { code: 'spawn_failed', message: reply.text };
+  }
+
+  private spawnChecked(
+    leadId: string,
+    args: Record<string, unknown>,
+    bypass: readonly StaffRequestLimit[],
+  ): DispatchReply {
+    this.spawned = null;
+    if (!this.deps.enabled()) {
+      return fail('dispatch_disabled', 'Session dispatch is turned off in Agent Board settings.');
+    }
+    const caller = this.deps.store.getSession(leadId);
+    if (!caller || !isLive(caller) || caller.status === 'done') {
+      return fail('caller_inactive', 'This session is archived or has ended.');
+    }
+    return this.spawn(caller, args, bypass);
   }
 
   private underLimit(map: Map<string, number[]>, key: string, max: number): boolean {
@@ -581,7 +658,14 @@ export class DispatchEngine {
     return team;
   }
 
-  private spawn(caller: Session, raw: Record<string, unknown>): DispatchReply {
+  /**
+   * `bypass`：GM 同意加開申請時要略過的上限（null＝隊長自己呼叫：碰到上限就改成申請）。
+   */
+  private spawn(
+    caller: Session,
+    raw: Record<string, unknown>,
+    bypass: readonly StaffRequestLimit[] | null = null,
+  ): DispatchReply {
     if (this.deps.paused?.()) {
       const detail = { fromSessionId: caller.id, tool: 'spawn_member', reason: 'board_paused' };
       this.deps.audit(caller.id, 'dispatch.blocked', JSON.stringify(detail));
@@ -657,37 +741,6 @@ export class DispatchEngine {
         `This ${agent === 'codex' ? 'Codex' : 'Claude'} account is rate-limited on this machine right now; a new member would stop at the same limit. Do not add members until the limit resets; continue with the current members or yourself.`,
       );
     }
-    // 從這裡的人數檢查到下面 upsertTeamMember 必須保持同步（中間不能 await）：Node 單執行緒，
-    // 兩個同時的 spawn_member 才不會一起通過檢查而超過上限。
-    const existingTeam = this.teamOf(caller);
-    const { teamLimit } = this.deps.autoStaff();
-    const size = existingTeam ? teamSize(store, existingTeam.id) : 1;
-    if (size >= teamLimit) {
-      const names = existingTeam
-        ? store
-            .listTeamMembers(existingTeam.id)
-            .flatMap((m) => {
-              const s = store.getSession(m.sessionId);
-              return s && !s.archived && s.id !== caller.id
-                ? [`${s.name} (${m.role}, ${s.status})`]
-                : [];
-            })
-            .join(', ')
-        : '';
-      this.blockedTool(caller, 'spawn_member', 'team_full');
-      return fail(
-        'team_full',
-        `Your team already has ${size} members (you included); the limit set by the user is ${teamLimit}. Members: ${names || 'none'}. release_member a member that has finished and will not be needed again, then try again — or reuse one with send_task.`,
-      );
-    }
-    const rateKey = existingTeam?.id ?? caller.id;
-    if (this.addsLeft(rateKey) === 0) {
-      this.blockedTool(caller, 'spawn_member', 'spawn_rate_limit');
-      return fail(
-        'spawn_rate_limit',
-        `More than ${DISPATCH_SPAWN_RATE_MAX} members added to this team in 10 minutes. Wait, and use the members you have (send_task).`,
-      );
-    }
     if (!this.deps.machineOnline(caller.machineId)) {
       return fail('machine_offline', 'This machine is not connected to Agent Board right now.');
     }
@@ -705,7 +758,7 @@ export class DispatchEngine {
       );
     }
     // 先檢查完才動資料庫：被擋下時不留下空的團隊。
-    const existing = existingTeam;
+    const existing = this.teamOf(caller);
     const members: TeamMember[] = existing
       ? store.listTeamMembers(existing.id)
       : [{ teamId: '', sessionId: caller.id, role: 'lead' }];
@@ -717,6 +770,44 @@ export class DispatchEngine {
           `Same folder as ${clash.join(', ')}. Members that edit files each need their own worktree (useWorktree: true).`,
         );
       }
+    }
+    // 上限（§23）：從這裡的人數檢查到下面 upsertTeamMember 必須保持同步（中間不能 await）：Node 單執行緒，
+    // 兩個同時的 spawn_member 才不會一起通過檢查而超過上限。
+    const { teamLimit } = this.deps.autoStaff();
+    const size = existing ? teamSize(store, existing.id) : 1;
+    const rateKey = existing?.id ?? caller.id;
+    const over: StaffRequestLimit[] = [];
+    if (size >= teamLimit) over.push('team_full');
+    if (this.addsLeft(rateKey) === 0) over.push('spawn_rate');
+    const blocking = over.filter((limit) => !(bypass ?? []).includes(limit));
+    if (blocking.length > 0) {
+      // 隊長自己呼叫、已經有團隊：改成向 GM 申請。GM 同意後再走這裡時又碰到別道上限（或還沒有團隊）就照舊拒絕。
+      if (bypass === null && existing && this.deps.staffRequests) {
+        return this.requestStaff(caller, existing, args, reason, over, size, teamLimit);
+      }
+      if (blocking[0] === 'team_full') {
+        const names = existing
+          ? store
+              .listTeamMembers(existing.id)
+              .flatMap((m) => {
+                const s = store.getSession(m.sessionId);
+                return s && !s.archived && s.id !== caller.id
+                  ? [`${s.name} (${m.role}, ${s.status})`]
+                  : [];
+              })
+              .join(', ')
+          : '';
+        this.blockedTool(caller, 'spawn_member', 'team_full');
+        return fail(
+          'team_full',
+          `Your team already has ${size} members (you included); the limit set by the user is ${teamLimit}. Members: ${names || 'none'}. release_member a member that has finished and will not be needed again, then try again — or reuse one with send_task.`,
+        );
+      }
+      this.blockedTool(caller, 'spawn_member', 'spawn_rate_limit');
+      return fail(
+        'spawn_rate_limit',
+        `More than ${DISPATCH_SPAWN_RATE_MAX} members added to this team in 10 minutes. Wait, and use the members you have (send_task).`,
+      );
     }
     const wanted = args.name ? cleanLine(args.name) : '';
     const taken = new Set(store.listSessions().map((s) => s.name.toLowerCase()));
@@ -802,6 +893,7 @@ export class DispatchEngine {
       reason,
     });
     this.deps.teamChanged(team);
+    this.spawned = member;
     return okJson({
       name,
       status: member.status,
@@ -817,6 +909,54 @@ export class DispatchEngine {
       teamSize: `${size + 1}/${teamLimit}`,
       result:
         'The prompt will be typed in once the session starts. Its result comes back to you automatically as "[Result from …]" when it finishes the turn. It is typed in only after your current turn ends, so end your turn now: do not sleep, poll or keep working just to wait for it.',
+    });
+  }
+
+  /**
+   * 超過上限：改成向 GM 申請（§23）。同一隊已有待處理的申請就不再申請（也不再推播），回 request_pending。
+   * 回傳的文字要隊長結束回合（不說 wait：實測模型會在回合裡 sleep 互等，§22.4）。
+   */
+  private requestStaff(
+    caller: Session,
+    team: Team,
+    args: z.infer<typeof SpawnArgs>,
+    reason: string,
+    limits: StaffRequestLimit[],
+    size: number,
+    teamLimit: number,
+  ): DispatchReply {
+    const port = this.deps.staffRequests!;
+    const pending = port.pendingFor(team.id);
+    if (pending) {
+      this.blockedTool(caller, 'spawn_member', 'request_pending');
+      return fail(
+        'request_pending',
+        `A request to add a member (${pending.role}) is already waiting for the user (request ${pending.id}); this call was not sent. Do not ask again: end your turn. The decision is typed back to you as "[Agent Board] …"; meanwhile use your current members (send_task).`,
+      );
+    }
+    const request = port.create({
+      team,
+      lead: caller,
+      limits,
+      teamSize: size,
+      teamLimit,
+      args,
+      reason,
+    });
+    const why =
+      request.limit === 'team_full'
+        ? `Your team already has ${size} members (you included) and the limit set by the user is ${teamLimit}.`
+        : `More than ${DISPATCH_SPAWN_RATE_MAX} members were added to this team in the last 10 minutes.`;
+    return okJson({
+      status: 'pending_approval',
+      requestId: request.id,
+      limit: request.limit,
+      team: team.name,
+      role: request.role,
+      reason,
+      teamSize: `${size}/${teamLimit}`,
+      expiresAt: request.expiresAt,
+      result: `${why} ${STAFF_REQUEST_PENDING_GUIDE}`,
     });
   }
 
@@ -1143,7 +1283,8 @@ export class DispatchEngine {
         : busy
           ? `${target.name} is busy (${now?.status ?? 'unknown'}); the task is typed in when it waits for input.`
           : `Typed into ${target.name}.`,
-      result: 'Its result comes back to you automatically as "[Result from …]". It is typed in only after your current turn ends, so end your turn now: do not sleep, poll or keep working just to wait for it.',
+      result:
+        'Its result comes back to you automatically as "[Result from …]". It is typed in only after your current turn ends, so end your turn now: do not sleep, poll or keep working just to wait for it.',
     });
   }
 

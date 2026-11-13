@@ -20,7 +20,17 @@ import {
 } from '../dispatch';
 import type { Timing } from '../hub';
 import { Store } from '../store';
-import { perEventPush, type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
+import {
+  hello,
+  PASSWORD,
+  perEventPush,
+  type Peer,
+  runtime,
+  spec,
+  startHub,
+  until,
+  type TestHub,
+} from './helpers';
 
 let hub: TestHub;
 afterEach(async () => {
@@ -318,6 +328,8 @@ interface Board {
   daemon: Peer;
   machineId: string;
   caller: string;
+  /** 機器 token（重啟 hub 後重新連 daemon 用）。 */
+  token?: string;
 }
 
 const CWD = '/fake/project';
@@ -329,14 +341,14 @@ async function board(
 ) {
   hub = await startHub({ timing: { handoffEnterDelayMs: 20, ...timing } });
   const cookie = await hub.setupOwner();
-  const { daemon, machineId } = await hub.onlineDaemon(cookie);
+  const { daemon, machineId, token } = await hub.onlineDaemon(cookie);
   const caller = await startSession(
     { cookie, daemon, machineId, caller: '' },
     { name: 'Lead', cwd: CWD, ...over },
     repoRoot,
   );
   daemon.clear();
-  return { cookie, daemon, machineId, caller } satisfies Board;
+  return { cookie, daemon, machineId, caller, token } satisfies Board;
 }
 
 async function startSession(
@@ -611,8 +623,8 @@ describe('派工：開成員、送工作、結果自動送回', () => {
       role: 'researcher',
       prompt: 'One more.',
     });
-    expect(fifth.ok).toBe(false);
-    expect(fifth.text).toMatch(/^spawn_rate_limit: More than 4 members added/);
+    // 第五位：不直接拒絕，改成向使用者申請（§23），沒有開 session。
+    expect(json(fifth)).toMatchObject({ status: 'pending_approval', limit: 'spawn_rate' });
     expect(b.daemon.of('session.create')).toHaveLength(0);
   });
 
@@ -1183,15 +1195,21 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
       prompt: 'Test.',
       reason: 'Need tests.',
     });
-    expect(full.text).toMatch(
-      /^team_full: Your team already has 4 members.*limit set by the user is 4/,
-    );
-    expect(full.text).toMatch(/release_member/);
+    // 滿了：改成向使用者申請（§23）。
+    expect(json(full)).toMatchObject({
+      status: 'pending_approval',
+      limit: 'team_full',
+      teamSize: '4/4',
+    });
     const fullList = json(await ask(b, 'list_members')) as {
       teams: { staffing: { guide: string; free: number } }[];
     };
-    expect(fullList.teams[0]!.staffing).toMatchObject({ free: 0 });
+    expect(fullList.teams[0]!.staffing).toMatchObject({
+      free: 0,
+      pendingRequest: { role: 'tester', limit: 'team_full' },
+    });
     expect(fullList.teams[0]!.staffing.guide).toMatch(/size limit: release_member/);
+    expect(fullList.teams[0]!.staffing.guide).toMatch(/request to approve/);
     // 封存一位 GM 配的（等輸入中）：名額空出來，可以再加。
     const released = json(
       await ask(b, 'release_member', { member: 'GM-A', reason: 'Survey done.' }),
@@ -1387,7 +1405,7 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
     for (let i = 1; i < 5; i++) expect(get(ids[i]!)?.archived).toBe(true);
   });
 
-  it('上限邊界：GM 配的成員加隊長剛好等於上限時，第一次 spawn 就擋（team_full），daemon 沒收到 session.create', async () => {
+  it('上限邊界：GM 配的成員加隊長剛好等於上限時，第一次 spawn 就改成申請（team_full），daemon 沒收到 session.create', async () => {
     const b = await board({ permissionMode: 'acceptEdits' });
     const ids: string[] = [];
     for (let i = 0; i < 3; i++) {
@@ -1400,7 +1418,7 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
     await setAutoStaff(b, { teamLimit: 4 });
     b.daemon.clear();
     const full = await ask(b, 'spawn_member', { role: 'researcher', prompt: 'x', reason: 'x' });
-    expect(full.text).toMatch(/^team_full: Your team already has 4 members/);
+    expect(json(full)).toMatchObject({ status: 'pending_approval', limit: 'team_full' });
     await settle();
     expect(b.daemon.of('session.create')).toHaveLength(0);
   });
@@ -1480,5 +1498,328 @@ describe('隊長自主擴編：新增理由、上限、通知', () => {
       staffing: Record<string, unknown>;
     };
     expect(member.staffing).toEqual({ guide: expect.stringMatching(/not the lead/) });
+  });
+});
+
+// ── 加開申請（GM 2026-11-13，CONTRACTS §23）────────────────────
+
+describe('加開申請：超過上限改成向使用者申請', () => {
+  const PROMPT = 'Write regression tests for the parser.';
+  const REASON = 'Nobody tests the parser yet.';
+
+  /** 隊長＋GM 配的 3 位、上限 4：再開就是 team_full。 */
+  async function fullTeam(timing: Partial<Timing> = {}) {
+    const b = await board({ permissionMode: 'acceptEdits' }, CWD, timing);
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      ids.push(await startSession(b, { name: `GM-${i}`, cwd: `/fake/g${i}` }, null));
+    }
+    const teamId = await gmTeam(
+      b,
+      ids.map((id) => ({ id, role: 'worker' })),
+    );
+    await setAutoStaff(b, { teamLimit: 4 });
+    b.daemon.clear();
+    return { b, teamId, ids };
+  }
+
+  const askSpawn = (b: Board, over: Record<string, unknown> = {}) =>
+    ask(b, 'spawn_member', {
+      role: 'tester',
+      prompt: PROMPT,
+      reason: REASON,
+      name: 'Parser-QA',
+      ...over,
+    });
+
+  const audits = (action: string) =>
+    hub.running.store.listAudit({ limit: 500 }).filter((a) => a.action === action);
+  const staffPushes = () =>
+    hub.push.sent
+      .map((p) => JSON.parse(p.payload) as Record<string, unknown>)
+      .filter((p) => p.kind === 'staff_request');
+  const pending = () => hub.running.hub.staffRequests.list();
+  const noticesTo = (b: Board) =>
+    textsTo(b, b.caller).filter((text) => text.startsWith('[Agent Board]'));
+
+  /** 假 daemon 確認開好成員。 */
+  async function confirmCreate(b: Board, name: string) {
+    const create = await b.daemon.next(
+      'session.create',
+      (m) => (m.spec as SessionSpec).name === name,
+    );
+    b.daemon.send({
+      type: 'session.created',
+      requestId: create.requestId,
+      session: runtime(create.sessionId as string, {
+        status: 'waiting_input',
+        cwd: `/fake/wt/${name}`,
+        worktreePath: `/fake/wt/${name}`,
+        branch: `ab/${name}`,
+        repoRoot: `/fake/wt/${name}`,
+      }),
+    });
+    return create;
+  }
+
+  it('team_full：回 pending_approval（叫隊長結束回合）、記 audit 與團隊動態、推播只有固定文字、收件匣看得到', async () => {
+    const { b, teamId } = await fullTeam();
+    await perEventPush(hub, b.cookie);
+    await subscribePush(b);
+    const client = await hub.client(b.cookie);
+    const reply = json(await askSpawn(b));
+    expect(reply).toMatchObject({
+      status: 'pending_approval',
+      limit: 'team_full',
+      team: 'Squad',
+      role: 'tester',
+      teamSize: '4/4',
+    });
+    expect(reply.result).toMatch(/end your turn now: do not sleep, poll/);
+    expect(reply.result).toMatch(/\[Agent Board\]/);
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+
+    // 收件匣：GET 清單、ws 推 staff.requests；只有 prompt 摘要，沒有完整參數。
+    const list = await hub.api('GET', '/api/staff-requests', { cookie: b.cookie });
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual([
+      expect.objectContaining({
+        id: reply.requestId,
+        teamId,
+        leadName: 'Lead',
+        limit: 'team_full',
+        limits: ['team_full'],
+        role: 'tester',
+        name: 'Parser-QA',
+        reason: REASON,
+        promptPreview: PROMPT,
+        status: 'pending',
+        teamSize: 4,
+        teamLimit: 4,
+      }),
+    ]);
+    expect(list.body[0]).not.toHaveProperty('args');
+    await client.next('staff.requests', (m) => (m.items as unknown[]).length === 1);
+
+    const created = audits('staff_request.created');
+    expect(created).toHaveLength(1);
+    expect(JSON.parse(created[0]!.detail)).toMatchObject({ limit: 'team_full', reason: REASON });
+    expect(hub.running.store.listTeamActivity()[0]).toMatchObject({
+      kind: 'staff_requested',
+      leadName: 'Lead',
+      memberName: 'Parser-QA',
+      role: 'tester',
+      reason: REASON,
+      staffRequestId: reply.requestId,
+      limit: 'team_full',
+    });
+    expect(hub.running.store.listTeamActivity()[0]!.memberSessionId).toBeUndefined();
+
+    // 推播：只有隊長名稱與上限種類，不帶理由、prompt。
+    await until(() => staffPushes().length === 1, 'staff push');
+    expect(staffPushes()[0]).toEqual({
+      kind: 'staff_request',
+      requestId: reply.requestId,
+      lead: 'Lead',
+      limit: 'team_full',
+      at: expect.any(String),
+    });
+    expect(hub.push.sent.some((p) => p.payload.includes('regression'))).toBe(false);
+    expect(hub.push.sent.some((p) => p.payload.includes('Nobody tests'))).toBe(false);
+  });
+
+  it('同一隊同時只有一件：已有待處理時再超限回 request_pending，不再推播、不再記申請', async () => {
+    const { b } = await fullTeam();
+    await perEventPush(hub, b.cookie);
+    await subscribePush(b);
+    json(await askSpawn(b));
+    await until(() => staffPushes().length === 1, 'first push');
+    const again = await askSpawn(b, { role: 'researcher', name: undefined });
+    expect(again.ok).toBe(false);
+    expect(again.text).toMatch(/^request_pending: A request to add a member \(tester\)/);
+    expect(again.text).toMatch(/end your turn/);
+    await settle();
+    expect(staffPushes()).toHaveLength(1);
+    expect(pending()).toHaveLength(1);
+    expect(audits('staff_request.created')).toHaveLength(1);
+    expect(
+      audits('dispatch.blocked').some((a) => JSON.parse(a.detail).reason === 'request_pending'),
+    ).toBe(true);
+  });
+
+  it('同意 → 照申請開成員（略過人數上限）、告訴隊長已開好；記 audit 與團隊動態；再按一次不會再開', async () => {
+    const { b, teamId } = await fullTeam();
+    const reply = json(await askSpawn(b));
+    const id = reply.requestId as string;
+    const approve = hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
+    const create = await confirmCreate(b, 'Parser-QA');
+    const res = await approve;
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id,
+      status: 'approved',
+      decidedBy: 'owner',
+      memberName: 'Parser-QA',
+      memberSessionId: create.sessionId,
+    });
+    // 照申請時的參數：角色、名稱、prompt、預設 worktree 與權限。
+    expect(create.spec).toMatchObject({
+      name: 'Parser-QA',
+      useWorktree: true,
+      permissionMode: 'default',
+      firstPrompt: `[From Lead] ${PROMPT}`,
+    });
+    expect(hub.running.store.listTeamMembers(teamId)).toHaveLength(5);
+    expect(pending()).toEqual([]);
+    // 隊長在等輸入：通知經送字佇列送進去，開頭固定 [Agent Board]。
+    await until(() => noticesTo(b).length === 1, 'approved notice');
+    expect(noticesTo(b)[0]).toMatch(
+      /^\[Agent Board\] The user approved your request to add a member \(over the team size limit\)\. Parser-QA \(tester\) has been started/,
+    );
+    expect(audits('staff_request.approved')).toHaveLength(1);
+    expect(audits('staff_request.approved')[0]!.userId).not.toBeNull();
+    await until(() => audits('staff_request.notice_delivered').length === 1, 'delivered');
+    const activity = hub.running.store.listTeamActivity();
+    expect(activity.find((a) => a.kind === 'staff_approved')).toMatchObject({
+      memberSessionId: create.sessionId,
+      memberName: 'Parser-QA',
+    });
+    // 成員的結果照常送回隊長（派工工作記在隊長名下）。
+    expect(hub.running.store.dispatchWork(create.sessionId as string)?.from).toBe(b.caller);
+    // 通知送到後就不留在 settings 表。
+    expect(hub.running.store.listRawJson('staffRequest:')).toEqual([]);
+    const twice = await hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
+    expect(twice.status).toBe(404);
+    // 第一次的 session.create 已被 confirmCreate 取走：沒有第二次。
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+  });
+
+  it('spawn_rate：10 分鐘第五位改成申請，同意後開出來（略過頻率上限）', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    for (let i = 0; i < DISPATCH_SPAWN_RATE_MAX; i += 1) {
+      await spawnMember(b, { role: 'researcher', prompt: `Look ${i}.` });
+    }
+    const reply = json(await askSpawn(b, { role: 'researcher', name: 'Extra-RS' }));
+    expect(reply).toMatchObject({ status: 'pending_approval', limit: 'spawn_rate' });
+    expect(reply.result).toMatch(/More than 4 members were added/);
+    const approve = hub.api('POST', `/api/staff-requests/${reply.requestId as string}/approve`, {
+      cookie: b.cookie,
+    });
+    await confirmCreate(b, 'Extra-RS');
+    expect((await approve).body).toMatchObject({ status: 'approved', memberName: 'Extra-RS' });
+    await until(() => noticesTo(b).length === 1, 'approved notice');
+    expect(noticesTo(b)[0]).toMatch(/too many members added in 10 minutes/);
+  });
+
+  it('拒絕 → 不開成員、告訴隊長被拒絕；一般使用者（member）看得到但不能處理', async () => {
+    const { b } = await fullTeam();
+    const id = json(await askSpawn(b)).requestId as string;
+    const user = await hub.createMember(b.cookie, 'viewer');
+    const forbidden = await hub.api('POST', `/api/staff-requests/${id}/reject`, {
+      cookie: user.cookie,
+    });
+    expect(forbidden.status).toBe(403);
+    const seen = await hub.api('GET', '/api/staff-requests', { cookie: user.cookie });
+    expect(seen.body).toHaveLength(1);
+    const res = await hub.api('POST', `/api/staff-requests/${id}/reject`, { cookie: b.cookie });
+    expect(res.body).toMatchObject({ status: 'rejected', decidedBy: 'owner' });
+    await until(() => noticesTo(b).length === 1, 'rejected notice');
+    expect(noticesTo(b)[0]).toMatch(
+      /^\[Agent Board\] The user rejected your request to add a tester member\. Nothing was started\./,
+    );
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+    expect(audits('staff_request.rejected')).toHaveLength(1);
+    expect(hub.running.store.listTeamActivity()[0]).toMatchObject({ kind: 'staff_rejected' });
+    expect(pending()).toEqual([]);
+  });
+
+  it('30 分鐘（測試縮短）沒處理 → 失效、告訴隊長；之後按同意不會開成員', async () => {
+    const { b } = await fullTeam({ staffRequestTtlMs: 400 });
+    const id = json(await askSpawn(b)).requestId as string;
+    await until(() => noticesTo(b).length === 1, 'expired notice');
+    expect(noticesTo(b)[0]).toMatch(
+      /^\[Agent Board\] Your request to add a tester member expired: the user did not answer within/,
+    );
+    expect(audits('staff_request.expired')).toHaveLength(1);
+    expect(audits('staff_request.expired')[0]!.userId).toBeNull();
+    expect(hub.running.store.listTeamActivity()[0]).toMatchObject({ kind: 'staff_expired' });
+    expect(pending()).toEqual([]);
+    const late = await hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
+    expect([404, 409]).toContain(late.status);
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+  });
+
+  it('同意時這一隊已全隊暫停：開不起來（team_held），申請標 failed、告訴隊長原因', async () => {
+    const { b, teamId } = await fullTeam();
+    const id = json(await askSpawn(b)).requestId as string;
+    const hold = await hub.api('POST', `/api/teams/${teamId}/hold`, {
+      cookie: b.cookie,
+      body: { mode: 'pause' },
+    });
+    expect(hold.status).toBe(200);
+    const res = await hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
+    expect(res.body).toMatchObject({ status: 'failed', error: 'team_held' });
+    await until(() => noticesTo(b).length === 1, 'failed notice');
+    expect(noticesTo(b)[0]).toMatch(
+      /^\[Agent Board\] The user approved your request to add a tester member, but it could not be started: team_held: /,
+    );
+    await settle();
+    expect(b.daemon.of('session.create')).toHaveLength(0);
+    expect(audits('staff_request.failed')).toHaveLength(1);
+    expect(hub.running.store.listTeamActivity()[0]).toMatchObject({
+      kind: 'staff_failed',
+      error: 'team_held',
+    });
+  });
+
+  it('隊長擴編設定關掉：照舊 autostaff_disabled，不產生申請', async () => {
+    const { b } = await fullTeam();
+    await setAutoStaff(b, { enabled: false, teamLimit: 4 });
+    const off = await askSpawn(b);
+    expect(off.text).toMatch(/^autostaff_disabled:/);
+    expect(pending()).toEqual([]);
+    expect(audits('staff_request.created')).toHaveLength(0);
+  });
+
+  /** 關掉 hub、用同一個資料庫重開，daemon 帶著原本的 session 重新連上。 */
+  async function restart(b: Board, timing: Partial<Timing> = {}) {
+    const runtimes = hub.running.store
+      .listSessions(false)
+      .map((s) => runtime(s.id, { status: 'waiting_input', cwd: s.cwd, repoRoot: s.repoRoot }));
+    const { dbPath } = hub;
+    await hub.running.close();
+    hub = await startHub({ dbPath, timing: { handoffEnterDelayMs: 20, ...timing } });
+    const login = await hub.api('POST', '/api/auth/login', {
+      body: { name: 'owner', password: PASSWORD },
+    });
+    b.cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    b.daemon = await hub.daemon(b.token!);
+    b.daemon.send(hello({ sessions: runtimes }));
+    await b.daemon.next('hub.welcome');
+    await until(() => get(b.caller)?.status === 'waiting_input', 'lead back');
+  }
+
+  it('hub 重啟：待處理的申請接回（清單還在），同意後照樣開成員', async () => {
+    const { b } = await fullTeam();
+    const id = json(await askSpawn(b)).requestId as string;
+    await restart(b);
+    expect(pending().map((r) => r.id)).toEqual([id]);
+    const approve = hub.api('POST', `/api/staff-requests/${id}/approve`, { cookie: b.cookie });
+    await confirmCreate(b, 'Parser-QA');
+    expect((await approve).body).toMatchObject({ status: 'approved' });
+    await until(() => noticesTo(b).length === 1, 'approved notice after restart');
+  });
+
+  it('hub 重啟：30 分鐘計時也接回，到時失效並告訴隊長', async () => {
+    const { b } = await fullTeam({ staffRequestTtlMs: 1_500 });
+    json(await askSpawn(b));
+    await restart(b, { staffRequestTtlMs: 1_500 });
+    expect(pending()).toHaveLength(1);
+    await until(() => noticesTo(b).length === 1, 'expired notice after restart');
+    expect(noticesTo(b)[0]).toMatch(/expired/);
+    expect(pending()).toEqual([]);
   });
 });

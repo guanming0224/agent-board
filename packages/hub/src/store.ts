@@ -1854,6 +1854,20 @@ export class Store {
     }
   }
 
+  /** 鍵以 `prefix` 開頭的所有 settings 列（加開申請 `staffRequest:<id>` 用，CONTRACTS §23）。讀不懂的 JSON 略過。 */
+  listRawJson(prefix: string): { key: string; value: unknown }[] {
+    const rows = this.db
+      .prepare("SELECT key, value FROM settings WHERE key LIKE ? ESCAPE '\\' ORDER BY rowid")
+      .all(`${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`) as { key: string; value: string }[];
+    return rows.flatMap((row) => {
+      try {
+        return [{ key: row.key, value: JSON.parse(row.value) as unknown }];
+      } catch {
+        return [];
+      }
+    });
+  }
+
   setRawJson(key: string, value: unknown): void {
     if (value === null || value === undefined) {
       this.db.prepare('DELETE FROM settings WHERE key = ?').run(key);

@@ -5,6 +5,7 @@ import { TeamPreset } from './presets';
 import {
   AgentKind,
   TeamActivity,
+  StaffRequest,
   Approval,
   BoardPauseState,
   Broadcast,
@@ -505,7 +506,11 @@ export const HubToClient = z.discriminatedUnion('type', [
     teamActivity: z.array(TeamActivity).default([]),
     /** 交叉審查（Codex 第二輪），新的在前，最多 `REVIEW_BOARD_KEEP` 筆。舊版 hub 不送＝空。 */
     reviews: z.array(Review).default([]),
+    /** 待處理的加開申請（CONTRACTS §23），舊的在前。舊版 hub 不送＝空。 */
+    staffRequests: z.array(StaffRequest).default([]),
   }),
+  /** 待處理的加開申請變了（新申請、同意、拒絕、失效）：整份推給每個 client。 */
+  z.object({ type: z.literal('staff.requests'), items: z.array(StaffRequest) }),
   /** 一則交叉審查變了（新建、diff 準備好、某一邊開始或結束、取消、已讀）。 */
   z.object({ type: z.literal('review.updated'), review: Review }),
   /** 團隊動態變了（新增、標已讀、清除）：整份推給每個 client。 */

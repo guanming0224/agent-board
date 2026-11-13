@@ -461,3 +461,45 @@ describe('sw.js cross review (Codex round 2)', () => {
     expect(en.shown[0]!.options.body).toBe('? asked for a cross review');
   });
 });
+
+describe('sw.js member request (CONTRACTS §23)', () => {
+  const request = (over: Record<string, unknown> = {}) => ({
+    kind: 'staff_request',
+    requestId: 'sr-1',
+    lead: 'LD',
+    limit: 'team_full',
+    at: '2026-11-13T01:00:00.000Z',
+    ...over,
+  });
+
+  it('fixed text: lead name and which limit; opens the inbox; own tag per request', async () => {
+    const zh = loadWorker('zh-TW');
+    await zh.dispatch('push', pushEvent(request()));
+    expect(zh.shown[0]).toMatchObject({
+      title: '加開申請',
+      options: {
+        body: 'LD 請求加開成員（超過人數上限）',
+        tag: 'agent-board-staff-sr-1',
+        data: { url: `${ORIGIN}/#/inbox` },
+      },
+    });
+    await zh.dispatch('push', pushEvent(request({ limit: 'spawn_rate' })));
+    expect(zh.shown[1]!.options.body).toBe('LD 請求加開成員（10 分鐘內新增太多）');
+    const en = loadWorker('en');
+    await en.dispatch('push', pushEvent(request({ limit: 'spawn_rate' })));
+    expect(en.shown[0]).toMatchObject({
+      title: 'Member request',
+      options: { body: 'LD asks to add a member (too many added in 10 minutes)' },
+    });
+  });
+
+  it('never shows the reason or the prompt, even if a payload carried them', async () => {
+    const zh = loadWorker('zh-TW');
+    await zh.dispatch(
+      'push',
+      pushEvent(request({ lead: undefined, reason: 'secret reason', prompt: 'secret prompt' })),
+    );
+    expect(zh.shown[0]!.options.body).toBe('? 請求加開成員（超過人數上限）');
+    expect(JSON.stringify(zh.shown)).not.toMatch(/secret/);
+  });
+});

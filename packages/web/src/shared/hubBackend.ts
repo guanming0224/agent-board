@@ -20,6 +20,7 @@ import type {
   RouteQuery,
   RouteResponse,
   TeamActivity,
+  StaffRequest,
   Review,
   User,
 } from '@agent-board/protocol';
@@ -298,8 +299,11 @@ class HubConnection implements TerminalStream {
           presets: message.presets,
           teamActivity: message.teamActivity,
           reviews: message.reviews,
+          staffRequests: message.staffRequests,
         });
         return;
+      case 'staff.requests':
+        return this.setStaffRequests(message.items);
       case 'review.updated':
         return this.applyReview(message.review);
       case 'team.activity':
@@ -418,6 +422,19 @@ class HubConnection implements TerminalStream {
   /** 交叉審查清單（REST 標已讀的回應）：整份換掉。 */
   setReviews(reviews: Review[]): void {
     this.patch((s) => ({ ...s, reviews }));
+  }
+
+  /** 待處理的加開申請（WS staff.requests）：整份換掉。 */
+  setStaffRequests(items: StaffRequest[]): void {
+    this.patch((s) => ({ ...s, staffRequests: items }));
+  }
+
+  /** REST 處理完一件申請：先從畫面拿掉（WS 的 staff.requests 隨後也會到）。 */
+  dropStaffRequest(id: string): void {
+    this.patch((s) => ({
+      ...s,
+      staffRequests: (s.staffRequests ?? []).filter((r) => r.id !== id),
+    }));
   }
 
   /** 團隊動態（WS team.activity 或 REST 回應）：整份換掉。 */
@@ -606,6 +623,16 @@ export function createHubBackend() {
       const items = await call('teamActivityClear', { body: ids ? { ids } : {} });
       hub.setTeamActivity(items);
       return items;
+    },
+    async approveStaffRequest(id) {
+      const request = await call('staffRequestApprove', { params: { id } });
+      hub.dropStaffRequest(id);
+      return request;
+    },
+    async rejectStaffRequest(id) {
+      const request = await call('staffRequestReject', { params: { id } });
+      hub.dropStaffRequest(id);
+      return request;
     },
     async getReview(id) {
       const review = await call('reviewGet', { params: { id } });

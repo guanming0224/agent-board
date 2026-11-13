@@ -39,6 +39,7 @@ import type {
   TeamMember,
   TeamResumeResult,
   TeamActivity,
+  StaffRequest,
   Review,
   ReviewTargetInput,
   TeamPreset,
@@ -100,6 +101,8 @@ export interface BoardSnapshot {
   teamActivity?: TeamActivity[];
   /** 交叉審查（Codex 第二輪），新的在前。舊版 hub 沒有＝undefined（不顯示）。 */
   reviews?: Review[];
+  /** 待處理的加開申請（CONTRACTS §23），舊的在前。舊版 hub 沒有＝undefined（不顯示）。 */
+  staffRequests?: StaffRequest[];
 }
 
 /** 團隊建立、修改（含換工作區）或刪除：hub 用 WS 推，不等輪詢。 */
@@ -366,6 +369,13 @@ export interface BoardBackend {
    */
   readTeamActivity(ids?: string[]): Promise<TeamActivity[]>;
   clearTeamActivity(ids?: string[]): Promise<TeamActivity[]>;
+
+  /**
+   * 加開申請（CONTRACTS §23，只有 owner）：同意 → hub 照申請開成員，回傳處理後的申請（approved，或開不起來時
+   * failed＋error 代碼）；拒絕 → 告訴隊長。已處理或失效的丟 409 request_decided。待處理清單也會經 board 快照更新。
+   */
+  approveStaffRequest(id: string): Promise<StaffRequest>;
+  rejectStaffRequest(id: string): Promise<StaffRequest>;
 
   /**
    * 交叉審查（Codex 第二輪，CONTRACTS §22）。prepare 只請 daemon 產生 diff（不跑模型）；GM 看過檔案清單

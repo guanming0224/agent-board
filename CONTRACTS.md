@@ -398,7 +398,7 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 | `request_review` | `member` 或 `branch`（`base`、`repoPath` 選填）、`reason`（必填）                                                                                                   | Codex 第二輪（§22.3.6）。隊長要求 Claude 與 Codex 唯讀交叉審查；馬上回 `reviewId`，兩邊做完摘要送回隊長。                                                                                                                                                                                                                                                  |
 | `release_member` | `member`、`reason`（必填）                                                                                                                                          | 2026-11-10。見 11.7。成功回 `released`、`team`、`teamSize`、`note`（可以在設定→已封存還原）。                                                                                                                                                                                                                                                              |
 
-錯誤代碼：`dispatch_disabled`、`caller_inactive`（封存、結束、不認得、不是這台機器）、`invalid_arguments`、`permission_not_allowed`、`nested_spawn`、`read_only_caller`、`machine_offline`、（§11.7）`reason_required`、`autostaff_disabled`、`not_lead`、`team_full`、`spawn_rate_limit`、`account_rate_limited`、`member_busy`、`team_held`、`board_paused`（只有 spawn）、`cannot_release_self`、`worktree_unavailable`、`worktree_required`、`not_your_member`、`member_ended`、`rate_limit`，以及 `hub.createSession` 的 409 代碼（例如 `session_deleting`）。daemon 端另有 `unauthorized`、`hub_unreachable`、`timeout`（等 hub 30 秒）、`invalid_request`；MCP server 端 `not_configured`、`daemon_unreachable`、`timeout`（45 秒）。
+錯誤代碼：`dispatch_disabled`、`caller_inactive`（封存、結束、不認得、不是這台機器）、`invalid_arguments`、`permission_not_allowed`、`nested_spawn`、`read_only_caller`、`machine_offline`、（§11.7）`reason_required`、`autostaff_disabled`、`not_lead`、`team_full`、`spawn_rate_limit`、`account_rate_limited`、`member_busy`、`team_held`、`board_paused`（只有 spawn）、`cannot_release_self`、`worktree_unavailable`、`worktree_required`、`not_your_member`、`member_ended`、`rate_limit`、（§23）`request_pending`，以及 `hub.createSession` 的 409 代碼（例如 `session_deleting`）。daemon 端另有 `unauthorized`、`hub_unreachable`、`timeout`（等 hub 30 秒）、`invalid_request`；MCP server 端 `not_configured`、`daemon_unreachable`、`timeout`（45 秒）。
 
 ### 11.3 開成員的規則（`spawn_member`）
 
@@ -409,7 +409,7 @@ claude（呼叫者）──stdio──► agent-board-mcp（hook 套件 src/mcp.
 - **唯讀呼叫者**（`Session.readOnly`）只能開 researcher／reviewer → 否則 `read_only_caller`。
 - **測試（tester，P2 Q5）**：和 worker 一樣會改檔案（`readOnly: false`、預設開 worktree），預設權限模式 `default`（每步問，名稱縮寫 `QA`）；可被派任務（任務負責人不限角色），**不當審查**（送審只找 `reviewer`）。新團隊放在呼叫者所在的工作區（§13）。
 - **不能巢狀**：派工開的成員（`dispatchedBy` 不是 null）不能再開 → `nested_spawn`（防止一層層開下去）。它還是可以用 `list_members`、`get_result`。
-- **上限**（2026-11-10 改，§11.7）：團隊總人數（含隊長、GM 配的，不含已封存）到 `autoStaff.teamLimit` → `team_full`（列出現有成員，建議 `release_member` 或 `send_task` 重用）；同一團隊 10 分鐘最多新增 `DISPATCH_SPAWN_RATE_MAX` = 4 位 → `spawn_rate_limit`。舊的「每個呼叫者同時 4 個」（`DISPATCH_SPAWN_LIMIT`、`limit_reached`）拿掉。
+- **上限**（2026-11-10 改，§11.7）：團隊總人數（含隊長、GM 配的，不含已封存）到 `autoStaff.teamLimit` → `team_full`（列出現有成員，建議 `release_member` 或 `send_task` 重用）；同一團隊 10 分鐘最多新增 `DISPATCH_SPAWN_RATE_MAX` = 4 位 → `spawn_rate_limit`。**2026-11-13 起（§23）**：隊長已有團隊時，碰到這兩道上限不再回錯誤，改成向 GM 提出加開申請（回 `status: "pending_approval"`）；`team_full`／`spawn_rate_limit` 只剩「還沒有團隊」與「GM 同意後開的時候又碰到另一道上限」兩種情況會回。舊的「每個呼叫者同時 4 個」（`DISPATCH_SPAWN_LIMIT`、`limit_reached`）拿掉。
 - **團隊**：呼叫者當隊長的團隊；在團隊裡但不是任何一隊的隊長 → `not_lead`（2026-11-10）；都沒有團隊就開一個新團隊（名稱＝呼叫者名稱、`teal`、目標空白、任務自動執行關），呼叫者當 `lead`。成員以 `role` 加入（直接寫 `team_members`，上面已檢查過寫入者規則）。前端團隊資料是 10 秒輪詢，框最慢 10 秒後出現。
 - **名稱**（`memberName`，同 `teamPlan.defaultNames`）：`<團隊名>-BD1`、`-BD2`；研究、審查第一位 `-RS`／`-RV`，之後 `-RS2`。指定的名稱撞名（不分大小寫，所有 session）加 `-2`、`-3`。
 - 第一個指令：`[From <呼叫者>] <prompt>`（一行、清控制字元、4000 字截斷），由 daemon 在 `SessionStart` 後送（§3.1）。
@@ -455,7 +455,7 @@ GM：「我組出來的團隊不見得合適；LD 要能自己新增它要的人
 
 - **守則放哪裡**：`protocol/src/leadGuide.ts` 一處（給 Claude 看，英文）。用在 MCP server 的 `instructions` 與工具說明（`hook/src/mcp.ts` 直接 import，這個檔案不 import 任何東西，打包也不帶 zod），以及 `list_members`、`get_progress` 回傳的 `staffing.guide`。**不用 hook `additionalContext`、不自動送字**：Claude 只有在讀工具清單或呼叫工具時看到（no-llm 保證不變）。節奏：收到任務先評估要哪些角色、對照 `list_members` → 不夠就 `spawn_member`（附理由）→ 分工寫進進度卡、`send_task`、等結果 → 執行中卡住、工作量太大、缺專長就補人 → 做完且之後用不到就 `release_member`。
 - **`staffing`**（`dispatch.ts` `staffingView`）：呼叫者是那個團隊的隊長時 `{ autoStaff, size, limit, free, roles: { <角色>: { members, running } }, addsLeftThis10Minutes, guide }`；不是隊長只有 `{ guide }`（「你是成員，不能自己開人，需要人手在回覆裡告訴隊長」）。`get_progress` 的團隊卡也帶同一份（派工設定關著時不帶）。
-- **新增（`spawn_member`）多的規則**，依序：全部暫停 → `board_paused`；設定關 → `autostaff_disabled`；沒帶 `reason`（空白也算）→ `reason_required`（舊呼叫會先看到這個，說明要補一句理由）；在團隊裡但不是隊長 → `not_lead`；呼叫者的團隊有全隊暫停／停止記錄（§17 `Team.hold`）→ `team_held`；同機器同帳號（`CLAUDE_CONFIG_DIR`）有還沒到重置時間的 `rate_limited` session（含呼叫者）→ `account_rate_limited`（不看「限流時排隊」設定）；團隊總人數 ≥ 上限 → `team_full`；同團隊 10 分鐘已新增 4 位 → `spawn_rate_limit`。權限上限、worktree、唯讀、巢狀規則照舊（§11.3）。理由一行、清控制字元、200 字截斷。
+- **新增（`spawn_member`）多的規則**，依序：全部暫停 → `board_paused`；設定關 → `autostaff_disabled`；沒帶 `reason`（空白也算）→ `reason_required`（舊呼叫會先看到這個，說明要補一句理由）；在團隊裡但不是隊長 → `not_lead`；呼叫者的團隊有全隊暫停／停止記錄（§17 `Team.hold`）→ `team_held`；同機器同帳號（`CLAUDE_CONFIG_DIR`）有還沒到重置時間的 `rate_limited` session（含呼叫者）→ `account_rate_limited`（不看「限流時排隊」設定）；團隊總人數 ≥ 上限 → `team_full`；同團隊 10 分鐘已新增 4 位 → `spawn_rate_limit`（2026-11-13 起這兩道改成加開申請，見 §23；順序也移到機器在線、worktree 檢查之後，那些先擋的不會變成申請）。權限上限、worktree、唯讀、巢狀規則照舊（§11.3）。理由一行、清控制字元、200 字截斷。
 - **封存（`release_member`）**（全部暫停時照樣可以封存、沒有頻率上限，GM 2026-11-10），依序：設定關 → `autostaff_disabled`；沒帶理由 → `reason_required`；呼叫者不是任何團隊的隊長 → `not_lead`；對象只能是**呼叫者當隊長的團隊**裡沒封存的成員（名稱或 id）→ 否則 `not_your_member`（在別隊只是成員也一樣）；自己 → `cannot_release_self`；那一隊有全隊暫停／停止記錄 → `team_held`；對象還沒結束且回合中（`running`、`starting`、`waiting_permission`、`plan_review`：GM 可能正在看它的權限框或計畫）→ `member_busy`（訊息依狀態分開寫）；對象還沒結束且還欠結果（`sessions.dispatch_work` 還在，或呼叫者送給它的工作還在送字佇列）→ `member_busy`（叫它等 `[Result from …]`）。走 hub 的封存流程（§9.1：還活著的先停、機器離線就照樣封存等重連補停、暫停從它出發或指向它的交接規則、對話保留、可以在設定→已封存還原）；audit `session.archive` 的 user 是 null、detail 多 `byLead`。
 - **人數怎麼算**：`team_members` 裡 session 沒封存的（含已結束、還沒封存的；含隊長）。還沒有團隊的呼叫者算 1。封存的成員還原後回到團隊，可能暫時超過上限（不會被擋，只是不能再新增）。
 - **記錄**：成員卡（團隊名單）顯示「由 <隊長> 新增：<理由>」——settings 表 `memberAdded:<sessionId>`（`MemberAdded`：`bySessionId`、`byName`、`reason`、`at`），hub 回傳 `TeamMember.added`；永久刪除 session 時一起刪。audit `dispatch.spawn`（多 `reason`、`teamSize`、`teamLimit`）、`dispatch.release`（from、to、team、name、role、reason）、被擋下的 `dispatch.blocked`（`tool`、`reason`）；session 事件 `dispatch.spawn`（多 `reason`）、`dispatch.release`（記在成員）。
@@ -1056,3 +1056,54 @@ start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀�
 - **真 CLI 實測（2026-11-13）**：claude -p（haiku）照 `claudeReviewArgs` 在含 SessionStart／PreToolUse hook 的 repo 跑，hook 沒觸發、要求的 Bash／寫檔都沒產生、沒留對話紀錄；codex exec（gpt-6-luna）照 `codexReviewArgs` 跑，`~/.codex/sessions` 檔數不變；兩份真輸出餵 `parseClaudeOutput`／`parseCodexOutput` 都讀得出。dev 實例開 `codexMcp`：Codex 呼叫 `list_members` 不跳核准；Codex 隊長 `spawn_member` 開 Codex 成員，成員結果 `[Result from …]` 送回隊長。
   - 發現：Codex 隊長派工後用內建 `clocksleep` 在同一回合裡等結果，不結束回合；結果只在隊長等輸入時送，兩邊互等（中斷隊長後立刻送達）。修正：守則與 `spawn_member`／`send_task`／`request_review` 的說明和回傳改成「結果在你這回合結束後才會送進來，現在就結束回合，不要 sleep、輪詢或為了等而繼續工作」。修正後尚未用真 Codex 再測（未驗證）。
   - 另記（第一版就有，未修）：Codex 在還沒信任的資料夾會先跳「Trust this folder?」，選了會寫進使用者的 `~/.codex/config.toml`；這時面板顯示 NEW（`idle:start`），沒有判斷成需要注意。互動模式的推理強度跟使用者的 Codex 預設（session 沒有欄位可設）。
+
+## 23. 加開申請（隊長超過上限時向 GM 申請，GM 2026-11-13）
+
+隊長自主擴編原本有兩道硬上限，碰到就拒絕 `spawn_member`：團隊總人數（`autoStaff.teamLimit`）→ `team_full`；同一隊 10 分鐘最多新增 `DISPATCH_SPAWN_RATE_MAX` = 4 位 → `spawn_rate_limit`。改成：碰到上限時不拒絕，改成「提出加開申請」，GM 批准後才開。
+
+### 23.1 規則
+
+- **什麼時候變成申請**：`spawn_member` 走完原本所有檢查（§11.7 的順序：全部暫停、設定關、理由、不是隊長、全隊暫停／停止、帳號限流；再加機器在線、權限、worktree、寫入者衝突）都過了，只差人數或頻率上限時。這些先擋的照舊回錯誤，**不會**變成申請。隊長擴編設定（`autoStaff.enabled`）關掉時照舊 `autostaff_disabled`，不產生申請。
+- **只有已經有團隊的隊長**：還沒有團隊（第一次開人）時理論上不會超限；真的碰到（例如團隊剛被刪）照舊回 `team_full`／`spawn_rate_limit`。
+- **同一隊同時最多一件待處理**：已有一件時再超限回 `request_pending`（錯誤，記 audit `dispatch.blocked`、reason `request_pending`），不記新申請、**不再推播**。
+- **兩道都超過**：`limit` 是 `team_full`，`limits` 兩個都列；同意時兩道都略過。
+- **申請時記下完整的 spawn 參數**（role、prompt、reason、name、permissionMode、useWorktree、model、agent，和原本 `spawn_member` 一樣），同意時照用，不再問隊長。
+- **同意**：hub 用申請時的參數再走一次 `DispatchEngine.spawn`（`spawnApproved`），**只略過 `limits` 裡的上限**；其他擋法照舊（全部暫停、全隊暫停／停止、帳號限流、設定關、派工關、隊長已封存／結束、機器離線、`hub.createSession` 的錯…），又碰到別道上限也照舊擋。被擋＝申請 `failed`，`error` 是代碼，告訴隊長原因。開好＝申請 `approved`，成員和一般 `spawn_member` 開的完全一樣（`dispatch.spawn` audit、session 事件、`member_added` 團隊動態與推播、派工工作記在隊長名下，結果照常 `[Result from …]` 送回隊長、算進 10 分鐘頻率）。
+- **拒絕**：不開，告訴隊長。
+- **失效**：`expiresAt`（申請時間＋30 分鐘，`STAFF_REQUEST_TTL_MS`；hub `Timing.staffRequestTtlMs` 測試縮短）到了還沒處理 → `expired`，告訴隊長。到期後才按同意／拒絕 → 409 `request_decided`（或 404，見 23.3）。
+
+### 23.2 給隊長的字
+
+- `spawn_member` 回 `ok: true`、JSON：`{ status: "pending_approval", requestId, limit: "team_full"|"spawn_rate", team, role, reason, teamSize: "12/12", expiresAt, result }`。`result` 先說是哪道上限，接著是固定的 `STAFF_REQUEST_PENDING_GUIDE`：已向使用者申請、什麼都還沒開；結果會在這回合結束後以 `[Agent Board] …` 送進來，**現在就結束回合，不要 sleep、輪詢或為了等而繼續工作**（不說「wait」：§22.4 真 Codex 實測說 wait 會在回合裡 clocksleep 互等）；同意後照這次呼叫的參數開；30 分鐘沒處理失效；這段時間可以繼續用現有成員。
+- `request_pending: A request to add a member (<role>) is already waiting for the user (request <id>); this call was not sent. Do not ask again: end your turn. …`
+- `list_members`／`get_progress` 的 `staffing` 有待處理申請時多一欄 `pendingRequest: { id, role, limit, expiresAt, note }`。
+- 結果通知一律走 SafeDelivery（只在隊長 `waiting_input` 時送、文字和 Enter 分開、全部暫停時排隊），key `staff-request:<id>`，一行、開頭固定 `[Agent Board]`（不會以 `/`、`!` 開頭），內容是固定英文加名稱與代碼，**不帶 prompt**：
+  - 同意且開好：`[Agent Board] The user approved your request to add a member (over the team size limit|too many members added in 10 minutes). <成員> (<role>) has been started with your prompt; its result comes back to you as "[Result from <成員>] …" when it finishes its turn.`
+  - 同意但開不起來：`[Agent Board] The user approved your request to add a <role> member, but it could not be started: <代碼>: <原因（固定英文，300 字截斷）>`
+  - 拒絕：`[Agent Board] The user rejected your request to add a <role> member. Nothing was started. Continue with your current members (send_task) or do the work yourself.`
+  - 失效：`[Agent Board] Your request to add a <role> member expired: the user did not answer within 30 minutes. Nothing was started. …`
+- 守則（`protocol/src/leadGuide.ts`）：`LEAD_STAFFING_RHYTHM` 多一段「上限與申請」、`TEAM_FULL_GUIDE` 說滿了再開會變成申請、`spawn_member` 工具說明改寫。
+
+### 23.3 資料與 API
+
+- 型別（`protocol/src/models.ts`）：`StaffRequest { id, at, expiresAt, teamId, teamName, leadSessionId, leadName, limit, limits, teamSize, teamLimit, role, name?, agent?, permissionMode?, useWorktree?, model?, reason, promptPreview, status: pending|approved|rejected|expired|failed, decidedAt?, decidedBy?, memberSessionId?, memberName?, error? }`。`promptPreview` 是 prompt 的一行、前 300 字（`STAFF_PROMPT_PREVIEW_MAX`）；完整 prompt 只存在 hub。
+- 持久化：**不升 schema（仍是 v11）**。settings 表 `staffRequest:<id>`，值是 `StaffRequest` 加 `args`（完整 spawn 參數）與 `notice`（還沒送到的通知）。待處理的一直留著；處理後（同意／拒絕／失效／失敗）留到通知送到隊長（或隊長已結束、通知被丟掉）就刪。hub 啟動時（`StaffRequestEngine.restore`）待處理的重排失效計時器（已過期的馬上失效）、已處理但通知還沒送到的重新排進送字佇列。讀不懂的列略過。
+- REST（`protocol/src/rest.ts`）：
+  - `GET /api/staff-requests`（user）：待處理的，舊的在前。
+  - `POST /api/staff-requests/:id/approve`（owner）：同意並開；回處理後的 `StaffRequest`（`approved` 或 `failed`＋`error`）。
+  - `POST /api/staff-requests/:id/reject`（owner）：拒絕；回 `rejected` 的 `StaffRequest`。
+  - 不認得（含已處理且通知已送到、紀錄已刪）→ 404 `not_found`；已處理或已到期 → 409 `request_decided`。
+- WebSocket：`board.state.staffRequests`（待處理的；舊版 hub 不送＝空）；變了推 `{ type: 'staff.requests', items }`（整份）。
+- 團隊動態（`TeamActivity`）多五種：`staff_requested`、`staff_approved`（`memberSessionId`／`memberName` 是開出來的成員）、`staff_rejected`、`staff_expired`、`staff_failed`（`error` 代碼），都帶 `staffRequestId`、`limit`；這幾種的 `memberSessionId` 可能沒有（`memberSessionId`、`memberName` 改成 optional）。注意：退回舊版 hub 時舊版讀不懂這幾種，整份團隊動態會當成空的（未驗證，資料不會壞，新版再讀得回來）。
+- audit（全部 `session_id` 是隊長）：`staff_request.created`（user null；detail：requestId、teamId、limit、limits、role、reason、teamSize、teamLimit）、`staff_request.approved`（GM；memberSessionId、memberName）、`staff_request.rejected`（GM）、`staff_request.expired`（user null）、`staff_request.failed`（GM；code）、`staff_request.notice_delivered`／`staff_request.notice_dropped`（通知送到／沒送到）。開好的成員另有原本的 `dispatch.spawn`。
+- 推播（只有新申請，不併進合併通知、不看 `autoStaff.push`，看一般的推播開關與勿擾時段）：`{ kind: 'staff_request', requestId, lead, limit, at }`。`sw.js` 顯示固定文字「加開申請／<隊長> 請求加開成員（超過人數上限）」或「（10 分鐘內新增太多）」，英文「Member request／<lead> asks to add a member (…)」，點了開收件匣；**不帶理由、prompt**（同 §11.7 推播不帶 Claude 寫的字）。同意、拒絕、失效不推播。
+
+### 23.4 網頁
+
+- 收件匣（桌面抽屜 `InboxBoard`、手機 `InboxPage`）在交叉審查與團隊動態上面多一區「加開申請」（`flows/StaffRequests.tsx`，`data-testid="staff-requests"`），沒有待處理時不顯示。每件顯示：隊長、角色、上限種類、團隊、目前人數／上限、理由、指定名稱、prompt 摘要、失效時間；理由與 prompt 摘要經遮蔽模式（`useMaskText`）。
+- 「同意並開成員」（`.primary.act`）與「拒絕」（`.act`）只有 owner 看得到（不是 owner 顯示「只有擁有者能同意或拒絕」）。桌面標準 36px，手機 `.act` 56px（STYLE §5.1）。按下後顯示結果（已開好 <名稱>／開不起來（代碼）／已拒絕）。
+- 團隊動態列出五種 staff 事件；`staff_approved` 在桌面有「在畫布上看」。
+
+### 23.5 不呼叫模型
+
+- 申請、同意、拒絕、失效全是固定規則；送給隊長的是固定英文＋名稱與代碼（不帶 Claude 寫的 prompt），走既有的 SafeDelivery（`docs/no-llm-review.md` 送字來源表多一列「加開申請結果通知」）。同意後開成員走 `spawn_member` 原本的路（第一個指令是隊長申請時寫的 `[From <隊長>] <prompt>`），觸發者是 GM 在網頁按「同意」。

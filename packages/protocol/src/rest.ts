@@ -6,6 +6,7 @@ import {
   ReviewSettings,
   TEAM_ACTIVITY_KEEP,
   TeamActivity,
+  StaffRequest,
   Broadcast,
   BROADCAST_TEXT_MAX,
   BoardHeld,
@@ -774,6 +775,29 @@ export const routes = {
     auth: 'user',
     body: z.object({ ids: z.array(Id).max(TEAM_ACTIVITY_KEEP).optional() }),
     response: z.array(TeamActivity),
+  }),
+  /**
+   * 加開申請（CONTRACTS §23）：待處理的清單在 board 快照的 staffRequests，變了推 staff.requests。
+   * 同意／拒絕只有 owner。同意會照申請開成員，回傳處理後的申請（approved 或 failed，failed 帶 error 代碼）。
+   * 已經處理過或失效的回 409 `request_decided`；不認得的 404。
+   */
+  staffRequestList: route({
+    method: 'GET',
+    path: '/api/staff-requests',
+    auth: 'user',
+    response: z.array(StaffRequest),
+  }),
+  staffRequestApprove: route({
+    method: 'POST',
+    path: '/api/staff-requests/:id/approve',
+    auth: 'owner',
+    response: StaffRequest,
+  }),
+  staffRequestReject: route({
+    method: 'POST',
+    path: '/api/staff-requests/:id/reject',
+    auth: 'owner',
+    response: StaffRequest,
   }),
   /**
    * 交叉審查（Codex 第二輪，CONTRACTS §22）。prepare 只請 daemon 產生 diff（不跑模型），回傳檔案清單與大小；

@@ -69,6 +69,8 @@ import {
   type Zone,
   type ZoneNotEmpty,
   type TeamActivity,
+  type StaffRequest,
+  STAFF_REQUEST_TTL_MS,
 } from '@agent-board/protocol';
 import type { z } from 'zod';
 import {
@@ -86,6 +88,7 @@ import { REVIEW_PREPARE_TIMEOUT_MS, ReviewEngine } from './reviews';
 import { conflict, HttpError, notFound } from './errors';
 import { SafeDelivery, type DeliveryItem } from './delivery';
 import { DispatchEngine, type DispatchDeps } from './dispatch';
+import { StaffRequestEngine } from './staffRequests';
 import { ProgressEngine } from './progress';
 import { HandoffEngine } from './handoff';
 import {
@@ -129,6 +132,8 @@ export interface Timing {
   deepSearchGraceMs: number;
   /** 派工成員手上有工作、已經 waiting_input 時還算「等隊長／在做事」的寬限期（GM 2026-11-11 審查）。測試縮短。 */
   awaitingGraceMs: number;
+  /** 加開申請沒處理多久失效（CONTRACTS §23，預設 30 分鐘）。測試縮短。 */
+  staffRequestTtlMs: number;
 }
 
 export const DEFAULT_TIMING: Timing = {
@@ -151,6 +156,7 @@ export const DEFAULT_TIMING: Timing = {
   deepSearchDeadlineMs: SEARCH_DEEP_DEADLINE_MS,
   deepSearchGraceMs: SEARCH_DEEP_GRACE_MS,
   awaitingGraceMs: AWAITING_GRACE_MS,
+  staffRequestTtlMs: STAFF_REQUEST_TTL_MS,
 };
 
 export const CLOSE_REVOKED = 4401;
@@ -362,6 +368,8 @@ export class Hub {
   private readonly dispatch: DispatchEngine;
   /** 交叉審查（Codex 第二輪，CONTRACTS §22）。 */
   readonly reviews: ReviewEngine;
+  /** 加開申請（CONTRACTS §23）：REST 的同意／拒絕直接呼叫。 */
+  readonly staffRequests: StaffRequestEngine;
   /** 團隊群發（P2 項目二）：GM 親手下的，走同一條送字佇列，全部暫停不擋。 */
   private readonly broadcasts: BroadcastEngine;
   /** 進度卡（P3 項目一）：REST 與 MCP 工具共用。 */
@@ -522,11 +530,28 @@ export class Hub {
         if (current) this.broadcast({ type: 'team.updated', team: current });
       },
       awaitingChanged: (ids, change, notify) => this.awaitingChanged(ids, change, notify),
+      // 加開申請（§23）：staffRequests 在下面才建，呼叫時一定已經有了。
+      staffRequests: {
+        pendingFor: (teamId) => this.staffRequests.pendingFor(teamId),
+        create: (input) => this.staffRequests.create(input),
+      },
       // 交叉審查（Codex 第二輪）：reviews 在下面才建，呼叫時一定已經有了。
       requestReview: (input) => this.reviews.requestByLead(input),
       reviewsLeft: (teamId) => this.reviews.leadRequestsLeft(teamId),
       boardReviewsLeft: () => this.reviews.boardRequestsLeft(),
       reviewLimit: () => this.store.getSettings().review.leadPerHour,
+    });
+    this.staffRequests = new StaffRequestEngine({
+      store: deps.store,
+      now: deps.now,
+      ttlMs: deps.timing.staffRequestTtlMs,
+      delivery: this.delivery,
+      audit: (userId, sessionId, action, detail) => this.audit(userId, sessionId, action, detail),
+      spawn: (leadId, args, bypass) => this.dispatch.spawnApproved(leadId, args, bypass),
+      activity: (entry) => this.recordStaffActivity(entry),
+      changed: (items) => this.broadcast({ type: 'staff.requests', items }),
+      notify: (request) => this.notifyStaffRequest(request),
+      guarded: (label, fn) => this.guarded(label, fn),
     });
     this.reviews = new ReviewEngine({
       store: deps.store,
@@ -618,6 +643,8 @@ export class Hub {
     // 等隊長：送字佇列沒了，指向已經不在的隊長的記錄清掉；寬限期計時器重排。
     this.store.pruneAwaitingLead();
     this.dispatch.resumeTimers();
+    // 加開申請（§23）：待處理的重排 30 分鐘計時器；已處理但通知還沒送到隊長的重新排送。
+    this.staffRequests.restore();
     // 交叉審查：上一輪沒跑完的（hub 重啟後收不到結果）標成失敗。
     this.reviews.recover();
     this.heartbeat = setInterval(
@@ -1120,6 +1147,7 @@ export class Hub {
       presets: this.presets.list(),
       teamActivity: this.store.listTeamActivity(),
       reviews: this.reviews.list(),
+      staffRequests: this.staffRequests.list(),
     };
   }
 
@@ -1149,6 +1177,39 @@ export class Hub {
     this.store.saveTeamActivity(items);
     this.broadcast({ type: 'team.activity', items: this.store.listTeamActivity() });
     this.notifyTeamActivity(item);
+  }
+
+  /**
+   * 加開申請（§23）的團隊動態：申請、同意（成員欄位是開出來的成員）、拒絕、失效、開不起來。
+   * 推播另外送（notifyStaffRequest，只有新申請），這裡不推。
+   */
+  private recordStaffActivity(entry: {
+    kind: TeamActivity['kind'];
+    request: StaffRequest;
+    member?: Session;
+    error?: string;
+  }): void {
+    const { request, member } = entry;
+    const memberName = member?.name ?? request.memberName ?? request.name;
+    const item: TeamActivity = {
+      id: randomUUID(),
+      at: this.nowIso(),
+      kind: entry.kind,
+      teamId: request.teamId,
+      teamName: request.teamName,
+      leadSessionId: request.leadSessionId,
+      leadName: request.leadName,
+      ...(member ? { memberSessionId: member.id } : {}),
+      ...(memberName ? { memberName } : {}),
+      role: request.role,
+      reason: request.reason,
+      read: false,
+      staffRequestId: request.id,
+      limit: request.limit,
+      ...(entry.error ? { error: entry.error } : {}),
+    };
+    this.store.saveTeamActivity([item, ...this.store.listTeamActivity()]);
+    this.broadcast({ type: 'team.activity', items: this.store.listTeamActivity() });
   }
 
   /** 標已讀：ids 沒給＝全部。回傳新清單。 */
@@ -3227,14 +3288,14 @@ export class Hub {
   private notifyTeamActivity(item: TeamActivity): void {
     const settings = this.store.getSettings();
     // 隊長要求審查的推播另外送（notifyReview：「<隊長> 要求交叉審查」），這裡不重複。
-    if (item.kind === 'review_requested') return;
+    // 加開申請（staff_*）的推播另外送（notifyStaffRequest）。
+    if (item.kind !== 'member_added' && item.kind !== 'member_released') return;
+    const { memberName: member, memberSessionId: sessionId } = item;
+    if (member === undefined || sessionId === undefined) return;
     if (!settings.autoStaff.push || !this.pushAllowed(settings)) return;
     const reason = item.kind === 'member_added' ? 'team_member_added' : 'team_member_released';
     if (settings.notifications.coalesce) {
-      this.teamPending = [
-        ...this.teamPending,
-        { reason, lead: item.leadName, member: item.memberName, sessionId: item.memberSessionId },
-      ];
+      this.teamPending = [...this.teamPending, { reason, lead: item.leadName, member, sessionId }];
       this.coalescer.add(null, false);
       return;
     }
@@ -3242,9 +3303,27 @@ export class Hub {
       JSON.stringify({
         reason,
         name: item.leadName,
-        member: item.memberName,
-        sessionId: item.memberSessionId,
+        member,
+        sessionId,
         at: item.at,
+      }),
+    );
+  }
+
+  /**
+   * 加開申請的推播（§23）：固定文字「<隊長> 請求加開成員（超過人數上限／10 分鐘內新增太多）」，只帶隊長名稱與
+   * 上限種類，不帶理由、prompt（Claude 寫的字不進推播）。要 GM 處理，不併進合併通知，也不看 autoStaff.push。
+   */
+  private notifyStaffRequest(request: StaffRequest): void {
+    const settings = this.store.getSettings();
+    if (!this.pushAllowed(settings)) return;
+    this.sendPush(
+      JSON.stringify({
+        kind: 'staff_request',
+        requestId: request.id,
+        lead: request.leadName,
+        limit: request.limit,
+        at: request.at,
       }),
     );
   }
@@ -3516,6 +3595,7 @@ export class Hub {
     this.deepSearch.dispose();
     this.coalescer.close();
     this.dispatch.close();
+    this.staffRequests.close();
     this.autoContinue.close();
     this.delivery.close();
     for (const pending of this.pendingCreates.values()) clearTimeout(pending.timer);

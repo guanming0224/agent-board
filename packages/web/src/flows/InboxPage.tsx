@@ -40,6 +40,7 @@ import {
 import { codeClass, statusCode } from '../shared/status';
 import { DenyForm } from './DenyForm';
 import { TeamActivitySection } from './TeamActivity';
+import { StaffRequestsSection } from './StaffRequests';
 import { ReviewInboxSection } from '../review/ReviewInbox';
 import { summarizeTool } from './toolView';
 import { isFault, workItems, type WorkItem } from './workItems';
@@ -397,6 +398,7 @@ export function InboxPage() {
           ))}
         </div>
       )}
+      <StaffRequestsSection owner={me.data?.role === 'owner'} />
       <ReviewInboxSection />
       <TeamActivitySection />
     </Page>

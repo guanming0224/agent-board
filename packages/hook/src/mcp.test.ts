@@ -481,7 +481,9 @@ describe('agent-board-mcp', () => {
     expect(tool('list_members').description).toMatch(/size limit/);
     expect(tool('spawn_member').description).toMatch(/stuck, the workload is too large/);
     expect(tool('spawn_member').description).toMatch(/reason is required/);
-    expect(tool('spawn_member').description).toMatch(/release_member a finished member first/);
+    // 加開申請（GM 2026-11-13，CONTRACTS §23）：超過上限變成向使用者申請；先封存可以避免申請。
+    expect(tool('spawn_member').description).toMatch(/Releasing a finished member first avoids/);
+    expect(tool('spawn_member').description).toMatch(/pending_approval/);
     expect(tool('spawn_member').description).toMatch(/rate-limited/);
     expect(tool('release_member').description).toMatch(
       /waiting for the user's approval or plan review\) or that still owes you a result cannot be released/,

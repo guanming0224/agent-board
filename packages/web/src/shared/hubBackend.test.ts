@@ -1,6 +1,11 @@
 // 全部暫停的 REST 回應與 WebSocket 廣播的先後：較晚到的 REST 回應不能蓋掉較新的廣播。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { NOT_PAUSED, type BoardPauseState, type Broadcast } from '@agent-board/protocol';
+import {
+  NOT_PAUSED,
+  type BoardPauseState,
+  type Broadcast,
+  type StaffRequest,
+} from '@agent-board/protocol';
 import type { BoardSnapshot } from './backend';
 import {
   createHubBackend,
@@ -88,7 +93,7 @@ async function connect() {
   ws.readyState = FakeSocket.OPEN;
   ws.onopen?.();
   ws.push({ type: 'board.state', machines: [], sessions: [], approvals: [], pause: NOT_PAUSED });
-  return { backend, ws, pause: () => latest?.pause };
+  return { backend, ws, pause: () => latest?.pause, snapshot: () => latest };
 }
 
 async function settle(index: number, value: unknown) {
@@ -124,6 +129,45 @@ describe('hubBackend 全部暫停', () => {
     await settle(0, { state: PAUSED, interrupted: [] });
     await done;
     expect(pause()?.held.deliveries).toBe(2);
+  });
+});
+
+describe('hubBackend 加開申請（CONTRACTS §23）', () => {
+  const request = (id: string): StaffRequest => ({
+    id,
+    at: '2026-11-13T01:00:00.000Z',
+    expiresAt: '2026-11-13T01:30:00.000Z',
+    teamId: 't',
+    teamName: 'Squad',
+    leadSessionId: 's-lead',
+    leadName: 'Lead',
+    limit: 'team_full',
+    limits: ['team_full'],
+    teamSize: 12,
+    teamLimit: 12,
+    role: 'tester',
+    reason: 'Need tests.',
+    promptPreview: 'Write tests.',
+    status: 'pending',
+  });
+
+  it('board.state 與 staff.requests 更新待處理清單；同意後先從畫面拿掉，回傳 hub 的結果', async () => {
+    const { backend, ws, snapshot } = await connect();
+    expect(snapshot()?.staffRequests).toEqual([]);
+    ws.push({ type: 'staff.requests', items: [request('a'), request('b')] });
+    expect(snapshot()?.staffRequests?.map((r) => r.id)).toEqual(['a', 'b']);
+    const done = backend.approveStaffRequest('a');
+    await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0));
+    expect(String(pending[0]!.body)).toContain('/api/staff-requests/a/approve');
+    pending[0]!.resolve(json({ ...request('a'), status: 'approved', memberName: 'Squad-QA' }));
+    expect(await done).toMatchObject({ status: 'approved', memberName: 'Squad-QA' });
+    expect(snapshot()?.staffRequests?.map((r) => r.id)).toEqual(['b']);
+    const rejected = backend.rejectStaffRequest('b');
+    await vi.waitFor(() => expect(pending.length).toBeGreaterThan(1));
+    expect(String(pending[1]!.body)).toContain('/api/staff-requests/b/reject');
+    pending[1]!.resolve(json({ ...request('b'), status: 'rejected' }));
+    expect(await rejected).toMatchObject({ status: 'rejected' });
+    expect(snapshot()?.staffRequests).toEqual([]);
   });
 });
 

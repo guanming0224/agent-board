@@ -592,6 +592,10 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     boardResume: (ctx) => hub.resumeBoard(ctx.user),
     settingsGet: () => store.getSettings(),
     teamActivityRead: (ctx) => hub.readTeamActivity(ctx.body.ids, ctx.user),
+    // 加開申請（CONTRACTS §23）：GM 同意 → 照申請開成員；拒絕 → 告訴隊長。audit 由 StaffRequestEngine 寫。
+    staffRequestList: () => hub.staffRequests.list(),
+    staffRequestApprove: (ctx) => hub.staffRequests.approve(param(ctx), ctx.user),
+    staffRequestReject: (ctx) => hub.staffRequests.reject(param(ctx), ctx.user),
     // 交叉審查（Codex 第二輪）：GM 的動作。start 是 GM 按確認，跑模型只有這裡與隊長的 request_review（no-llm 界線）。
     reviewList: () => hub.reviews.list(100),
     reviewGet: (ctx) => hub.reviews.get(param(ctx)),

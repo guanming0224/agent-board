@@ -166,6 +166,23 @@ const REVIEW_TEXT = {
   },
 };
 
+/**
+ * 加開申請（CONTRACTS §23，hub 送 { kind: 'staff_request', requestId, lead, limit: 'team_full'|'spawn_rate', at }）。
+ * 固定文字，只用隊長名稱與上限種類：不帶理由、不帶 prompt（Claude 寫的字不進推播）。點了開收件匣處理。
+ */
+const STAFF_TEXT = {
+  'zh-TW': {
+    title: '加開申請',
+    team_full: '{lead} 請求加開成員（超過人數上限）',
+    spawn_rate: '{lead} 請求加開成員（10 分鐘內新增太多）',
+  },
+  en: {
+    title: 'Member request',
+    team_full: '{lead} asks to add a member (over the team size limit)',
+    spawn_rate: '{lead} asks to add a member (too many added in 10 minutes)',
+  },
+};
+
 const reviewUrl = (reviewId) =>
   new URL(
     typeof reviewId === 'string' && reviewId
@@ -330,6 +347,15 @@ self.addEventListener('push', (event) => {
       data.event === 'requested' ? fill(text.requested, { lead: textOf(data.lead) }) : text.done;
     const id = typeof data.reviewId === 'string' ? data.reviewId : '';
     event.waitUntil(show(text.title, body, `agent-board-review-${id}`, reviewUrl(id), data.at));
+    return;
+  }
+  if (data && data.kind === 'staff_request') {
+    const text = STAFF_TEXT[lang];
+    const body = fill(data.limit === 'spawn_rate' ? text.spawn_rate : text.team_full, {
+      lead: textOf(data.lead),
+    });
+    const id = typeof data.requestId === 'string' ? data.requestId : '';
+    event.waitUntil(show(text.title, body, `agent-board-staff-${id}`, inboxUrl(null), data.at));
     return;
   }
   if (data && data.kind === 'overload') {
