@@ -380,7 +380,8 @@ describe('整理畫布後關係線看得到（GM 2026-11-09）', () => {
     }));
     placeLabels(requests, cards, 6 / z);
     // 單獨跑約 105ms；pnpm -r test 幾個套件同時跑時會慢好幾倍，門檻留寬一點免得誤報。
-    expect(performance.now() - start).toBeLessThan(800);
+    // GitHub Actions 共用機器更慢（2026-11-13 實測 863ms），CI 只當退步警訊。
+    expect(performance.now() - start).toBeLessThan(process.env.CI ? 2000 : 800);
   });
 });
 
