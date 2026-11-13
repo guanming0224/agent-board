@@ -214,6 +214,7 @@ describe('SelfUpdater', () => {
     h.setStatuses(['running', 'waiting_permission']);
     h.updater.onTarget(target(), false);
     await settle();
+    await until(() => h.reports[0]?.reason === 'waiting_permission');
     expect(h.reports[0]).toMatchObject({ phase: 'deferred', reason: 'waiting_permission' });
     expect(h.fetches).toEqual([]);
     h.setStatuses(['running']);
@@ -227,6 +228,7 @@ describe('SelfUpdater', () => {
     h.setStatuses(['running']);
     h.updater.onTarget(target(), false);
     await settle();
+    await until(() => h.reports.at(-1)?.reason === 'host_busy');
     expect(h.reports.at(-1)).toMatchObject({ phase: 'deferred', reason: 'host_busy' });
     expect(h.spawned).toEqual([]);
     h.updater.dispose();
@@ -286,6 +288,7 @@ describe('SelfUpdater', () => {
       true,
     );
     await settle();
+    await until(() => h.fetches.length > 0);
     expect(h.fetches).toHaveLength(1);
   });
 
@@ -328,6 +331,7 @@ describe('SelfUpdater', () => {
     await settle();
     h.updater.onTarget(target(), false);
     await settle();
+    await until(() => h.reports.length > 0);
     expect(h.reports).toHaveLength(1);
     expect(h.reports[0]).toMatchObject({ phase: 'idle', reason: 'not_installed' });
     expect(h.fetches).toEqual([]);
@@ -381,6 +385,7 @@ describe('SelfUpdater：卡住的狀態（S1）', () => {
     const h = harness();
     h.updater.onConnected();
     await settle();
+    await until(() => h.reports[0]?.reason === 'interrupted');
     expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
     h.updater.onTarget(target(), false);
     await until(() => h.spawned.length > 0);
@@ -396,6 +401,7 @@ describe('SelfUpdater：卡住的狀態（S1）', () => {
     const h = harness();
     h.updater.onTarget(target(), false);
     await settle();
+    await until(() => h.reports[0]?.reason === 'interrupted');
     expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
     expect(h.spawned).toHaveLength(1);
     h.updater.dispose();
@@ -420,6 +426,7 @@ describe('SelfUpdater：卡住的狀態（S1）', () => {
     );
     h.updater.onTarget(target(), true);
     await settle();
+    await until(() => h.reports[0]?.reason === 'interrupted');
     expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
     expect(h.spawned).toHaveLength(1);
     h.updater.dispose();
@@ -431,6 +438,7 @@ describe('SelfUpdater：卡住的狀態（S1）', () => {
     h.setLock(5353);
     h.updater.onTarget(target(), false);
     await settle();
+    await until(() => h.reports[0]?.reason === 'interrupted');
     expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
     h.updater.dispose();
   });
@@ -508,6 +516,7 @@ describe('SelfUpdater：回滾與進行中的更新（N2）', () => {
     h.updater.onTarget(target(), true);
     await settle();
     await settle();
+    await until(() => h.reports.some((r) => r.phase === 'idle' && r.reason === 'superseded'));
     expect(h.reports.some((r) => r.phase === 'idle' && r.reason === 'superseded')).toBe(true);
     expect(h.spawned).toHaveLength(1);
     expect(h.spawned[0]!.args[0]).toBe('update');
@@ -524,6 +533,7 @@ describe('SelfUpdater：啟動更新程式（S2）', () => {
     });
     h.updater.onTarget(target(), false);
     await settle();
+    await until(() => h.reports.at(-1)?.reason === 'spawn_failed');
     expect(h.reports.at(-1)).toMatchObject({
       phase: 'failed',
       reason: 'spawn_failed',
@@ -554,6 +564,7 @@ describe('SelfUpdater：解壓與成品檢查', () => {
     const h = harness();
     h.updater.onTarget(target(), false);
     await settle();
+    await until(() => h.fetches.length > 0);
     expect(h.fetches).toHaveLength(1);
     expect(h.spawned).toHaveLength(1);
     expect(existsSync(join(root, 'releases', '.incoming', '0.2.0.partial'))).toBe(false);
@@ -568,6 +579,7 @@ describe('SelfUpdater：解壓與成品檢查', () => {
     });
     h.updater.onTarget(target(), false);
     await settle();
+    await until(() => h.reports.at(-1)?.reason === 'extract_failed');
     expect(h.reports.at(-1)).toMatchObject({ phase: 'failed', reason: 'extract_failed' });
     expect(existsSync(join(root, 'releases', '.incoming'))).toBe(false);
   });
@@ -640,6 +652,7 @@ describe('SelfUpdater：解壓與成品檢查', () => {
     });
     h.updater.onTarget(target(), false);
     await settle();
+    await until(() => h.reports.at(-1)?.reason === 'extract_failed');
     expect(h.reports.at(-1)).toMatchObject({ phase: 'failed', reason: 'extract_failed' });
     expect(h.spawned).toEqual([]);
     expect(existsSync(join(root, 'releases', '.incoming'))).toBe(false);
