@@ -600,6 +600,7 @@ export function createHubBackend() {
     browseDirectory: (id, path) => call('machineBrowse', { params: { id }, query: { path } }),
     makeDirectory: (id, parent, name) =>
       call('machineMkdir', { params: { id }, body: { parent, name } }),
+    gitInit: (id, path) => call('machineGitInit', { params: { id }, body: { path } }),
     createProject: (input) => call('projectsCreate', { body: input }),
     createPairingCode: () => call('pairingCreate'),
     async removeMachine(id) {

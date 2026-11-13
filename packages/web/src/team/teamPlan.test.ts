@@ -102,6 +102,10 @@ describe('validatePlan', () => {
     expect(validatePlan(defaultReviewer, true)).toBeNull();
     // 不是 git：BD 開不了 worktree，會和 LD 共用資料夾。
     expect(validatePlan(rows, false)).toBe('sharedWriters');
+    // 勾了「共用資料夾」（§24）：使用者同意 BD 和 LD 共用，不擋。
+    expect(validatePlan(rows, false, undefined, true)).toBeNull();
+    // 其他檢查照舊。
+    expect(validatePlan([...rows, { ...rows[0]! }], false, undefined, true)).toBe('leadCount');
     // 不是 git 也可以：只有 LD 會改檔案，其他人只讀。
     expect(validatePlan(presetRows('explore', 'A').slice(0, 2), false)).toBeNull();
   });
@@ -315,6 +319,8 @@ describe('補成員（現有團隊）', () => {
     expect(validatePlan(clash, true, existing())).toBe('duplicateName');
     // 不是 git：新的 BD 留在主資料夾，和現有的隊長（寫入者）衝突。
     expect(validatePlan(rows, false, existing())).toBe('sharedWriters');
+    // 既有團隊是（或這次勾了）共用資料夾：連同現有寫入者都不擋（§24）。
+    expect(validatePlan(rows, false, existing(), true)).toBeNull();
     // 現有成員本來就沒有隊長：補成員不強迫加隊長。
     expect(validatePlan(rows, true, existing({ leads: 0, mainWriters: 0 }))).toBeNull();
     // 團隊還沒有成員：和新團隊一樣要剛好一位隊長。

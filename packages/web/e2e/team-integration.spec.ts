@@ -1,6 +1,6 @@
 // 交接與請隊長拆解走完整條路：假 claude 真的收到 hub 送進 PTY 的內容。不連外、不呼叫 LLM。
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -37,6 +37,8 @@ test.describe.configure({ mode: 'serial' });
 
 let daemon: ChildProcess | undefined;
 let daemonDir: string;
+/** 測完要刪的暫存資料夾（§24 的非 git 資料夾，daemon 停掉後才刪）。 */
+const cleanupDirs: string[] = [];
 let codexHome: string;
 let repo: string;
 let machineId: string;
@@ -71,13 +73,18 @@ const getSession = async (request: APIRequestContext, id: string): Promise<Sessi
 const expectStatus = (request: APIRequestContext, id: string, status: Session['status']) =>
   expect.poll(async () => (await getSession(request, id)).status, { timeout: 20_000 }).toBe(status);
 
-async function createSession(page: Page, name: string, useWorktree: boolean): Promise<Session> {
+async function createSession(
+  page: Page,
+  name: string,
+  useWorktree: boolean,
+  cwd = repo,
+): Promise<Session> {
   const response = await page.request.post('/api/sessions', {
     data: {
       machineId,
       name,
       projectId: null,
-      cwd: repo,
+      cwd,
       useWorktree,
       permissionMode: 'default',
       model: null,
@@ -182,6 +189,7 @@ test.afterAll(async () => {
       running.kill('SIGTERM');
     });
   }
+  for (const dir of cleanupDirs) rmSync(dir, { recursive: true, force: true });
 });
 
 test('建立管理員、配對、開好 session', async ({ page }) => {
@@ -1035,4 +1043,90 @@ test('交叉審查（Codex 第二輪，真 hub、真 daemon、真 git、假 clau
   } finally {
     rmSync(untracked, { force: true });
   }
+});
+
+test('不是 git 的資料夾（§24，真 daemon、真 git）：隊長開 BD 被擋並說要 git init；補成員按 git init 後隊長不用重開就能開 BD worktree', async ({
+  page,
+}) => {
+  // 只在暫存資料夾裡 init（worktree 會開在 parent/.agent-board-wt，一起刪）。
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'ab-team-e2e-nongit-')));
+  cleanupDirs.push(parent);
+  const plain = join(parent, 'notes');
+  mkdirSync(plain);
+  writeFileSync(join(plain, 'notes.md'), '# notes\n');
+
+  await page.goto('/#/canvas');
+  const ngLead = await createSession(page, 'ng-ld', false, plain);
+  expect(ngLead.repoRoot).toBeNull();
+  const created = await page.request.post('/api/teams', {
+    data: { name: 'ng-team', goal: '', doneCriteria: '', color: 'teal', contextMd: '' },
+  });
+  const ngTeam = (await created.json()) as Team;
+  expect(
+    (
+      await page.request.put(`/api/teams/${ngTeam.id}/members/${ngLead.id}`, {
+        data: { role: 'lead' },
+      })
+    ).ok(),
+  ).toBe(true);
+
+  // 隊長開 BD：不是 git、這一隊沒勾共用 → 被擋，回固定指引。
+  await typeInto(
+    page,
+    ngLead.id,
+    'mcp spawn_member {"role":"worker","prompt":"Edit notes.","reason":"Need an editor."}',
+  );
+  await screenOf(page, ngLead.id).toContain('MCP error worktree_unavailable');
+
+  // 團隊面板補成員：位置沿用隊長，偵測到不是 git，按 git init。
+  await page.goto(`/#/team/${ngTeam.id}`);
+  await page.getByTestId('add-members-toggle').click();
+  const add = page.getByTestId('add-members');
+  await expect(add.getByTestId('plan-place-fixed')).toContainText(plain);
+  await add.getByRole('button', { name: '小隊' }).click();
+  await expect(add.getByTestId('team-not-git')).toBeVisible({ timeout: 20_000 });
+  await add.getByTestId('git-init-open').click();
+  await add.getByTestId('git-init-confirm').click();
+  await expect(add.getByTestId('git-init-done')).toContainText('已 git init', { timeout: 30_000 });
+  await expect(add.getByTestId('team-not-git')).toHaveCount(0, { timeout: 20_000 });
+  await expect(add.locator('.plan-row').first()).toContainText('自己的 worktree');
+  await add.getByRole('button', { name: '開 1 個 session 並加入' }).click();
+  await expect(add.getByTestId('add-members-msg')).toContainText('已加入 1 位', {
+    timeout: 20_000,
+  });
+
+  // 真的 init 了：第一個 commit、分支 main、沒有 remote。
+  expect(
+    execFileSync('git', ['-C', plain, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim(),
+  ).toBe('Agent Board：初始 commit');
+  expect(execFileSync('git', ['-C', plain, 'remote'], { encoding: 'utf8' }).trim()).toBe('');
+  // 隊長沒有中斷：同一個 session 還在等輸入，repo 已更新。
+  await expect
+    .poll(async () => (await getSession(page.request, ngLead.id)).repoRoot, { timeout: 20_000 })
+    .not.toBeNull();
+  const leadNow = await getSession(page.request, ngLead.id);
+  expect(leadNow).toMatchObject({ status: 'waiting_input', endedAt: null, branch: 'main' });
+  expect(leadNow.claudeSessionId).toBe(ngLead.claudeSessionId);
+  const sessions = (await (await page.request.get('/api/sessions')).json()) as Session[];
+  expect(sessions.find((s) => s.name === 'ng-team-BD1')?.worktreePath).toBeTruthy();
+
+  // 隊長不用重開：spawn_member 開 BD 成功，有自己的 worktree。
+  await typeInto(
+    page,
+    ngLead.id,
+    'mcp spawn_member {"role":"worker","prompt":"Edit notes now.","reason":"Folder is a repo now."}',
+  );
+  await screenOf(page, ngLead.id).toContain('MCP ok');
+  await expect
+    .poll(
+      async () => {
+        const all = (await (await page.request.get('/api/sessions')).json()) as Session[];
+        const spawned = all.find((s) => s.dispatchedBy === ngLead.id && s.name !== 'ng-team-BD1');
+        return spawned?.worktreePath ?? null;
+      },
+      { timeout: 20_000 },
+    )
+    .not.toBeNull();
+  const gitInits = await auditOf(page, 'fs.git_init');
+  expect(gitInits.some((a) => a.detail.includes('"ok":true'))).toBe(true);
 });

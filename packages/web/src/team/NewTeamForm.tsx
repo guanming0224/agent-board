@@ -72,7 +72,7 @@ export function NewTeamForm() {
   const research = teamType === 'research';
   const withSessions = rows.length > 0;
   const locked = busy || created !== null;
-  const planError = validatePlan(rows, gitOk);
+  const planError = validatePlan(rows, gitOk, undefined, place.shared);
   const placeError = withSessions ? place.error : null;
   const formError = planError ? t(`team.new.err.${planError}`) : placeError;
   const offerPair = research && planHasPair(rows);
@@ -146,6 +146,8 @@ export function NewTeamForm() {
             ...(research ? { phase } : {}),
             // 新團隊放在目前工作區。
             zoneId: currentZoneId(),
+            // 不是 git、使用者勾了共用資料夾（§24）：存在團隊上，之後隊長開 BD 也照樣共用。
+            ...(place.shared ? { sharedWriters: true } : {}),
           },
           machineId: place.machineId,
           cwd: place.cwd.trim(),
@@ -276,13 +278,14 @@ export function NewTeamForm() {
 
         {withSessions && (
           <>
-            <PlaceFields place={place} rows={rows} tried={tried} />
+            <PlaceFields place={place} rows={rows} tried={tried} allowShared />
             <PlanRowsEditor
               rows={rows}
               setRows={setRows}
               teamName={name}
               teamType={teamType}
               gitOk={gitOk}
+              shared={place.shared}
               steps={steps}
             />
             {offerPair && (

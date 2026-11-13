@@ -555,3 +555,14 @@ button.color-pick[aria-pressed='true'] {
   color: var(--faint);
   font-size: var(--fs-sm);
 }
+
+/* 團隊「共用資料夾」（§24）：勾選與說明。 */
+.shared-writers {
+  margin-top: var(--space-2);
+}
+.team-shared-note p {
+  margin: 0;
+}
+.team-shared-note .row {
+  margin-top: var(--space-2);
+}

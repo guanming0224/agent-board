@@ -17,6 +17,7 @@ import {
   isReadOnlyMember,
   LEAD_STAFFING_REMINDER,
   MEMBER_STAFFING_GUIDE,
+  NOT_GIT_WRITER_GUIDE,
   STAFFING_REASON_MAX,
   SPAWN_PROMPT_MAX,
   promptLength,
@@ -787,25 +788,32 @@ export class DispatchEngine {
       caller.permissionMode,
       args.role,
     );
-    // 寫入者預設開 worktree；不是 git（或 daemon 還沒回報）就開不了，除非明確說不要。
-    const useWorktree = args.useWorktree ?? !readOnly;
-    if (useWorktree && caller.repoRoot === null) {
-      return fail(
-        'worktree_unavailable',
-        `${caller.cwd} is not a git repository (or Agent Board has not detected it yet), so a member cannot get its own worktree. Use role researcher or reviewer, or set useWorktree: false if nobody else edits files here.`,
-      );
-    }
     // 先檢查完才動資料庫：被擋下時不留下空的團隊。
     const existing = approved?.team ?? this.teamOf(caller);
     const members: TeamMember[] = existing
       ? store.listTeamMembers(existing.id)
       : [{ teamId: '', sessionId: caller.id, role: 'lead' }];
-    if (!readOnly && !useWorktree) {
+    // 共用資料夾的團隊（§24）：使用者已同意會改檔案的成員共用資料夾，不檢查衝突；不是 git 時預設不開 worktree。
+    const sharedTeam = existing?.sharedWriters === true;
+    const notGit = caller.repoRoot === null;
+    // 寫入者預設開 worktree；不是 git（或 daemon 還沒回報）就開不了，除非明確說不要（或這一隊共用資料夾）。
+    const useWorktree = args.useWorktree ?? (!readOnly && !(sharedTeam && notGit));
+    if (useWorktree && notGit) {
+      return fail(
+        'worktree_unavailable',
+        readOnly || sharedTeam
+          ? `${caller.cwd} is not a git repository (or Agent Board has not detected it yet), so a member cannot get its own worktree. Set useWorktree: false.`
+          : `${caller.cwd} is not a git repository (or Agent Board has not detected it yet). ${NOT_GIT_WRITER_GUIDE}`,
+      );
+    }
+    if (!readOnly && !useWorktree && !sharedTeam) {
       const clash = this.writerClash(caller, members);
       if (clash.length > 0) {
         return fail(
           'worktree_required',
-          `Same folder as ${clash.join(', ')}. Members that edit files each need their own worktree (useWorktree: true).`,
+          notGit
+            ? `Same folder as ${clash.join(', ')}. ${NOT_GIT_WRITER_GUIDE}`
+            : `Same folder as ${clash.join(', ')}. Members that edit files each need their own worktree (useWorktree: true).`,
         );
       }
     }

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   AUTO_STAFF_DEFAULT,
   DISPATCH_SPAWN_RATE_MAX,
+  NOT_GIT_WRITER_GUIDE,
   type Session,
   type SessionSpec,
 } from '@agent-board/protocol';
@@ -2111,5 +2112,72 @@ describe('加開申請：超過上限改成向使用者申請', () => {
     expect(hub.running.store.getRawJson(key)).toBeNull();
     await settle();
     expect(noticesTo(b)).toEqual([]);
+  });
+});
+
+// ── 不是 git 的資料夾：共用資料夾的團隊與 git init 之後（CONTRACTS §24） ──────────
+
+describe('不是 git 的資料夾（§24）', () => {
+  it('沒勾共用的團隊：開 BD 回固定的指引（請使用者按 git init 或允許共用）', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' }, null);
+    await setAutoStaff(b, {});
+    await gmTeam(b, []);
+    const refused = await ask(b, 'spawn_member', {
+      reason: 'Needed.',
+      role: 'worker',
+      prompt: 'x',
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.text).toMatch(/^worktree_unavailable:/);
+    expect(refused.text).toContain(NOT_GIT_WRITER_GUIDE);
+    // 明說不開 worktree：和隊長同資料夾衝突，也帶同一段指引。
+    const clash = await ask(b, 'spawn_member', {
+      reason: 'Needed.',
+      role: 'worker',
+      prompt: 'x',
+      useWorktree: false,
+    });
+    expect(clash.text).toMatch(/^worktree_required: Same folder as Lead/);
+    expect(clash.text).toContain(NOT_GIT_WRITER_GUIDE);
+  });
+
+  it('共用資料夾的團隊：BD 不開 worktree、直接在主資料夾，兩位都可以', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' }, null);
+    await setAutoStaff(b, {});
+    const teamId = await gmTeam(b, []);
+    const patch = await hub.api('PATCH', `/api/teams/${teamId}`, {
+      cookie: b.cookie,
+      body: { sharedWriters: true },
+    });
+    expect(patch.status).toBe(200);
+    expect(patch.body.sharedWriters).toBe(true);
+    const first = await spawnMember(b, { role: 'worker', prompt: 'Part one.' });
+    expect(first.spec.useWorktree).toBe(false);
+    expect(first.reply.useWorktree).toBe(false);
+    const second = await spawnMember(b, { role: 'tester', prompt: 'Tests.' });
+    expect(second.spec.useWorktree).toBe(false);
+    expect(hub.running.store.listTeamMembers(teamId)).toHaveLength(3);
+  });
+
+  it('git init 之後（daemon 回報 repoRoot）：不用重開隊長，BD 就開 worktree', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' }, null);
+    await setAutoStaff(b, {});
+    await gmTeam(b, []);
+    const before = await ask(b, 'spawn_member', { reason: 'Needed.', role: 'worker', prompt: 'x' });
+    expect(before.text).toMatch(/^worktree_unavailable:/);
+    // daemon 在 git init 後送的 session.runtime（隊長沒有中斷，只有 repo 與分支變了）。
+    b.daemon.send({
+      type: 'session.runtime',
+      session: runtime(b.caller, {
+        status: 'waiting_input',
+        cwd: CWD,
+        branch: 'main',
+        repoRoot: CWD,
+        repoCommonDir: `${CWD}/.git`,
+      }),
+    });
+    await until(() => get(b.caller)?.repoRoot === CWD, 'repoRoot 更新');
+    const member = await spawnMember(b, { role: 'worker', prompt: 'Now with a worktree.' });
+    expect(member.spec.useWorktree).toBe(true);
   });
 });

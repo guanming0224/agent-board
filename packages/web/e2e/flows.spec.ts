@@ -1386,6 +1386,48 @@ test.describe('新增 session', () => {
     await expect(preview(page)).not.toContainText('git worktree');
   });
 
+  test('不是 git 的資料夾：「在這裡 git init」確認後重新偵測，worktree 勾選框可以用（§24）', async ({
+    page,
+  }) => {
+    await open(page, 'new', {
+      machines: [rigA],
+      sessions: [session({ id: 's1', name: '筆記', machineId: 'm-a', cwd: '/plain' })],
+      approvals: [],
+      // 按過 git init 的資料夾之後回報是 repo。
+      patch: `const inited = new Set();
+        backend.browseDirectory = async (_m, path) => ({ path, entries: [],
+          repo: inited.has(path) ? { root: path, commonDir: path + '/.git' } : null });
+        backend.gitInit = async (_m, path) => {
+          window.__calls.push({ type: 'gitInit', path });
+          inited.add(path);
+          return { ok: true, path, branch: 'main', commit: 'abcdef1234567', gitignoreCreated: false,
+            identity: 'user', files: 3, skipped: [], skippedMore: 0 };
+        };`,
+    });
+    const toggle = page.getByLabel('使用 worktree');
+    await page.getByLabel('工作目錄').fill('/plain');
+    await expect(toggle).toBeDisabled();
+    await page.getByTestId('git-init-open').click();
+    await expect(page.locator('.git-init-confirm')).toContainText('session 不會中斷');
+    // 取消：什麼都不做。
+    await page.getByRole('button', { name: '取消' }).click();
+    await expect(page.locator('.git-init-confirm')).toHaveCount(0);
+    await page.getByTestId('git-init-open').click();
+    await page.getByTestId('git-init-confirm').click();
+    await expect(page.getByTestId('git-init-done')).toContainText('3 個檔案');
+    await expect(page.getByTestId('worktree-not-git')).toHaveCount(0);
+    await expect(toggle).toBeEnabled();
+    // 同資料夾已有 session：重新偵測後預設開 worktree。
+    await expect(toggle).toBeChecked();
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as { __calls: { type: string }[] }).__calls.filter(
+          (c) => c.type === 'gitInit',
+        ),
+      ),
+    ).toEqual([{ type: 'gitInit', path: '/plain' }]);
+  });
+
   test('同帳號限流且設定會排隊：預覽說明會排隊；別台機器不算同帳號', async ({ page }) => {
     await open(page, 'new', {
       machines: [rigA, rigGpu],

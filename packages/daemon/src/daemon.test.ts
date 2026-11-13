@@ -1270,6 +1270,45 @@ describe('其他 hub 指令', () => {
     expect(result.entries).toEqual([{ name: 'child', isDir: true, isGitRepo: false }]);
   });
 
+  it('fs.gitInit（§24）：hello 宣告功能；init 後同資料夾的 session 不中斷，回報新的 repo 與分支', async () => {
+    expect(h.hellos()[0]?.features).toContain('fs.gitInit');
+    await h.createAndSubscribe('s1');
+    const before = h.hub.received.filter(
+      (m) => m.type === 'session.runtime' && m.session.id === 's1',
+    ).length;
+    h.hub.send({ type: 'fs.gitInit', requestId: 'g1', path: h.workDir });
+    const reply = await h.hub.waitFor('fs.gitInitResult', (m) => m.requestId === 'g1');
+    expect(reply.result).toMatchObject({ ok: true, branch: 'main' });
+    const root = realpathSync(h.workDir);
+    await waitUntil(
+      () =>
+        h.hub.received.some(
+          (m, i) =>
+            i >= before &&
+            m.type === 'session.runtime' &&
+            m.session.id === 's1' &&
+            m.session.repoRoot !== null,
+        ),
+      'session 回報新的 repo',
+    );
+    const runtime = h.hub.received
+      .filter((m) => m.type === 'session.runtime' && m.session.id === 's1')
+      .at(-1);
+    expect(runtime).toMatchObject({
+      session: { branch: 'main', status: expect.not.stringMatching(/done|error/) },
+    });
+    expect(runtime && 'session' in runtime && realpathSync(runtime.session.repoRoot ?? '')).toBe(
+      root,
+    );
+    // agent 照跑：還收得到輸入。
+    h.hub.send({ type: 'terminal.input', sessionId: 's1', data: 'still-alive\r' });
+    await h.waitForOutput('s1', 'INPUT:still-alive');
+    // 再按一次：已經是 repo。
+    h.hub.send({ type: 'fs.gitInit', requestId: 'g2', path: h.workDir });
+    const again = await h.hub.waitFor('fs.gitInitResult', (m) => m.requestId === 'g2');
+    expect(again.result).toMatchObject({ ok: false, code: 'already_repo' });
+  });
+
   it('session.inspect／session.transcript 走訊息流程，用預設的 Claude 設定資料夾', async () => {
     const id = '0a1b2c3d-aaaa-bbbb-cccc-000011112222';
     const project = join(h.claudeDir, 'projects', 'p');

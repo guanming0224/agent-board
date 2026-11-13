@@ -42,6 +42,18 @@ registerMessages('zh-TW', {
   'team.new.where.main': '主資料夾',
   'team.new.where.worktree': '自己的 worktree',
   'team.new.where.shared': '共用主資料夾（唯讀）',
+  'team.new.where.mainShared': '主資料夾（共用）',
+  'team.new.notGitChoose':
+    '這個資料夾不是 git repo，BD 開不了 worktree。建議在這裡 git init（BD 就能各自開 worktree）；或勾選下面讓 BD 和 LD 共用資料夾。',
+  'team.shared.check': '我知道風險：讓 BD 和 LD 共用這個資料夾（可能互相覆蓋修改）',
+  'team.shared.already': '這一隊已設定「共用資料夾」：會改檔案的成員不開 worktree、共用主資料夾。',
+  'team.shared.on':
+    '共用資料夾：這一隊會改檔案的成員不開 worktree、共用同一個資料夾，可能互相覆蓋修改。隊長開成員時也照這個設定。',
+  'team.shared.off': '關掉共用資料夾',
+  'team.shared.offArmed': '確定關掉？',
+  'team.shared.offDone':
+    '已關掉。之後會改檔案的成員要各自 worktree（不是 git 的資料夾請先 git init）。',
+  'team.shared.ownerOnly': '只有擁有者能關掉這個設定。',
   'team.new.err.leadCount': '要剛好一位隊長（LD）。',
   'team.new.err.emptyName': '每位都要有 session 名稱。',
   'team.new.err.duplicateName': 'session 名稱不能重複。',
@@ -343,6 +355,20 @@ registerMessages('en', {
   'team.new.where.main': 'Main folder',
   'team.new.where.worktree': 'Own worktree',
   'team.new.where.shared': 'Shares main folder (read-only)',
+  'team.new.where.mainShared': 'Main folder (shared)',
+  'team.new.notGitChoose':
+    'This folder is not a git repo, so BD members cannot get a worktree. Recommended: run git init here (each BD then gets its own worktree); or tick the box below to let BD and LD share the folder.',
+  'team.shared.check':
+    'I understand the risk: let BD and LD share this folder (they may overwrite each other)',
+  'team.shared.already':
+    'This team uses a shared folder: members that edit files work in the main folder without a worktree.',
+  'team.shared.on':
+    'Shared folder: members of this team that edit files share one folder without worktrees and may overwrite each other. The lead adding members follows this setting too.',
+  'team.shared.off': 'Turn off shared folder',
+  'team.shared.offArmed': 'Turn it off?',
+  'team.shared.offDone':
+    'Turned off. Members that edit files now need their own worktree (run git init first if the folder is not a git repo).',
+  'team.shared.ownerOnly': 'Only the owner can turn this off.',
   'team.new.err.leadCount': 'Exactly one lead (LD) is needed.',
   'team.new.err.emptyName': 'Every member needs a session name.',
   'team.new.err.duplicateName': 'Session names must be different.',

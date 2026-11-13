@@ -50,6 +50,7 @@ import {
 import type { DaemonConfig } from './config';
 import { DeepSearcher } from './deepSearch';
 import { listDirectory, makeDirectory } from './fsList';
+import { gitInitFolder, isInside } from './gitInit';
 import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { downMarkerPath, HookServer, type HookOutput } from './hookServer';
 import { attachTimeoutFor, HostPtyBackend } from './hostPty';
@@ -1031,6 +1032,8 @@ export class Daemon {
         ...(this.capabilities.codexVersion ? [DAEMON_FEATURES.codex] : []),
         // 交叉審查（Codex 第二輪）：產生 diff、跑審查。
         DAEMON_FEATURES.review,
+        // 不是 git 的資料夾一鍵 git init（CONTRACTS §24）。
+        DAEMON_FEATURES.gitInit,
       ],
       // 發版與自動更新（CONTRACTS §21）
       protocolVersion: this.deps.config.protocolVersionOverride ?? PROTOCOL_VERSION,
@@ -1175,6 +1178,9 @@ export class Daemon {
         void makeDirectory(message.requestId, message.parent, message.name).then((result) =>
           this.send(result),
         );
+        return;
+      case 'fs.gitInit':
+        void this.gitInit(message.requestId, message.path);
         return;
       case 'session.inspect':
       case 'session.purge':
@@ -1678,6 +1684,40 @@ export class Daemon {
       throw error;
     }
     return session;
+  }
+
+  /**
+   * 一鍵 git init（CONTRACTS §24）。成功後，在那個資料夾（或子資料夾）裡、沒有自己 worktree 的 session
+   * 換上新的 repo 與分支並回報 hub（agent 照跑、不中斷），隊長馬上就能 spawn_member 開 worktree。
+   */
+  private async gitInit(requestId: string, path: string): Promise<void> {
+    let result: Awaited<ReturnType<typeof gitInitFolder>>;
+    try {
+      result = await gitInitFolder(path);
+    } catch (error) {
+      result = { ok: false, path, code: 'git_failed', message: errorMessage(error).slice(0, 500) };
+    }
+    if (result.ok) {
+      const root = result.path;
+      for (const [sessionId, dir] of this.sessionDirs) {
+        const session = this.sessions.get(sessionId);
+        if (!session?.isAlive || !isInside(dir, root)) continue;
+        if (session.runtime().worktreePath !== null) continue;
+        try {
+          const [repo, branch] = await Promise.all([repoInfo(dir), currentBranch(dir)]);
+          session.updateRepo(repo, branch);
+          this.store.patch(sessionId, { branch });
+        } catch (error) {
+          log.warn(`git init 後更新 session ${sessionId} 的 repo 失敗：${errorMessage(error)}`);
+        }
+      }
+      log.info(
+        `git init：${root}（${result.files} 個檔案，略過 ${result.skipped.length + result.skippedMore} 個大檔）`,
+      );
+    } else {
+      log.info(`git init 拒絕／失敗：${result.path}（${result.code}）`);
+    }
+    this.send({ type: 'fs.gitInitResult', requestId, result });
   }
 
   private newManagedSession(

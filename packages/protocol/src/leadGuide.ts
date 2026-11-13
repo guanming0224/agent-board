@@ -80,3 +80,11 @@ export const RELEASE_REASON_DESCRIPTION =
 
 /** reason 的長度上限（字元）。超過截斷。 */
 export const STAFFING_REASON_MAX = 200;
+
+/**
+ * 不是 git 的資料夾、這一隊又沒勾「共用資料夾」時，spawn_member 開會改檔案的成員被擋下的說明（CONTRACTS §24）。
+ * 固定文字：最後一句是給使用者的中文操作說明，隊長原樣轉述即可。
+ */
+export const NOT_GIT_WRITER_GUIDE =
+  'This folder is not a git repository, so a member that edits files cannot get its own worktree, and this team does not allow members that edit files to share the folder. Ask the user to press "git init" for this folder in the Agent Board panel, or to allow this team to share the folder (the "shared folder" option on the team page). Until then, use role researcher or reviewer (read-only) or do the work yourself. ' +
+  '（請使用者在面板按「git init」，或允許這一隊共用資料夾。）';

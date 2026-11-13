@@ -48,7 +48,7 @@ import { TaskBoard } from './TaskBoard';
 import { ROLE_ABBR } from './teamPlan';
 import { memberClashes, worktreeConflicts } from './worktree';
 import { PHONE_QUERY } from '../shared/breakpoints';
-import { Empty } from '../flows/common';
+import { Empty, useCurrentUser } from '../flows/common';
 import { PanelHead, WideButton } from '../views/Overlays';
 
 /** STYLE 沒定義字數，DISPATCH §8-3 的「1 頁」以約 3000 字計。 */
@@ -472,6 +472,47 @@ function TeamControls({ team, members }: { team: Team; members: Session[] }) {
   );
 }
 
+/**
+ * 團隊「共用資料夾」（§24）：開著時顯示說明；owner 可以關掉（之後隊長開 BD 又要各自 worktree，
+ * 不是 git 的資料夾就會被擋，請改按 git init）。開的地方是新增團隊與補成員的勾選。
+ */
+function SharedFolderNote({ team }: { team: Team }) {
+  const t = useT();
+  const backend = useBoard((s) => s.backend);
+  const me = useCurrentUser();
+  const { busy, message, run } = useAction();
+  if (!team.sharedWriters) return null;
+  return (
+    <div className="alert you-alert team-shared-note" data-testid="team-shared">
+      <span aria-hidden="true">◆</span>
+      <div>
+        <p>{t('team.shared.on')}</p>
+        {me.data?.role === 'owner' ? (
+          <div className="row">
+            <TwoClickButton
+              className="touch"
+              label={t('team.shared.off')}
+              armedLabel={t('team.shared.offArmed')}
+              testId="team-shared-off"
+              disabled={busy}
+              onConfirm={() =>
+                void run(async () => {
+                  await backend.updateTeam(team.id, { sharedWriters: false });
+                  await refreshTeams(backend);
+                  return t('team.shared.offDone');
+                })
+              }
+            />
+            <ActionMessage message={message} />
+          </div>
+        ) : (
+          <p className="sub">{t('team.shared.ownerOnly')}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function TeamWorkbench({ team, inPanel = false }: { team: Team; inPanel?: boolean }) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
@@ -569,6 +610,7 @@ export function TeamWorkbench({ team, inPanel = false }: { team: Team; inPanel?:
       <div className="row team-head-controls">
         <TeamControls team={team} members={members} />
       </div>
+      <SharedFolderNote team={team} />
       <ActionMessage message={message} />
       {/* 進度卡（P3 項目一 §1.5）：名單上方，同畫布展開樣式；手機與桌面一致。 */}
       <TeamProgress team={team} />

@@ -44,6 +44,7 @@ export const AUDIT_ACTIONS = [
   'machine.pair_failed',
   'machine.delete',
   'fs.mkdir',
+  'fs.git_init',
   'settings.update',
   'audit.export',
   'audit.retention',
@@ -54,6 +55,7 @@ export const AUDIT_ACTIONS = [
   'board.interrupt_skipped',
   'team.hold',
   'team.resume',
+  'team.shared_writers',
 ] as const;
 
 /** hub 一次最多回 1000 筆；畫面一次多載 100。 */

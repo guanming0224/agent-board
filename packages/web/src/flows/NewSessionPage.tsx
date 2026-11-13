@@ -522,7 +522,7 @@ export function NewSessionPage() {
               />
               {t('flows.new.worktree')}
             </label>
-            <WorktreeHints {...advice} />
+            <WorktreeHints {...advice} machine={machine} cwd={cwd} />
           </div>
 
           <fieldset className={`field modes${bypass ? ' modes-bypass' : ''}`}>

@@ -8,12 +8,27 @@ import type { RepoInfo } from '@agent-board/protocol';
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 60_000;
 
-export async function git(args: string[]): Promise<string> {
+export interface GitOptions {
+  /** 預設 60 秒。 */
+  timeoutMs?: number;
+  /** stdout 上限（預設 Node 的 1MB）。列很多檔案時放大。 */
+  maxBuffer?: number;
+  /** 預設去掉頭尾空白；`-z` 的輸出要原樣（檔名可能以空白開頭）。 */
+  raw?: boolean;
+}
+
+/**
+ * 只執行 `git`（參數陣列，不經 shell，Windows 也不用處理引號）。`GIT_TERMINAL_PROMPT=0`：要帳密時直接失敗、不卡住。
+ * daemon 所有 git 指令（worktree、git init §24）都走這一個呼叫點（docs/no-llm-review.md）。
+ */
+export async function git(args: string[], options: GitOptions = {}): Promise<string> {
   const { stdout } = await execFileAsync('git', args, {
-    timeout: GIT_TIMEOUT_MS,
+    timeout: options.timeoutMs ?? GIT_TIMEOUT_MS,
+    ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}),
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    windowsHide: true,
   });
-  return stdout.trim();
+  return options.raw ? stdout : stdout.trim();
 }
 
 /** 留下字母與數字（含中文），加上 session id 確保不撞名。 */

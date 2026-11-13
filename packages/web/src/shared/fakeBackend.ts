@@ -606,6 +606,8 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   const projects: Project[] = [];
   /** 假的「建資料夾」：parent → 建過的名稱。 */
   const madeDirs = new Map<string, string[]>();
+  /** 假的 git init（§24）做過的資料夾：之後瀏覽回報是 repo。 */
+  const gitInited = new Set<string>();
   const teams: Team[] = [
     {
       id: 'team-demo-auth',
@@ -1506,6 +1508,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
           { name: 'notes', isDir: true, isGitRepo: false },
           ...(madeDirs.get(path) ?? []).map((name) => ({ name, isDir: true, isGitRepo: false })),
         ],
+        ...(gitInited.has(path) ? { repo: { root: path, commonDir: `${path}/.git` } } : {}),
       };
     },
     async makeDirectory(_machineId, parent, name) {
@@ -1515,6 +1518,41 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       }
       madeDirs.set(parent, [...list, name]);
       return { path: `${parent.replace(/\/+$/, '')}/${name}`, entries: [] };
+    },
+    async gitInit(_machineId, path) {
+      const dir = path.trim().replace(/\/+$/, '');
+      if (dir === '/home/demo' || dir === '/') {
+        return { ok: false, path: dir, code: 'too_broad', message: 'it is your home folder' };
+      }
+      if (gitInited.has(dir)) {
+        return {
+          ok: false,
+          path: dir,
+          code: 'already_repo',
+          message: 'This folder already has a .git',
+        };
+      }
+      gitInited.add(dir);
+      // 和 daemon 一樣：在這個資料夾、沒有自己 worktree 的 session 換上新的 repo（不中斷）。
+      for (const s of state.sessions) {
+        if (s.worktreePath === null && (s.cwd === dir || s.cwd.startsWith(`${dir}/`))) {
+          s.repoRoot = dir;
+          s.repoCommonDir = `${dir}/.git`;
+          s.branch = 'main';
+        }
+      }
+      publish();
+      return {
+        ok: true,
+        path: dir,
+        branch: 'main',
+        commit: '0123456789abcdef0123456789abcdef01234567',
+        gitignoreCreated: true,
+        identity: 'fallback',
+        files: 12,
+        skipped: dir.includes('big') ? [{ path: 'data/video.mp4', bytes: 80 * 1024 * 1024 }] : [],
+        skippedMore: 0,
+      };
     },
     createPairingCode: async () => ({
       code: 'DEMO-0000',

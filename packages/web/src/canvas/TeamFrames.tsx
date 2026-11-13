@@ -59,6 +59,15 @@ export function TeamFrames({
                 data-testid={`team-open-${team.id}`}
               >
                 {t('canvas.team.label', { name: team.name })}
+                {team.shared && (
+                  <span
+                    className="team-shared"
+                    title={t('canvas.team.sharedHint')}
+                    data-testid={`team-shared-${team.id}`}
+                  >
+                    {` · ${t('canvas.team.shared')}`}
+                  </span>
+                )}
               </a>
               {onTidy && (
                 // 框本身不吃滑鼠（拖曳畫布要穿過去），只有按鈕吃；nopan／nodrag 讓 xyflow 不把按下當成拖曳。

@@ -7,6 +7,8 @@ export interface CanvasTeam {
   name: string;
   color: string;
   memberIds: string[];
+  /** 共用資料夾（§24）：標籤上標出來。 */
+  shared?: boolean;
 }
 
 export function canvasTeams(teams: readonly Team[], members: readonly TeamMember[]): CanvasTeam[] {
@@ -15,6 +17,7 @@ export function canvasTeams(teams: readonly Team[], members: readonly TeamMember
     name: team.name,
     color: team.color,
     memberIds: members.filter((m) => m.teamId === team.id).map((m) => m.sessionId),
+    ...(team.sharedWriters ? { shared: true } : {}),
   }));
 }
 

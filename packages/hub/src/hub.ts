@@ -13,6 +13,7 @@ import {
   type UpdateState,
   ClientToHub,
   DAEMON_FEATURES,
+  type GitInitResult,
   SEARCH_DEEP_DEADLINE_MS,
   SEARCH_DEEP_GRACE_MS,
   isMemoryTool,
@@ -135,11 +136,14 @@ export interface Timing {
   awaitingGraceMs: number;
   /** 加開申請沒處理多久失效（CONTRACTS §23，預設 30 分鐘）。測試縮短。 */
   staffRequestTtlMs: number;
+  /** 一鍵 git init（§24）等 daemon 回覆的上限：大資料夾 add／commit 要時間（daemon 每步上限 5 分鐘）。 */
+  gitInitTimeoutMs: number;
 }
 
 export const DEFAULT_TIMING: Timing = {
   heartbeatMs: 30_000,
   browseTimeoutMs: 10_000,
+  gitInitTimeoutMs: 11 * 60_000,
   createTimeoutMs: 120_000,
   helloTimeoutMs: 10_000,
   pushRetryMs: 5_000,
@@ -207,6 +211,7 @@ type DaemonRequest = Extract<
     type:
       | 'fs.list'
       | 'fs.mkdir'
+      | 'fs.gitInit'
       | 'session.inspect'
       | 'session.purge'
       | 'session.transcript'
@@ -218,6 +223,7 @@ type DaemonReply = Extract<
   {
     type:
       | 'fs.listResult'
+      | 'fs.gitInitResult'
       | 'session.inspectResult'
       | 'session.purgeResult'
       | 'session.transcriptResult'
@@ -822,6 +828,7 @@ export class Hub {
         this.recordUsage(conn.machineId, msg.summary, msg.detail ?? null, msg.codex ?? null);
         return;
       case 'fs.listResult':
+      case 'fs.gitInitResult':
       case 'session.inspectResult':
       case 'session.purgeResult':
       case 'session.transcriptResult':
@@ -2189,6 +2196,14 @@ export class Hub {
       );
     }
     this.broadcastTeam(id);
+    if (Boolean(current.sharedWriters) !== Boolean(next.sharedWriters)) {
+      this.audit(
+        user.id,
+        null,
+        'team.shared_writers',
+        JSON.stringify({ teamId: id, on: !!next.sharedWriters }),
+      );
+    }
     if (Boolean(current.taskAuto) !== Boolean(next.taskAuto)) {
       this.audit(
         user.id,
@@ -2736,6 +2751,58 @@ export class Hub {
     return result;
   }
 
+  /**
+   * 一鍵 git init（CONTRACTS §24，REST 已限 owner）。daemon 太舊（hello 沒有 `fs.gitInit`）回 409 daemon_too_old，
+   * 不送出（舊 daemon 不認得會回 error，網頁會卡到逾時）。拒絕也回結果（ok: false），一律記 audit。
+   */
+  async gitInit(userId: string, machineId: string, path: string): Promise<GitInitResult> {
+    if (!this.store.getMachine(machineId)) throw notFound('Machine');
+    const conn = this.daemonFor(machineId);
+    if (conn && !conn.features.has(DAEMON_FEATURES.gitInit)) {
+      throw conflict(
+        'daemon_too_old',
+        'The daemon on this machine is too old for git init; update it first',
+      );
+    }
+    const reply = await this.askDaemon(
+      machineId,
+      'fs.gitInitResult',
+      this.timing.gitInitTimeoutMs,
+      (requestId) => ({ type: 'fs.gitInit', requestId, path }),
+    );
+    this.auditGitInit(userId, machineId, path, reply.result);
+    return reply.result;
+  }
+
+  private auditGitInit(
+    userId: string | null,
+    machineId: string,
+    requested: string,
+    result: GitInitResult,
+    late = false,
+  ): void {
+    this.audit(
+      userId,
+      null,
+      'fs.git_init',
+      JSON.stringify({
+        machineId,
+        path: result.path || requested,
+        ok: result.ok,
+        ...(late ? { late: true } : {}),
+        ...(result.ok
+          ? {
+              commit: result.commit,
+              files: result.files,
+              gitignoreCreated: result.gitignoreCreated,
+              identity: result.identity,
+              skipped: result.skipped.length + result.skippedMore,
+            }
+          : { code: result.code }),
+      }),
+    );
+  }
+
   // ── 封存、刪除、看舊資料（CONTRACTS §9） ─────────────────
   /** 刪除前的檢查：daemon 看機器上的狀況，hooksShared 由 hub 依資料庫算。 */
   async inspectSession(id: string): Promise<SessionInspect> {
@@ -2992,6 +3059,11 @@ export class Hub {
           this.releaseDeleteLock(sessionId, lock);
         }
       }
+    }
+    if (msg.type === 'fs.gitInitResult' && !this.pendingRequests.has(msg.requestId)) {
+      // hub 已經回 504：機器上可能已經 init 了，記下來才查得到。
+      this.auditGitInit(null, conn.machineId, msg.result.path, msg.result, true);
+      return;
     }
     const pending = this.pendingRequests.get(msg.requestId);
     if (!pending || pending.machineId !== conn.machineId || pending.expects !== msg.type) return;

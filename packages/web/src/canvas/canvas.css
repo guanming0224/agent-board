@@ -947,3 +947,8 @@ input.cmd {
   min-height: var(--ctl-h-xs);
   padding: 0 var(--space-1);
 }
+
+/* 共用資料夾的團隊（§24）：標籤後面加註。 */
+.team .team-shared {
+  color: var(--fg-muted);
+}

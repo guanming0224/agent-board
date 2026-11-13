@@ -433,6 +433,12 @@ export const Team = z.object({
   zoneId: Id,
   /** 全隊暫停／停止後還沒恢復時才有（hub 回傳時附上；建立、修改時不能帶）。 */
   hold: TeamHold.optional(),
+  /**
+   * 共用資料夾（CONTRACTS §24）：使用者勾了「讓 BD 和 LD 共用這個資料夾」。會改檔案的成員可以不開 worktree、
+   * 和別人在同一個資料夾（不檢查同資料夾衝突；隊長 spawn_member 在不是 git 的資料夾也照樣開）。
+   * 存在 settings 表 `teamSharedWriters:<teamId>`（不升 schema）；hub 回傳時只有開著才帶 true。建立、修改時可以帶。
+   */
+  sharedWriters: z.boolean().optional(),
 });
 export type Team = z.infer<typeof Team>;
 

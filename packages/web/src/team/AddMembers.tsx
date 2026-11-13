@@ -50,7 +50,7 @@ export function AddMembers({
   const { backend, sessions, connected } = useBoard();
   const teamType: TeamType = team.phase ? 'research' : 'dev';
   const initialPlace = useMemo(() => defaultPlace(members), [members]);
-  const place = usePlanPlace(initialPlace);
+  const place = usePlanPlace(initialPlace, team.sharedWriters === true);
   const fixed = initialPlace !== undefined;
   const existing = existingTeam(members, { machineId: place.machineId, cwd: place.cwd }, sessions);
   const ctx = { taken: existing.names, hasLead: existing.leads > 0 };
@@ -63,7 +63,7 @@ export function AddMembers({
   const { busy, message, run } = useAction();
   const submitting = useRef(false);
 
-  const planError = validatePlan(rows, place.gitOk, existing);
+  const planError = validatePlan(rows, place.gitOk, existing, place.shared);
   const formError = planError ? t(`team.new.err.${planError}`) : place.error;
 
   const presets: { id: string; kinds: readonly RowKind[]; label: string }[] =
@@ -85,6 +85,14 @@ export function AddMembers({
     submitting.current = true;
     void run(async () => {
       setSteps(Object.fromEntries(rows.map((r) => [r.key, { step: 'waiting' } as RowStep])));
+      // 補成員時才勾共用資料夾（§24）：先存到團隊上，hub 加成員時才不會擋同資料夾。
+      if (place.shared && !team.sharedWriters) {
+        await backend.updateTeam(team.id, { sharedWriters: true }).catch((e: unknown) => {
+          submitting.current = false;
+          setSteps({});
+          throw e;
+        });
+      }
       // 團隊已經存在，runPlan 不會丟例外：每一列的失敗都記在進度裡。
       const done = await runPlan(
         backend,
@@ -126,7 +134,7 @@ export function AddMembers({
           ))}
         </div>
         {existing.leads > 0 && <p className="sub">{t('team.add.hasLead')}</p>}
-        <PlaceFields place={place} rows={rows} fixed={fixed} tried={tried} />
+        <PlaceFields place={place} rows={rows} fixed={fixed} tried={tried} allowShared />
         <PlanRowsEditor
           rows={rows}
           setRows={setRows}
@@ -134,6 +142,7 @@ export function AddMembers({
           teamType={teamType}
           taken={existing.names}
           gitOk={place.gitOk}
+          shared={place.shared}
           steps={steps}
         />
       </fieldset>

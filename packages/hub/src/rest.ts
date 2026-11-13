@@ -335,6 +335,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     },
     machineBrowse: (ctx) => hub.browse(param(ctx), ctx.query.path),
     machineMkdir: (ctx) => hub.mkdir(ctx.user.id, param(ctx), ctx.body.parent, ctx.body.name),
+    machineGitInit: (ctx) => hub.gitInit(ctx.user.id, param(ctx), ctx.body.path),
     machineUsage: (ctx) => {
       const id = param(ctx);
       if (!store.getMachine(id)) throw notFound('Machine');
@@ -462,7 +463,15 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
           JSON.stringify({ teamId: team.id, on: true }),
         );
       }
-      return team;
+      if (team.sharedWriters) {
+        hub.audit(
+          ctx.user.id,
+          null,
+          'team.shared_writers',
+          JSON.stringify({ teamId: team.id, on: true }),
+        );
+      }
+      return store.getTeam(team.id) ?? team;
     },
     teamsUpdate: (ctx) => hub.updateTeam(requireTeam(param(ctx)).id, ctx.body, ctx.user),
     teamsDelete: (ctx) => {
@@ -480,7 +489,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     teamResume: (ctx) => hub.resumeTeam(requireTeam(param(ctx)).id, ctx.user),
     teamMembersList: (ctx) => store.listTeamMembers(requireTeam(param(ctx)).id),
     teamMembersPut: (ctx) => {
-      const teamId = requireTeam(param(ctx)).id;
+      const team = requireTeam(param(ctx));
+      const teamId = team.id;
       const sessionId = param(ctx, 'sessionId');
       const session = store.getSession(sessionId);
       if (!session) throw notFound('Session');
@@ -500,7 +510,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
         existing !== undefined &&
         isReadOnlyMember(existing.role, session) &&
         !isReadOnlyMember(member.role, session);
-      if (existing === undefined || becomesWriter) {
+      // 共用資料夾的團隊（§24）：使用者已同意會改檔案的成員共用資料夾，不檢查。
+      if (!team.sharedWriters && (existing === undefined || becomesWriter)) {
         const clashes = worktreeConflicts(store, member, others);
         if (clashes.length > 0) {
           throw conflict(

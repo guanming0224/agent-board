@@ -15,3 +15,4 @@ export * from './codex';
 export * from './review';
 export * from './sessionHost';
 export * from './release';
+export * from './gitInit';

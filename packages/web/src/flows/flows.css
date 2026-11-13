@@ -2198,3 +2198,30 @@
   flex-wrap: wrap;
   gap: var(--space-3);
 }
+
+/* 不是 git 的資料夾：「在這裡 git init」（§24，flows/GitInit.tsx）。新增 session、新增團隊、補成員共用。 */
+.git-init {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  justify-items: start;
+}
+.git-init-confirm {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+.git-init-confirm p,
+.git-init .msg p {
+  margin: 0;
+}
+.git-init ul {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.git-init .mono {
+  overflow-wrap: anywhere;
+}

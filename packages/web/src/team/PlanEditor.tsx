@@ -10,6 +10,7 @@ import {
   useWorktreeAdvice,
   worktreeOn,
 } from '../flows/sessionForm';
+import { GitInitAction } from '../flows/GitInit';
 import { isSessionDeleting } from '../shared/backend';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
@@ -66,19 +67,26 @@ export interface PlanPlace {
   projectId: string;
 }
 
-/** 機器、資料夾、專案的狀態與 worktree 判斷。`initial` 給補成員時沿用隊長的位置。 */
-export function usePlanPlace(initial?: PlanPlace) {
+/**
+ * 機器、資料夾、專案的狀態與 worktree 判斷。`initial` 給補成員時沿用隊長的位置。
+ * `teamShared`：既有團隊已經是「共用資料夾」（§24），一律當成勾了、不再給勾。
+ */
+export function usePlanPlace(initial?: PlanPlace, teamShared = false) {
   const t = useT();
   const { machines, sessions } = useBoard();
   const [chosenMachine, setChosenMachine] = useState<string | null>(initial?.machineId ?? null);
   const [cwd, setCwd] = useState(initial?.cwd ?? '');
   const [projectId, setProjectId] = useState(initial?.projectId ?? '');
+  /** 使用者勾了「讓 BD 和 LD 共用這個資料夾」（§24）。只在不是 git 時給勾。 */
+  const [sharedChoice, setShared] = useState(false);
   const suggestion = suggestMachine(machines, sessions, 'general');
   const machineId = chosenMachine ?? suggestion?.id ?? '';
   const machine = machines.find((m) => m.id === machineId);
   const advice = useWorktreeAdvice(machine, cwd);
   // 同 sessionForm 的 worktreeOn：daemon 確認不是 git 才關；還不知道時照開，失敗會寫在那一列。
   const gitOk = worktreeOn(advice, true);
+  // 換到 git 資料夾後不再算（勾選框也不顯示），團隊不會無故被設成共用。
+  const shared = teamShared || (sharedChoice && advice.notGit);
   const error = !machine
     ? t('flows.new.err.machine')
     : !machine.online
@@ -94,6 +102,10 @@ export function usePlanPlace(initial?: PlanPlace) {
     projectId,
     advice,
     gitOk,
+    shared,
+    teamShared,
+    sharedChoice,
+    setShared,
     error,
     setMachine: setChosenMachine,
     setCwd,
@@ -108,11 +120,14 @@ export function PlaceFields({
   rows,
   fixed = false,
   tried,
+  allowShared = false,
 }: {
   place: PlanPlaceState;
   rows: readonly PlanRow[];
   fixed?: boolean;
   tried: boolean;
+  /** 顯示「共用資料夾」勾選（建立團隊、補成員；§24）。 */
+  allowShared?: boolean;
 }) {
   const t = useT();
   const projects = useProjects();
@@ -125,10 +140,32 @@ export function PlaceFields({
       {place.advice.notGit ? (
         <div className="alert you-alert" data-testid="team-not-git">
           <span aria-hidden="true">◆</span>
-          <div>{t('team.new.notGit')}</div>
+          <div>{t(allowShared ? 'team.new.notGitChoose' : 'team.new.notGit')}</div>
         </div>
       ) : (
         <p className="sub">{t('team.new.folderHint')}</p>
+      )}
+      <GitInitAction
+        key={`${machineId}\n${place.cwd.trim()}`}
+        machine={machine}
+        path={place.cwd}
+        notGit={place.advice.notGit}
+        onDone={place.advice.recheck}
+      />
+      {allowShared && place.teamShared && (
+        <p className="sub" data-testid="team-shared-note">
+          {t('team.shared.already')}
+        </p>
+      )}
+      {allowShared && !place.teamShared && place.advice.notGit && (
+        <label className="check shared-writers" data-testid="team-shared-check">
+          <input
+            type="checkbox"
+            checked={place.sharedChoice}
+            onChange={(e) => place.setShared(e.target.checked)}
+          />
+          {t('team.shared.check')}
+        </label>
       )}
       {rows.some((r) => isReadOnlyRole(r.role)) && (
         <p className="sub" data-testid="read-only-hint">
@@ -220,6 +257,7 @@ export function PlanRowsEditor({
   teamType,
   taken,
   gitOk,
+  shared = false,
   steps,
 }: {
   rows: PlanRow[];
@@ -229,6 +267,8 @@ export function PlanRowsEditor({
   /** 已經存在的 session 名稱（補成員時），預設名稱避開它們。 */
   taken?: ReadonlySet<string>;
   gitOk: boolean;
+  /** 團隊共用資料夾（§24）：會改檔案的列標「主資料夾（共用）」。 */
+  shared?: boolean;
   steps: Record<string, RowStep>;
 }) {
   const t = useT();
@@ -239,7 +279,9 @@ export function PlanRowsEditor({
       ? t('team.new.where.worktree')
       : isReadOnlyRole(row.role)
         ? t('team.new.where.shared')
-        : t('team.new.where.main');
+        : shared
+          ? t('team.new.where.mainShared')
+          : t('team.new.where.main');
 
   return (
     <>

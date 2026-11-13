@@ -58,6 +58,8 @@ export type StoredBoardPause = z.infer<typeof StoredBoardPause>;
 const BOARD_PAUSE_KEY = 'boardPause';
 /** 全隊暫停／停止的記錄（CONTRACTS §17）：settings 表 `teamHold:<teamId>`，不升 schema。 */
 const TEAM_HOLD_PREFIX = 'teamHold:';
+/** 團隊「共用資料夾」（CONTRACTS §24）：settings 表 `teamSharedWriters:<teamId>`，值 true，不升 schema。關掉＝刪列。 */
+const TEAM_SHARED_PREFIX = 'teamSharedWriters:';
 /** 隊長新增成員的記錄（隊長自主擴編，GM 2026-11-10）：settings 表 `memberAdded:<sessionId>`，不升 schema。 */
 const MEMBER_ADDED_PREFIX = 'memberAdded:';
 /** 團隊動態（同上）：settings 表 `teamActivity`，新的在前，最多 TEAM_ACTIVITY_KEEP 筆。 */
@@ -289,6 +291,9 @@ const toTeam = (r: TeamRow): Team => ({
 
 const withHold = (team: Team, hold: TeamHold | undefined): Team =>
   hold ? { ...team, hold } : team;
+/** 只有開著才帶 `sharedWriters: true`（舊網頁、舊資料都當沒開）。 */
+const withShared = (team: Team, shared: boolean): Team =>
+  shared ? { ...team, sharedWriters: true } : team;
 
 function parseTeamHold(text: string): TeamHold | null {
   try {
@@ -1399,14 +1404,45 @@ export class Store {
   /** 有全隊暫停／停止記錄的團隊附上 hold（CONTRACTS §17）。 */
   listTeams(): Team[] {
     const holds = this.teamHolds();
+    const shared = this.sharedTeams();
     return (this.db.prepare('SELECT * FROM teams ORDER BY name').all() as TeamRow[]).map((r) =>
-      withHold(toTeam(r), holds.get(r.id)),
+      withShared(withHold(toTeam(r), holds.get(r.id)), shared.has(r.id)),
     );
   }
 
   getTeam(id: string): Team | null {
     const row = this.db.prepare('SELECT * FROM teams WHERE id = ?').get(id) as TeamRow | undefined;
-    return row ? withHold(toTeam(row), this.getTeamHold(id) ?? undefined) : null;
+    return row
+      ? withShared(
+          withHold(toTeam(row), this.getTeamHold(id) ?? undefined),
+          this.getTeamSharedWriters(id),
+        )
+      : null;
+  }
+
+  /** 團隊「共用資料夾」（§24）。 */
+  getTeamSharedWriters(teamId: string): boolean {
+    const row = this.db
+      .prepare('SELECT value FROM settings WHERE key = ?')
+      .get(`${TEAM_SHARED_PREFIX}${teamId}`) as { value: string } | undefined;
+    return row?.value === 'true';
+  }
+
+  setTeamSharedWriters(teamId: string, on: boolean): void {
+    if (!on) {
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${TEAM_SHARED_PREFIX}${teamId}`);
+      return;
+    }
+    this.setRaw(`${TEAM_SHARED_PREFIX}${teamId}`, true);
+  }
+
+  private sharedTeams(): Set<string> {
+    const rows = this.db
+      .prepare("SELECT key, value FROM settings WHERE key LIKE 'teamSharedWriters:%'")
+      .all() as { key: string; value: string }[];
+    return new Set(
+      rows.filter((r) => r.value === 'true').map((r) => r.key.slice(TEAM_SHARED_PREFIX.length)),
+    );
   }
 
   /** 讀不懂的記錄（理論上不會）當沒有：按鈕回到「全隊暫停／停止」，不能讓團隊讀不出來。 */
@@ -1458,10 +1494,13 @@ export class Store {
         taskAuto: t.taskAuto ? 1 : 0,
         zoneId: t.zoneId,
       });
+    // 帶了才改（hub 自己建的團隊、舊網頁不帶＝不動）。
+    if (t.sharedWriters !== undefined) this.setTeamSharedWriters(t.id, t.sharedWriters);
   }
 
   deleteTeam(id: string): boolean {
     this.setTeamHold(id, null);
+    this.setTeamSharedWriters(id, false);
     return this.db.prepare('DELETE FROM teams WHERE id = ?').run(id).changes === 1;
   }
 

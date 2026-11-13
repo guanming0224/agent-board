@@ -1116,3 +1116,49 @@ start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀�
 ### 23.5 不呼叫模型
 
 - 申請、同意、拒絕、失效全是固定規則；送給隊長的是固定英文＋名稱與代碼（不帶 Claude 寫的 prompt），走既有的 SafeDelivery（`docs/no-llm-review.md` 送字來源表多一列「加開申請結果通知」）。同意後開成員走 `spawn_member` 原本的路（第一個指令是隊長申請時寫的 `[From <隊長>] <prompt>`），觸發者是 GM 在網頁按「同意」。
+
+## 24. 不是 git 的資料夾：一鍵 git init 與團隊共用資料夾（GM 2026-11-13）
+
+在不是 git repo 的資料夾建團隊時，BD（會改檔案）開不了 worktree，又不能和 LD 共用資料夾（同一個資料夾只能有一位會改檔案的成員），整隊建不起來；隊長 `spawn_member` 開 worker／tester 也被擋。GM 決定兩條路都給：**一鍵 git init（建議）**與**使用者自己勾選的共用資料夾**。既有團隊（補成員、隊長正在跑）也適用。
+
+### 24.1 一鍵 git init
+
+- **誰能按**：只有 owner（REST `auth: 'owner'`）。網頁在「不是 git」時顯示「在這裡 git init」（`flows/GitInit.tsx`，`.touch`，手機 ≥ 44px）：新增團隊、補成員（含沿用隊長位置的 fixed 模式）、套用 Preset 換位置、新增 session 的 worktree 提示底下。按下先展開確認區，列出會做的事（init 分支 main、沒有 `.gitignore` 才建、第一個 commit 與大檔上限、身分只對這次、只在本機不設 remote 不 push、正在這個資料夾的 session 不中斷），再按「確認 git init」才送；「取消」收起。非 owner 顯示「只有擁有者能在這裡 git init」。
+- **API**：`POST /api/machines/:id/git-init`，body `{ path }`（去頭尾空白、1–4096 字），回 `GitInitResult`（`protocol/src/gitInit.ts`）。拒絕也是 200、`ok: false`＋`code`。daemon 太舊（hello `features` 沒有 `fs.gitInit`）→ 409 `daemon_too_old`，**不送出**（網頁顯示「<機器> 的 daemon 太舊，請先更新。」，不會卡到逾時）；機器離線 409 `machine_offline`；hub 等 11 分鐘（`Timing.gitInitTimeoutMs`）沒回 → 504 `daemon_timeout`。
+- **協定**：hub → daemon `{ type: 'fs.gitInit', requestId, path }`；daemon → hub `{ type: 'fs.gitInitResult', requestId, result }`；`DAEMON_FEATURES.gitInit = 'fs.gitInit'`。hub 只對宣告了旗標的 daemon 送。不升協定版本。
+- **daemon 的步驟**（`daemon/src/gitInit.ts`；所有 git 都走 `worktree.ts` 的 `git()`：參數陣列、不經 shell、`GIT_TERMINAL_PROMPT=0`，Windows 不必處理引號）：
+  1. `~`／`~/` 展開成家目錄；不是絕對路徑 → `not_absolute`。不存在 → `not_found`；不是資料夾 → `not_directory`。之後一律用 realpath。
+  2. **太大的位置 → `too_broad`**（比對時 Windows、macOS 不分大小寫）：檔案系統根目錄（`/`、`C:\`）；家目錄本身與它的任何上層（例如 `/Users`、`/home`）；家目錄底下的 `Desktop`、`Documents`、`Downloads`、`Library`、`Pictures`、`Music`、`Movies`、`Videos`、`Public`、`Applications`、`AppData`、`OneDrive` 本身（子資料夾可以）；系統資料夾本身（`/bin`、`/boot`、`/dev`、`/etc`、`/home`、`/lib`、`/lib64`、`/media`、`/mnt`、`/opt`、`/proc`、`/root`、`/run`、`/sbin`、`/srv`、`/sys`、`/tmp`、`/usr`、`/usr/local`、`/var`、`/Applications`、`/Library`、`/System`、`/Users`、`/Volumes`、`/private`、`/private/etc`、`/private/tmp`、`/private/var`；Windows 任一磁碟機的 `Windows`、`Program Files`、`Program Files (x86)`、`ProgramData`、`Users`）；作業系統暫存資料夾本身。
+  3. 同一個資料夾同時只做一次（第二個回 `git_failed`「Another git init is already running」）。`git --version` 找不到 git（ENOENT）→ `git_missing`。
+  4. **已經是 repo → `already_repo`**：資料夾裡已有 `.git`，或 `git -C <dir> rev-parse --show-toplevel` 成功（上層是 repo 也算）。不動任何東西。
+  5. 沒有 `.gitignore`（含連結）才建（`wx`，不覆寫），內容是 `DEFAULT_GITIGNORE_LINES`：註解一行、`node_modules/`、`dist/`、`build/`、`.venv/`、`venv/`、`__pycache__/`、`*.pyc`、`.env`、`.env.*`、`*.pem`、`*.key`、`id_rsa*`、`id_ed25519*`、`id_ecdsa*`、`.DS_Store`、`Thumbs.db`。已有就完全不動。
+  6. `git init -q`，再 `git symbolic-ref HEAD refs/heads/main`（舊版 git 沒有 `init -b` 也能用）。
+  7. **大檔**：`git ls-files -z --others --exclude-standard` 列出要收的檔案，單一檔案（`lstat`，一般檔案）超過 `GIT_INIT_MAX_FILE_BYTES` = 50 MB 的寫進 `.git/info/exclude`（`/` 開頭；萬用字元與 `#`、`!`、結尾空白跳脫；檔名有換行的寫不進去，會照常收），只在這台、不改 `.gitignore`，之後 `git add -A` 也不會收。另外一律把 `.claude/settings.local.json`（Agent Board 的 hook 設定，含本機路徑）寫進 exclude。回報最多列 50 個（`GIT_INIT_SKIPPED_LIST_MAX`，由大到小），其餘算 `skippedMore`。
+  8. `git add -A`。`git config user.name`／`user.email` 有一個沒設定 → 這次 commit 加 `-c user.name=Agent Board -c user.email=agent-board@localhost`（**只對這一次指令，不寫任何 git 設定檔**）。commit 一律帶 `-c commit.gpgsign=false`、`--no-verify`（不簽章、不跑使用者全域 hook）、`--allow-empty`（空資料夾也要有第一個 commit，`worktree add` 才能開），訊息固定 `Agent Board：初始 commit`。add／commit／列檔每步上限 5 分鐘。
+  9. **只在本機**：不設 remote、不 push、不 fetch。
+  10. 第 5 步以後任何一步失敗 → 刪掉這次建的 `.git` 與 `.gitignore`（使用者的檔案沒被動過），回 `git_failed`（git 的 stderr，截 500 字）。
+- **結果**：`{ ok: true, path, branch: 'main', commit, gitignoreCreated, identity: 'user'|'fallback', files, skipped: [{ path, bytes }], skippedMore }`。網頁顯示幾個檔案進了第一個 commit、commit 前 7 碼、有沒有建 `.gitignore`、是否用了固定身分、略過的大檔清單；接著重新問 daemon 這個資料夾是不是 git（`useWorktreeAdvice().recheck`），BD 那一列改成「自己的 worktree」，共用勾選消失。
+- **正在這個資料夾跑的 session 不中斷**：daemon 成功後，把 `sessionDirs`（realpath）在這個資料夾（或子資料夾）裡、沒有自己 worktree 的活 session 重新算 `repoInfo`／`currentBranch`，呼叫 `ManagedSession.updateRepo` 換上新的 `repoRoot`／`repoCommonDir`／`branch` 並立刻送 `session.runtime`（PTY 不動），也寫回本機 `sessions.json` 的 branch。hub 照一般的 runtime 更新 session（hub 沒有另外快取 git 狀態），所以隊長**不用重開**，下一次 `spawn_member` 開 worker 就會開 worktree。daemon 重啟接回時本來就重算 `repoInfo`。
+- **audit** `fs.git_init`（`session_id` null）：`{ machineId, path, ok, commit?, files?, gitignoreCreated?, identity?, skipped?（數量）, code? }`；hub 已回 504 之後才到的結果也記（user null、`late: true`）。
+
+### 24.2 團隊「共用資料夾」
+
+- **資料**：`Team.sharedWriters?: boolean`，存在 settings 表 `teamSharedWriters:<teamId>`（值 `true`，**不升 schema**，同 `teamHold:`）；關掉＝刪列；刪團隊（`store.deleteTeam`）時一起刪。hub 回傳時只有開著才帶 `sharedWriters: true`。`POST /api/teams`、`PATCH /api/teams/:id` 可以帶（`upsertTeam` 只在有帶時改），開關都記 audit `team.shared_writers` `{ teamId, on }`。
+- **規則**（開著時）：
+  - `PUT /api/teams/:id/members/:sessionId` 不檢查同資料夾寫入者衝突（`worktreeConflicts`）。
+  - 隊長 `spawn_member`：資料夾不是 git（呼叫者 `repoRoot` 為 null）時，會改檔案的角色 `useWorktree` 預設 false、和別人共用主資料夾，不檢查 `writerClash`。資料夾是 git 時照舊預設開 worktree（明說 `useWorktree: false` 也不擋）。明說 `useWorktree: true` 但不是 git → `worktree_unavailable`（請改 false）。
+- **沒勾的團隊**（或還沒有團隊）在不是 git 的資料夾開會改檔案的成員：`worktree_unavailable: <cwd> is not a git repository … ` 或 `worktree_required: Same folder as <名稱>. `，後面接固定的 `NOT_GIT_WRITER_GUIDE`（`protocol/src/leadGuide.ts`）：請使用者在面板按「git init」，或允許這一隊共用資料夾；在那之前用 researcher／reviewer 或自己做；最後一句是中文「（請使用者在面板按「git init」，或允許這一隊共用資料夾。）」讓隊長原樣轉述。MCP `spawn_member` 的 `useWorktree` 說明補上共用資料夾的預設。
+- **網頁**：
+  - 新增團隊、補成員、套用 Preset 換位置（`PlaceFields allowShared`）在「不是 git」時，提醒改成「建議在這裡 git init；或勾選下面讓 BD 和 LD 共用資料夾」，下面是 git init 按鈕與勾選「我知道風險：讓 BD 和 LD 共用這個資料夾（可能互相覆蓋修改）」。勾了之後 `validatePlan(..., sharedOk)` 不再擋「主資料夾只能有一位會改檔案的」，會改檔案的列標「主資料夾（共用）」，BD 不開 worktree。新增團隊／套用 Preset 隨 `createTeam` 帶 `sharedWriters: true`；補成員時先 `updateTeam(id, { sharedWriters: true })` 再開人。換到 git 資料夾後勾選失效（不會無故把團隊設成共用）。
+  - 既有團隊已是共用資料夾：補成員不再給勾，顯示「這一隊已設定共用資料夾」。
+  - 團隊面板（工作台）顯示「共用資料夾」說明；owner 有「關掉共用資料夾」（按兩下確認），之後會改檔案的成員要各自 worktree。開啟的地方只有建立團隊／補成員的勾選。
+  - 畫布團隊框標籤後面加「· 共用資料夾」（`.team-shared`，滑過有說明）。
+
+### 24.3 不呼叫模型
+
+- git init 是 GM 在網頁按確認後 daemon 跑固定的 git 指令（同一個審查過的 `worktree.ts` 呼叫點，`check:no-llm` 的 `CALL_SITES` 不變），不送任何字進 PTY。給隊長的指引是固定文字，只出現在工具回傳裡（Claude 呼叫才看到）。
+
+### 24.4 測試與未驗證
+
+- daemon `gitInit.test.ts`（暫存資料夾、測完刪；`GIT_CONFIG_GLOBAL` 指到空檔、`GIT_CONFIG_NOSYSTEM`、`GIT_CEILING_DIRECTORIES`，不碰使用者的 git 設定）：成功、`.gitignore` 不覆寫、身分只對單次、大檔略過、空資料夾、`~/`、各拒絕情況；`daemon.test.ts`：hello 宣告、init 後同資料夾 session 不中斷且回報新的 repo。hub `nongit.test.ts`：轉送與 audit、owner 限定、舊 daemon 409、逾時後的 late audit、共用設定存取／刪團隊清除、加成員不擋；`dispatch.test.ts`：非共用隊的固定指引、共用隊 BD 不開 worktree、git init 後隊長不用重開就開 worktree。web：`teamPlan.test.ts`、`canvas/teams.test.ts`；e2e `team.spec.ts`（新增團隊 git init／太大的位置／daemon 太舊、新增團隊勾共用與團隊面板關掉、既有團隊補成員兩條路）、`flows.spec.ts`（新增 session 的 git init）、`team-integration.spec.ts`（真 daemon、真 git：隊長被擋 → 補成員按 git init → 隊長不重開 `spawn_member` 開到 worktree）。
+- 未驗證：Windows 實機（`gitInit.test.ts` 已列進 `test:windows`，只在 macOS 跑過）；非常大的資料夾（上萬檔）的實際耗時；檔名含換行的大檔不會被排除。

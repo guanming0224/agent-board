@@ -57,6 +57,7 @@ import { ProgressCard, ProgressRevision, ProgressWrite } from './progress';
 import { SearchQuery, SearchResults } from './search';
 import { TeamPreset, TeamPresetConfig, TeamPresetName, TeamPresetUsed } from './presets';
 import { DirEntry, FolderName, RepoInfo, SessionSpec } from './ws';
+import { GitInitResult } from './gitInit';
 
 export type Auth = 'public' | 'user' | 'owner';
 
@@ -290,6 +291,17 @@ export const routes = {
       entries: z.array(DirEntry),
       repo: RepoInfo.nullable().default(null),
     }),
+  }),
+  /**
+   * 在遠端機器的資料夾 git init＋第一個 commit（CONTRACTS §24，只有 owner）。拒絕（已是 repo、太大的位置…）
+   * 也回 200、`ok: false`；daemon 太舊回 409 `daemon_too_old`，機器離線照一般的 409 `machine_offline`。
+   */
+  machineGitInit: route({
+    method: 'POST',
+    path: '/api/machines/:id/git-init',
+    auth: 'owner',
+    body: z.object({ path: z.string().trim().min(1).max(4096) }),
+    response: GitInitResult,
   }),
   machineUsage: route({
     method: 'GET',

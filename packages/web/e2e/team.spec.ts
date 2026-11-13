@@ -363,6 +363,173 @@ test('資料夾不是 git：提醒 BD 會共用資料夾，探索組合拿掉 BD
   ]);
 });
 
+// ── 不是 git 的資料夾：一鍵 git init 與共用資料夾（CONTRACTS §24） ──────────
+
+/** daemon 確認不是 git（repo null）；假後端 git init 過的資料夾照常回報 repo。 */
+const NOT_GIT = `const browse = backend.browseDirectory;
+  backend.browseDirectory = async (m, p) => {
+    const r = await browse(m, p);
+    return { ...r, repo: r.repo ?? null };
+  };`;
+
+async function teamsNamed(page: Page, name: string) {
+  return page.evaluate(
+    async ({ url, name }) => {
+      const { useBoard } = (await import(url)) as {
+        useBoard: {
+          getState(): {
+            backend: { listTeams(): Promise<{ name: string; sharedWriters?: boolean }[]> };
+          };
+        };
+      };
+      return (await useBoard.getState().backend.listTeams()).filter((t) => t.name === name);
+    },
+    { url: STORE, name },
+  );
+}
+
+test('新增團隊、資料夾不是 git：按「在這裡 git init」確認後重新偵測，BD 改開 worktree', async ({
+  page,
+}) => {
+  await page.goto('/#/team');
+  await fake(page, NOT_GIT);
+  await page.getByLabel('團隊名稱').fill('Init');
+  await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '標準' }).click();
+  // 太大的位置：daemon 拒絕，寫出原因，什麼都沒改。
+  await page.getByLabel('工作目錄').fill('/home/demo');
+  await expect(page.getByTestId('team-not-git')).toContainText('建議在這裡 git init');
+  await page.getByTestId('git-init-open').click();
+  await page.getByTestId('git-init-confirm').click();
+  await expect(page.getByTestId('git-init-error')).toContainText('這個位置太大');
+  await expect(page.getByTestId('team-not-git')).toBeVisible();
+
+  await page.getByLabel('工作目錄').fill('/home/demo/big-notes');
+  await expect(page.locator('.plan-row').nth(1)).toContainText('主資料夾');
+  await page.getByTestId('git-init-open').click();
+  // 確認步驟先說清楚會做什麼。
+  const confirm = page.locator('.git-init-confirm');
+  await expect(confirm).toContainText('/home/demo/big-notes');
+  await expect(confirm).toContainText('不設 remote、不 push');
+  await expect(confirm).toContainText('不改你的 git 設定');
+  await expect(confirm).toContainText('50 MB');
+  const box = await page.getByTestId('git-init-confirm').boundingBox();
+  expect(box!.height).toBeGreaterThanOrEqual(36);
+  await shot(page, 'team-git-init-confirm');
+  await page.getByTestId('git-init-confirm').click();
+  await expect(page.getByTestId('git-init-done')).toContainText('已 git init');
+  await expect(page.getByTestId('git-init-skipped')).toContainText('data/video.mp4');
+  // 重新偵測：不再是「不是 git」，BD 開自己的 worktree，共用勾選不見。
+  await expect(page.getByTestId('team-not-git')).toHaveCount(0);
+  await expect(page.getByTestId('team-shared-check')).toHaveCount(0);
+  await expect(page.locator('.plan-row').nth(1)).toContainText('自己的 worktree');
+  await page.getByRole('button', { name: '建立團隊和 4 個 session' }).click();
+  await expect(page.getByRole('heading', { name: 'Init' })).toBeVisible();
+  const made = await sessionsNamed(page, 'Init-BD');
+  expect(made.map((s) => s.worktreePath !== null)).toEqual([true, true]);
+  expect((await teamsNamed(page, 'Init'))[0]?.sharedWriters).toBeFalsy();
+});
+
+test('git init：daemon 太舊時說要先更新，不卡住', async ({ page }) => {
+  await page.goto('/#/team');
+  await fake(
+    page,
+    `${NOT_GIT}
+     backend.gitInit = async () => {
+       throw Object.assign(new Error('too old'), { code: 'daemon_too_old' });
+     };`,
+  );
+  await page.getByLabel('團隊名稱').fill('Old');
+  await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '探索' }).click();
+  await page.getByLabel('工作目錄').fill('/home/demo/old');
+  await page.getByTestId('git-init-open').click();
+  await page.getByTestId('git-init-confirm').click();
+  await expect(page.getByTestId('git-init-error')).toContainText('daemon 太舊，請先更新');
+  // 可以再按一次。
+  await expect(page.getByTestId('git-init-open')).toBeEnabled();
+});
+
+test('新增團隊、資料夾不是 git：勾「共用資料夾」就能建，團隊面板看得到、owner 可以關掉', async ({
+  page,
+}) => {
+  await page.goto('/#/team');
+  await fake(page, NOT_GIT);
+  await page.getByLabel('團隊名稱').fill('Shared');
+  await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '標準' }).click();
+  await page.getByLabel('工作目錄').fill('/home/demo/shared');
+  await expect(page.getByTestId('team-not-git')).toBeVisible();
+  await page.getByRole('button', { name: '建立團隊和 4 個 session' }).click();
+  await expect(page.getByTestId('new-team-error')).toContainText('只能有一位會改檔案');
+  await page
+    .getByTestId('team-shared-check')
+    .getByLabel('我知道風險：讓 BD 和 LD 共用這個資料夾（可能互相覆蓋修改）')
+    .check();
+  await expect(page.locator('.plan-row').nth(1)).toContainText('主資料夾（共用）');
+  await page.getByRole('button', { name: '建立團隊和 4 個 session' }).click();
+  await expect(page.getByRole('heading', { name: 'Shared' })).toBeVisible();
+  const made = await sessionsNamed(page, 'Shared-');
+  expect(made.filter((s) => s.name.includes('-BD')).map((s) => s.worktreePath)).toEqual([
+    null,
+    null,
+  ]);
+  expect((await teamsNamed(page, 'Shared'))[0]?.sharedWriters).toBe(true);
+  await expect(page.getByTestId('team-shared')).toContainText('共用資料夾');
+  await shot(page, 'team-shared-folder');
+  // 畫布上的團隊標籤也標出來。
+  await page.goto('/#/canvas');
+  await expect(page.locator('.team-shared')).toContainText('共用資料夾');
+  await page.locator('.team-open', { hasText: 'Shared' }).click();
+  const off = page.getByTestId('team-shared-off');
+  await off.click();
+  await expect(off).toHaveText('確定關掉？');
+  await page.waitForTimeout(400); // 350ms 內的連點不算確認（同刪除團隊）
+  await off.click();
+  await expect(page.getByTestId('team-shared')).toHaveCount(0);
+  expect((await teamsNamed(page, 'Shared'))[0]?.sharedWriters).toBeFalsy();
+});
+
+test('既有團隊補成員、資料夾不是 git：git init 或勾共用資料夾都能補 BD', async ({ page }) => {
+  // git init 這條路。
+  await page.goto('/#/team');
+  await fake(page, NOT_GIT);
+  await page.getByLabel('團隊名稱').fill('Later');
+  await page.getByRole('button', { name: '建立團隊', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Later' })).toBeVisible();
+  await page.getByTestId('add-members-toggle').click();
+  let add = page.getByTestId('add-members');
+  await add.getByLabel('工作目錄').fill('/home/demo/later');
+  await add.getByRole('button', { name: '標準' }).click();
+  await expect(add.getByTestId('team-not-git')).toBeVisible();
+  await add.getByRole('button', { name: '開 4 個 session 並加入' }).click();
+  await expect(add.getByTestId('add-members-error')).toContainText('只能有一位會改檔案');
+  await add.getByTestId('git-init-open').click();
+  await add.getByTestId('git-init-confirm').click();
+  await expect(add.getByTestId('git-init-done')).toContainText('已 git init');
+  await expect(add.locator('.plan-row').nth(1)).toContainText('自己的 worktree');
+  await add.getByRole('button', { name: '開 4 個 session 並加入' }).click();
+  await expect(add.getByTestId('add-members-msg')).toContainText('已加入 4 位');
+
+  // 共用資料夾這條路：補成員時才勾，存到既有團隊上。
+  await page.goto('/#/team');
+  await page.getByLabel('團隊名稱').fill('Later2');
+  await page.getByRole('button', { name: '建立團隊', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Later2' })).toBeVisible();
+  await page.getByTestId('add-members-toggle').click();
+  add = page.getByTestId('add-members');
+  await add.getByLabel('工作目錄').fill('/home/demo/later2');
+  await add.getByRole('button', { name: '標準' }).click();
+  await expect(add.getByTestId('team-not-git')).toBeVisible();
+  await add.getByTestId('team-shared-check').getByRole('checkbox').check();
+  await add.getByRole('button', { name: '開 4 個 session 並加入' }).click();
+  await expect(add.getByTestId('add-members-msg')).toContainText('已加入 4 位');
+  expect((await teamsNamed(page, 'Later2'))[0]?.sharedWriters).toBe(true);
+  await expect(page.getByTestId('team-shared')).toBeVisible();
+  // 再補一批：沿用位置，團隊已是共用資料夾，不用再勾。
+  await add.getByRole('button', { name: '再補一批' }).click();
+  await add.getByRole('button', { name: '標準' }).click();
+  await expect(add.getByTestId('team-shared-note')).toBeVisible();
+  await expect(add.locator('.plan-row').first()).toContainText('主資料夾（共用）');
+});
+
 test('部分失敗：已建立的保留，列出哪一位在哪一步失敗與原因，可以打開團隊', async ({ page }) => {
   await page.goto('/#/team');
   await fake(

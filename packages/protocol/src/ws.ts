@@ -54,6 +54,7 @@ import {
   SEARCH_QUERY_MAX,
   SearchItem,
 } from './search';
+import { GIT_INIT_FEATURE, GitInitResult } from './gitInit';
 
 export const WS_PATHS = { daemon: '/ws/daemon', client: '/ws/client' } as const;
 
@@ -78,6 +79,8 @@ export const DAEMON_FEATURES = {
   codex: 'agent.codex',
   /** 會做交叉審查（`review.prepare`／`review.run`，Codex 第二輪）。舊 daemon 沒有：hub 回 review_unsupported。 */
   review: REVIEW_FEATURE,
+  /** 認得 `fs.gitInit`（不是 git 的資料夾一鍵 git init，CONTRACTS §24）。舊 daemon 沒有：hub 回 409 daemon_too_old。 */
+  gitInit: GIT_INIT_FEATURE,
 } as const;
 
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);
@@ -287,6 +290,8 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     repo: RepoInfo.nullable().default(null),
     error: z.string().nullable(),
   }),
+  /** `fs.gitInit` 的結果（CONTRACTS §24）。成功或拒絕都放在 result 裡。 */
+  z.object({ type: z.literal('fs.gitInitResult'), requestId: Id, result: GitInitResult }),
   z.object({
     type: z.literal('session.inspectResult'),
     requestId: Id,
@@ -404,6 +409,11 @@ export const HubToDaemon = z.discriminatedUnion('type', [
   z.object({ type: z.literal('fs.list'), requestId: Id, path: z.string() }),
   /** 在 parent 底下建一層新資料夾（parent 要已存在、不覆蓋），成功後回 fs.listResult（path 是新資料夾）。 */
   z.object({ type: z.literal('fs.mkdir'), requestId: Id, parent: z.string(), name: FolderName }),
+  /**
+   * 在不是 git 的資料夾 git init＋第一個 commit（CONTRACTS §24）。只送給 hello `features` 有 `fs.gitInit` 的 daemon。
+   * 只在本機，不設 remote、不 push；拒絕規則見 `GitInitErrorCode`。回 `fs.gitInitResult`。
+   */
+  z.object({ type: z.literal('fs.gitInit'), requestId: Id, path: z.string().min(1).max(4096) }),
   /** 封存與刪除用（CONTRACTS §9）：hub 從資料庫帶齊 session 的路徑，daemon 不必還記得這個 session。 */
   z.object({ type: z.literal('session.inspect'), requestId: Id, target: SessionLocator }),
   z.object({

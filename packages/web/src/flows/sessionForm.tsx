@@ -1,4 +1,5 @@
 // 新增 session 的共用零件：完整表單（NewSessionPage）與畫布上的快速建立（QuickCreate）都用。
+import { GitInitAction } from './GitInit';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { sameWorkingTree } from '@agent-board/protocol';
 import type { Machine, Project, RepoInfo, Session } from '@agent-board/protocol';
@@ -77,13 +78,18 @@ const workDir = (s: Session) => s.worktreePath ?? s.cwd;
  * 選定資料夾所在的 repo（daemon 跑 `git rev-parse`，借用資料夾瀏覽的回應）。
  * null：daemon 確認不是 git；undefined：還沒問到、問不到或機器離線。兩者都退回只比資料夾。
  */
-function useRepoOf(machine: Machine | undefined, path: string): RepoInfo | null | undefined {
+function useRepoOf(
+  machine: Machine | undefined,
+  path: string,
+  /** 改了就重新問（git init 之後，§24）。 */
+  generation = 0,
+): RepoInfo | null | undefined {
   const { backend } = useBoard();
   const [found, setFound] = useState<{ key: string; repo: RepoInfo | null | undefined } | null>(
     null,
   );
   const machineId = machine?.online ? machine.id : '';
-  const key = machineId && path ? `${machineId}\n${path}` : '';
+  const key = machineId && path ? `${machineId}\n${path}\n${generation}` : '';
   useEffect(() => {
     if (!key) return;
     let cancelled = false;
@@ -110,7 +116,8 @@ function useRepoOf(machine: Machine | undefined, path: string): RepoInfo | null 
 export function useWorktreeAdvice(machine: Machine | undefined, cwd: string) {
   const { sessions } = useBoard();
   const dir = cwd.trim();
-  const cwdRepo = useRepoOf(machine, dir);
+  const [generation, setGeneration] = useState(0);
+  const cwdRepo = useRepoOf(machine, dir, generation);
   const here = { dir, repoRoot: cwdRepo?.root ?? null };
   const sameMachine = sessions.filter((s) => s.machineId === machine?.id && isActive(s));
   const related = sameMachine.filter((s) =>
@@ -120,7 +127,14 @@ export function useWorktreeAdvice(machine: Machine | undefined, cwd: string) {
   const siblings = cwdRepo
     ? sameMachine.filter((s) => s.repoCommonDir === cwdRepo.commonDir && !related.includes(s))
     : [];
-  return { related, relatedByRepo, siblings, notGit: cwdRepo === null };
+  return {
+    related,
+    relatedByRepo,
+    siblings,
+    notGit: cwdRepo === null,
+    /** 重新問 daemon 這個資料夾是不是 git（git init 成功後）。 */
+    recheck: () => setGeneration((n) => n + 1),
+  };
 }
 
 /** 勾選框的實際值：使用者選過就照選的，否則同 working tree 有人就打開；不是 git 一律關。 */
@@ -132,22 +146,42 @@ export function WorktreeHints({
   relatedByRepo,
   siblings,
   notGit,
-}: ReturnType<typeof useWorktreeAdvice>) {
+  recheck,
+  machine,
+  cwd,
+}: ReturnType<typeof useWorktreeAdvice> & {
+  /** 給了才顯示「在這裡 git init」（§24）。 */
+  machine?: Machine | undefined;
+  cwd?: string;
+}) {
   const t = useT();
+  const gitInit = machine && cwd !== undefined && (
+    <GitInitAction
+      key={`${machine.id}\n${cwd.trim()}`}
+      machine={machine}
+      path={cwd}
+      notGit={notGit}
+      onDone={recheck}
+    />
+  );
   if (notGit) {
     return (
-      <p className={related.length > 0 ? 'hint you' : 'hint'} data-testid="worktree-not-git">
-        {related.length > 0
-          ? t('flows.new.worktreeNotGitShared', {
-              n: related.length,
-              names: related.map((s) => s.name).join('、'),
-            })
-          : t('flows.new.worktreeNotGit')}
-      </p>
+      <>
+        <p className={related.length > 0 ? 'hint you' : 'hint'} data-testid="worktree-not-git">
+          {related.length > 0
+            ? t('flows.new.worktreeNotGitShared', {
+                n: related.length,
+                names: related.map((s) => s.name).join('、'),
+              })
+            : t('flows.new.worktreeNotGit')}
+        </p>
+        {gitInit}
+      </>
     );
   }
   return (
     <>
+      {gitInit}
       {related.length > 0 && (
         <p className="hint you" data-testid="worktree-hint">
           {t(relatedByRepo ? 'flows.new.worktreeRepoHint' : 'flows.new.worktreeHint', {

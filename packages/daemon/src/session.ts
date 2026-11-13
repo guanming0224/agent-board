@@ -485,6 +485,16 @@ export class ManagedSession {
     };
   }
 
+  /**
+   * 資料夾後來被 git init 了（CONTRACTS §24）：換上新的 repo 與分支並馬上回報 hub，
+   * 隊長不用重開就能 spawn_member 開 worktree。不動 PTY（agent 照跑、不中斷）。
+   */
+  updateRepo(repo: RepoInfo | null, branch: string | null): void {
+    this.options.repo = repo;
+    this.options.branch = branch;
+    if (this.alive) this.options.onRuntime(this.runtime());
+  }
+
   // ── hub 指令 ──────────────────────────────────────────────
 
   /** 冪等：hub 可能重送，每次都回一份新快照（第二個瀏覽器加入、慢 client、重連）。 */

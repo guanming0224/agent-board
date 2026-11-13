@@ -23,6 +23,9 @@ registerMessages('zh-TW', {
   'canvas.zoom.controls': '縮放',
   'canvas.minimap': '小地圖',
   'canvas.team.label': '團隊・{name}',
+  'canvas.team.shared': '共用資料夾',
+  'canvas.team.sharedHint':
+    '這一隊會改檔案的成員共用同一個資料夾（不開 worktree），可能互相覆蓋修改。',
   'canvas.error.teams': '讀不到團隊：{detail}。團隊框和交接線暫時不顯示。',
   'canvas.error.teamsFirst':
     '讀不到團隊：{detail}。不知道每張卡屬於哪個工作區，先不畫畫布。確認 hub 有在跑，再按「再試一次」。',
@@ -205,6 +208,9 @@ registerMessages('en', {
   'canvas.zoom.controls': 'Zoom',
   'canvas.minimap': 'Minimap',
   'canvas.team.label': 'Team: {name}',
+  'canvas.team.shared': 'shared folder',
+  'canvas.team.sharedHint':
+    'Members of this team that edit files share one folder (no worktree) and may overwrite each other.',
   'canvas.error.teams':
     'Could not read teams: {detail}. Team frames and handoff lines are hidden for now.',
   'canvas.error.teamsFirst':

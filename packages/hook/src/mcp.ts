@@ -64,7 +64,8 @@ const ALL_TOOLS = [
         },
         useWorktree: {
           type: 'boolean',
-          description: 'Optional. Workers and testers default to true (needs a git repo).',
+          description:
+            'Optional. Workers and testers default to true (needs a git repo); in a team the user set to share its folder (not a git repo), they default to false and share the folder.',
         },
         model: {
           type: 'string',

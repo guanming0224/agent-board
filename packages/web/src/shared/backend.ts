@@ -1,5 +1,6 @@
 // 畫面只透過這個介面存取資料。Phase 1 接 fakeBackend，Phase 2 由 Lead 接真 hub。
 import type {
+  GitInitResult,
   Approval,
   ApprovalDecision,
   AuditEntry,
@@ -232,6 +233,11 @@ export interface BoardBackend {
     parent: string,
     name: string,
   ): ReturnType<BoardBackend['browseDirectory']>;
+  /**
+   * 在那台機器的資料夾 git init＋第一個 commit（CONTRACTS §24，owner）。拒絕回 `ok: false`；
+   * daemon 太舊丟 409 `daemon_too_old`。
+   */
+  gitInit(machineId: string, path: string): Promise<GitInitResult>;
   createProject(input: Omit<Project, 'id'>): Promise<Project>;
   createPairingCode(): Promise<{ code: string; expiresAt: string; installCommand: string }>;
   removeMachine(id: string): Promise<void>;

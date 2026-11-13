@@ -240,6 +240,39 @@ export const zhTW: Record<string, string> = {
   'flows.new.worktreeNotGit': '這個資料夾不是 git repo，不能用 worktree。',
   'flows.new.worktreeNotGitShared':
     '這個資料夾已有 {n} 個 session（{names}），但它不是 git repo，不能用 worktree，兩邊會改到同一份檔案。要同時改請換資料夾，或先在這裡 git init。',
+  'flows.gitInit.button': '在這裡 git init',
+  'flows.gitInit.ownerOnly': '只有擁有者能在這裡 git init。',
+  'flows.gitInit.confirmTitle': '在這個資料夾建立本機 git repo？',
+  'flows.gitInit.what.init': 'git init，預設分支 {branch}。',
+  'flows.gitInit.what.ignore':
+    '沒有 .gitignore 就建一份常見的忽略清單（node_modules、.env、金鑰、建置產物等）；已有的不動。',
+  'flows.gitInit.what.commit':
+    '把目前的檔案做成第一個 commit；單一檔案超過 {mb} MB 的不收進去（會列給你看）。',
+  'flows.gitInit.what.identity':
+    '沒設定 git 身分時，只有這次 commit 用「Agent Board」署名，不改你的 git 設定。',
+  'flows.gitInit.what.local': '只在這台機器：不設 remote、不 push。',
+  'flows.gitInit.what.sessions': '正在這個資料夾工作的 session 不會中斷。',
+  'flows.gitInit.confirm': '確認 git init',
+  'flows.gitInit.busy': 'git init 中…',
+  'flows.gitInit.cancel': '取消',
+  'flows.gitInit.done':
+    '已 git init：{files} 個檔案進了第一個 commit（{commit}，分支 {branch}）。BD 現在可以開 worktree。',
+  'flows.gitInit.doneIgnore': '已建立 .gitignore。',
+  'flows.gitInit.doneIdentity': '這台沒設定 git 身分，第一個 commit 用「Agent Board」署名。',
+  'flows.gitInit.skipped':
+    '{n} 個檔案超過 {mb} MB，沒有 commit（只在這台的 .git/info/exclude 排除）：',
+  'flows.gitInit.skippedMore': '另外還有 {n} 個',
+  'flows.gitInit.tooOld': '{machine} 的 daemon 太舊，請先更新。',
+  'flows.gitInit.timeout': '等太久沒有回應。資料夾很大時可能還在跑，稍後重新選一次資料夾看看。',
+  'flows.gitInit.failed': 'git init 沒成功：{detail}',
+  'flows.gitInit.err.not_absolute': '路徑要是絕對路徑。',
+  'flows.gitInit.err.not_found': '找不到這個資料夾。',
+  'flows.gitInit.err.not_directory': '這不是資料夾。',
+  'flows.gitInit.err.already_repo': '這裡（或上層資料夾）已經是 git repo，沒有改動。',
+  'flows.gitInit.err.too_broad':
+    '這個位置太大（根目錄、家目錄、整個桌面或文件、系統資料夾），請選專案資料夾。',
+  'flows.gitInit.err.git_missing': '這台機器找不到 git，請先安裝 git。',
+  'flows.gitInit.err.git_failed': 'git 執行失敗，資料夾已還原。',
   'flows.new.agent': 'Agent',
   'flows.new.agent.claude': 'Claude Code',
   'flows.new.agent.codex': 'Codex',
@@ -496,6 +529,8 @@ export const zhTW: Record<string, string> = {
   'flows.audit.act.machine.pair_failed': '配對失敗',
   'flows.audit.act.machine.delete': '移除機器',
   'flows.audit.act.fs.mkdir': '建立資料夾',
+  'flows.audit.act.fs.git_init': 'git init',
+  'flows.audit.act.team.shared_writers': '團隊共用資料夾',
   'flows.audit.act.settings.update': '修改設定',
   'flows.audit.act.audit.export': '匯出操作紀錄',
   'flows.audit.act.audit.retention': '到期紀錄封存',
@@ -1024,6 +1059,42 @@ export const en: Record<string, string> = {
   'flows.new.worktreeNotGit': 'This folder is not a git repo, so a worktree is not available.',
   'flows.new.worktreeNotGitShared':
     'This folder already has {n} session(s) ({names}), but it is not a git repo, so a worktree is not available and they will edit the same files. To work in parallel, pick another folder or run git init here first.',
+  'flows.gitInit.button': 'git init here',
+  'flows.gitInit.ownerOnly': 'Only the owner can run git init here.',
+  'flows.gitInit.confirmTitle': 'Create a local git repo in this folder?',
+  'flows.gitInit.what.init': 'git init with default branch {branch}.',
+  'flows.gitInit.what.ignore':
+    'If there is no .gitignore, create one with common entries (node_modules, .env, keys, build output…). An existing one is left alone.',
+  'flows.gitInit.what.commit':
+    'Make the first commit of the current files; any single file over {mb} MB is left out (listed for you).',
+  'flows.gitInit.what.identity':
+    'If git has no user identity, only this commit is signed "Agent Board"; your git config is not changed.',
+  'flows.gitInit.what.local': 'Local only: no remote, no push.',
+  'flows.gitInit.what.sessions': 'Sessions working in this folder keep running.',
+  'flows.gitInit.confirm': 'Run git init',
+  'flows.gitInit.busy': 'Running git init…',
+  'flows.gitInit.cancel': 'Cancel',
+  'flows.gitInit.done':
+    'git init done: {files} file(s) in the first commit ({commit}, branch {branch}). BD members can now get their own worktree.',
+  'flows.gitInit.doneIgnore': '.gitignore created.',
+  'flows.gitInit.doneIdentity':
+    'No git identity on this machine; the first commit is signed "Agent Board".',
+  'flows.gitInit.skipped':
+    '{n} file(s) over {mb} MB were not committed (excluded in .git/info/exclude on this machine only):',
+  'flows.gitInit.skippedMore': '{n} more',
+  'flows.gitInit.tooOld': 'The daemon on {machine} is too old. Update it first.',
+  'flows.gitInit.timeout':
+    'No answer in time. A large folder may still be in progress; pick the folder again later to check.',
+  'flows.gitInit.failed': 'git init failed: {detail}',
+  'flows.gitInit.err.not_absolute': 'The path must be absolute.',
+  'flows.gitInit.err.not_found': 'Folder not found.',
+  'flows.gitInit.err.not_directory': 'This is not a folder.',
+  'flows.gitInit.err.already_repo':
+    'This folder (or a parent) is already a git repo. Nothing was changed.',
+  'flows.gitInit.err.too_broad':
+    'This location is too broad (root, home, the whole Desktop or Documents, a system folder). Pick a project folder.',
+  'flows.gitInit.err.git_missing': 'git is not installed on this machine.',
+  'flows.gitInit.err.git_failed': 'git failed; the folder was restored.',
   'flows.new.agent': 'Agent',
   'flows.new.agent.claude': 'Claude Code',
   'flows.new.agent.codex': 'Codex',
@@ -1299,6 +1370,8 @@ export const en: Record<string, string> = {
   'flows.audit.act.machine.pair_failed': 'Pairing failed',
   'flows.audit.act.machine.delete': 'Machine removed',
   'flows.audit.act.fs.mkdir': 'Folder created',
+  'flows.audit.act.fs.git_init': 'git init',
+  'flows.audit.act.team.shared_writers': 'Team shared folder',
   'flows.audit.act.settings.update': 'Settings changed',
   'flows.audit.act.audit.export': 'Audit log exported',
   'flows.audit.act.audit.retention': 'Expired entries archived',

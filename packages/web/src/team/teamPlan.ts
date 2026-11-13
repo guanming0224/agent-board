@@ -266,6 +266,8 @@ export function validatePlan(
   rows: readonly PlanRow[],
   gitOk: boolean,
   existing?: ExistingTeam,
+  /** 團隊「共用資料夾」（§24，使用者勾了）：主資料夾可以有多位會改檔案的成員。 */
+  sharedOk = false,
 ): PlanError {
   if (rows.length === 0) return null;
   const leads = rows.filter((r) => r.role === 'lead').length + (existing?.leads ?? 0);
@@ -277,6 +279,6 @@ export function validatePlan(
   if (existing && names.some((n) => existing.names.has(n))) return 'duplicateName';
   const writers =
     rows.filter((r) => sharesMainAsWriter(r, gitOk)).length + (existing?.mainWriters ?? 0);
-  if (writers > 1) return 'sharedWriters';
+  if (writers > 1 && !sharedOk) return 'sharedWriters';
   return null;
 }

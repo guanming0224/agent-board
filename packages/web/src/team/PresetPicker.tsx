@@ -235,7 +235,7 @@ function PresetPreview({
   const titleId = useId();
 
   const machine = place.machine;
-  const planError = validatePlan(rows, place.gitOk);
+  const planError = validatePlan(rows, place.gitOk, undefined, place.shared);
   const firstPrompt = leadFirstPrompt(name.trim(), config);
   const costs = presetCosts(config);
   const running = sessions.filter(
@@ -293,6 +293,8 @@ function PresetPreview({
               taskAuto: config.taskAuto,
               // 不存工作區：放在目前工作區（§2.2）。
               zoneId: currentZoneId(),
+              // 不是 git、使用者勾了共用資料夾（§24）。
+              ...(place.shared ? { sharedWriters: true } : {}),
             },
             machineId: place.machineId,
             cwd: place.cwd.trim(),
@@ -443,6 +445,7 @@ function PresetPreview({
             }}
             rows={rows}
             tried
+            allowShared
           />
         </div>
       )}
