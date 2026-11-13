@@ -816,7 +816,7 @@ export class DispatchEngine {
       reason,
       teamSize: `${size + 1}/${teamLimit}`,
       result:
-        'The prompt will be typed in once the session starts. Its result comes back to you automatically as "[Result from …]" when it finishes the turn.',
+        'The prompt will be typed in once the session starts. Its result comes back to you automatically as "[Result from …]" when it finishes the turn. It is typed in only after your current turn ends, so end your turn now: do not sleep, poll or keep working just to wait for it.',
     });
   }
 
@@ -1074,7 +1074,7 @@ export class DispatchEngine {
       target: review.target.label,
       reviewsLeftThisHour: Math.max(0, left - 1),
       result:
-        'Claude and Codex review it in the background (read-only). When both finish, a one-line verdict from each is typed back to you as "[Review from Agent Board] …". Do not poll.',
+        'Claude and Codex review it in the background (read-only). When both finish, a one-line verdict from each is typed back to you as "[Review from Agent Board] …" after your current turn ends, so end your turn now: do not sleep or poll for it.',
     });
   }
 
@@ -1143,7 +1143,7 @@ export class DispatchEngine {
         : busy
           ? `${target.name} is busy (${now?.status ?? 'unknown'}); the task is typed in when it waits for input.`
           : `Typed into ${target.name}.`,
-      result: 'Its result comes back to you automatically as "[Result from …]".',
+      result: 'Its result comes back to you automatically as "[Result from …]". It is typed in only after your current turn ends, so end your turn now: do not sleep, poll or keep working just to wait for it.',
     });
   }
 

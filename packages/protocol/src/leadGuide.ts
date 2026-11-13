@@ -39,9 +39,9 @@ export const DISPATCH_INSTRUCTIONS: readonly string[] = [
   'Agent Board tools let you delegate work to other Claude Code sessions shown on the Agent Board canvas, like subagents that keep running.',
   'list_members shows your team and its staffing. spawn_member starts a new member in this same project (writers — worker and tester — get their own git worktree; researcher/reviewer are read-only) and gives it your prompt. release_member archives a member you no longer need.',
   'send_task types a new task into one of your members once it is waiting for input.',
-  'When a member finishes the turn that handled your work, its result is typed back into this session automatically as "[Result from <name>] Summary: … | Detected file edits: … | Branch: …". Do not poll; wait for it.',
+  'When a member finishes the turn that handled your work, its result is typed back into this session automatically as "[Result from <name>] Summary: … | Detected file edits: … | Branch: …". It is typed in only after your current turn ends, so end your turn now: do not sleep, poll or keep working just to wait for it.',
   "get_result shows a member's latest summary, files and branch on demand.",
-  'request_review (team lead only) asks Agent Board to have both Claude and Codex review a change read-only: a member\'s uncommitted changes, or a branch against its base. A reason is required, the user is notified, and each team has an hourly limit. The verdicts come back here as "[Review from Agent Board] …" when both finish; do not poll.',
+  'request_review (team lead only) asks Agent Board to have both Claude and Codex review a change read-only: a member\'s uncommitted changes, or a branch against its base. A reason is required, the user is notified, and each team has an hourly limit. The verdicts come back here as "[Review from Agent Board] …" when both finish (after your current turn ends); do not sleep or poll for them.',
   LEAD_STAFFING_RHYTHM,
   `If you are not the lead: ${MEMBER_STAFFING_GUIDE}`,
 ];
@@ -53,7 +53,7 @@ export const DISPATCH_TOOL_DESCRIPTIONS = {
   spawn_member:
     'Add a member to the team you lead: start a new Claude Code session in the same machine and project folder and give it a first prompt. Use it when you receive a task and a needed role is missing, or while working when you are stuck, the workload is too large, or a skill is missing. role worker edits files (gets its own git worktree by default); tester writes and runs tests (also its own worktree, asks before each step by default); researcher and reviewer are read-only and share the folder. reason is required: one short sentence on why the team needs this member (shown to the user). Its permission mode cannot exceed yours. The whole team (lead included) is capped by a size limit the user sets (list_members shows it); when full, release_member a finished member first. Refused while the board or this team is paused, while this account is rate-limited, or when the user turned auto-staffing off. Only the team lead can add members. The result comes back to you automatically when it finishes the turn.',
   send_task:
-    'Give one of your members (a member of a team you lead, or one you spawned) a new task. It is typed in when the member is waiting for input; if it is busy the task waits in a queue. The result comes back to you automatically.',
+    'Give one of your members (a member of a team you lead, or one you spawned) a new task. It is typed in when the member is waiting for input; if it is busy the task waits in a queue. The result comes back to you automatically after your current turn ends; end your turn instead of sleeping or polling.',
   get_result:
     "Show a member's latest one-sentence summary, detected file edits and branch, and whether it is still working on your task.",
   request_review:
