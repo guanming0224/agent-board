@@ -554,8 +554,13 @@ export type StaffRequestStatus = z.infer<typeof StaffRequestStatus>;
 export const STAFF_REQUEST_TTL_MS = 30 * 60 * 1000;
 /** 收件匣清單裡的 prompt 摘要長度（字元）。全文用 GET /api/staff-requests/:id（owner）讀。 */
 export const STAFF_PROMPT_PREVIEW_MAX = 300;
-/** spawn_member 的 prompt 上限（字元）；超過回 invalid_arguments（送進成員時仍照原本截斷）。 */
-export const SPAWN_PROMPT_MAX = 20_000;
+/**
+ * spawn_member 的 prompt 上限（字元，以 Unicode code point 計，`[...text].length`）；超過回 invalid_arguments。
+ * 和 hub 送進成員時的截斷（`[From …]` 的內容上限）是同一個數字：GM 在收件匣看到的全文就是成員會收到的。
+ */
+export const SPAWN_PROMPT_MAX = 4_000;
+/** prompt 的字數（和 SPAWN_PROMPT_MAX、promptChars 同一種算法）。 */
+export const promptLength = (text: string): number => [...text].length;
 export const StaffRequest = z.object({
   id: Id,
   at: IsoTime,
@@ -583,8 +588,8 @@ export const StaffRequest = z.object({
   reason: z.string(),
   /** 隊長寫的 prompt 的開頭（一行、截斷到 STAFF_PROMPT_PREVIEW_MAX）。 */
   promptPreview: z.string(),
-  /** prompt 全文的字數（UI 標「共 N 字」）。 */
-  promptChars: z.number().int().nonnegative(),
+  /** prompt 全文的字數（promptLength，UI 標「共 N 字」）。54cb33d 留下的紀錄沒有＝0。 */
+  promptChars: z.number().int().nonnegative().default(0),
   status: StaffRequestStatus,
   decidedAt: IsoTime.optional(),
   /** 同意、拒絕的使用者名稱（失效時沒有）。 */
@@ -596,6 +601,21 @@ export const StaffRequest = z.object({
   error: z.string().optional(),
 });
 export type StaffRequest = z.infer<typeof StaffRequest>;
+/**
+ * 這一隊最後一次加開申請的結果（list_members／get_progress 的 `staffing.lastDecision`）：結果通知被打斷沒送到時，
+ * 隊長還查得到。只有固定欄位，不含 prompt、理由。存在 settings 表 `staffLastDecision:<teamId>`。
+ */
+export const StaffLastDecision = z.object({
+  requestId: Id,
+  at: IsoTime,
+  role: z.enum(DISPATCH_ROLES),
+  result: z.enum(['approved', 'rejected', 'expired', 'failed']),
+  /** failed 的代碼。 */
+  code: z.string().optional(),
+  /** approved：開出來的成員。 */
+  memberName: z.string().optional(),
+});
+export type StaffLastDecision = z.infer<typeof StaffLastDecision>;
 /** GET /api/staff-requests/:id（owner）：加上 prompt 全文。 */
 export const StaffRequestDetail = StaffRequest.extend({ prompt: z.string() });
 export type StaffRequestDetail = z.infer<typeof StaffRequestDetail>;

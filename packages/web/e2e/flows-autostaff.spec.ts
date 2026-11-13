@@ -257,12 +257,14 @@ test.describe('加開申請（桌面收件匣抽屜）', () => {
 test.describe('加開申請（手機收件匣）', () => {
   test.use({ locale: 'zh-TW', viewport: { width: 375, height: 760 }, hasTouch: true });
 
-  test('手機：同意／拒絕至少 44px（會開 session 的動作 56），不撐出水平捲軸', async ({ page }) => {
+  test('手機：同意／拒絕、展開全文至少 44px（會開 session 的動作 56），不撐出水平捲軸', async ({
+    page,
+  }) => {
     await openInbox(page);
-    await addRequest(page);
+    await addRequest(page, { promptPreview: 'Write regression…', promptChars: 600 });
     const row = page.getByTestId(`staff-request-${REQUEST_ID}`);
     await expect(row).toBeVisible();
-    for (const id of ['approve', 'reject']) {
+    for (const id of ['approve', 'reject', 'full']) {
       const box = await row.getByTestId(`staff-request-${id}-${REQUEST_ID}`).boundingBox();
       expect(box!.height).toBeGreaterThanOrEqual(44);
     }

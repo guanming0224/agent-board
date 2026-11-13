@@ -8,8 +8,10 @@ import {
   routes,
   STAFF_REQUEST_PENDING_GUIDE,
   STAFF_REQUEST_TTL_MS,
+  promptLength,
   SPAWN_PROMPT_MAX,
   StaffActivity,
+  StaffLastDecision,
   StaffRequest,
   StaffRequestDetail,
   TEAM_FULL_GUIDE,
@@ -98,15 +100,39 @@ describe('staff request (CONTRACTS §23)', () => {
     expect(parsed).not.toHaveProperty('someFutureField');
   });
 
-  it('full prompt only in the owner-only detail route; prompt cap is 20,000', () => {
+  it('full prompt only in the owner-only detail route; prompt cap equals what the member receives', () => {
     expect(routes.staffRequestGet).toMatchObject({
       method: 'GET',
       path: '/api/staff-requests/:id',
       auth: 'owner',
     });
     expect(StaffRequestDetail.safeParse({ ...request, prompt: 'full' }).success).toBe(true);
-    expect(SPAWN_PROMPT_MAX).toBe(20_000);
+    // 和送進成員時的截斷同一個數字（N8），以 code point 計。
+    expect(SPAWN_PROMPT_MAX).toBe(4_000);
+    expect(promptLength('🧪ab')).toBe(3);
     expect(StaffRequest.safeParse({ ...request, status: 'approving' }).success).toBe(true);
+    // 54cb33d 留下的紀錄沒有 promptChars：當 0（N10）。
+    const { promptChars: _omit, ...old } = request;
+    expect(StaffRequest.parse(old).promptChars).toBe(0);
+    expect(_omit).toBe(23);
+    // lastDecision 只有固定欄位。
+    expect(
+      StaffLastDecision.safeParse({
+        requestId: 'sr-1',
+        at: '2026-11-13T01:00:00.000Z',
+        role: 'tester',
+        result: 'failed',
+        code: 'team_held',
+      }).success,
+    ).toBe(true);
+    expect(
+      StaffLastDecision.safeParse({
+        requestId: 'sr-1',
+        at: '2026-11-13T01:00:00.000Z',
+        role: 'tester',
+        result: 'pending',
+      }).success,
+    ).toBe(false);
   });
 
   it('approve and reject are owner-only; the list is for any signed-in user', () => {

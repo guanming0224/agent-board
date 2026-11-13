@@ -534,6 +534,7 @@ export class Hub {
       // 加開申請（§23）：staffRequests 在下面才建，呼叫時一定已經有了。
       staffRequests: {
         pendingFor: (teamId) => this.staffRequests.pendingFor(teamId),
+        lastDecisionFor: (teamId) => this.staffRequests.lastDecisionFor(teamId),
         create: (input) => this.staffRequests.create(input),
       },
       // 交叉審查（Codex 第二輪）：reviews 在下面才建，呼叫時一定已經有了。

@@ -19,6 +19,7 @@ import {
   MEMBER_STAFFING_GUIDE,
   STAFFING_REASON_MAX,
   SPAWN_PROMPT_MAX,
+  promptLength,
   STAFF_REQUEST_PENDING_GUIDE,
   TEAM_FULL_GUIDE,
   TEAM_HELD_GUIDE,
@@ -35,6 +36,7 @@ import {
   type Session,
   type SessionEvent,
   type SessionSpec,
+  type StaffLastDecision,
   type StaffRequest,
   type StaffRequestLimit,
   type Team,
@@ -48,7 +50,7 @@ import { cleanLine, oneSentence, reportParts, sessionReport } from './handoff';
 import type { Store } from './store';
 
 /** 送進成員的工作內容上限（字元）；超過截斷。 */
-const PROMPT_MAX_CHARS = 4_000;
+const PROMPT_MAX_CHARS = SPAWN_PROMPT_MAX;
 const NAME_MAX_CHARS = 60;
 /** 同一個呼叫者 10 分鐘內最多送幾則工作、收幾則結果（防迴圈的第二道防線，同交接的 RULE_MAX_FIRES）。 */
 export const DISPATCH_SEND_MAX = 20;
@@ -163,7 +165,12 @@ export function resultMessage(
 export const SpawnArgs = z.object({
   name: z.string().max(NAME_MAX_CHARS).optional(),
   role: z.enum(DISPATCH_ROLES),
-  prompt: z.string().min(1).max(SPAWN_PROMPT_MAX),
+  prompt: z
+    .string()
+    .min(1)
+    .refine((text) => promptLength(text) <= SPAWN_PROMPT_MAX, {
+      message: `must be at most ${SPAWN_PROMPT_MAX} characters`,
+    }),
   reason: z.string(),
   permissionMode: PermissionMode.optional(),
   useWorktree: z.boolean().optional(),
@@ -236,8 +243,10 @@ export function staffingView(input: {
   addsLeft: number;
   /** 這一隊待處理的加開申請（§23）。 */
   pendingRequest?: StaffRequest | null;
+  /** 這一隊最後一次加開申請的結果（§23）。 */
+  lastDecision?: StaffLastDecision | null;
 }): Record<string, unknown> {
-  const { store, team, isLead, autoStaff, addsLeft, pendingRequest } = input;
+  const { store, team, isLead, autoStaff, addsLeft, pendingRequest, lastDecision } = input;
   if (!isLead) return { guide: MEMBER_STAFFING_GUIDE };
   const roles = Object.fromEntries(
     TeamRole.options.map((r) => [r, { members: 0, running: 0 }]),
@@ -274,6 +283,7 @@ export function staffingView(input: {
           },
         }
       : {}),
+    ...(lastDecision ? { lastDecision } : {}),
     guide,
   };
 }
@@ -361,6 +371,8 @@ export interface DispatchDeps {
 export interface StaffRequestPort {
   /** 這一隊待處理的申請（同一隊同時最多一件）。 */
   pendingFor(teamId: string): StaffRequest | null;
+  /** 這一隊最後一次申請的結果（沒有＝null）。 */
+  lastDecisionFor(teamId: string): StaffLastDecision | null;
   /** 記下申請（含完整的 spawn 參數）、記 audit 與團隊動態、推播。 */
   create(input: {
     team: Team;
@@ -536,6 +548,7 @@ export class DispatchEngine {
       autoStaff: this.deps.autoStaff(),
       addsLeft: this.addsLeft(team.id),
       pendingRequest: this.deps.staffRequests?.pendingFor(team.id) ?? null,
+      lastDecision: this.deps.staffRequests?.lastDecisionFor(team.id) ?? null,
     });
   }
 

@@ -66,6 +66,8 @@ const TEAM_ACTIVITY_KEY = 'teamActivity';
 const STAFF_ACTIVITY_KEY = 'staffActivity';
 /** 加開申請本身（staffRequests.ts）：settings 表 `staffRequest:<id>`。getSettings 不讀（可能有很長的 prompt）。 */
 const STAFF_REQUEST_PREFIX = 'staffRequest:';
+/** 每隊最後一次加開申請的結果（staffRequests.ts）。 */
+const STAFF_LAST_DECISION_PREFIX = 'staffLastDecision:';
 /**
  * session 跑的是哪個 CLI（Codex 接口第一版，GM 2026-11-10）：settings 表 `sessionAgent:<sessionId>`，不升 schema。
  * 只有 Codex 才寫；沒有這個鍵＝Claude Code（舊資料都是）。
@@ -1845,7 +1847,8 @@ export class Store {
         `SELECT key, value FROM settings WHERE key NOT LIKE '${USAGE_KEY_PREFIX}%'
            AND key NOT LIKE '${MEMBER_ADDED_PREFIX}%' AND key != '${TEAM_ACTIVITY_KEY}'
            AND key NOT LIKE '${SESSION_AGENT_PREFIX}%' AND key NOT LIKE '${AWAITING_LEAD_PREFIX}%'
-           AND key NOT LIKE '${STAFF_REQUEST_PREFIX}%' AND key != '${STAFF_ACTIVITY_KEY}'`,
+           AND key NOT LIKE '${STAFF_REQUEST_PREFIX}%' AND key != '${STAFF_ACTIVITY_KEY}'
+           AND key NOT LIKE '${STAFF_LAST_DECISION_PREFIX}%'`,
       )
       .all() as {
       key: string;

@@ -189,6 +189,9 @@ describe('session host 模式', () => {
   it('daemon 停止時留停止記號，下次啟動清掉（hook CLI 看它決定要不要重試）', async () => {
     await h.start();
     await h.createAndSubscribe('s1');
+    // 停止記號只在 daemon 停止時還連著 host 才寫（daemon.ts stop）。先確認這個前提：負載很高時若連 host 逾時、
+    // 退回舊模式，失敗訊息會指在這裡，而不是後面看起來像檔案沒寫好的 ENOENT。
+    expect(h.daemons[0]!['backend'].kind).toBe('host');
     const marker = `${h.daemons[0]!.hookSocketPath}.down`;
     for (const daemon of h.daemons.splice(0)) await daemon.stop();
     expect(mode(marker)).toBe(0o600);

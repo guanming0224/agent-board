@@ -92,7 +92,7 @@ function RequestRow({
         {owner && truncated && (
           <button
             type="button"
-            className="link"
+            className="link touch"
             onClick={() => void loadFull()}
             disabled={full !== null && full.text === null && full.error === null}
             data-testid={`staff-request-full-${request.id}`}
