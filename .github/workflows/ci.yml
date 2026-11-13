@@ -21,7 +21,7 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm lint
       # GitHub 的共用機器較慢，時間敏感的測試偶爾失敗：失敗的測試最多重跑 2 次（同 release.yml）。
-      - run: pnpm -r test -- --retry=2 --testTimeout=20000
+      - run: pnpm -r test --retry=2 --testTimeout=20000
 
   # Windows（原生、PowerShell 7、工作排程器；CONTRACTS §20.7、§21.10）：push 到 main、PR、手動才跑（其他分支的 push 不跑）。
   # 跑 protocol、web、session-host、hook 全部，daemon 的 processCheck／hookServer／codex，
@@ -40,6 +40,6 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
-      - run: pnpm --filter @agent-board/protocol --filter @agent-board/web --filter @agent-board/session-host --filter @agent-board/hook test -- --retry=2 --testTimeout=20000
+      - run: pnpm --filter @agent-board/protocol --filter @agent-board/web --filter @agent-board/session-host --filter @agent-board/hook test --retry=2 --testTimeout=20000
       - run: pnpm --filter @agent-board/daemon exec vitest run --retry=2 --testTimeout=20000 src/processCheck.test.ts src/hookServer.test.ts src/codex.test.ts
       - run: node --test scripts/windows-paths.test.mjs scripts/process-start.test.mjs scripts/service-templates.test.mjs

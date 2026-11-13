@@ -62,9 +62,9 @@ jobs:
       # GitHub 的共用機器比 Mac mini 慢，時間敏感的測試偶爾失敗（v0.1.4、v0.1.5）：發版建置時失敗的測試最多重跑 2 次。
       # 本機與一般開發仍是一次定生死。
       - if: runner.os == 'macOS'
-        run: pnpm -r test -- --retry=2 --testTimeout=20000
+        run: pnpm -r test --retry=2 --testTimeout=20000
       - if: runner.os == 'Windows'
-        run: pnpm --filter @agent-board/protocol --filter @agent-board/web --filter @agent-board/session-host --filter @agent-board/hook test -- --retry=2 --testTimeout=20000
+        run: pnpm --filter @agent-board/protocol --filter @agent-board/web --filter @agent-board/session-host --filter @agent-board/hook test --retry=2 --testTimeout=20000
       - if: runner.os == 'Windows'
         run: pnpm --filter @agent-board/daemon exec vitest run src/processCheck.test.ts src/hookServer.test.ts src/codex.test.ts --retry=2 --testTimeout=20000
       - if: runner.os == 'Windows'
