@@ -491,6 +491,12 @@ describe('session host', () => {
     await spawnEcho(client, 's1');
     client.write('s1', 'flood 200\r');
     await waitUntil(() => rec.text.includes('FLOOD DONE'), 'flood');
+    // ConPTY 在 FLOOD DONE 之後還會補幾個游標控制碼（Windows CI 2026-11-13 差 1–2 bytes）：
+    // 等輸出 300ms 不再變才量總數，不然 total 會比 host 緩衝裡的少。
+    for (let last = -1; Buffer.byteLength(rec.text) !== last; ) {
+      last = Buffer.byteLength(rec.text);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
     const again = recorder();
     client.register('s1', again.handlers);
     client.attach('s1', 0);
