@@ -2,7 +2,7 @@
 // 機器、資料夾、專案的選法和 worktree 判斷沿用 flows/sessionForm。
 import { useEffect, useState } from 'react';
 import type { PermissionMode } from '@agent-board/protocol';
-import { useProjects } from '../flows/common';
+import { useCurrentUser, useProjects } from '../flows/common';
 import {
   FolderBrowser,
   ProjectSelect,
@@ -133,6 +133,9 @@ export function PlaceFields({
   const projects = useProjects();
   const [browsing, setBrowsing] = useState(false);
   const { machine, machineId } = place;
+  // 共用資料夾開和關都只有 owner（§24 W6）；還沒讀到使用者時不顯示勾選。
+  const me = useCurrentUser();
+  const owner = me.data?.role === 'owner';
   useEffect(() => setBrowsing(false), [machineId]);
 
   const hints = (
@@ -157,7 +160,12 @@ export function PlaceFields({
           {t('team.shared.already')}
         </p>
       )}
-      {allowShared && !place.teamShared && place.advice.notGit && (
+      {allowShared && !place.teamShared && place.advice.notGit && me.data?.role === 'member' && (
+        <p className="sub" data-testid="team-shared-owner-only">
+          {t('team.shared.ownerOnlyCheck')}
+        </p>
+      )}
+      {allowShared && !place.teamShared && place.advice.notGit && owner && (
         <label className="check shared-writers" data-testid="team-shared-check">
           <input
             type="checkbox"

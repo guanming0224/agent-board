@@ -51,6 +51,9 @@ import type { DaemonConfig } from './config';
 import { DeepSearcher } from './deepSearch';
 import { listDirectory, makeDirectory } from './fsList';
 import { gitInitFolder, isInside } from './gitInit';
+
+/** git init 成功後多久再補掃一次 session（§24 N7）。 */
+const GIT_INIT_RESCAN_MS = 2_000;
 import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { downMarkerPath, HookServer, type HookOutput } from './hookServer';
 import { attachTimeoutFor, HostPtyBackend } from './hostPty';
@@ -1690,6 +1693,24 @@ export class Daemon {
    * 一鍵 git init（CONTRACTS §24）。成功後，在那個資料夾（或子資料夾）裡、沒有自己 worktree 的 session
    * 換上新的 repo 與分支並回報 hub（agent 照跑、不中斷），隊長馬上就能 spawn_member 開 worktree。
    */
+  /** root 裡（含子資料夾）沒有自己 worktree、還當成「不是 git」的活 session：換上新的 repo 與分支並回報 hub。 */
+  private async refreshReposIn(root: string): Promise<void> {
+    for (const [sessionId, dir] of [...this.sessionDirs]) {
+      const session = this.sessions.get(sessionId);
+      if (!session?.isAlive || !isInside(dir, root)) continue;
+      const runtime = session.runtime();
+      if (runtime.worktreePath !== null || runtime.repoRoot !== null) continue;
+      try {
+        const [repo, branch] = await Promise.all([repoInfo(dir), currentBranch(dir)]);
+        if (repo === null) continue;
+        session.updateRepo(repo, branch);
+        this.store.patch(sessionId, { branch });
+      } catch (error) {
+        log.warn(`git init 後更新 session ${sessionId} 的 repo 失敗：${errorMessage(error)}`);
+      }
+    }
+  }
+
   private async gitInit(requestId: string, path: string): Promise<void> {
     let result: Awaited<ReturnType<typeof gitInitFolder>>;
     try {
@@ -1699,18 +1720,10 @@ export class Daemon {
     }
     if (result.ok) {
       const root = result.path;
-      for (const [sessionId, dir] of this.sessionDirs) {
-        const session = this.sessions.get(sessionId);
-        if (!session?.isAlive || !isInside(dir, root)) continue;
-        if (session.runtime().worktreePath !== null) continue;
-        try {
-          const [repo, branch] = await Promise.all([repoInfo(dir), currentBranch(dir)]);
-          session.updateRepo(repo, branch);
-          this.store.patch(sessionId, { branch });
-        } catch (error) {
-          log.warn(`git init 後更新 session ${sessionId} 的 repo 失敗：${errorMessage(error)}`);
-        }
-      }
+      await this.refreshReposIn(root);
+      // init 進行中才登記的 session（開 session 時 repoInfo 已經算成「不是 git」）：稍後再補掃一次。
+      const later = setTimeout(() => void this.refreshReposIn(root), GIT_INIT_RESCAN_MS);
+      later.unref();
       log.info(
         `git init：${root}（${result.files} 個檔案，略過 ${result.skipped.length + result.skippedMore} 個大檔）`,
       );

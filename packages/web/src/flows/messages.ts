@@ -252,6 +252,8 @@ export const zhTW: Record<string, string> = {
     '沒設定 git 身分時，只有這次 commit 用「Agent Board」署名，不改你的 git 設定。',
   'flows.gitInit.what.local': '只在這台機器：不設 remote、不 push。',
   'flows.gitInit.what.sessions': '正在這個資料夾工作的 session 不會中斷。',
+  'flows.gitInit.what.worktreeFiles':
+    '成員的 worktree 只有 commit 進去的檔案（.env、node_modules、略過的大檔不會在裡面）。',
   'flows.gitInit.confirm': '確認 git init',
   'flows.gitInit.busy': 'git init 中…',
   'flows.gitInit.cancel': '取消',
@@ -269,8 +271,10 @@ export const zhTW: Record<string, string> = {
   'flows.gitInit.err.not_found': '找不到這個資料夾。',
   'flows.gitInit.err.not_directory': '這不是資料夾。',
   'flows.gitInit.err.already_repo': '這裡（或上層資料夾）已經是 git repo，沒有改動。',
+  'flows.gitInit.err.busy':
+    '這個資料夾已經有一次 git init 正在進行，這次沒有做任何事；等它完成後再看看。',
   'flows.gitInit.err.too_broad':
-    '這個位置太大（根目錄、家目錄、整個桌面或文件、系統資料夾），請選專案資料夾。',
+    '這個位置太大（根目錄、外接或網路碟的根目錄、家目錄、整個桌面或文件、家目錄的隱藏資料夾、iCloud／雲端硬碟根目錄、系統資料夾），請選專案資料夾。',
   'flows.gitInit.err.git_missing': '這台機器找不到 git，請先安裝 git。',
   'flows.gitInit.err.git_failed': 'git 執行失敗，資料夾已還原。',
   'flows.new.agent': 'Agent',
@@ -1071,6 +1075,8 @@ export const en: Record<string, string> = {
     'If git has no user identity, only this commit is signed "Agent Board"; your git config is not changed.',
   'flows.gitInit.what.local': 'Local only: no remote, no push.',
   'flows.gitInit.what.sessions': 'Sessions working in this folder keep running.',
+  'flows.gitInit.what.worktreeFiles':
+    "Members' worktrees contain only committed files (.env, node_modules and skipped large files are not in them).",
   'flows.gitInit.confirm': 'Run git init',
   'flows.gitInit.busy': 'Running git init…',
   'flows.gitInit.cancel': 'Cancel',
@@ -1091,8 +1097,10 @@ export const en: Record<string, string> = {
   'flows.gitInit.err.not_directory': 'This is not a folder.',
   'flows.gitInit.err.already_repo':
     'This folder (or a parent) is already a git repo. Nothing was changed.',
+  'flows.gitInit.err.busy':
+    'A git init is already running in this folder; nothing was done this time. Check again when it finishes.',
   'flows.gitInit.err.too_broad':
-    'This location is too broad (root, home, the whole Desktop or Documents, a system folder). Pick a project folder.',
+    'This location is too broad (root, the root of a disk or network drive, home, the whole Desktop or Documents, a hidden folder in home, the iCloud or cloud drive root, a system folder). Pick a project folder.',
   'flows.gitInit.err.git_missing': 'git is not installed on this machine.',
   'flows.gitInit.err.git_failed': 'git failed; the folder was restored.',
   'flows.new.agent': 'Agent',

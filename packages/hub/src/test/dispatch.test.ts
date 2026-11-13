@@ -2159,6 +2159,25 @@ describe('不是 git 的資料夾（§24）', () => {
     expect(hub.running.store.listTeamMembers(teamId)).toHaveLength(3);
   });
 
+  it('共用資料夾只在不是 git 的資料夾生效：git 資料夾的團隊照常開 worktree，明說不開仍算衝突', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' });
+    await setAutoStaff(b, {});
+    const teamId = await gmTeam(b, []);
+    await hub.api('PATCH', `/api/teams/${teamId}`, {
+      cookie: b.cookie,
+      body: { sharedWriters: true },
+    });
+    const member = await spawnMember(b, { role: 'worker', prompt: 'Own worktree.' });
+    expect(member.spec.useWorktree).toBe(true);
+    const clash = await ask(b, 'spawn_member', {
+      reason: 'Needed.',
+      role: 'worker',
+      prompt: 'x',
+      useWorktree: false,
+    });
+    expect(clash.text).toMatch(/^worktree_required: Same folder as Lead/);
+  });
+
   it('git init 之後（daemon 回報 repoRoot）：不用重開隊長，BD 就開 worktree', async () => {
     const b = await board({ permissionMode: 'acceptEdits' }, null);
     await setAutoStaff(b, {});

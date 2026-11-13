@@ -48,11 +48,12 @@ registerMessages('zh-TW', {
   'team.shared.check': '我知道風險：讓 BD 和 LD 共用這個資料夾（可能互相覆蓋修改）',
   'team.shared.already': '這一隊已設定「共用資料夾」：會改檔案的成員不開 worktree、共用主資料夾。',
   'team.shared.on':
-    '共用資料夾：這一隊會改檔案的成員不開 worktree、共用同一個資料夾，可能互相覆蓋修改。隊長開成員時也照這個設定。',
+    '共用資料夾：這一隊會改檔案的成員不開 worktree、共用同一個資料夾，可能互相覆蓋修改。隊長開成員時也照這個設定；只在不是 git 的資料夾生效。',
   'team.shared.off': '關掉共用資料夾',
-  'team.shared.offArmed': '確定關掉？',
+  'team.shared.offArmed': '再按一次關掉（已在跑的成員不受影響，之後新增會改檔案的成員會被擋）',
+  'team.shared.ownerOnlyCheck': '只有擁有者能設定共用資料夾；請擁有者按 git init 或勾選共用。',
   'team.shared.offDone':
-    '已關掉。之後會改檔案的成員要各自 worktree（不是 git 的資料夾請先 git init）。',
+    '已關掉。已在跑的成員不受影響；之後新增會改檔案的成員要各自 worktree（不是 git 的資料夾請先 git init）。',
   'team.shared.ownerOnly': '只有擁有者能關掉這個設定。',
   'team.new.err.leadCount': '要剛好一位隊長（LD）。',
   'team.new.err.emptyName': '每位都要有 session 名稱。',
@@ -365,9 +366,12 @@ registerMessages('en', {
   'team.shared.on':
     'Shared folder: members of this team that edit files share one folder without worktrees and may overwrite each other. The lead adding members follows this setting too.',
   'team.shared.off': 'Turn off shared folder',
-  'team.shared.offArmed': 'Turn it off?',
+  'team.shared.offArmed':
+    'Click again to turn off (running members are not affected; new members that edit files will be blocked)',
+  'team.shared.ownerOnlyCheck':
+    'Only an owner can set a shared folder; ask an owner to run git init or tick the shared option.',
   'team.shared.offDone':
-    'Turned off. Members that edit files now need their own worktree (run git init first if the folder is not a git repo).',
+    'Turned off. Running members are not affected; new members that edit files need their own worktree (run git init first if the folder is not a git repo).',
   'team.shared.ownerOnly': 'Only the owner can turn this off.',
   'team.new.err.leadCount': 'Exactly one lead (LD) is needed.',
   'team.new.err.emptyName': 'Every member needs a session name.',

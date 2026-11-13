@@ -43,7 +43,9 @@ export function GitInitAction({
   const dir = path.trim();
   if (!machine || !dir) return null;
   if (!notGit && state.step !== 'done') return null;
-  if (me.data && me.data.role !== 'owner') {
+  // 還沒讀到使用者：先不顯示（不讓非 owner 看到按鈕又被 403）。
+  if (!me.data) return null;
+  if (me.data.role !== 'owner') {
     return (
       <p className="sub" data-testid="git-init-owner-only">
         {t('flows.gitInit.ownerOnly')}
@@ -100,6 +102,7 @@ export function GitInitAction({
             <li>{t('flows.gitInit.what.identity')}</li>
             <li>{t('flows.gitInit.what.local')}</li>
             <li>{t('flows.gitInit.what.sessions')}</li>
+            <li>{t('flows.gitInit.what.worktreeFiles')}</li>
           </ul>
           <div className="row">
             <button

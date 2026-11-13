@@ -30,10 +30,31 @@ export const DEFAULT_GITIGNORE_LINES = [
   'venv/',
   '__pycache__/',
   '*.pyc',
+  '.terraform/',
+  '*.tfstate',
+  '*.tfstate.*',
   '.env',
   '.env.*',
+  '!.env.example',
+  '.npmrc',
+  '.pypirc',
+  '.netrc',
+  '.git-credentials',
+  '.aws/',
+  '.ssh/',
+  '.gnupg/',
+  'credentials.json',
+  'service-account*.json',
+  'client_secret*.json',
+  'token.json',
   '*.pem',
   '*.key',
+  '*.p12',
+  '*.pfx',
+  '*.jks',
+  '*.keystore',
+  '*.ppk',
+  '*.kdbx',
   'id_rsa*',
   'id_ed25519*',
   'id_ecdsa*',
@@ -45,9 +66,12 @@ export const DEFAULT_GITIGNORE_LINES = [
  * 拒絕的原因。
  * - not_absolute：不是絕對路徑（`~` 開頭會先展開成家目錄）。
  * - not_found／not_directory：資料夾不存在、不是資料夾。
- * - already_repo：資料夾本身或任何上層已經在某個 git repo 裡（`git rev-parse` 找得到），或資料夾裡已有 `.git`。
- * - too_broad：系統根目錄（`/`、`C:\`）、家目錄本身與它的上層、家目錄底下的標準大資料夾（Desktop、Documents…）、
+ * - already_repo：資料夾本身或任何上層已經在某個 git repo 裡（`git rev-parse --absolute-git-dir` 成功）、
+ *   路徑中有一段是 `.git`，或資料夾裡已有 `.git`。rev-parse 失敗但不是「not a git repository」（例如 dubious ownership）→ git_failed。
+ * - too_broad：系統根目錄（`/`、`C:\`）、磁碟或網路碟的根目錄（POSIX 掛載點）、家目錄本身與它的上層、
+ *   家目錄底下的標準大資料夾（Desktop、Documents…）與以 `.` 開頭的資料夾、iCloud／CloudStorage 根目錄、
  *   系統資料夾（`/usr`、`C:\Windows`…）、暫存資料夾本身（見 `tooBroadReason`，daemon/src/gitInit.ts）。
+ * - busy：同一個資料夾已經有一次 git init 在跑（兩個分頁同時按），這次沒做任何事。
  * - git_missing：這台找不到 git。
  * - git_failed：git 指令失敗（訊息是 git 的錯誤，已截斷）；建到一半的 `.git` 與剛建的 `.gitignore` 會收掉。
  */
@@ -57,6 +81,7 @@ export const GitInitErrorCode = z.enum([
   'not_directory',
   'already_repo',
   'too_broad',
+  'busy',
   'git_missing',
   'git_failed',
 ]);

@@ -21,11 +21,23 @@ export interface GitOptions {
  * 只執行 `git`（參數陣列，不經 shell，Windows 也不用處理引號）。`GIT_TERMINAL_PROMPT=0`：要帳密時直接失敗、不卡住。
  * daemon 所有 git 指令（worktree、git init §24）都走這一個呼叫點（docs/no-llm-review.md）。
  */
+/**
+ * git 的環境變數：daemon 自己的環境若帶了 GIT_DIR／GIT_WORK_TREE／GIT_INDEX_FILE（例如從某個 repo 的 hook 啟動），
+ * `-C <dir>` 會被它們蓋過、改到別的 repo；一律拿掉，讓 git 照 `-C` 的位置找 repo。
+ */
+export function gitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, GIT_TERMINAL_PROMPT: '0' };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  return env;
+}
+
 export async function git(args: string[], options: GitOptions = {}): Promise<string> {
   const { stdout } = await execFileAsync('git', args, {
     timeout: options.timeoutMs ?? GIT_TIMEOUT_MS,
     ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}),
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    env: gitEnv(),
     windowsHide: true,
   });
   return options.raw ? stdout : stdout.trim();

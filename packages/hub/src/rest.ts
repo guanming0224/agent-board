@@ -33,6 +33,13 @@ import type { Store } from './store';
 import { worktreeConflicts } from './worktree';
 
 export const AUTH_COOKIE = 'ab_session';
+
+/** 團隊「共用資料夾」（§24）開或關都只有 owner（GM 2026-11-13）：帶了 sharedWriters 的非 owner 一律 403。 */
+function requireOwnerForShared(user: User, sharedWriters: boolean | undefined): void {
+  if (sharedWriters !== undefined && user.role !== 'owner') {
+    throw new HttpError(403, 'forbidden', 'Only an owner can change the shared folder setting');
+  }
+}
 const LOGIN_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 10 * 60 * 1000;
 const LIMIT_WINDOW_MS = 5 * 60 * 1000;
@@ -444,6 +451,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
 
     teamsList: () => store.listTeams(),
     teamsCreate: (ctx) => {
+      requireOwnerForShared(ctx.user, ctx.body.sharedWriters);
       const team = {
         id: randomUUID(),
         ...ctx.body,
@@ -473,7 +481,10 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       }
       return store.getTeam(team.id) ?? team;
     },
-    teamsUpdate: (ctx) => hub.updateTeam(requireTeam(param(ctx)).id, ctx.body, ctx.user),
+    teamsUpdate: (ctx) => {
+      requireOwnerForShared(ctx.user, ctx.body.sharedWriters);
+      return hub.updateTeam(requireTeam(param(ctx)).id, ctx.body, ctx.user);
+    },
     teamsDelete: (ctx) => {
       const team = requireTeam(param(ctx));
       const memberIds = store.listTeamMembers(team.id).map((m) => m.sessionId);
@@ -510,8 +521,10 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
         existing !== undefined &&
         isReadOnlyMember(existing.role, session) &&
         !isReadOnlyMember(member.role, session);
-      // 共用資料夾的團隊（§24）：使用者已同意會改檔案的成員共用資料夾，不檢查。
-      if (!team.sharedWriters && (existing === undefined || becomesWriter)) {
+      // 共用資料夾的團隊（§24）：使用者已同意會改檔案的成員共用資料夾；只在不是 git 的資料夾生效
+      // （daemon 回報 repoRoot 為 null）。git 資料夾照常要各自 worktree。
+      const sharedHere = team.sharedWriters === true && session.repoRoot === null;
+      if (!sharedHere && (existing === undefined || becomesWriter)) {
         const clashes = worktreeConflicts(store, member, others);
         if (clashes.length > 0) {
           throw conflict(

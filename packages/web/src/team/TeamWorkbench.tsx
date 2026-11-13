@@ -487,7 +487,7 @@ function SharedFolderNote({ team }: { team: Team }) {
       <span aria-hidden="true">◆</span>
       <div>
         <p>{t('team.shared.on')}</p>
-        {me.data?.role === 'owner' ? (
+        {!me.data ? null : me.data.role === 'owner' ? (
           <div className="row">
             <TwoClickButton
               className="touch"

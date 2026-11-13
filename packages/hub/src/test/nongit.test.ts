@@ -169,16 +169,16 @@ describe('團隊「共用資料夾」（teamSharedWriters）', () => {
     hub = await startHub();
     const cookie = await hub.setupOwner();
     const { daemon, machineId } = await hub.onlineDaemon(cookie);
-    const start = async () => {
+    const start = async (cwd = '/plain', repoRoot: string | null = null) => {
       const res = await hub.api('POST', '/api/sessions', {
         cookie,
-        body: { ...spec({ cwd: '/plain' }), machineId },
+        body: { ...spec({ cwd }), machineId },
       });
       const create = await daemon.next('session.create', (m) => m.sessionId === res.body.id);
       daemon.send({
         type: 'session.created',
         requestId: create.requestId,
-        session: runtime(res.body.id, { cwd: '/plain', status: 'waiting_input', repoRoot: null }),
+        session: runtime(res.body.id, { cwd, status: 'waiting_input', repoRoot }),
       });
       await until(
         () => hub.running.store.getSession(res.body.id)?.status === 'waiting_input',
@@ -203,5 +203,64 @@ describe('團隊「共用資料夾」（teamSharedWriters）', () => {
     ).body.id as string;
     expect((await put(shared, a, 'lead')).status).toBe(200);
     expect((await put(shared, b, 'worker')).status).toBe(200);
+
+    // N10：共用只在不是 git 的資料夾生效。git 資料夾的團隊開著也照樣要各自 worktree。
+    const g1 = await start('/repo', '/repo');
+    const g2 = await start('/repo', '/repo');
+    const sharedGit = (
+      await hub.api('POST', '/api/teams', {
+        cookie,
+        body: { ...body, name: 'G', sharedWriters: true },
+      })
+    ).body.id as string;
+    expect((await put(sharedGit, g1, 'lead')).status).toBe(200);
+    expect((await put(sharedGit, g2, 'worker')).body.code).toBe('worktree_required');
+  });
+
+  it('開或關都只有 owner：非 owner 帶 sharedWriters 一律 403；不帶照常', async () => {
+    hub = await startHub();
+    const cookie = await hub.setupOwner();
+    const member = await hub.createMember(cookie);
+    const denied = await hub.api('POST', '/api/teams', {
+      cookie: member.cookie,
+      body: { ...body, sharedWriters: true },
+    });
+    expect(denied.status).toBe(403);
+    // 帶 false 也算「改這個設定」。
+    const deniedOff = await hub.api('POST', '/api/teams', {
+      cookie: member.cookie,
+      body: { ...body, sharedWriters: false },
+    });
+    expect(deniedOff.status).toBe(403);
+    const plain = await hub.api('POST', '/api/teams', { cookie: member.cookie, body });
+    expect(plain.status).toBe(200);
+    const id = plain.body.id as string;
+    expect(
+      (
+        await hub.api('PATCH', `/api/teams/${id}`, {
+          cookie: member.cookie,
+          body: { sharedWriters: true },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (await hub.api('PATCH', `/api/teams/${id}`, { cookie: member.cookie, body: { name: 'X' } }))
+        .status,
+    ).toBe(200);
+    expect(hub.running.store.getTeamSharedWriters(id)).toBe(false);
+    const byOwner = await hub.api('PATCH', `/api/teams/${id}`, {
+      cookie,
+      body: { sharedWriters: true },
+    });
+    expect(byOwner.body.sharedWriters).toBe(true);
+    expect(
+      (
+        await hub.api('PATCH', `/api/teams/${id}`, {
+          cookie: member.cookie,
+          body: { sharedWriters: false },
+        })
+      ).status,
+    ).toBe(403);
+    expect(hub.running.store.getTeamSharedWriters(id)).toBe(true);
   });
 });

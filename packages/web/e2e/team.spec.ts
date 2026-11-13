@@ -480,11 +480,53 @@ test('新增團隊、資料夾不是 git：勾「共用資料夾」就能建，�
   await page.locator('.team-open', { hasText: 'Shared' }).click();
   const off = page.getByTestId('team-shared-off');
   await off.click();
-  await expect(off).toHaveText('確定關掉？');
+  await expect(off).toContainText('已在跑的成員不受影響');
   await page.waitForTimeout(400); // 350ms 內的連點不算確認（同刪除團隊）
   await off.click();
   await expect(page.getByTestId('team-shared')).toHaveCount(0);
   expect((await teamsNamed(page, 'Shared'))[0]?.sharedWriters).toBeFalsy();
+});
+
+test('不是 owner：看不到 git init 按鈕與共用勾選，只有說明', async ({ page }) => {
+  await page.goto('/#/team');
+  await fake(
+    page,
+    `${NOT_GIT}
+     const me = backend.currentUser;
+     backend.currentUser = async () => ({ ...(await me()), role: 'member' });`,
+  );
+  await page.getByLabel('團隊名稱').fill('Member');
+  await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '標準' }).click();
+  await page.getByLabel('工作目錄').fill('/home/demo/member');
+  await expect(page.getByTestId('team-not-git')).toBeVisible();
+  await expect(page.getByTestId('git-init-owner-only')).toBeVisible();
+  await expect(page.getByTestId('team-shared-owner-only')).toBeVisible();
+  await expect(page.getByTestId('git-init-open')).toHaveCount(0);
+  await expect(page.getByTestId('team-shared-check')).toHaveCount(0);
+});
+
+test('補成員時才勾共用、結果一位都沒加進去：共用設定還原', async ({ page }) => {
+  await page.goto('/#/team');
+  await fake(
+    page,
+    `${NOT_GIT}
+     backend.createSession = async () => {
+       throw Object.assign(new Error('Machine demo-studio is offline'), { code: 'machine_offline' });
+     };`,
+  );
+  await page.getByLabel('團隊名稱').fill('Revert');
+  await page.getByRole('button', { name: '建立團隊', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Revert' })).toBeVisible();
+  await page.getByTestId('add-members-toggle').click();
+  const add = page.getByTestId('add-members');
+  await add.getByLabel('工作目錄').fill('/home/demo/revert');
+  await add.getByRole('button', { name: '標準' }).click();
+  await expect(add.getByTestId('team-not-git')).toBeVisible();
+  await add.getByTestId('team-shared-check').getByRole('checkbox').check();
+  await add.getByRole('button', { name: '開 4 個 session 並加入' }).click();
+  await expect(add.getByTestId('plan-step-4')).toContainText('session 沒建立');
+  await expect.poll(async () => (await teamsNamed(page, 'Revert'))[0]?.sharedWriters).toBeFalsy();
+  await expect(page.getByTestId('team-shared')).toHaveCount(0);
 });
 
 test('既有團隊補成員、資料夾不是 git：git init 或勾共用資料夾都能補 BD', async ({ page }) => {

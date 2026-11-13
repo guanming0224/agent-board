@@ -86,7 +86,8 @@ export function AddMembers({
     void run(async () => {
       setSteps(Object.fromEntries(rows.map((r) => [r.key, { step: 'waiting' } as RowStep])));
       // 補成員時才勾共用資料夾（§24）：先存到團隊上，hub 加成員時才不會擋同資料夾。
-      if (place.shared && !team.sharedWriters) {
+      const turnedOnShared = place.shared && !team.sharedWriters;
+      if (turnedOnShared) {
         await backend.updateTeam(team.id, { sharedWriters: true }).catch((e: unknown) => {
           submitting.current = false;
           setSteps({});
@@ -106,6 +107,10 @@ export function AddMembers({
         },
         (key, step) => setSteps((all) => ({ ...all, [key]: step })),
       );
+      // 這次才開的共用資料夾、結果一位都沒加進去（N8）：還原，不留下沒用到的共用設定。
+      if (turnedOnShared && done.sessionIds.size === 0) {
+        await backend.updateTeam(team.id, { sharedWriters: false }).catch(() => undefined);
+      }
       // 建過之後鎖住這一批（再按會多開一組）；要再補按「再補一批」清掉。
       setResult({ failed: done.failed });
       await refreshTeams(backend);

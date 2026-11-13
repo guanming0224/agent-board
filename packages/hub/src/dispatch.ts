@@ -794,8 +794,9 @@ export class DispatchEngine {
       ? store.listTeamMembers(existing.id)
       : [{ teamId: '', sessionId: caller.id, role: 'lead' }];
     // 共用資料夾的團隊（§24）：使用者已同意會改檔案的成員共用資料夾，不檢查衝突；不是 git 時預設不開 worktree。
-    const sharedTeam = existing?.sharedWriters === true;
+    // 只在不是 git 的資料夾生效（N10）：git 資料夾的團隊即使開著也照常要各自 worktree。
     const notGit = caller.repoRoot === null;
+    const sharedTeam = existing?.sharedWriters === true && notGit;
     // 寫入者預設開 worktree；不是 git（或 daemon 還沒回報）就開不了，除非明確說不要（或這一隊共用資料夾）。
     const useWorktree = args.useWorktree ?? (!readOnly && !(sharedTeam && notGit));
     if (useWorktree && notGit) {

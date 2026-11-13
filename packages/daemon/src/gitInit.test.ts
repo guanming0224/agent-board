@@ -1,6 +1,8 @@
 // 一鍵 git init（CONTRACTS §24）：只在暫存資料夾建 repo，測完清掉。家目錄、暫存資料夾用參數假裝，不碰真的。
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -10,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_GITIGNORE_LINES,
@@ -19,6 +21,7 @@ import {
   GIT_INIT_FALLBACK_NAME,
 } from '@agent-board/protocol';
 import { excludeLine, gitInitFolder, isInside, tooBroadReason } from './gitInit';
+import { gitEnv as cleanGitEnv } from './worktree';
 
 let base: string;
 let home: string;
@@ -68,6 +71,9 @@ describe('gitInitFolder：成功', () => {
     const dir = project();
     writeFileSync(join(dir, 'a.txt'), 'hello');
     writeFileSync(join(dir, '.env'), 'SECRET=sk-ant-demo-xyz');
+    writeFileSync(join(dir, '.env.example'), 'SECRET=');
+    writeFileSync(join(dir, '.npmrc'), '//registry/:_authToken=sk-ant-demo-npm');
+    writeFileSync(join(dir, 'client_secret_1.json'), '{}');
     mkdirSync(join(dir, 'node_modules'));
     writeFileSync(join(dir, 'node_modules', 'x.js'), '1');
     const result = await gitInitFolder(dir, opts());
@@ -81,7 +87,8 @@ describe('gitInitFolder：成功', () => {
       skippedMore: 0,
     });
     if (!result.ok) return;
-    expect(result.files).toBe(2); // a.txt、.gitignore（.env、node_modules 被忽略）
+    // a.txt、.gitignore、.env.example（.env、.npmrc、client_secret、node_modules 被忽略）
+    expect(result.files).toBe(3);
     expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe(
       `${DEFAULT_GITIGNORE_LINES.join('\n')}\n`,
     );
@@ -90,7 +97,11 @@ describe('gitInitFolder：成功', () => {
       `${GIT_INIT_COMMIT_MESSAGE}|${GIT_INIT_FALLBACK_NAME}|${GIT_INIT_FALLBACK_EMAIL}`,
     );
     expect(gitOut(dir, ['rev-parse', 'HEAD'])).toBe(result.commit);
-    expect(gitOut(dir, ['ls-files']).split('\n').sort()).toEqual(['.gitignore', 'a.txt']);
+    expect(gitOut(dir, ['ls-files']).split('\n').sort()).toEqual([
+      '.env.example',
+      '.gitignore',
+      'a.txt',
+    ]);
     // 身分只對單次指令：repo 與「全域」設定檔都沒有被寫入 user.*。
     expect(readFileSync(join(base, 'gitconfig'), 'utf8')).toBe('');
     expect(readFileSync(join(dir, '.git', 'config'), 'utf8')).not.toMatch(/\[user\]|Agent Board/);
@@ -146,6 +157,30 @@ describe('gitInitFolder：成功', () => {
     expect(gitOut(join(base, 'wt'), ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('ab/x');
   });
 
+  it('不跑任何 hook：使用者全域 core.hooksPath 與 init.templateDir 範本的 hook 都不執行', async () => {
+    const dir = project();
+    writeFileSync(join(dir, 'a.txt'), 'x');
+    const marker = join(base, 'hook-ran');
+    const hook = `#!/bin/sh\necho ran >> "${marker.replaceAll('\\', '/')}"\n`;
+    for (const hooksDir of [join(base, 'hooks'), join(base, 'tmpl', 'hooks')]) {
+      mkdirSync(hooksDir, { recursive: true });
+      for (const name of ['post-commit', 'pre-commit', 'reference-transaction', 'post-checkout']) {
+        writeFileSync(join(hooksDir, name), hook);
+        chmodSync(join(hooksDir, name), 0o755);
+      }
+    }
+    writeFileSync(
+      join(base, 'gitconfig'),
+      `[core]\n\thooksPath = ${join(base, 'hooks').replaceAll('\\', '/')}\n[init]\n\ttemplateDir = ${join(base, 'tmpl').replaceAll('\\', '/')}\n`,
+    );
+    const result = await gitInitFolder(dir, opts());
+    expect(result).toMatchObject({ ok: true });
+    expect(existsSync(marker)).toBe(false);
+    // 範本沒被複製；repo 自己的設定也沒有寫進 hooksPath。
+    expect(existsSync(join(dir, '.git', 'hooks', 'post-commit'))).toBe(false);
+    expect(readFileSync(join(dir, '.git', 'config'), 'utf8')).not.toMatch(/hooksPath|fsmonitor/);
+  });
+
   it('`~/` 開頭展開成家目錄', async () => {
     project('tilde');
     const result = await gitInitFolder('~/tilde', opts());
@@ -185,6 +220,73 @@ describe('gitInitFolder：拒絕', () => {
     expect(() => readFileSync(join(inner, '.git', 'HEAD'))).toThrow();
   });
 
+  it('路徑在 .git 裡面：直接拒絕', async () => {
+    const outer = project('outer2');
+    execFileSync('git', ['-C', outer, 'init', '-q']);
+    const inside = join(outer, '.git', 'objects');
+    expect(await gitInitFolder(inside, opts())).toMatchObject({ ok: false, code: 'already_repo' });
+  });
+
+  it('git 判斷失敗但不是「不是 repo」（例如設定壞了、dubious ownership）：git_failed，不 init', async () => {
+    const dir = project();
+    writeFileSync(join(base, 'gitconfig'), '[core\n');
+    const result = await gitInitFolder(dir, opts());
+    expect(result).toMatchObject({ ok: false, code: 'git_failed' });
+    expect(existsSync(join(dir, '.git'))).toBe(false);
+    expect(existsSync(join(dir, '.gitignore'))).toBe(false);
+  });
+
+  it('已經有（空的）.git：already_repo，而且不刪掉它', async () => {
+    const dir = project();
+    mkdirSync(join(dir, '.git'));
+    expect(await gitInitFolder(dir, opts())).toMatchObject({ ok: false, code: 'already_repo' });
+    expect(existsSync(join(dir, '.git'))).toBe(true);
+    expect(existsSync(join(dir, '.gitignore'))).toBe(false);
+  });
+
+  it('同一個資料夾同時按兩次：一個成功、另一個 busy（沒有做任何事）', async () => {
+    const dir = project();
+    writeFileSync(join(dir, 'a.txt'), 'x');
+    const results = await Promise.all([gitInitFolder(dir, opts()), gitInitFolder(dir, opts())]);
+    expect(results.map((r) => (r.ok ? 'ok' : r.code)).sort()).toEqual(['busy', 'ok']);
+    expect(gitOut(dir, ['rev-list', '--count', 'HEAD'])).toBe('1');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    '超過上限的大檔名稱有換行（寫不進排除清單）：整次失敗並還原，不會 commit',
+    async () => {
+      const dir = project();
+      writeFileSync(join(dir, 'ok.txt'), 'x');
+      writeFileSync(join(dir, 'bad\nname.bin'), '');
+      truncateSync(join(dir, 'bad\nname.bin'), 2048);
+      const result = await gitInitFolder(dir, { ...opts(), maxFileBytes: 1024 });
+      expect(result).toMatchObject({ ok: false, code: 'git_failed' });
+      if (!result.ok) expect(result.message).toMatch(/line break/);
+      expect(existsSync(join(dir, '.git'))).toBe(false);
+      expect(existsSync(join(dir, '.gitignore'))).toBe(false);
+    },
+  );
+
+  it('磁碟或網路碟的根目錄（掛載點）拒絕，裡面的資料夾可以；家目錄的隱藏資料夾、iCloud／CloudStorage 根目錄拒絕', async () => {
+    const disk = join(base, 'disk');
+    // 掛載的碟：disk 本身與裡面都在裝置 2，上層在裝置 1。
+    const devOf = async (p: string) => (p === disk || p.startsWith(`${disk}${sep}`) ? 2 : 1);
+    expect(await tooBroadReason(disk, { ...opts(), devOf })).toMatch(/disk or network drive/);
+    expect(await tooBroadReason(join(disk, 'proj'), { ...opts(), devOf })).toBeNull();
+    expect(await tooBroadReason(join(home, '.config'), opts())).toMatch(/hidden/);
+    expect(await tooBroadReason(join(home, '.config', 'app'), opts())).toMatch(/hidden/);
+    const lib = join(home, 'Library');
+    expect(
+      await tooBroadReason(join(lib, 'Mobile Documents', 'com~apple~CloudDocs'), opts()),
+    ).toMatch(/iCloud/);
+    expect(await tooBroadReason(join(lib, 'CloudStorage', 'GoogleDrive-x'), opts())).toMatch(
+      /cloud storage/,
+    );
+    expect(
+      await tooBroadReason(join(lib, 'CloudStorage', 'GoogleDrive-x', 'proj'), opts()),
+    ).toBeNull();
+  });
+
   it('家目錄、家目錄的上層、家目錄底下的 Desktop 等、暫存資料夾本身、根目錄', async () => {
     mkdirSync(join(home, 'Desktop'));
     mkdirSync(join(home, 'Desktop', 'proj'));
@@ -210,6 +312,16 @@ describe('小工具', () => {
     expect(excludeLine('!x')).toBe('/\\!x');
     expect(excludeLine('trail  ')).toBe('/trail\\ \\ ');
     expect(excludeLine('a\nb')).toBeNull();
+  });
+
+  it('git 的環境變數拿掉 GIT_DIR／GIT_WORK_TREE／GIT_INDEX_FILE，不會被帶到別的 repo', () => {
+    const env = cleanGitEnv({
+      PATH: '/bin',
+      GIT_DIR: '/x/.git',
+      GIT_WORK_TREE: '/x',
+      GIT_INDEX_FILE: '/x/i',
+    });
+    expect(env).toEqual({ PATH: '/bin', GIT_TERMINAL_PROMPT: '0' });
   });
 
   it('isInside：同一個或子資料夾；Windows 不分大小寫', () => {
