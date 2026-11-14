@@ -124,10 +124,10 @@ describe('allocateWebgl', () => {
 });
 
 describe('WebglBudget', () => {
-  const setup = (limit = 6, ceiling = 12, linger = 5000, hard = ceiling) => {
+  const setup = (limit = 6, ceiling = 12, linger = 5000, hard = ceiling, delay = 0) => {
     const clock = new FakeClock();
     const gc = new FakeGc();
-    const budget = new WebglBudget(limit, ceiling, hard, linger, clock, gc.track);
+    const budget = new WebglBudget(limit, ceiling, hard, linger, delay, clock, gc.track);
     let peak = 0;
     const client = (visible = false) => {
       const c = new FakeClient(() => (peak = Math.max(peak, budget.holding + 1)));
@@ -226,6 +226,34 @@ describe('WebglBudget', () => {
     budget.changed(d, true);
     clock.settle();
     expect(d.holding).toBe(false);
+  });
+
+  it('新拿 WebGL 要先看得到 1 秒；平移經過的不花 context；頁面上唯一的、聚焦中的立刻給', () => {
+    const { budget, clock, client, show } = setup(6, 12, 5000, 12, 1000);
+    // 頁面上沒有人在用：立刻給（全尺寸頁）。
+    const first = client(true);
+    clock.settle();
+    expect(first.holding).toBe(true);
+    // 其他的：看得到 1 秒後才給。
+    const passing = client(true);
+    clock.settle();
+    clock.advance(500);
+    expect(passing.holding).toBe(false);
+    show(passing, false);
+    clock.advance(2000);
+    expect(passing.grants).toBe(0);
+    const staying = client(true);
+    clock.settle();
+    clock.advance(999);
+    expect(staying.holding).toBe(false);
+    clock.advance(1);
+    expect(staying.holding).toBe(true);
+    // 聚焦中的不用等。
+    const focused = client(false);
+    focused.focused = true;
+    budget.changed(focused, true);
+    clock.settle();
+    expect(focused.holding).toBe(true);
   });
 
   it('聚焦中的會搶到名額（擠掉只是看得到的）', () => {

@@ -5,6 +5,8 @@
 // - WebKit 把「已經 loseContext、但 JS 物件還沒被 GC」的 context 也算進 16 個，所以另外數
 //   還沒回收的 context（FinalizationRegistry），到 CONTEXT_CEILING 就先用 DOM renderer，回收後再升級；
 //   聚焦中的、或頁面上唯一要 WebGL 的（全尺寸終端機頁）可以用到 CONTEXT_HARD_CEILING，仍低於 16；
+// - 新拿 WebGL 要先連續看得到 WEBGL_GRANT_DELAY_MS（平移經過的卡不花 context），
+//   聚焦中的、或頁面上唯一的（全尺寸頁）立刻給；
 // - 剛看不到的先保留 WEBGL_LINGER_MS（縮放來回、平移經過不必反覆建 context），名額不夠時才提早收回。
 // 不碰 DOM，方便單元測試；實際的載入／卸載由 controller.ts 做。
 
@@ -16,6 +18,8 @@ export const CONTEXT_CEILING = 12;
 export const CONTEXT_HARD_CEILING = 15;
 /** 看不到之後還保留 WebGL 多久。 */
 export const WEBGL_LINGER_MS = 5000;
+/** 看得到多久才給 WebGL（之前用 DOM renderer）。 */
+export const WEBGL_GRANT_DELAY_MS = 1000;
 
 export interface WebglClient {
   /** 畫面上看得到（畫布卡在畫面內、全尺寸頁）。 */
@@ -89,6 +93,8 @@ interface Entry {
   touched: number;
   /** 拿著 WebGL 但不再看得到的起點；看得到或聚焦時是 null。 */
   idleSince: number | null;
+  /** 開始要 WebGL（看得到或聚焦）的時間；不要時是 null。 */
+  wantedSince: number | null;
 }
 
 export class WebglBudget {
@@ -105,6 +111,7 @@ export class WebglBudget {
     readonly ceiling: number = CONTEXT_CEILING,
     readonly hardCeiling: number = CONTEXT_HARD_CEILING,
     readonly lingerMs: number = WEBGL_LINGER_MS,
+    readonly grantDelayMs: number = WEBGL_GRANT_DELAY_MS,
     private readonly clock: BudgetClock = realClock,
     private readonly track: CollectTracker = realTracker(),
   ) {}
@@ -115,6 +122,7 @@ export class WebglBudget {
       holding: false,
       touched: ++this.touchClock,
       idleSince: null,
+      wantedSince: null,
     });
     this.request();
   }
@@ -157,13 +165,22 @@ export class WebglBudget {
       const wanted = !client.webglBroken && (client.visible || client.focused);
       if (wanted || !entry.holding) entry.idleSince = null;
       else entry.idleSince ??= now;
+      if (wanted) entry.wantedSince ??= now;
+      else entry.wantedSince = null;
     }
     const lingering = (entry: Entry) =>
       entry.idleSince !== null && now - entry.idleSince < this.lingerMs;
+    const nobodyHolds = list.every(([, entry]) => !entry.holding);
+    // 還沒看得到夠久的先不參加（已經拿著的、聚焦中的、頁面上唯一的不用等）。
+    const settled = (client: WebglClient, entry: Entry) =>
+      entry.holding ||
+      client.focused ||
+      nobodyHolds ||
+      (entry.wantedSince !== null && now - entry.wantedSince >= this.grantDelayMs);
     const winners = allocateWebgl(
       list.map(([client, entry]) => ({
         id: entry.id,
-        visible: client.visible,
+        visible: client.visible && settled(client, entry),
         focused: client.focused,
         lingering: entry.holding && lingering(entry),
         broken: client.webglBroken,
@@ -205,7 +222,7 @@ export class WebglBudget {
     if (retry) this.request();
   }
 
-  /** 保留期到了要重新分配。 */
+  /** 保留期到了、或等著拿 WebGL 的看得到夠久了，要重新分配。 */
   private armTimer(now: number): void {
     if (this.timer !== null) this.clock.clearTimeout(this.timer);
     this.timer = null;
@@ -213,6 +230,13 @@ export class WebglBudget {
     for (const entry of this.entries.values()) {
       if (entry.holding && entry.idleSince !== null) {
         next = Math.min(next, entry.idleSince + this.lingerMs);
+      }
+      if (
+        !entry.holding &&
+        entry.wantedSince !== null &&
+        now - entry.wantedSince < this.grantDelayMs
+      ) {
+        next = Math.min(next, entry.wantedSince + this.grantDelayMs);
       }
     }
     if (next === Infinity) return;
