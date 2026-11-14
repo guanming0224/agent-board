@@ -123,9 +123,24 @@ export function FloatingDialog({
   useEffect(() => {
     if (!open || !box.current) return;
     const element = box.current;
-    const onResize = () => setBounds(currentBounds());
+    // 值沒變就沿用舊物件：不多 render，也不會在 ResizeObserver 裡連鎖觸發。
+    const onResize = () =>
+      setBounds((prev) => {
+        const next = currentBounds();
+        return prev &&
+          prev.left === next.left &&
+          prev.top === next.top &&
+          prev.right === next.right &&
+          prev.bottom === next.bottom
+          ? prev
+          : next;
+      });
     const observer = new ResizeObserver(() => {
-      setSize({ width: element.offsetWidth, height: element.offsetHeight });
+      const width = element.offsetWidth;
+      const height = element.offsetHeight;
+      setSize((prev) =>
+        prev && prev.width === width && prev.height === height ? prev : { width, height },
+      );
       onResize();
     });
     observer.observe(element);

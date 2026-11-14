@@ -1454,8 +1454,8 @@ test.describe('新增 session', () => {
     await page.getByLabel('名稱').fill('x');
     const top = (selector: string) =>
       page.locator(selector).evaluate((el) => el.getBoundingClientRect().top);
-    // 新增表單是疊在畫布上的次畫面，自己捲動。
-    const body = modal(page).locator('.modal-body');
+    // 新增表單是疊在畫布上的浮動次畫面（STYLE §5.2），內容自己捲動。
+    const body = modal(page).locator('.float-body');
     await body.evaluate((el) => el.scrollTo(0, 0));
     expect(await top('aside.preview')).toBe(await top('form.form-card'));
     await body.evaluate((el) => el.scrollTo(0, 300));
