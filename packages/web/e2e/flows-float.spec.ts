@@ -58,13 +58,25 @@ async function uncoveredCard(page: Page, dialogTestId: string) {
   }, dialogTestId);
 }
 
-/** 畫布空白（滑鼠下就是 xyflow 的底板，不是卡片、對話框或工具列）的一點。 */
+/**
+ * 畫布空白（滑鼠下就是 xyflow 的底板，不是卡片、對話框、側欄或工具列）的一點。
+ * 也避開團隊框的範圍：點團隊框裡的空白會打開團隊面板（換網址），不是「點畫布空白」。
+ */
 async function blankPane(page: Page) {
   return page.evaluate(() => {
+    const frames = [...document.querySelectorAll('.team')].map((el) => el.getBoundingClientRect());
+    const inFrame = (x: number, y: number) =>
+      frames.some(
+        (r) => x >= r.left - 8 && x <= r.right + 8 && y >= r.top - 8 && y <= r.bottom + 8,
+      );
     for (let y = innerHeight - 120; y > 120; y -= 40) {
       for (let x = 20; x < innerWidth - 20; x += 40) {
-        if (document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'))
+        if (
+          document.elementFromPoint(x, y)?.classList.contains('react-flow__pane') &&
+          !inFrame(x, y)
+        ) {
           return { x, y };
+        }
       }
     }
     return null;
@@ -263,7 +275,9 @@ test.describe('浮動對話框：新增團隊、補成員、Preset（桌面）',
     expect(Math.round(moved.y)).toBe(Math.round(start.y + 60));
 
     // 點畫布空白處：對話框、團隊面板都還在。
-    await page.mouse.click(moved.x + moved.width + 20, DESKTOP.height - 140);
+    const blank = await blankPane(page);
+    expect(blank, '要有一塊沒被蓋住的畫布空白').not.toBeNull();
+    await page.mouse.click(blank!.x, blank!.y);
     await expect(dialog).toBeVisible();
 
     await page.getByTestId('new-team-dialog-close').click();
@@ -305,7 +319,12 @@ test.describe('浮動對話框：新增團隊、補成員、Preset（桌面）',
     await expect
       .poll(async () => Math.round((await box(dialog)).x))
       .toBe(Math.round(start.x + 200));
-    await page.mouse.click(40, DESKTOP.height - 140);
+    // 點畫布空白（xyflow 底板）：不能用固定座標，(40, 760) 在側欄上，可能點到「看用量詳情」之類的
+    // 連結、開出置中次畫面（浮動框變 inert），之後的 Esc 就關不到浮動框。
+    const blank = await blankPane(page);
+    expect(blank, '要有一塊沒被蓋住的畫布空白').not.toBeNull();
+    await page.mouse.click(blank!.x, blank!.y);
+    await expect(page).toHaveURL(/#\/canvas$/);
     await expect(dialog).toBeVisible();
     await dialog.focus();
     await page.keyboard.press('Escape');
