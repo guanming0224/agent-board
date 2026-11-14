@@ -39,6 +39,8 @@ import {
   isLoaded,
   runningPid,
   stopAll,
+  stopOnSignal,
+  sweepStale,
 } from './test-support/fake-launchctl.mjs';
 
 const repo = join(import.meta.dirname, '..');
@@ -171,6 +173,8 @@ async function waitFor(what, check, timeoutMs = 15_000) {
 }
 
 before(() => {
+  sweepStale('ab-system-node-test-', LABELS);
+  stopOnSignal(() => launchd, LABELS);
   base = mkdtempSync(join(realpathSync(tmpdir()), 'ab-system-node-test-'));
   nodeLink = join(base, 'node-bin', 'node');
   mkdirSync(dirname(nodeLink));

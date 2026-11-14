@@ -27,7 +27,13 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { fakeHostCode } from './test-support/fake-host.mjs';
-import { installFakeLaunchctl, runningPid, stopAll } from './test-support/fake-launchctl.mjs';
+import {
+  installFakeLaunchctl,
+  runningPid,
+  stopAll,
+  stopOnSignal,
+  sweepStale,
+} from './test-support/fake-launchctl.mjs';
 
 const repo = join(import.meta.dirname, '..');
 const LABELS = ['com.agent-board.hub', 'com.agent-board.daemon', 'com.agent-board.session-host'];
@@ -204,6 +210,8 @@ function freshHome() {
 }
 
 before(async () => {
+  sweepStale('ab-updater-test-', LABELS);
+  stopOnSignal(() => launchd, LABELS);
   base = mkdtempSync(join(realpathSync(tmpdir()), 'ab-updater-test-'));
   port = await freePort();
 });

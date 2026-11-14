@@ -22,11 +22,14 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 /** bootout 之後 job 至少還算載入中這麼久（真的 launchd 要等程式結束才收掉 job）。 */
@@ -241,4 +244,64 @@ if (process.argv[1] === import.meta.filename) {
     code = kickstart(stateDir, rest);
   }
   process.exit(code);
+}
+
+/**
+ * 測試被中途砍掉（SIGTERM／SIGINT）時先停掉假服務再結束。假服務在自己的 process group（同 launchd），
+ * 不收的話會一直活著（2026-11-14 發現 4 個跑了 22 小時的 hub／daemon／session host）。SIGKILL 攔不到，靠下面的 sweepStale。
+ */
+export function stopOnSignal(currentStateDir, labels) {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      const stateDir = currentStateDir();
+      if (stateDir) stopAll(stateDir, labels);
+      process.exit(130);
+    });
+  }
+}
+
+/**
+ * 清掉以前被砍掉的測試留下的假服務與暫存資料夾：系統暫存資料夾裡 `<prefix>*`、超過 maxAgeMs 沒動過的才清
+ * （別的 worktree 正在跑的測試資料夾很新，不會碰）。只停命令列含那個資料夾路徑的程序（pid 可能被重用）。
+ */
+export function sweepStale(prefix, labels, maxAgeMs = 30 * 60_000) {
+  const tmp = realpathSync(tmpdir());
+  let names;
+  try {
+    names = readdirSync(tmp);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const base = join(tmp, name);
+    try {
+      if (Date.now() - statSync(base).mtimeMs < maxAgeMs) continue;
+      for (const home of readdirSync(base)) {
+        const stateDir = join(base, home, 'launchd');
+        for (const label of labels) {
+          const pid = runningPid(stateDir, label);
+          if (pid && commandOf(pid).includes(base)) {
+            signalGroup(pid, 'SIGTERM');
+            const deadline = Date.now() + 3_000;
+            while (Date.now() < deadline && alive(pid)) {
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+            }
+            signalGroup(pid, 'SIGKILL');
+          }
+        }
+      }
+      rmSync(base, { recursive: true, force: true });
+    } catch {
+      // 清不掉就算了，不影響這次測試
+    }
+  }
+}
+
+function commandOf(pid) {
+  try {
+    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+  } catch {
+    return '';
+  }
 }
