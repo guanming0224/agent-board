@@ -13,6 +13,7 @@ import {
 import { GitInitAction } from '../flows/GitInit';
 import { isSessionDeleting } from '../shared/backend';
 import { useT } from '../shared/i18n';
+import { useDraftState } from '../shared/draftStore';
 import { useBoard } from '../shared/store';
 import { errorText } from '../views';
 import type { RowStep } from './runPlan';
@@ -71,14 +72,19 @@ export interface PlanPlace {
  * 機器、資料夾、專案的狀態與 worktree 判斷。`initial` 給補成員時沿用隊長的位置。
  * `teamShared`：既有團隊已經是「共用資料夾」（§24），一律當成勾了、不再給勾。
  */
-export function usePlanPlace(initial?: PlanPlace, teamShared = false) {
+export function usePlanPlace(initial?: PlanPlace, teamShared = false, draft: string | null = null) {
   const t = useT();
   const { machines, sessions } = useBoard();
-  const [chosenMachine, setChosenMachine] = useState<string | null>(initial?.machineId ?? null);
-  const [cwd, setCwd] = useState(initial?.cwd ?? '');
-  const [projectId, setProjectId] = useState(initial?.projectId ?? '');
+  // draft：新增團隊把位置也放進草稿（shared/draftStore，STYLE §5.2）；其他地方用 null（普通的 state）。
+  const [chosenMachine, setChosenMachine] = useDraftState<string | null>(
+    draft,
+    'machine',
+    initial?.machineId ?? null,
+  );
+  const [cwd, setCwd] = useDraftState(draft, 'cwd', initial?.cwd ?? '');
+  const [projectId, setProjectId] = useDraftState(draft, 'projectId', initial?.projectId ?? '');
   /** 使用者勾了「讓 BD 和 LD 共用這個資料夾」（§24）。只在不是 git 時給勾。 */
-  const [sharedChoice, setShared] = useState(false);
+  const [sharedChoice, setShared] = useDraftState(draft, 'shared', false);
   const suggestion = suggestMachine(machines, sessions, 'general');
   const machineId = chosenMachine ?? suggestion?.id ?? '';
   const machine = machines.find((m) => m.id === machineId);

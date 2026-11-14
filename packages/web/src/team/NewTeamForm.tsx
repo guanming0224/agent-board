@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ResearchPhase, TeamPresetConfigInput } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
+import { clearDraft, NEW_TEAM_DRAFT, useDraftState } from '../shared/draftStore';
 import { useBoard } from '../shared/store';
 import { currentZoneId } from '../zones';
 import { errorText } from '../views';
@@ -27,6 +28,8 @@ import {
 } from './teamPlan';
 
 /** 建立後預設雙向交接的結果：少了實驗／寫作所以沒建、建好、部分失敗。沒勾就沒有結果。 */
+const D = NEW_TEAM_DRAFT;
+
 type PairResult =
   | { state: 'missing' }
   | { state: 'done'; n: number }
@@ -35,15 +38,17 @@ type PairResult =
 export function NewTeamForm() {
   const t = useT();
   const { backend, connected } = useBoard();
-  const [name, setName] = useState('');
-  const [color, setColor] = useState<string>(TEAM_COLORS[0]);
-  const [goal, setGoal] = useState('');
-  const [teamType, setTeamType] = useState<TeamType>('dev');
-  const [preset, setPreset] = useState<PresetId>('none');
-  const [phase, setPhase] = useState<ResearchPhase>('topic');
-  const [rows, setRows] = useState<PlanRow[]>([]);
-  const [pair, setPair] = useState(true);
-  const [pairRounds, setPairRounds] = useState(TWO_WAY_DEFAULT_ROUNDS);
+  // 表單欄位放草稿（STYLE §5.2）：換掉右側面板、跨 640px 換畫法再回來，填到一半的內容還在；
+  // 團隊建好（成功或部分成功）才清。
+  const [name, setName] = useDraftState(D, 'name', '');
+  const [color, setColor] = useDraftState<string>(D, 'color', TEAM_COLORS[0]);
+  const [goal, setGoal] = useDraftState(D, 'goal', '');
+  const [teamType, setTeamType] = useDraftState<TeamType>(D, 'teamType', 'dev');
+  const [preset, setPreset] = useDraftState<PresetId>(D, 'preset', 'none');
+  const [phase, setPhase] = useDraftState<ResearchPhase>(D, 'phase', 'topic');
+  const [rows, setRows] = useDraftState<PlanRow[]>(D, 'rows', []);
+  const [pair, setPair] = useDraftState(D, 'pair', true);
+  const [pairRounds, setPairRounds] = useDraftState(D, 'pairRounds', TWO_WAY_DEFAULT_ROUNDS);
   const [pairResult, setPairResult] = useState<PairResult | null>(null);
   const [tried, setTried] = useState(false);
   const [steps, setSteps] = useState<Record<string, RowStep>>({});
@@ -67,7 +72,7 @@ export function NewTeamForm() {
     };
   }, []);
 
-  const place = usePlanPlace();
+  const place = usePlanPlace(undefined, false, D);
   const { gitOk } = place;
   const research = teamType === 'research';
   const withSessions = rows.length > 0;
@@ -185,6 +190,7 @@ export function NewTeamForm() {
       // 團隊已經建好：先鎖住表單，之後重新讀取失敗也不能再按一次（會多建一組）。
       const { failed } = result;
       setCreated({ teamId: result.team.id, failed, refreshFailed: false });
+      clearDraft(D);
       // 清單沒讀到就跳過去，工作台會顯示「找不到這個團隊」；改成留在這裡給連結。
       const refreshed = await refreshTeams(backend).then(
         () => true,

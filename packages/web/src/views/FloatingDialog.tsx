@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { create } from 'zustand';
 import { PHONE_QUERY } from '../shared/breakpoints';
 import { useT } from '../shared/i18n';
 import {
@@ -28,6 +29,8 @@ import {
   type Size,
 } from './floatPosition';
 import { CloseButton } from './CloseButton';
+import { isFloatingModal } from './overlay';
+import { useOverlay } from './overlayStore';
 import { useViewsUi } from './uiStore';
 import './messages';
 
@@ -49,12 +52,37 @@ export function useFloatDialogs(): boolean {
   return float;
 }
 
+/**
+ * 同時開兩個以上浮動框（N1）：最後按過或聚焦的那個在最上面（front），焦點不在任何地方時的 Esc
+ * 也只關它（active）。active 在點到任何浮動框以外的地方時清掉：之後的 Esc 交給畫布與面板。
+ */
+const useFloatFront = create<{ front: string | null }>(() => ({ front: null }));
+let active: string | null = null;
+/** 開著的浮動框（置中時錯開，不完全疊在一起）。 */
+const openFloats = new Set<string>();
+/** 第二個以後的框置中時往右下錯開這麼多。 */
+const STACK_OFFSET = 24;
+
+function activate(token: string): void {
+  active = token;
+  if (useFloatFront.getState().front !== token) useFloatFront.setState({ front: token });
+}
+
 /** 打字中（輸入框、終端機）：Esc 交給它，不關對話框（和 App 的全域 Esc 同一條規則）。 */
 function isTyping(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLElement &&
     (target.isContentEditable ||
       target.closest('input, textarea, select, .xterm, [role="textbox"]') !== null)
+  );
+}
+
+/** 可以輸入文字的元素：Mac 的 Option＋方向鍵在這裡是按詞移動／選取，不拿來移動框。 */
+function isEditable(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.closest('input, textarea, select, [role="textbox"]') !== null)
   );
 }
 
@@ -93,6 +121,11 @@ export function FloatingDialog({
   const titleId = useId();
   const hintId = useId();
   const box = useRef<HTMLDivElement>(null);
+  const token = useId();
+  const front = useFloatFront((s) => s.front === token);
+  /** 置中次畫面（設定、搜尋…）或確認框開著：浮動框也 inert，焦點與點擊都不會跑到它身上（N2）。 */
+  const blockingModal = useOverlay((s) => s.modal !== null && !isFloatingModal(s.modal));
+  const [confirmOpen, setConfirmOpen] = useState(false);
   /** 使用者要的位置（拖過、鍵盤移過、或打開時算好的置中位置）；實際顯示一律再夾進範圍。 */
   const [desired, setDesired] = useState<Pos | null>(null);
   const [size, setSize] = useState<Size | null>(null);
@@ -114,10 +147,68 @@ export function FloatingDialog({
     const area = currentBounds();
     setSize(measured);
     setBounds(area);
+    const stacked = [...openFloats].filter((other) => other !== token).length;
+    const center = centerPos(measured, area, useViewsUi.getState().rightInset);
     setDesired(
-      readPos(id, safeStorage()) ?? centerPos(measured, area, useViewsUi.getState().rightInset),
+      readPos(id, safeStorage()) ??
+        (stacked > 0
+          ? clampPos(
+              { x: center.x + STACK_OFFSET * stacked, y: center.y + STACK_OFFSET * stacked },
+              measured,
+              area,
+            )
+          : center),
     );
-  }, [open, id]);
+  }, [open, id, token]);
+
+  // 開著的框登記起來（錯開置中用）；打開的這個就是最上面、也是 Esc 的對象。
+  useEffect(() => {
+    if (!open) return;
+    openFloats.add(token);
+    activate(token);
+    return () => {
+      openFloats.delete(token);
+      if (active === token) active = null;
+      if (useFloatFront.getState().front === token) useFloatFront.setState({ front: null });
+    };
+  }, [open, token]);
+
+  // 點到或聚焦到哪裡：這個框裡就變成 active＋最上面；框以外（畫布、面板、頁首）就清掉 active。
+  useEffect(() => {
+    if (!open) return;
+    const element = box.current;
+    const onDown = (e: Event) => {
+      const target = e.target as Node | null;
+      if (element && target && element.contains(target)) activate(token);
+      else if (
+        active === token &&
+        !(target instanceof Element && target.closest('[data-floating]'))
+      ) {
+        active = null;
+      }
+    };
+    const onFocus = (e: FocusEvent) => {
+      const target = e.target as Node | null;
+      if (element && target && element.contains(target)) activate(token);
+      else if (active === token && target !== document.body) active = null;
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('focusin', onFocus, true);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('focusin', onFocus, true);
+    };
+  }, [open, token]);
+
+  // 確認框（flows/Dialog.tsx，portal 到 body 底下的 .dialog-host）開著時也 inert。
+  useEffect(() => {
+    if (!open) return;
+    const check = () => setConfirmOpen(document.querySelector('body > .dialog-host') !== null);
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true });
+    return () => observer.disconnect();
+  }, [open]);
 
   // 視窗縮放、換螢幕、頁首換行：重算範圍（記住的位置不改，視窗變回來時框也回到原處）。內容長高：重量大小。
   useEffect(() => {
@@ -167,20 +258,20 @@ export function FloatingDialog({
     };
   }, [open]);
 
-  // 焦點不在任何地方（框裡按過的元素被換掉，例如 Preset 預覽回清單）時按 Esc：一樣關這個框，
-  // 不會變成關掉後面的右側面板。焦點在畫布或面板上的 Esc 照舊交給它們與 App。
+  // 焦點不在任何地方，而且最後點過／聚焦的是這個框（框裡按過的元素被換掉，例如 Preset 預覽回清單）
+  // 時按 Esc：只關這一個框。點過畫布或面板之後（active 已清掉）Esc 照舊交給畫布、面板與 App。
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented) return;
-      const active = document.activeElement;
-      if (active && active !== document.body) return;
+      if (e.key !== 'Escape' || e.defaultPrevented || active !== token) return;
+      const focused = document.activeElement;
+      if (focused && focused !== document.body) return;
       e.preventDefault();
       close.current();
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
-  }, [open]);
+  }, [open, token]);
 
   const recenter = useCallback(() => {
     if (!box.current) return;
@@ -212,6 +303,11 @@ export function FloatingDialog({
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = drag.current;
     if (!d || d.pointer !== e.pointerId) return;
+    // 按鍵已經放開（pointerup 沒送到，例如放開在視窗外）：結束拖曳，不讓框黏在指標上。
+    if (e.buttons === 0) {
+      endDrag(e);
+      return;
+    }
     moveTo({ x: d.from.x + e.clientX - d.startX, y: d.from.y + e.clientY - d.startY });
   };
   const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -235,8 +331,9 @@ export function FloatingDialog({
       close.current();
       return;
     }
-    // Alt＋方向鍵移動整個框（加 Shift 走大步）。打字中也可以：Alt＋方向鍵在輸入框裡沒有別的用途。
-    if (e.altKey && !e.metaKey && !e.ctrlKey && shown) {
+    // Alt＋方向鍵移動整個框（加 Shift 走大步）。焦點在可輸入的元素時不搶：Mac 的 Option＋方向鍵
+    // 在那裡是按詞移動／選取。
+    if (e.altKey && !e.metaKey && !e.ctrlKey && shown && !isEditable(e.target)) {
       const delta = keyMove(e.key, e.shiftKey);
       if (!delta) return;
       e.preventDefault();
@@ -248,7 +345,9 @@ export function FloatingDialog({
   return createPortal(
     <div
       ref={box}
-      className={`float-box${className ? ` ${className}` : ''}${dragging ? ' is-dragging' : ''}`}
+      // nokey：xyflow 的 Delete／Backspace（刪除選取的交接線）不吃框裡的按鍵（S1）。
+      className={`float-box nokey${className ? ` ${className}` : ''}${dragging ? ' is-dragging' : ''}${front ? ' is-front' : ''}`}
+      inert={blockingModal || confirmOpen}
       role="dialog"
       // 非模態：背後的畫布、頁首、面板都還能操作。
       aria-modal="false"
@@ -275,6 +374,7 @@ export function FloatingDialog({
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
         onDoubleClick={(e) => {
           if ((e.target as Element).closest('button, a')) return;
           recenter();

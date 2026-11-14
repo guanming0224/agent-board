@@ -15,6 +15,7 @@ import {
 import { applyAccountLocale } from './flows/locale';
 import { MemoryContent, MemoryDrawer } from './progress';
 import { markBooted } from './shared/boot';
+import { clearDraft, NEW_SESSION_DRAFT } from './shared/draftStore';
 import { useT } from './shared/i18n';
 import { isDemo, useBoard } from './shared/store';
 import { isSearchShortcut, SearchPanel } from './search';
@@ -74,6 +75,20 @@ function isTyping(target: EventTarget | null): boolean {
     (target.isContentEditable ||
       target.closest('input, textarea, select, .xterm, [role="textbox"]') !== null)
   );
+}
+
+/**
+ * 焦點在任何對話框裡（置中次畫面、浮動框、確認框）：單鍵的全域快捷鍵（I 開關收件匣）不觸發，
+ * 按鈕上按 I 不會換掉背後的面板。Esc 不用這條：Esc 照「只關最上層」的規則。
+ */
+function inDialog(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('[role="dialog"], [data-floating]') !== null;
+}
+
+/** 使用者明確關掉次畫面（✕、Esc、手機返回）：新增 session 的草稿跟著清掉。換網址離開不清。 */
+function closeModalExplicitly(): void {
+  if (useOverlay.getState().modal === 'new') clearDraft(NEW_SESSION_DRAFT);
+  closeModal();
 }
 
 interface Nav {
@@ -148,6 +163,7 @@ const MODAL_LABEL: Record<ModalKind, string> = {
 
 /** 手機：上一筆歷史就是 app 裡的畫面就上一頁，否則回收件匣（手機的首頁）。 */
 function phoneBack() {
+  if (useOverlay.getState().modal === 'new') clearDraft(NEW_SESSION_DRAFT);
   if (cameFrom() !== null) history.back();
   else replaceHash('#/inbox');
 }
@@ -203,7 +219,7 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
       {modal && (
         <ModalLayer
           label={t(MODAL_LABEL[modal])}
-          onClose={closeModal}
+          onClose={closeModalExplicitly}
           testId="modal"
           className={
             modal === 'search' ? 'search-modal' : modal === 'gitInit' ? 'git-init-modal' : undefined
@@ -277,10 +293,14 @@ export function App() {
         setTimeout(() => {
           if (e.defaultPrevented) return;
           const { modal: open, right } = useOverlay.getState();
-          if (open) closeModal();
-          else if (right) closeRight();
+          // 浮動的次畫面（新增 session）只在焦點在框裡時由框自己關（FloatingDialog）。焦點在畫布、
+          // 面板時這裡什麼都不關：關右側面板會換掉網址，連帶把浮動框也收掉。
+          if (open) {
+            if (!isFloatingModal(open)) closeModalExplicitly();
+          } else if (right) closeRight();
         }, 0);
       } else if ((e.key === 'i' || e.key === 'I') && !e.shiftKey) {
+        if (inDialog(e.target)) return;
         if (useOverlay.getState().modal) return;
         e.preventDefault();
         toggleInbox();

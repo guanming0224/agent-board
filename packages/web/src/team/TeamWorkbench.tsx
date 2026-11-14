@@ -632,34 +632,29 @@ export function TeamWorkbench({ team, inPanel = false }: { team: Team; inPanel?:
           </button>
           <span className="sub">{t('team.add.hint')}</span>
         </div>
-        {adding &&
-          (phone ? (
+      </Fold>
+      {/*
+        補成員是浮動對話框（GM 2026-11-14，STYLE §5.2），可以邊看畫布邊填。放在 Fold 外面、只由 adding 控制：
+        收起「補成員」區塊不會把填到一半的框卸載。手機的 Fold 不展開（回電腦處理），所以只有桌面。
+      */}
+      {adding && !phone && (
+        <FloatingDialog
+          id="add-members"
+          label={t('team.add.title')}
+          onClose={() => setAdding(false)}
+          testId="add-members-dialog"
+          className="float-team"
+        >
+          <div className="page team-page float-pad">
             <AddMembers
               team={team}
               members={records}
               title={t('team.add.title')}
               onClose={() => setAdding(false)}
             />
-          ) : (
-            // 桌面：補成員是浮動對話框（GM 2026-11-14，STYLE §5.2），可以邊看畫布邊填。
-            <FloatingDialog
-              id="add-members"
-              label={t('team.add.title')}
-              onClose={() => setAdding(false)}
-              testId="add-members-dialog"
-              className="float-team"
-            >
-              <div className="page team-page float-pad">
-                <AddMembers
-                  team={team}
-                  members={records}
-                  title={t('team.add.title')}
-                  onClose={() => setAdding(false)}
-                />
-              </div>
-            </FloatingDialog>
-          ))}
-      </Fold>
+          </div>
+        </FloatingDialog>
+      )}
       {team.phase && (
         <Fold id="phase" title={t('team.fold.phase')} phone={phone}>
           <PhasePanel team={{ ...team, phase: team.phase }} members={records} />

@@ -21,7 +21,9 @@ const LOCALES: { value: Locale; label: string }[] = [
 function isTyping(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLElement &&
-    (target.isContentEditable || target.closest('input, textarea, select') !== null)
+    (target.isContentEditable ||
+      // 焦點在對話框（含浮動框）裡也不觸發 N：按鈕上按 N 不會把畫布拉去下一張卡。
+      target.closest('input, textarea, select, [role="dialog"], [data-floating]') !== null)
   );
 }
 

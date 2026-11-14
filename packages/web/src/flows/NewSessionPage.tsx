@@ -11,6 +11,7 @@ import {
 } from '@agent-board/protocol';
 import type { Machine, Session, Settings } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
+import { NEW_SESSION_DRAFT, useDraftState } from '../shared/draftStore';
 import { useBoard } from '../shared/store';
 import { currentZoneId } from '../zones';
 import { commandPreview } from './commandPreview';
@@ -45,6 +46,7 @@ import {
 import { PairMachineNext } from './settingsParts';
 
 const LONG_CONTEXT_TOKENS = 100_000;
+const D = NEW_SESSION_DRAFT;
 const NO_GUARDS: Settings['quotaGuards'] = {
   denyReadPaths: [],
   maxConcurrentSessions: null,
@@ -133,22 +135,24 @@ export function NewSessionPage() {
   const templates = useLoad(useCallback(() => backend.listTemplates(), [backend]));
   const settings = useLoad(useCallback(() => backend.getSettings(), [backend]));
 
-  const [name, setName] = useState('');
-  const [projectId, setProjectId] = useState('');
-  const [taskType, setTaskType] = useState<TaskType>('general');
-  const [chosenMachine, setChosenMachine] = useState<string | null>(null);
-  const [cwd, setCwd] = useState('');
+  // 表單欄位放草稿（STYLE §5.2）：開著時去點收件匣、團隊框等換掉網址，再開 #/new 還在；
+  // ✕／Esc 明確關閉才清（App 的 closeNewSession）。
+  const [name, setName] = useDraftState(D, 'name', '');
+  const [projectId, setProjectId] = useDraftState(D, 'projectId', '');
+  const [taskType, setTaskType] = useDraftState<TaskType>(D, 'taskType', 'general');
+  const [chosenMachine, setChosenMachine] = useDraftState<string | null>(D, 'machine', null);
+  const [cwd, setCwd] = useDraftState(D, 'cwd', '');
   const fillName = useFolderNameFill(name, setName);
   const [browsing, setBrowsing] = useState(false);
-  const [worktreeChoice, setWorktreeChoice] = useState<boolean | null>(null);
-  const [agent, setAgent] = useState<AgentKind>('claude');
-  const [mode, setMode] = useState<PermissionMode>('default');
-  const [model, setModel] = useState('');
-  const [account, setAccount] = useState('');
-  const [resume, setResume] = useState('');
-  const [firstPrompt, setFirstPrompt] = useState('');
-  const [templateId, setTemplateId] = useState('');
-  const [templateName, setTemplateName] = useState('');
+  const [worktreeChoice, setWorktreeChoice] = useDraftState<boolean | null>(D, 'worktree', null);
+  const [agent, setAgent] = useDraftState<AgentKind>(D, 'agent', 'claude');
+  const [mode, setMode] = useDraftState<PermissionMode>(D, 'mode', 'default');
+  const [model, setModel] = useDraftState(D, 'model', '');
+  const [account, setAccount] = useDraftState(D, 'account', '');
+  const [resume, setResume] = useDraftState(D, 'resume', '');
+  const [firstPrompt, setFirstPrompt] = useDraftState(D, 'firstPrompt', '');
+  const [templateId, setTemplateId] = useDraftState(D, 'templateId', '');
+  const [templateName, setTemplateName] = useDraftState(D, 'templateName', '');
   const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
