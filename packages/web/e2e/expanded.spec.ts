@@ -84,6 +84,30 @@ async function openCanvas(page: Page) {
 const viewportTransform = (page: Page) =>
   page.locator('.react-flow__viewport').evaluate((el) => (el as HTMLElement).style.transform);
 
+/**
+ * 等鏡頭移動完：位置已經離開 from，而且連續 10 個 animation frame 都沒變。
+ * 用 frame 計數而不是隔幾百毫秒讀兩次：機器忙、主執行緒卡住時 frame 不會跑，
+ * 兩次讀值會一樣但動畫其實還沒做完（曾經記到 0.845、實際停在 0.85）。
+ */
+const cameraSettled = (page: Page, from: string) =>
+  page.evaluate(
+    (from) =>
+      new Promise<string>((resolve) => {
+        const viewport = document.querySelector<HTMLElement>('.react-flow__viewport')!;
+        let last = viewport.style.transform;
+        let still = 0;
+        const tick = () => {
+          const now = viewport.style.transform;
+          still = now === last && now !== from ? still + 1 : 0;
+          last = now;
+          if (still >= 10) resolve(now);
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+    from,
+  );
+
 const noHorizontalScroll = (page: Page) =>
   page.evaluate(() => {
     const el = document.documentElement;
@@ -99,20 +123,8 @@ test('從卡片打開全尺寸：xterm 填滿、resize 送出、Esc、切換、�
   const fitted = await viewportTransform(page);
   await tests.locator('.tail').dblclick();
   await expect(tests).toHaveAttribute('data-mode', 'terminal');
-  // 等鏡頭停下：固定等 300ms 在機器忙時不夠，改成等鏡頭已經離開全覽、而且兩次讀到的位置一樣。
-  let last = '';
-  await expect
-    .poll(
-      async () => {
-        const now = await viewportTransform(page);
-        const settled = now === last && now !== fitted;
-        last = now;
-        return settled;
-      },
-      { intervals: [250] },
-    )
-    .toBe(true);
-  const before = await viewportTransform(page);
+  // 等鏡頭停下再記位置。
+  const before = await cameraSettled(page, fitted);
   const cardCols = await page.evaluate(() =>
     (window as never as { __spy: Spy }).__spy.sent.findLast(
       (m) => m.type === 'terminal.resize' && m.sessionId === 's-tests',
