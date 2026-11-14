@@ -14,7 +14,10 @@ describe('卡片上的 git init（CONTRACTS §24.5）', () => {
   it('只有不是 git、不是自己的 worktree、還在跑的 session 要顯示', () => {
     expect(needsGitInit(base)).toBe(true);
     expect(needsGitInit({ ...base, status: 'running' })).toBe(true);
-    expect(needsGitInit({ ...base, status: 'queued' })).toBe(true);
+    expect(needsGitInit({ ...base, status: 'rate_limited' })).toBe(true);
+    // daemon 還沒回報（hub 剛建、排隊中）：repoRoot 的 null 是「還不知道」，不顯示（審查 N6）。
+    expect(needsGitInit({ ...base, status: 'starting' })).toBe(false);
+    expect(needsGitInit({ ...base, status: 'queued' })).toBe(false);
     // 已經是 git（git init 成功後 hub 推來新的 repoRoot）：提示消失。
     expect(needsGitInit({ ...base, repoRoot: '/r' })).toBe(false);
     expect(needsGitInit({ ...base, worktreePath: '/wt/x' })).toBe(false);

@@ -401,11 +401,16 @@ const TURN_STARTED: ReadonlySet<Session['status']> = new Set([
   'plan_review',
 ]);
 
+/** 同一個 session 記「不是 git 被擋」（事件＋audit）的最短間隔。 */
+export const NOT_GIT_RECORD_MS = 60_000;
+
 export class DispatchEngine {
   private readonly sends = new Map<string, number[]>();
   private readonly results = new Map<string, number[]>();
   /** 每個團隊（還沒有團隊時是呼叫者）10 分鐘內新增成員的時間。 */
   private readonly adds = new Map<string, number[]>();
+  /** 呼叫者上一次記「不是 git 被擋」的時間（session id → ms），NOT_GIT_RECORD_MS 內不重複記（審查 N5）。 */
+  private readonly notGitAt = new Map<string, number>();
 
   /** 寬限期到時重算成員與隊長的 awaiting（成員 id → 計時器）。 */
   private readonly graceTimers = new Map<string, NodeJS.Timeout>();
@@ -1289,6 +1294,14 @@ export class DispatchEngine {
    * 並在呼叫者記固定的事件，網頁在那張卡上提示 GM 可以在這裡 git init。payload 不帶模型寫的字。
    */
   private notGitBlocked(caller: Session): void {
+    // 同一個 session 60 秒內只記一筆（隊長可能連試好幾次；指引照樣每次回）。
+    const now = this.deps.now().getTime();
+    const last = this.notGitAt.get(caller.id);
+    if (last !== undefined && now - last < NOT_GIT_RECORD_MS) return;
+    // 過期的順手清掉（只在記一筆時跑，很少），map 不會一直長。
+    for (const [id, at] of this.notGitAt)
+      if (now - at >= NOT_GIT_RECORD_MS) this.notGitAt.delete(id);
+    this.notGitAt.set(caller.id, now);
     this.blockedTool(caller, 'spawn_member', 'not_git');
     this.deps.addEvent(caller.id, NOT_GIT_BLOCKED_EVENT, { tool: 'spawn_member' });
   }
