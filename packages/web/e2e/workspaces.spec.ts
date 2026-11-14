@@ -170,32 +170,25 @@ test('刪除：非空的工作區按鈕停用並寫數量；清空後可刪；�
   await expect(tab(page, 'agent-board')).toBeVisible();
 });
 
-test('超過 6 個收進「更多」：裡面的工作區也能右鍵改名、刪除，拖團隊經過「更多」會展開、可以放', async ({
+test('超過 6 個不再收進「更多」：全部留在頂部列（放不下就捲動），每個都能右鍵改名、刪除、放團隊', async ({
   page,
 }) => {
   await page.goto('/#/canvas');
   for (const name of ['B', 'C', 'D', 'E', 'F']) await addZone(page, name);
-  await page.getByTestId('zone-add').click();
-  await page.getByTestId('zone-add-input').fill('第七');
-  await page.getByTestId('zone-add-input').press('Enter');
-  // 第 7 個收在「更多」：按鈕寫目前工作區的名稱。
-  await expect(page.locator('[role="tab"][data-zone-name]')).toHaveCount(6);
-  await expect(page.getByTestId('zone-more')).toContainText('第七');
+  await addZone(page, '第七');
+  // 沒有「更多」：7 個分頁都在頂部列，剛建立的（目前的）在可見範圍內。
+  await expect(page.locator('[role="tab"][data-zone-name]')).toHaveCount(7);
+  await expect(page.getByTestId('zone-more')).toHaveCount(0);
+  await expect(tab(page, '第七')).toBeInViewport();
 
-  // 拖團隊框標籤：經過「更多」自動展開，放在裡面的「第七」上。
+  // 拖團隊框標籤到「第七」上。
   await tab(page, '主要').click();
   await expect(card(page, 's-auth')).toBeVisible();
-  await page.getByTestId(`team-open-${TEAM}`).hover();
-  await page.mouse.down();
-  await page.getByTestId('zone-more').hover();
-  await expect(page.getByTestId('zone-more-menu')).toBeVisible();
-  await tab(page, '第七').hover();
-  await page.mouse.up();
+  await page.getByTestId(`team-open-${TEAM}`).dragTo(tab(page, '第七'));
   await expect(page.getByTestId('zone-notice')).toContainText('已移到「第七」');
   await expect(card(page, 's-auth')).toHaveCount(0);
 
-  // 右鍵改名（「更多」裡的項目）。
-  await page.getByTestId('zone-more').click();
+  // 右鍵改名。
   await tab(page, '第七').click({ button: 'right' });
   await expect(page.getByTestId('zone-menu')).toBeVisible();
   await page.getByTestId('zone-rename').click();
@@ -211,11 +204,9 @@ test('超過 6 個收進「更多」：裡面的工作區也能右鍵改名、�
   await page.goto(`/#/team/${TEAM}`);
   await page.getByTestId('team-zone-select').selectOption({ label: '主要' });
   await page.goto('/#/canvas');
-  await page.getByTestId('zone-more').click();
   await tab(page, '交易').click({ button: 'right' });
   await expect(page.getByTestId('zone-delete')).toBeEnabled();
   await page.getByTestId('zone-delete').click();
-  await expect(page.getByTestId('zone-more')).toHaveCount(0);
   await expect(page.locator('[role="tab"][data-zone-name]')).toHaveCount(6);
 });
 
@@ -495,17 +486,17 @@ test('團隊清單模式：只列目前工作區的團隊，可切「顯示全�
   await expect(page.getByTestId(`team-row-${TEAM}`)).toContainText('主要');
 });
 
-test('手機尺寸：工作區是下拉、帶等你數；團隊面板全螢幕，可以群發，收合區塊寫「回電腦處理」', async ({
+test('手機尺寸：工作區是可以橫向滑的分頁列、帶等你數；團隊面板全螢幕，可以群發，收合區塊寫「回電腦處理」', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/#/canvas');
-  const select = page.getByTestId('zone-select');
-  await expect(select).toBeVisible();
-  await expect(page.getByTestId('zone-add')).toBeHidden();
-  await expect(select.locator('option')).toHaveCount(1);
-  // 主要裡有等你的（PERM、PLAN、ERR）：選項帶數量。
-  await expect(select.locator('option').first()).toContainText(/主要（等你 \d+）/);
+  await expect(page.getByTestId('zone-scroll')).toBeVisible();
+  await expect(page.getByTestId('zone-select')).toHaveCount(0);
+  await expect(page.locator('[role="tab"][data-zone-name]')).toHaveCount(1);
+  // 主要裡有等你的（PERM、PLAN、ERR）：分頁帶數量。觸控 44。
+  await expect(page.getByTestId('zone-waiting-main')).toHaveText(/^\d+$/);
+  expect((await tab(page, '主要').boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await page.goto(`/#/team/${TEAM}`);
   const phone = page.getByTestId('phone-team');
   await expect(phone.getByTestId('team-roster')).toBeVisible();

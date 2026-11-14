@@ -75,11 +75,10 @@ export type ZoneGroupCreated = z.infer<typeof ZoneGroupCreated>;
 
 /** 純函式丟出的錯誤（hub 轉成 HTTP：unknown_zone 400、unknown_group 404、too_many_groups 409）。 */
 export class ZoneGroupError extends Error {
-  constructor(
-    readonly code: 'unknown_zone' | 'unknown_group' | 'too_many_groups',
-    message: string,
-  ) {
+  readonly code: 'unknown_zone' | 'unknown_group' | 'too_many_groups';
+  constructor(code: ZoneGroupError['code'], message: string) {
     super(message);
+    this.code = code;
   }
 }
 

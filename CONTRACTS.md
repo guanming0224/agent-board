@@ -1179,3 +1179,53 @@ start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀�
 - **不呼叫模型**：同 §24.3；新增的只有固定文字與固定事件。
 - **測試**：hub `dispatch.test.ts`（兩條路都記事件與 audit、還沒有團隊的 session 也記、唯讀角色不記）；web `gitInitState.test.ts`、`overlay.test.ts`；e2e `canvas.spec.ts`「session 卡片上的 git init」（git 資料夾／worktree／失聯不顯示、被擋提示、⋯ 次畫面確認後晶片消失、非 owner 沒有按鈕、全尺寸頁側欄、共用隊說明、縮小時藏起來）；`team-integration.spec.ts`（真 daemon、真 git：沒有團隊的 session 開 BD 被擋 → 全尺寸頁提示 → git init → 晶片消失、不重開就開到 worktree）。假後端：`s-docs` 是不是 git 的 session，`s-etl`、`s-ml` 改成 git。截圖 `docs/card-gitinit/`。
 - **未驗證**：真 claude 收到固定指引後的實際反應（沒跑真 CLI）；手機實機上的次畫面；網頁重新整理後被擋提示不保留（設計如此）。
+
+## 25. 分頁群組（取代「更多」，GM 2026-11-14）
+
+GM 不要「工作區到第 7 個就收進『更多 ▾』」，要看得到自己要看的。改成像 Chrome 的分頁群組：同類的工作區（畫布分頁）收進一個有名稱、有顏色、可收合的群組。**拿掉 `VISIBLE_TABS` 與「更多」**，分頁數沒有上限。
+
+### 25.1 資料與存法（不升 schema，仍是 v11）
+
+- `protocol/src/zoneGroups.ts`：`ZoneGroups = { groups: ZoneGroup[], order: Id[] }`，`ZoneGroup = { id, name (1–40 字，去頭尾空白), color, zoneIds: Id[] }`。
+  - `color` 存色票 id（`/^[a-z][a-z0-9-]{0,19}$/`，沒給＝`teal`），用團隊框那 8 色（STYLE §4：teal、lime、indigo、apricot、ice、sand、plum、violet，避開狀態色）；前端不認得的 id 當 teal，不把任意字串放進 CSS。
+  - `order`：頂部列由左到右，群組 id 與「沒分組的工作區」id 混排。群組裡的順序是 `zoneIds`。一個工作區最多在一個群組。
+- hub 存在 settings 表的 **`zoneGroups` 鍵**（`hub/src/zoneGroups.ts` 的 `ZoneGroupStore`；`getSettings` 被 schema 濾掉，不會出現在設定裡）。讀不懂（壞掉的 JSON、型別不對）＝沒有群組，不讓快照或 API 失敗。沒寫過群組就不存這一列。
+- **整理規則**（`normalizeZoneGroups`，hub、前端假後端、前端畫面都用同一個純函式）：不存在的工作區從群組與順序拿掉；同一個工作區在兩個群組只留第一個；順序裡重複或不存在的拿掉；沒列到的群組、沒分組的工作區接在最後面（工作區照 `position`）——所以**新建的工作區自動排在最後**，不用另外寫入。空群組保留（GM 自己刪）。群組 id 和工作區 id 撞名時群組不算（hub 產生的 id 一律 `zg-<uuid>`）。
+- **刪工作區**：`deleteZone` 成功後 hub 把整理過的資料存回去並推 `zone.groups`（群組留著，空了也留）。**刪群組不影響工作區**。
+
+### 25.2 API（權限同工作區：REST `auth: 'user'`，登入的使用者都能改，沒登入 401）
+
+| 路由 | body | 回應 |
+|---|---|---|
+| `GET /api/zone-groups` | — | `ZoneGroups`（整理過） |
+| `POST /api/zone-groups` | `{ name, color?, zoneIds?: Id[] }` | `{ group, zoneGroups }`。帶的工作區從原本的地方拿出來放進去；群組放在第一個工作區原本的位置（它原本在別的群組＝那個群組右邊），沒帶＝最後 |
+| `PATCH /api/zone-groups/:id` | `{ name?, color? }`（至少一個） | `ZoneGroups` |
+| `DELETE /api/zone-groups/:id` | — | `ZoneGroups`。「取消群組」與「刪除群組」都是這個：群組不見，裡面的工作區照原順序回到群組原本的位置，**畫布不刪** |
+| `POST /api/zone-groups/move` | `ZoneBarMove`：`{ kind: 'zone', id, groupId?: Id\|null, before?: Id\|null }` 或 `{ kind: 'group', id, before?: Id\|null }` | `ZoneGroups`。`groupId` null／沒給＝頂部列；`before`＝放在同一排的誰前面，null／沒給＝最後。沒指定位置的「移出群組」放在群組右邊。群組只在頂部列排序 |
+
+- 錯誤：不存在的工作區 400 `unknown_zone`；不存在的群組 404 `unknown_group`；超過 50 個群組（`ZONE_GROUPS_MAX`）409 `too_many_groups`；名稱空白、超過 40 字、顏色不是 id 格式 400。
+- **WS**：每次寫入（含刪工作區後的整理）推 `{ type: 'zone.groups', zoneGroups }` 給每個 client，所有裝置即時同步。`board.state` 帶選填的 `zoneGroups`。
+- **相容**：舊版 hub 不送 `zoneGroups` → 新前端當成沒有群組、照 `position` 排；沒有這些路由 → 選單操作顯示錯誤，分頁本身照常。舊版網頁收到新快照：zod 預設丟掉不認得的欄位，`zone.groups` 訊息 `safeParse` 失敗直接略過（同 §23 的 `staff.activity`）。
+- **audit**（`session_id` null）：`zoneGroup.create` `{ id, name, color, zoneIds }`、`zoneGroup.update` `{ id, from, to }`、`zoneGroup.delete` `{ id, name, zoneIds }`、`zoneGroup.move`（`ZoneBarMove` 原樣）。
+
+### 25.3 網頁（`zones/ZoneTabs.tsx`、`zones/bar.ts`、`zones/zones.css`）
+
+- **頂部列**：沒分組的分頁照常；群組＝群組標籤（色塊＋名稱＋▾／▸）＋展開時裡面的分頁，整塊 1px 群組色框＋8% 底（同團隊框「框＋淡底＋名稱標籤」，字用 `--fg-muted`／`--fg`，不拿群組色當字色）。**點群組標籤展開／收合**；收合時只剩標籤，寫畫布數（膠囊）、裡面「等你」總數（`--you`），目前畫布在裡面時標籤加白色 2px 底線（`aria-current`）並寫「· 目前畫布名稱」。
+- **展開／收合每台裝置各自記**：localStorage `agent-board.zone.collapsed`（`{ [groupId]: true }`，沒記錄＝展開；讀寫都 try/catch，壞掉＝全部展開，存不了只在這次有效）。
+- **放不下就左右捲**（桌面、手機都一樣；手機不再是單一下拉）：`.zone-tabs` `overflow-x: auto`（細捲軸）、觸控 `touch-action: pan-x` 可滑；滑鼠滾輪（直向為主、真的放不下時）轉成橫向；目前分頁（或收合著、裝著目前分頁的群組標籤）變動時自動捲進可見範圍（兩側留 24px）。「+」在捲動區外面，一直看得到。
+- **選單**（右鍵；觸控長按 550ms、手指移超過 8px 當捲動不開；鍵盤 Shift+F10／選單鍵）：掛在 body（`position: fixed`，z-index 50），頂部列捲動或點外面、Esc 關（Esc 焦點回到分頁）。
+  - 分頁：重新命名、**加入群組 ▸**（既有群組列表＋「新群組…」：名稱＋顏色＋建立，建立時帶這個分頁）、**移出群組**（在群組裡才有）、往左移、往右移（同一排換位置，最邊邊停用）、刪除（規則同 P2：非空停用寫數量、最後一個不能刪）。
+  - 群組標籤：重新命名、換顏色 ▸、往左移、往右移、**取消群組**（分頁回到沒分組）、**刪除群組…**（`.danger` 按兩次確認，`useTwoStep`；說明「只刪群組，裡面 N 個畫布不會被刪」）。資料上兩者相同，差在刪除要確認。
+- **拖曳**（只在 `pointer: fine` 的裝置開 `draggable`；觸控長按是選單，用選單的加入／移出／往左右移替代）：分頁拖到分頁上＝放進那一排（群組或頂部列）、指到左半放前面右半放後面；拖到群組標籤＝加進群組最後；拖到分頁列空白＝移出群組排最後；群組標籤可拖，只在頂部列排序。拖曳中可放的地方虛線、指到的白框或左右白線。
+- **團隊拖到分頁**照舊（放開＝移團隊）；**拖著團隊（或分頁）經過收合的群組會暫時展開**，放下或取消後收回（不改收合記錄）——取代原本拖經「更多」自動展開。
+- **觸控 44px**：分頁與群組標籤在手機／觸控至少 `--ctl-h-touch`（`.zone-tab` 的 class 權重會蓋過 controls.css 的 button 規則，zones.css 補回）；選單項目照 controls.css 44。
+
+### 25.4 不呼叫模型
+
+純介面與設定資料，不送任何字進 PTY、不碰 `check:no-llm` 的呼叫點。
+
+### 25.5 測試與未驗證
+
+- protocol `zoneGroups.test.ts`（整理、排列、移動、建立位置、取消群組、改名換色、舊快照相容、路由 body）；hub `test/zoneGroups.test.ts`（真 hub：舊資料沒群組、CRUD 與移動、WS 推送、audit、重啟後還在、刪工作區同步拿掉、錯誤碼、權限 401／member 可改、壞資料）；web `zones/bar.test.ts`（排列、往左右移、拖曳放下、捲動到目前分頁、滾輪轉橫向、收合狀態讀寫與壞資料）。
+- e2e `zone-groups.spec.ts`（`team.config.ts`）：建群組、加入／移出、收合／展開（含鍵盤）、改名換色、往左移、刪群組不刪畫布、取消群組；13 個分頁全部點得到＋滾輪＋自動捲進可見範圍；拖團隊經過收合群組自動展開並放進去、放下後收回；桌面拖曳分頁進出群組與群組排序；手機觸控（可橫向捲、點標籤展開、長按選單、44px）；截圖 `docs/screenshots/zone-groups-desktop.png`、`zone-groups-phone.png`（10 個分頁、2 個群組，一個展開、一個收合且目前畫布在裡面）。`workspaces.spec.ts` 改寫「超過 6 個」與手機兩則。
+- 未驗證：真 hub 兩台裝置同時開著時的畫面同步（WS 推送由 hub 單元測試驗；e2e 用假後端）；實機觸控（iOS Safari 長按、Android Chrome）只用 Playwright 觸控模擬；群組很多（數十個）時的效能；淺色主題（介面目前只有深色主題，STYLE §4）。

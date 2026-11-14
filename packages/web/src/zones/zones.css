@@ -116,6 +116,8 @@
   padding-right: 0;
 }
 .zone-group-tag {
+  display: inline-flex;
+  align-items: center;
   gap: var(--space-1h);
   min-height: var(--ctl-h);
   padding: 0 var(--ctl-px-sm);
@@ -141,6 +143,7 @@
   border-bottom-right-radius: 0;
 }
 .zone-group-tag .swatch {
+  flex: none;
   margin: 0;
   background: var(--gc);
 }
