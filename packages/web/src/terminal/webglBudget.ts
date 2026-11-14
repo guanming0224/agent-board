@@ -25,8 +25,8 @@ export interface WebglClient {
   /** 畫面上看得到（畫布卡在畫面內、全尺寸頁）。 */
   readonly visible: boolean;
   /**
-   * 看得到時要不要用 WebGL。畫布上一般的小卡是 false（只在展開、聚焦時 true）：
-   * WebKit 量到 WebGL addon 反覆建立／釋放留下的垃圾在 GC 前佔網頁程序上百 MB，DOM renderer 沒有這個問題。
+   * 要不要用 WebGL。畫布卡一律 false（只有全尺寸頁 true）：WebKit 量到 WebGL addon 反覆建立／釋放
+   * 留下的垃圾在 GC 前佔網頁程序上百 MB；而且換 renderer 會讓字元格寬度改變、送 resize。
    */
   readonly webglPreferred: boolean;
   /** 鍵盤焦點在這個終端機裡。 */
@@ -168,7 +168,7 @@ export class WebglBudget {
     const list = [...this.entries];
     for (const [client, entry] of list) {
       const wanted =
-        !client.webglBroken && ((client.visible && client.webglPreferred) || client.focused);
+        !client.webglBroken && client.webglPreferred && (client.visible || client.focused);
       if (wanted || !entry.holding) entry.idleSince = null;
       else entry.idleSince ??= now;
       if (wanted) entry.wantedSince ??= now;
@@ -187,7 +187,7 @@ export class WebglBudget {
       list.map(([client, entry]) => ({
         id: entry.id,
         visible: client.visible && client.webglPreferred && settled(client, entry),
-        focused: client.focused,
+        focused: client.focused && client.webglPreferred,
         lingering: entry.holding && lingering(entry),
         broken: client.webglBroken,
         holding: entry.holding,

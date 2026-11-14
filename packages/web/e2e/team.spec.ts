@@ -1,6 +1,8 @@
 // 用 fakeBackend 完整操作團隊工作台與畫布上的團隊資料。不花額度、不連外。
 import { expect, test, type Page } from '@playwright/test';
 
+/** 交接紀錄的輪詢間隔（10 秒）再加餘裕。 */
+const ACTIVITY_WAIT = 15_000;
 const STORE = '/src/shared/store.ts';
 const SHOTS = process.env.TEAM_SHOTS;
 
@@ -1087,7 +1089,9 @@ test('被防迴圈擋下的交接要看得到', async ({ page }) => {
   await page.goto('/#/team/team-demo-auth');
   // 假後端在 reload 前都還在（hash 導覽不重新載入）
   const log = page.getByTestId('handoff-activity');
-  await expect(log).toContainText('Write tests → Fix login');
+  // 紀錄每 10 秒輪詢一次（HandoffPanel 的 ACTIVITY_POLL_MS）。面板若沒有重新掛載（兩次 hash 導覽
+  // 之間沒卸載），要等下一輪才讀到剛加的事件，所以等久一點。
+  await expect(log).toContainText('Write tests → Fix login', { timeout: ACTIVITY_WAIT });
   await expect(log).toContainText('會形成迴圈');
   await expect(log).toContainText('Fix login → Write tests：已交接');
 });
@@ -1328,7 +1332,8 @@ test('到輪數上限擋下的交接要看得到', async ({ page }) => {
   await page.goto('/#/canvas');
   await page.goto('/#/team/team-demo-auth');
   const log = page.getByTestId('handoff-activity');
-  await expect(log).toContainText('停下：已來回 3 輪');
+  // 同上：等過一輪輪詢。
+  await expect(log).toContainText('停下：已來回 3 輪', { timeout: ACTIVITY_WAIT });
   await expect(log).toContainText('第 3/3 輪');
 });
 

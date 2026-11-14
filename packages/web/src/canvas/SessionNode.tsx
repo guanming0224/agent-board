@@ -291,8 +291,10 @@ export function SessionNode({
   }, [host]);
   // 縮回摘要條時 xterm 被藏起來，焦點跟著消失（瀏覽器不一定送 focusout）。
   if (!isTerminal && typingHere) setTypingHere(false);
+  // focusout 不一定會來（textarea 被藏起來或拆下）：以目前焦點實際在不在 host 裡為準。
+  const typing = typingHere && host.contains(document.activeElement);
   // xterm 不是每張卡都有：只給畫面內＋最近看過的卡，展開／聚焦中的一定有（terminalPool.ts）。
-  const pinned = isTerminal && (expanded || focused || typingHere);
+  const pinned = isTerminal && (expanded || focused || typing);
   const hasTerminal = useTerminalLease(data.sessionId, {
     visible: isTerminal && onScreen,
     pinned,
@@ -332,6 +334,8 @@ export function SessionNode({
   return (
     <div
       className={`frame ${codeClass(statusCode(session))}${focused ? ' spot' : ''}`}
+      // 點了這張卡（含 portal 底下的 xterm：React 事件照 React 樹往上傳）：名額優先給它。
+      onPointerDownCapture={() => canvasTerminals.touch(data.sessionId)}
       // --fill 放在外框上：摘要條的倍率（--strip-scale）由外框算，外框的圓角才跟得上（canvas.css）。
       style={
         {
@@ -394,7 +398,6 @@ export function SessionNode({
             data-testid="terminal-slot"
             data-visible={onScreen}
             data-terminal={hasTerminal ? 'live' : 'idle'}
-            onPointerDownCapture={() => canvasTerminals.touch(session.id)}
           >
             {/* 還沒分到 xterm：先放最後幾行文字（不是疊在 xterm 上，xterm 來了就換掉）。 */}
             {!hasTerminal && (
@@ -440,8 +443,9 @@ export function SessionNode({
             autoFocus={isTerminal && expanded}
             onSizeOwnerChange={size.onSizeOwnerChange}
             scrollback={isTerminal && expanded ? EXPANDED_SCROLLBACK : CARD_SCROLLBACK}
-            // 一般小卡用 DOM renderer；展開、聚焦、打字中的才用 WebGL（webglBudget.ts 的說明）。
-            webgl={pinned}
+            // 畫布上一律 DOM renderer，只有全尺寸頁用 WebGL：換 renderer 會讓字元格寬度改變
+            // （DOM 不取整、WebGL 取整）→ cols 變 → 送 resize，PTY 收到 SIGWINCH 重畫。
+            webgl={false}
           />,
           host,
         )}

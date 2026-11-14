@@ -46,17 +46,18 @@ const card = (id: string, patch: Partial<PoolCard> = {}): PoolCard => ({
   granted: false,
   lastSeen: 0,
   touched: 0,
+  touchedAt: -Infinity,
   ...patch,
 });
 
 describe('allocateTerminals', () => {
   it('畫面外、沒拿過的卡不給', () => {
-    expect([...allocateTerminals([card('a')], 0, 8, 5000)]).toEqual([]);
+    expect([...allocateTerminals([card('a')], 0, { limit: 8, graceMs: 5000 })]).toEqual([]);
   });
 
   it('畫面內的優先，超過上限的不給', () => {
     const cards = ['a', 'b', 'c', 'd'].map((id) => card(id, { visible: true }));
-    expect(allocateTerminals(cards, 0, 3, 5000).size).toBe(3);
+    expect(allocateTerminals(cards, 0, { limit: 3, graceMs: 5000 }).size).toBe(3);
   });
 
   it('展開／聚焦中的一定給，而且佔掉其他卡的名額', () => {
@@ -66,15 +67,22 @@ describe('allocateTerminals', () => {
       card('v1', { visible: true }),
       card('v2', { visible: true }),
     ];
-    expect([...allocateTerminals(cards, 0, 3, 5000)].sort()).toEqual(['p1', 'p2', 'v1']);
+    expect([...allocateTerminals(cards, 0, { limit: 3, graceMs: 5000 })].sort()).toEqual([
+      'p1',
+      'p2',
+      'v1',
+    ]);
     // 名額比 pinned 少也照樣給 pinned。
-    expect([...allocateTerminals(cards, 0, 1, 5000)].sort()).toEqual(['p1', 'p2']);
+    expect([...allocateTerminals(cards, 0, { limit: 1, graceMs: 5000 })].sort()).toEqual([
+      'p1',
+      'p2',
+    ]);
   });
 
   it('剛離開畫面的在寬限期內保留，過了就釋放', () => {
     const left = card('a', { granted: true, lastSeen: 1000 });
-    expect(allocateTerminals([left], 5999, 8, 5000).has('a')).toBe(true);
-    expect(allocateTerminals([left], 6000, 8, 5000).has('a')).toBe(false);
+    expect(allocateTerminals([left], 5999, { limit: 8, graceMs: 5000 }).has('a')).toBe(true);
+    expect(allocateTerminals([left], 6000, { limit: 8, graceMs: 5000 }).has('a')).toBe(false);
   });
 
   it('畫面內的會擠掉寬限期內的；寬限期內的照最近看過排', () => {
@@ -83,7 +91,10 @@ describe('allocateTerminals', () => {
       card('recent', { granted: true, lastSeen: 900 }),
       card('new', { visible: true }),
     ];
-    expect([...allocateTerminals(cards, 1000, 2, 5000)].sort()).toEqual(['new', 'recent']);
+    expect([...allocateTerminals(cards, 1000, { limit: 2, graceMs: 5000 })].sort()).toEqual([
+      'new',
+      'recent',
+    ]);
   });
 
   it('畫面內超過上限：已經有的留著，再來是最近點過的', () => {
@@ -92,7 +103,35 @@ describe('allocateTerminals', () => {
       card('b', { visible: true, touched: 5 }),
       card('c', { visible: true, touched: 1 }),
     ];
-    expect([...allocateTerminals(cards, 0, 2, 5000)].sort()).toEqual(['a', 'b']);
+    expect([...allocateTerminals(cards, 0, { limit: 2, graceMs: 5000 })].sort()).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('畫面內 9 張、名額 8 張都滿：剛點的第 9 張拿到，擠掉最久沒碰的', () => {
+    const cards = Array.from({ length: 8 }, (_, i) =>
+      card(`g${i}`, { visible: true, granted: true, touched: i + 1, lastSeen: 100 }),
+    );
+    cards.push(card('clicked', { visible: true, touched: 99, touchedAt: 1000 }));
+    const winners = allocateTerminals(cards, 1500, { limit: 8, graceMs: 5000 });
+    expect(winners.has('clicked')).toBe(true);
+    expect(winners.has('g0')).toBe(false);
+    expect(winners.size).toBe(8);
+    // 10 秒後不再優先，但已經拿到的照「已有名額」留著。
+    const later = cards.map((c) => (c.id === 'clicked' ? { ...c, granted: true } : c));
+    const after = allocateTerminals(later, 20_000, { limit: 8, graceMs: 5000 });
+    expect(after.has('clicked')).toBe(true);
+  });
+
+  it('展開／聚焦的卡最多保留 4 張，最舊的展開讓位給一般排序', () => {
+    const cards = Array.from({ length: 6 }, (_, i) =>
+      card(`p${i}`, { pinned: true, touched: i + 1 }),
+    );
+    const winners = allocateTerminals(cards, 0, { limit: 4, graceMs: 5000 });
+    expect([...winners].sort()).toEqual(['p2', 'p3', 'p4', 'p5']);
+    // 名額有剩時，超過的展開卡照一般卡排進來。
+    expect(allocateTerminals(cards, 0, { limit: 5, graceMs: 5000 }).size).toBe(5);
   });
 });
 
@@ -188,6 +227,18 @@ describe('TerminalPool', () => {
     clock.settle();
     expect(pool.granted('b')).toBe(true);
     expect(pool.granted('a')).toBe(false);
+  });
+
+  it('畫面內 9 張卡、名額 8：點第 9 張會拿到 xterm', () => {
+    const { clock, pool } = setup(8);
+    for (let i = 0; i < 9; i += 1) pool.set(`s${i}`, { visible: true, pinned: false });
+    clock.settle();
+    const left = [...Array(9).keys()].map((i) => `s${i}`).find((id) => !pool.granted(id))!;
+    clock.advance(1000);
+    pool.touch(left);
+    clock.settle();
+    expect(pool.granted(left)).toBe(true);
+    expect(pool.grantedCount).toBe(8);
   });
 
   it('remove 立刻讓出名額', () => {

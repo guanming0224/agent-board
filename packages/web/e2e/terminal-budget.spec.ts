@@ -284,12 +284,7 @@ test('停放（縮回摘要條）期間不送 resize；回到畫面只送卡片�
   }
 });
 
-test('焦點在卡片的 xterm 裡（打字中）：平移出畫面超過寬限期也不釋放', async ({
-  page,
-  browserName,
-}) => {
-  // WebKit 下 Playwright 的滾輪推不動畫布（30 次後卡仍在畫面內），焦點規則只在 Chromium 驗。
-  test.skip(browserName === 'webkit', 'WebKit 的滾輪無法把卡推出畫面');
+test('焦點在卡片的 xterm 裡（打字中）：平移出畫面超過寬限期也不釋放', async ({ page }) => {
   await open25(page);
   await zoomUntil(page, 90);
   await visibleTerminalsShowContent(page);
@@ -318,14 +313,29 @@ test('焦點在卡片的 xterm 裡（打字中）：平移出畫面超過寬限�
       ),
     )
     .toBe(id);
-  // 在畫面另一側用滾輪放大，把這張卡推出畫面（滾輪不會移走焦點）。
+  // 在畫面另一側用程式送滾輪事件放大，把這張卡推出畫面（不經過點擊，焦點留在 xterm）。
+  // Playwright 的 mouse.wheel 在 WebKit 推不動畫布，所以直接派送 WheelEvent 給 React Flow。
   const box = (await page.locator(`[data-terminal-session="${id}"]`).boundingBox())!;
   const viewport = page.viewportSize()!;
   const x = box.x + box.width / 2 < viewport.width / 2 ? viewport.width - 120 : 300;
-  await page.mouse.move(x, viewport.height / 2);
   const mySlot = page.locator(`[data-testid="card-${id}"] [data-testid="terminal-slot"]`);
-  for (let i = 0; i < 30 && (await mySlot.getAttribute('data-visible')) === 'true'; i += 1) {
-    await page.mouse.wheel(0, -400);
+  for (let i = 0; i < 40 && (await mySlot.getAttribute('data-visible')) === 'true'; i += 1) {
+    await page.evaluate(
+      ({ x, y }) => {
+        const pane = document.querySelector('.react-flow__pane')!;
+        pane.dispatchEvent(
+          new WheelEvent('wheel', {
+            deltaY: -200,
+            deltaMode: 0,
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      },
+      { x, y: viewport.height / 2 },
+    );
     await page.waitForTimeout(50);
   }
   const mine = page.locator(`[data-testid="card-${id}"] [data-testid="terminal-slot"]`);
@@ -341,7 +351,7 @@ test('焦點在卡片的 xterm 裡（打字中）：平移出畫面超過寬限�
   await expect(mine).toHaveAttribute('data-terminal', 'live');
 });
 
-test('小卡 300 行；展開時改回 1000 行（重拿快照補回歷史）', async ({ page }) => {
+test('小卡 300 行；展開時改成 1000 行（不重拿快照，畫面不重排）', async ({ page }) => {
   await open25(page);
   const auth = card(page, 's-auth');
   await auth.locator('.strip').dblclick();
@@ -361,4 +371,47 @@ test('小卡 300 行；展開時改回 1000 行（重拿快照補回歷史）', 
   await zoomUntil(page, 90);
   await expect(auth).toHaveAttribute('data-mode', 'terminal');
   await expect.poll(sb).toBe(300);
+});
+
+test('在畫布上點進卡片、聚焦、離開：hub 收到的 resize 是 0 次，renderer 不換', async ({ page }) => {
+  await open25(page);
+  await zoomUntil(page, 90);
+  await visibleTerminalsShowContent(page);
+  await page.waitForTimeout(1000); // 剛放大時的 fit 先送完
+  await spyResize(page);
+  // 挑一張中心點真的點得到（沒被側欄、浮動工具擋住）的卡。
+  const target = await page.evaluate(() => {
+    for (const el of document.querySelectorAll<HTMLElement>(
+      '[data-testid="terminal-slot"][data-terminal="live"] [data-terminal-session]',
+    )) {
+      const r = el.getBoundingClientRect();
+      const x = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1);
+      const y = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1);
+      if (el.contains(document.elementFromPoint(x, y))) {
+        return { id: el.dataset.terminalSession!, x, y };
+      }
+    }
+    return null;
+  });
+  expect(target, '要有一張點得到的卡').not.toBeNull();
+  const { id, x, y } = target!;
+  const container = page.locator(`[data-terminal-session="${id}"]`);
+  await page.mouse.click(x, y);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        document.activeElement
+          ?.closest('[data-terminal-session]')
+          ?.getAttribute('data-terminal-session'),
+      ),
+    )
+    .toBe(id);
+  // 聚焦中：超過 WebGL 的 1 秒等待與 resize 的 debounce，renderer 仍是 DOM。
+  await page.waitForTimeout(1500);
+  await expect(container).toHaveAttribute('data-renderer', 'dom');
+  // 離開（失焦），再等過 5 秒保留期。
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.waitForTimeout(RELEASE_MS + 1500);
+  await expect(container).toHaveAttribute('data-renderer', 'dom');
+  expect(await resizes(page)).toEqual([]);
 });
