@@ -49,7 +49,9 @@ export function GitInitAction({
   const [state, setState] = useState<State>({ step: startOpen ? 'confirm' : 'idle' });
   const dir = path.trim();
   if (!machine || !dir) return null;
-  if (!notGit && state.step !== 'done') return null;
+  // 已經是 git：還沒開始（或只在確認）就不顯示。送出中與有結果時照常顯示到使用者離開——新的 repoRoot
+  // 可能比 API 回應早到（daemon 先送 session.runtime），不能在 busy 期間變成空白（審查 N7）。
+  if (!notGit && (state.step === 'idle' || state.step === 'confirm')) return null;
   // 還沒讀到使用者：先不顯示（不讓非 owner 看到按鈕又被 403）。
   if (!me.data) return null;
   if (me.data.role !== 'owner') {
@@ -86,7 +88,7 @@ export function GitInitAction({
   const result = state.step === 'done' ? state.result : null;
   return (
     <div className="git-init" data-testid="git-init">
-      {(state.step === 'idle' || state.step === 'error' || (result && !result.ok)) && (
+      {notGit && (state.step === 'idle' || state.step === 'error' || (result && !result.ok)) && (
         <button
           type="button"
           className="touch"

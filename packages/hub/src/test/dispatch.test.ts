@@ -17,6 +17,7 @@ import {
   DISPATCH_RESULT_MAX,
   DispatchEngine,
   memberName,
+  NOT_GIT_RECORD_MS,
   resultMessage,
   workMessage,
 } from '../dispatch';
@@ -152,15 +153,18 @@ function engineSetup() {
   const queued: DeliveryItem[] = [];
   const events: { sessionId: string; type: string; payload: Record<string, unknown> }[] = [];
   let enabled = true;
+  /** 假時鐘：測試可以往前撥（不等真的時間）。 */
+  let offset = 0;
+  const audits: { sessionId: string; action: string; detail: string }[] = [];
   const engine = new DispatchEngine({
     store,
-    now: () => new Date(),
+    now: () => new Date(Date.now() + offset),
     delivery: {
       enqueue: (item: DeliveryItem) => queued.push(item),
       has: () => false,
       retry: () => undefined,
     } as never,
-    audit: () => undefined,
+    audit: (sessionId, action, detail) => audits.push({ sessionId, action, detail }),
     addEvent: (sessionId, type, payload) => events.push({ sessionId, type, payload }),
     enabled: () => enabled,
     createSession: () => {
@@ -187,7 +191,17 @@ function engineSetup() {
       kind: 'send',
       at: new Date().toISOString(),
     });
-  return { store, engine, queued, events, stopEvent, give, off: () => (enabled = false) };
+  return {
+    store,
+    engine,
+    queued,
+    events,
+    audits,
+    stopEvent,
+    give,
+    off: () => (enabled = false),
+    advance: (ms: number) => (offset += ms),
+  };
 }
 
 describe('DispatchEngine：結果', () => {
@@ -233,6 +247,41 @@ describe('DispatchEngine：結果', () => {
       payload: { reason: 'dispatch_disabled' },
     });
     expect(t.engine.handle('caller', 'list_members', {}).text).toMatch(/^dispatch_disabled:/);
+  });
+});
+
+describe('DispatchEngine：不是 git 被擋的紀錄（§24.5，審查 N5）', () => {
+  it('同一個 session 60 秒內只記一筆事件與 audit；指引每次照回；過了 60 秒再記；別的 session 各算各的', () => {
+    const t = engineSetup();
+    const caller = { ...t.store.getSession('caller')!, repoRoot: null };
+    t.store.updateSession(caller);
+    t.store.insertSession({ ...caller, id: 'solo', name: 'solo' }, null);
+    const spawn = (id: string) =>
+      t.engine.handle(id, 'spawn_member', { role: 'worker', prompt: 'x', reason: 'Needed.' });
+    const recorded = () => t.events.filter((e) => e.type === NOT_GIT_BLOCKED_EVENT);
+    const audited = () =>
+      t.audits.filter(
+        (a) => a.action === 'dispatch.blocked' && JSON.parse(a.detail).reason === 'not_git',
+      );
+    for (let i = 0; i < 5; i += 1) {
+      const reply = spawn('caller');
+      expect(reply.text).toMatch(/^worktree_unavailable:/);
+      expect(reply.text).toContain(NOT_GIT_WRITER_GUIDE);
+    }
+    expect(recorded()).toEqual([
+      { sessionId: 'caller', type: NOT_GIT_BLOCKED_EVENT, payload: { tool: 'spawn_member' } },
+    ]);
+    expect(audited()).toHaveLength(1);
+    t.advance(NOT_GIT_RECORD_MS - 1_000);
+    spawn('caller');
+    expect(recorded()).toHaveLength(1);
+    // 另一個 session 不受影響。
+    expect(spawn('solo').text).toMatch(/^worktree_unavailable:/);
+    expect(recorded().map((e) => e.sessionId)).toEqual(['caller', 'solo']);
+    t.advance(1_000);
+    spawn('caller');
+    expect(recorded().map((e) => e.sessionId)).toEqual(['caller', 'solo', 'caller']);
+    expect(audited()).toHaveLength(3);
   });
 });
 
@@ -2140,19 +2189,17 @@ describe('不是 git 的資料夾（§24）', () => {
     });
     expect(clash.text).toMatch(/^worktree_required: Same folder as Lead/);
     expect(clash.text).toContain(NOT_GIT_WRITER_GUIDE);
-    // 兩次被擋都在隊長身上記固定的事件（網頁卡片提示 git init，§24.5）與 audit；不帶模型寫的字。
+    // 被擋時在隊長身上記固定的事件（網頁卡片提示 git init，§24.5）與 audit；不帶模型寫的字。
+    // 60 秒內第二次被擋（這裡是 worktree_required 那條路）照樣回指引，但不重複記（審查 N5）。
     const notGit = eventsOf(b.caller).filter((e) => e.type === NOT_GIT_BLOCKED_EVENT);
-    expect(notGit.map((e) => e.payload)).toEqual([
-      { tool: 'spawn_member' },
-      { tool: 'spawn_member' },
-    ]);
+    expect(notGit.map((e) => e.payload)).toEqual([{ tool: 'spawn_member' }]);
     expect(
       hub.running.store
         .listAudit({ limit: 500 })
         .filter(
           (a) => a.action === 'dispatch.blocked' && JSON.parse(a.detail).reason === 'not_git',
         ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   it('還沒有團隊、要自己組隊的 session：開 BD 被擋也記事件（§24.5）', async () => {

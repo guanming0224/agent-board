@@ -6,8 +6,15 @@ import { NOT_GIT_BLOCKED_EVENT, type Session, type SessionEvent } from '@agent-b
 import type { BoardBackend } from '../shared/backend';
 
 /**
+ * hub 建 session 時先填 `repoRoot: null`、狀態 starting（排隊中是 queued），daemon 開好 session 送回 runtime
+ * 才有真正的 repo 資料（daemon 在開 PTY 之前就算好）。這兩個狀態的 null 是「還不知道」，不是「不是 git」（審查 N6）。
+ */
+const REPO_UNKNOWN: readonly Session['status'][] = ['starting', 'queued'];
+
+/**
  * 這個 session 的資料夾不是 git、而且 git init 之後 daemon 會讓它即時換上 repo：
- * 沒封存、`repoRoot` 為 null、不是自己的 worktree、PTY 還在（失聯與已結束的 daemon 不會重算，提示消不掉）。
+ * 沒封存、`repoRoot` 為 null、不是自己的 worktree、daemon 已回報過（不是 starting／queued）、
+ * PTY 還在（失聯與已結束的 daemon 不會重算，提示消不掉）。
  */
 export function needsGitInit(
   session: Pick<Session, 'repoRoot' | 'worktreePath' | 'archived' | 'status'>,
@@ -16,6 +23,7 @@ export function needsGitInit(
     !session.archived &&
     session.repoRoot === null &&
     session.worktreePath === null &&
+    !REPO_UNKNOWN.includes(session.status) &&
     session.status !== 'offline' &&
     session.status !== 'done'
   );

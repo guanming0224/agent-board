@@ -3827,6 +3827,63 @@ test.describe('session 卡片上的 git init（CONTRACTS §24.5）', () => {
     await expect(dialog.getByTestId('git-init-confirm')).toBeVisible();
   });
 
+  test('daemon 還沒回報（starting、queued）：repoRoot 是「還不知道」，不顯示「不是 git」與被擋（審查 N6）', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    const docs = card(page, 's-docs');
+    await fakeBackend(
+      page,
+      `backend.addSessionEvent('s-docs', 'dispatch.not_git', { tool: 'spawn_member' });`,
+    );
+    await expect(docs.getByTestId('not-git-blocked')).toBeVisible();
+    for (const status of ['starting', 'queued']) {
+      await fakeBackend(page, `backend.setSessionStatus('s-docs', '${status}');`);
+      await expect(docs).toHaveAttribute('data-code', status === 'starting' ? 'NEW' : 'QUE');
+      await expect(docs.getByTestId('not-git-blocked')).toHaveCount(0);
+      await expect(docs.getByTestId('not-git')).toHaveCount(0);
+    }
+    // daemon 回報後（這裡是 waiting_input）才顯示。
+    await fakeBackend(page, `backend.setSessionStatus('s-docs', 'waiting_input');`);
+    await expect(docs.getByTestId('not-git-blocked')).toBeVisible();
+  });
+
+  test('新的 repoRoot 比 API 回應早到：送出中照常顯示，結果出來後留著（審查 N7）', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    // 假後端先推新的 repoRoot（publish），API 回應等測試放行才回。
+    await fakeBackend(
+      page,
+      `const init = backend.gitInit;
+       backend.gitInit = async (m, p) => {
+         const result = await init(m, p);
+         await new Promise((release) => (window.__releaseGitInit = release));
+         return result;
+       };`,
+    );
+    await page.evaluate(() => (location.hash = '#/git-init/s-docs'));
+    const dialog = page.getByTestId('modal');
+    await dialog.getByTestId('git-init-confirm').click();
+    // 背後的卡已經是 git（晶片消失），次畫面仍是「git init 中…」，不是空白。
+    await expect(card(page, 's-docs').getByTestId('not-git')).toHaveCount(0);
+    await expect(dialog.getByTestId('git-init-confirm')).toHaveText('git init 中…');
+    await expect(dialog.getByTestId('git-init-confirm')).toBeDisabled();
+    await expect(dialog.getByTestId('git-init-open')).toHaveCount(0);
+    await page.waitForFunction(
+      () => typeof (window as never as Record<string, unknown>).__releaseGitInit === 'function',
+    );
+    await page.evaluate(() =>
+      (window as never as { __releaseGitInit: () => void }).__releaseGitInit(),
+    );
+    await expect(dialog.getByTestId('git-init-done')).toContainText('12 個檔案');
+    await expect(dialog.getByTestId('session-git-init')).toContainText('已 git init');
+    // 已經是 git：不再給「在這裡 git init」按鈕。
+    await expect(dialog.getByTestId('git-init-open')).toHaveCount(0);
+  });
+
   test('畫布縮很小：「不是 git」跟著標題以外的內容一起藏起來', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openCanvasAt(page, 0.25);
