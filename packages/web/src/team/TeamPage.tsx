@@ -6,6 +6,7 @@ import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { Empty } from '../flows/common';
 import { closeRight, ErrorState, LoadingState, useBoardLoad, useViewsUi } from '../views';
+import { FloatingDialog, useFloatDialogs } from '../views/FloatingDialog';
 import { PanelHead, SidePanel } from '../views/Overlays';
 import { useCurrentZoneId, useZones } from '../zones';
 import { NewTeamForm } from './NewTeamForm';
@@ -29,6 +30,8 @@ function TeamList({ missing, inPanel }: { missing: boolean; inPanel: boolean }) 
   const zones = useZones();
   const current = useCurrentZoneId();
   const [all, setAll] = useState(false);
+  const float = useFloatDialogs();
+  const [newOpen, setNewOpen] = useState(false);
   const waitingIds = new Set(waitingSessions(sessions, approvals).map((s) => s.id));
   const shown = all ? teams : teams.filter((team) => team.zoneId === current);
   const zoneName = (id: string) => zones.find((z) => z.id === id)?.name ?? '';
@@ -46,7 +49,37 @@ function TeamList({ missing, inPanel }: { missing: boolean; inPanel: boolean }) 
       )}
       {/* 從 Preset 建立（P3 §2.4：手機的入口；桌面另有底部指令列的 Presets）。 */}
       <PresetEntry />
-      <NewTeamForm />
+      {float ? (
+        // 桌面：新增團隊是浮動對話框（GM 2026-11-14，STYLE §5.2），開著時畫布照常可操作。
+        // 關掉只是藏起來不卸載：已填的內容和以前內嵌在面板裡一樣留著。
+        <>
+          <div className="row new-team-entry">
+            <button
+              type="button"
+              aria-expanded={newOpen}
+              aria-haspopup="dialog"
+              onClick={() => setNewOpen((open) => !open)}
+              data-testid="new-team-open"
+            >
+              {t('team.new.title')}
+            </button>
+          </div>
+          <FloatingDialog
+            id="new-team"
+            label={t('team.new.title')}
+            open={newOpen}
+            onClose={() => setNewOpen(false)}
+            testId="new-team-dialog"
+            className="float-team"
+          >
+            <div className="page team-page float-pad">
+              <NewTeamForm />
+            </div>
+          </FloatingDialog>
+        </>
+      ) : (
+        <NewTeamForm />
+      )}
       <label className="check team-list-all">
         <input
           type="checkbox"

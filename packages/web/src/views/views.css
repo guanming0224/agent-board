@@ -717,6 +717,111 @@ button.primary kbd {
   padding-top: var(--space-4);
 }
 
+/*
+ * 浮動對話框（GM 2026-11-14，STYLE §5.2；views/FloatingDialog.tsx）：建立型表單（新增 session、新增團隊、
+ * 補成員、套用 Preset）。沒有暗化遮罩，背後照常可操作。層級 35：在畫布與右側面板（30）之上，
+ * 在置中次畫面（40）與確認對話框（60）之下；位置夾在頁首下緣以下，頁首永遠不被蓋到。
+ */
+.float-box {
+  position: fixed;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  width: min(480px, calc(100vw - 16px));
+  max-height: calc(100dvh - var(--app-header-height, 0px) - 16px);
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+}
+.float-box[hidden] {
+  display: none;
+}
+/* 打開時焦點放在框上（程式聚焦）。不寫 outline: none（STYLE §5.1）：用鍵盤時看得出焦點在框上。 */
+.float-box:focus-visible {
+  outline-offset: -2px;
+}
+/* 標題列＝拖曳把手：cursor move、拖的時候不選字、觸控拖曳不捲動頁面。按鈕維持手指游標。 */
+.float-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-2) var(--space-1h) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+.float-head button {
+  cursor: pointer;
+}
+.float-grip {
+  color: var(--faint);
+  font-size: var(--fs-ctl-sm);
+}
+.float-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-base);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.float-acts {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-1);
+}
+/* 拖曳中：整頁不選字（指標可能跑出標題列）。 */
+body:has(.float-box.is-dragging) {
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.float-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  --app-header-height: 0px;
+}
+/* 新增 session（完整表單：左表單右預覽）：寬一點；頁面自己的 h1 和標題列重複，只留給螢幕閱讀器。 */
+.float-box.float-modal {
+  width: min(900px, calc(100vw - 16px));
+}
+.float-modal .float-body .page {
+  padding-top: var(--space-3);
+}
+.float-modal .float-body .page > .page-head:first-child:has(> h1:only-child) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* 團隊類的浮動框（新增團隊、補成員、Preset）：寬度和團隊面板相近，內容單欄；框本身就是外框，裡面不再套一層卡片。 */
+.float-pad {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+.float-team .team-grid,
+.float-team .columns,
+.float-team .plan-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+.float-team .float-body .panel.new-team {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
 .phone-page {
   min-height: 100dvh;
 }

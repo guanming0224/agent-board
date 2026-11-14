@@ -26,6 +26,7 @@ import {
   cameFrom,
   closeModal,
   closeRight,
+  isFloatingModal,
   isSearchHash,
   markHistory,
   openSearch,
@@ -153,6 +154,7 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
   const { view } = resolve(nav.hash, nav.right);
   const modal = view.kind === 'board' ? view.modal : null;
   const right = nav.right;
+  const floating = isFloatingModal(modal);
 
   // 手機（≤ 640px）：收件匣、團隊、設定、新增都是全螢幕頁；畫布只有開 #/canvas 時才有。
   if (phone) {
@@ -185,8 +187,11 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
 
   return (
     <>
-      {/* 畫布永遠掛著（開面板不卸載，終端機不重連）；次畫面開著時整層 inert，焦點不會跑到背後。 */}
-      <div className="board-layer" inert={modal !== null}>
+      {/*
+        畫布永遠掛著（開面板不卸載，終端機不重連）；次畫面開著時整層 inert，焦點不會跑到背後。
+        浮動的次畫面（新增 session）例外：背後的畫布、面板照常可以操作（STYLE §5.2）。
+      */}
+      <div className="board-layer" inert={modal !== null && !floating}>
         <CanvasPage />
         {right?.kind === 'inbox' && <InboxDrawer target={right.target} nonce={nav.nonce} />}
         {right?.kind === 'team' && <TeamDrawer teamId={right.teamId} />}
@@ -198,6 +203,8 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
           onClose={closeModal}
           testId="modal"
           className={modal === 'search' ? 'search-modal' : undefined}
+          floating={floating}
+          floatId={floating ? `modal-${modal}` : undefined}
         >
           <ModalStack modal={modal} />
         </ModalLayer>

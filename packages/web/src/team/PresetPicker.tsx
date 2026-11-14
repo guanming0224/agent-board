@@ -15,6 +15,7 @@ import { errorCode } from '../shared/backend';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { errorText, handsClass, ModeChip, teamHash, usePauseState } from '../views';
+import { FloatingDialog, useFloatDialogs } from '../views/FloatingDialog';
 import { currentZoneId, useCurrentZoneId, useZones } from '../zones';
 import { CostChip } from './common';
 import { useHeldPrompts } from './heldPrompts';
@@ -647,16 +648,40 @@ export function PresetPicker({ phone = false, onClose }: { phone?: boolean; onCl
 }
 
 /**
- * 底部指令列的「Presets」：按鈕上方彈出清單（桌面）。點外面或 Esc（在清單時）關閉。
+ * 浮動的 Preset 對話框（GM 2026-11-14，STYLE §5.2）：桌面的「Presets」與團隊清單「從 Preset 建立」共用，
+ * 位置記在同一個名字。點畫布不會關；Esc、✕、建立完成才關。
+ */
+function PresetDialog({ testId, onClose }: { testId: string; onClose: () => void }) {
+  const t = useT();
+  return (
+    <FloatingDialog
+      id="preset"
+      label={t('team.preset.title')}
+      onClose={onClose}
+      testId={testId}
+      className="float-team float-preset"
+    >
+      <div className="float-pad">
+        <PresetPicker onClose={onClose} />
+      </div>
+    </FloatingDialog>
+  );
+}
+
+/**
+ * 底部指令列的「Presets」：打開浮動的 Preset 對話框（桌面；手機沒有底部指令列）。
+ * 視窗窄到手機寬度時退回原本按鈕上方的彈出區：點外面或 Esc（在清單時）關閉。
  */
 export function PresetsButton() {
   const t = useT();
+  const float = useFloatDialogs();
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useEffect(() => {
-    if (!open) return;
+    // 浮動對話框自己處理 Esc，也不因為點畫布而關。
+    if (!open || float) return;
     const onDown = (e: PointerEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) close();
     };
@@ -673,7 +698,7 @@ export function PresetsButton() {
       removeEventListener('pointerdown', onDown);
       removeEventListener('keydown', onKey);
     };
-  }, [open, close]);
+  }, [open, close, float]);
   return (
     <div className="presets-menu" ref={box}>
       <button
@@ -682,37 +707,52 @@ export function PresetsButton() {
         // 底部指令列的按鈕一律精簡 32（畫布區，views.css 不再替指令列裡的按鈕寫尺寸）。
         className="sm"
         aria-expanded={open}
+        aria-haspopup="dialog"
         title={t('team.preset.buttonHint')}
         onClick={() => setOpen((o) => !o)}
         data-testid="command-presets"
       >
         {t('team.preset.button')}
       </button>
-      {open && (
-        <div className="presets-pop" data-testid="presets-pop">
-          <PresetPicker onClose={close} />
-        </div>
-      )}
+      {open &&
+        (float ? (
+          <PresetDialog testId="presets-pop" onClose={close} />
+        ) : (
+          <div className="presets-pop" data-testid="presets-pop">
+            <PresetPicker onClose={close} />
+          </div>
+        ))}
     </div>
   );
 }
 
-/** 手機（與團隊清單）頂部「從 Preset 建立」：展開成全寬清單，按鈕 ≥ 56px（§2.4）。 */
+/**
+ * 團隊清單頂部「從 Preset 建立」。手機：展開成全寬清單，按鈕 ≥ 56px（§2.4）；
+ * 桌面：打開浮動的 Preset 對話框（和底部「Presets」同一個）。
+ */
 export function PresetEntry() {
   const t = useT();
+  const float = useFloatDialogs();
   const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
   return (
     <div className="preset-entry">
       <button
         type="button"
         className="preset-entry-toggle"
         aria-expanded={open}
+        aria-haspopup={float ? 'dialog' : undefined}
         onClick={() => setOpen((o) => !o)}
         data-testid="preset-entry"
       >
         {t('team.preset.fromPreset')}
       </button>
-      {open && <PresetPicker phone onClose={() => setOpen(false)} />}
+      {open &&
+        (float ? (
+          <PresetDialog testId="preset-entry-dialog" onClose={close} />
+        ) : (
+          <PresetPicker phone onClose={close} />
+        ))}
     </div>
   );
 }

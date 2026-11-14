@@ -120,6 +120,19 @@ const openPresets = async (page: Page) => {
 };
 const presetRow = (page: Page, name: string) => page.locator(`.preset-row[data-name="${name}"]`);
 
+/**
+ * 新增團隊在桌面是浮動對話框（GM 2026-11-14，STYLE §5.2）：沒開就按「新增團隊」打開，回傳名稱欄。
+ * 關掉只是藏起來（已填的內容留著），所以用「看不看得到」判斷要不要開。
+ */
+async function newTeamName(page: Page) {
+  const dialog = page.getByTestId('new-team-dialog');
+  if (!(await dialog.isVisible())) {
+    await page.getByTestId('new-team-open').click();
+    await expect(dialog).toBeVisible();
+  }
+  return dialog.getByLabel('團隊名稱');
+}
+
 test('從團隊存成 Preset：4 列、角色與模式一致、交接規則 1 條且關、初始進度卡空；底部列套用建出同樣的團隊', async ({
   page,
 }) => {
@@ -497,7 +510,7 @@ test('全部暫停中套用含第一個指令的 Preset：隊長建好時沒收�
 
 test('新增團隊表單「存成 Preset」：不建立團隊，只存表單', async ({ page }) => {
   await page.goto('/#/team');
-  await page.getByLabel('團隊名稱').fill('表單');
+  await (await newTeamName(page)).fill('表單');
   await page.getByRole('button', { name: '標準' }).click();
   await page.getByLabel('工作目錄').fill(CWD);
   await page.getByTestId('new-team-save-preset').click();

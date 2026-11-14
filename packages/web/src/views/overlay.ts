@@ -19,6 +19,15 @@ export type RightPanel =
 export type ModalKind =
   'settings' | 'archive' | 'new' | 'search' | 'transcript' | 'usage' | 'machines' | 'crossReview';
 
+/**
+ * 浮動的次畫面（GM 2026-11-14，STYLE §5.2）：建立型的表單不擋畫布——沒有暗化遮罩、背後不 inert，
+ * 標題列可拖、位置記住。其他次畫面（設定、搜尋、對話紀錄…）維持置中模態。網址規則不變。
+ */
+export const FLOATING_MODALS: ReadonlySet<ModalKind> = new Set<ModalKind>(['new']);
+
+export const isFloatingModal = (kind: ModalKind | null): boolean =>
+  kind !== null && FLOATING_MODALS.has(kind);
+
 export type RouteView =
   /** 不疊在畫布上的整頁：全尺寸終端機、登入、首次引導（規格 §1.4 不變）。 */
   | { kind: 'page'; page: 'terminal' | 'login' | 'onboarding' }
