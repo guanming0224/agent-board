@@ -124,10 +124,10 @@ describe('allocateWebgl', () => {
 });
 
 describe('WebglBudget', () => {
-  const setup = (limit = 6, ceiling = 12, linger = 5000) => {
+  const setup = (limit = 6, ceiling = 12, linger = 5000, hard = ceiling) => {
     const clock = new FakeClock();
     const gc = new FakeGc();
-    const budget = new WebglBudget(limit, ceiling, linger, clock, gc.track);
+    const budget = new WebglBudget(limit, ceiling, hard, linger, clock, gc.track);
     let peak = 0;
     const client = (visible = false) => {
       const c = new FakeClient(() => (peak = Math.max(peak, budget.holding + 1)));
@@ -202,6 +202,30 @@ describe('WebglBudget', () => {
     clock.settle();
     expect(budget.contexts).toBe(1);
     expect(a.holding).toBe(true);
+  });
+
+  it('context 快滿時：聚焦中的、或頁面上唯一要 WebGL 的（全尺寸頁）可以用到硬上限', () => {
+    const { budget, clock, client, show } = setup(6, 2, 0, 3);
+    const a = client(true);
+    const b = client(true);
+    clock.settle();
+    expect(budget.contexts).toBe(2);
+    // 兩個都看不到又回來：軟上限 2 已滿，一般的不給。
+    show(a, false);
+    show(b, false);
+    clock.advance(1);
+    expect(budget.holding).toBe(0);
+    const c = client(true);
+    clock.settle();
+    // 頁面上沒有人在用 WebGL（例如剛切到全尺寸頁）：可以用到硬上限。
+    expect(c.holding).toBe(true);
+    expect(budget.contexts).toBe(3);
+    // 再來一個：已到硬上限，維持 DOM。
+    const d = client(true);
+    d.focused = true;
+    budget.changed(d, true);
+    clock.settle();
+    expect(d.holding).toBe(false);
   });
 
   it('聚焦中的會搶到名額（擠掉只是看得到的）', () => {

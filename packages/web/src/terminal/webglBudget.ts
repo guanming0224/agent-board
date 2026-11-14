@@ -4,6 +4,7 @@
 // - 同時用 WebGL 的終端機最多 WEBGL_LIMIT 個，只給看得到或聚焦中的；
 // - WebKit 把「已經 loseContext、但 JS 物件還沒被 GC」的 context 也算進 16 個，所以另外數
 //   還沒回收的 context（FinalizationRegistry），到 CONTEXT_CEILING 就先用 DOM renderer，回收後再升級；
+//   聚焦中的、或頁面上唯一要 WebGL 的（全尺寸終端機頁）可以用到 CONTEXT_HARD_CEILING，仍低於 16；
 // - 剛看不到的先保留 WEBGL_LINGER_MS（縮放來回、平移經過不必反覆建 context），名額不夠時才提早收回。
 // 不碰 DOM，方便單元測試；實際的載入／卸載由 controller.ts 做。
 
@@ -11,6 +12,8 @@
 export const WEBGL_LIMIT = 6;
 /** 終端機建立、還沒被回收的 context 最多幾個（瀏覽器上限 16，留 4 個給其他元件與誤差）。 */
 export const CONTEXT_CEILING = 12;
+/** 聚焦中、或頁面上沒有別的終端機在用 WebGL 時，可以用到這裡（瀏覽器上限 16 減 1）。 */
+export const CONTEXT_HARD_CEILING = 15;
 /** 看不到之後還保留 WebGL 多久。 */
 export const WEBGL_LINGER_MS = 5000;
 
@@ -100,6 +103,7 @@ export class WebglBudget {
   constructor(
     readonly limit: number = WEBGL_LIMIT,
     readonly ceiling: number = CONTEXT_CEILING,
+    readonly hardCeiling: number = CONTEXT_HARD_CEILING,
     readonly lingerMs: number = WEBGL_LINGER_MS,
     private readonly clock: BudgetClock = realClock,
     private readonly track: CollectTracker = realTracker(),
@@ -183,7 +187,8 @@ export class WebglBudget {
       const [client, entry] = byId.get(id)!;
       if (entry.holding || !this.entries.has(client)) continue;
       // 還沒回收的 context 太多：先用 DOM renderer，等回收後（onCollected）再升級。
-      if (this.alive >= this.ceiling) break;
+      const cap = client.focused || this.holding === 0 ? this.hardCeiling : this.ceiling;
+      if (this.alive >= cap) continue;
       const owners = client.grantWebgl();
       entry.holding = !client.webglBroken && owners.length > 0;
       for (const owner of owners) {
