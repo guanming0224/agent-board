@@ -264,7 +264,7 @@ describe('WebglBudget', () => {
     expect(focused.holding).toBe(true);
   });
 
-  it('不偏好 WebGL 的（畫布一般小卡）看得到也不給；改成偏好（展開）或聚焦時才給', () => {
+  it('不偏好 WebGL 的（畫布卡）看得到、聚焦中都不給；偏好的（全尺寸頁）才給', () => {
     const { budget, clock } = setup();
     const card = new FakeClient(() => {});
     card.visible = true;
@@ -283,10 +283,11 @@ describe('WebglBudget', () => {
     expect(card.holding).toBe(true);
     clock.advance(5000);
     expect(card.holding).toBe(false);
+    // 畫布卡被點進去（聚焦）也不換 renderer：換了字元格寬度會變、送 resize。
     card.focused = true;
     budget.changed(card, true);
     clock.settle();
-    expect(card.holding).toBe(true);
+    expect(card.holding).toBe(false);
   });
 
   it('聚焦中的會搶到名額（擠掉只是看得到的）', () => {

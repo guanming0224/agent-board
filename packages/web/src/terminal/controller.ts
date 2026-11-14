@@ -19,7 +19,7 @@ export const DEFAULT_SCROLLBACK = 1000;
 export interface TerminalOptions {
   /** 捲動保留行數（畫布小卡用比較少）。 */
   scrollback?: number;
-  /** 看得到時要不要用 WebGL（預設 true）；畫布小卡只在展開／聚焦時 true。 */
+  /** 要不要用 WebGL（預設 true）；畫布卡一律 false，只有全尺寸頁用。 */
   webgl?: boolean;
   /** WebGL 配額；預設全頁共用的那一份。 */
   budget?: WebglBudget;
@@ -134,7 +134,8 @@ export class TerminalController implements WebglClient {
   }
 
   get focused(): boolean {
-    return this.hasFocus;
+    // focusout 不一定會來（textarea 被藏起來或拆下），以目前焦點實際所在為準。
+    return !this.disposed && this.container.contains(document.activeElement);
   }
 
   get webglPreferred(): boolean {
@@ -164,11 +165,13 @@ export class TerminalController implements WebglClient {
   }
 
   /** 改捲動保留行數。變多時重拿快照，已經被截掉的歷史才補得回來（例如小卡展開）。 */
+  /**
+   * 改捲動保留行數（小卡展開時 300 → 1000）。不重拿快照：重拿會 reset 再重排、跳到最底，
+   * 展開時的畫面會閃；之後的輸出照新的行數保留。
+   */
   setScrollback(lines: number): void {
-    const current = this.term.options.scrollback ?? DEFAULT_SCROLLBACK;
-    if (lines === current || this.disposed) return;
+    if (this.disposed || lines === this.term.options.scrollback) return;
     this.term.options.scrollback = lines;
-    if (lines > current) this.feed.resync();
   }
 
   dispose(): void {

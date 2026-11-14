@@ -34,7 +34,7 @@ export interface TerminalViewProps {
   scrollback?: number;
   /**
    * 看得到時要不要用 WebGL renderer（預設 true；實際給不給由全頁配額決定）。
-   * 畫布小卡只在展開／聚焦時 true，其他用 DOM renderer。
+   * 畫布卡一律 false（換 renderer 會改字元格寬度而送 resize），只有全尺寸頁用 WebGL。
    */
   webgl?: boolean;
   className?: string;

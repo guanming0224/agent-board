@@ -96,9 +96,22 @@ test('從卡片打開全尺寸：xterm 填滿、resize 送出、Esc、切換、�
   await instrument(page);
 
   const tests = card(page, 's-tests');
+  const fitted = await viewportTransform(page);
   await tests.locator('.tail').dblclick();
   await expect(tests).toHaveAttribute('data-mode', 'terminal');
-  await page.waitForTimeout(300); // 等鏡頭停下
+  // 等鏡頭停下：固定等 300ms 在機器忙時不夠，改成等鏡頭已經離開全覽、而且兩次讀到的位置一樣。
+  let last = '';
+  await expect
+    .poll(
+      async () => {
+        const now = await viewportTransform(page);
+        const settled = now === last && now !== fitted;
+        last = now;
+        return settled;
+      },
+      { intervals: [250] },
+    )
+    .toBe(true);
   const before = await viewportTransform(page);
   const cardCols = await page.evaluate(() =>
     (window as never as { __spy: Spy }).__spy.sent.findLast(
