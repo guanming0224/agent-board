@@ -49,6 +49,7 @@ import { ROLE_ABBR } from './teamPlan';
 import { memberClashes, worktreeConflicts } from './worktree';
 import { PHONE_QUERY } from '../shared/breakpoints';
 import { Empty, useCurrentUser } from '../flows/common';
+import { FloatingDialog } from '../views/FloatingDialog';
 import { PanelHead, WideButton } from '../views/Overlays';
 
 /** STYLE 沒定義字數，DISPATCH §8-3 的「1 頁」以約 3000 字計。 */
@@ -631,14 +632,33 @@ export function TeamWorkbench({ team, inPanel = false }: { team: Team; inPanel?:
           </button>
           <span className="sub">{t('team.add.hint')}</span>
         </div>
-        {adding && (
-          <AddMembers
-            team={team}
-            members={records}
-            title={t('team.add.title')}
-            onClose={() => setAdding(false)}
-          />
-        )}
+        {adding &&
+          (phone ? (
+            <AddMembers
+              team={team}
+              members={records}
+              title={t('team.add.title')}
+              onClose={() => setAdding(false)}
+            />
+          ) : (
+            // 桌面：補成員是浮動對話框（GM 2026-11-14，STYLE §5.2），可以邊看畫布邊填。
+            <FloatingDialog
+              id="add-members"
+              label={t('team.add.title')}
+              onClose={() => setAdding(false)}
+              testId="add-members-dialog"
+              className="float-team"
+            >
+              <div className="page team-page float-pad">
+                <AddMembers
+                  team={team}
+                  members={records}
+                  title={t('team.add.title')}
+                  onClose={() => setAdding(false)}
+                />
+              </div>
+            </FloatingDialog>
+          ))}
       </Fold>
       {team.phase && (
         <Fold id="phase" title={t('team.fold.phase')} phone={phone}>

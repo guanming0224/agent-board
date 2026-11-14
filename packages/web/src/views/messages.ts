@@ -80,6 +80,10 @@ registerMessages('zh-TW', {
   'views.dialog.close': '關閉對話框',
   'views.panel.back': '返回',
   'views.panel.closeHint': '關閉（Esc）',
+  'views.float.center': '回到中間',
+  'views.float.dragHint': '按住標題列拖曳可移動；雙擊回到中間',
+  'views.float.hint':
+    '這個視窗不擋背後的畫布。按住標題列拖曳可移動，Alt＋方向鍵也可以移動，雙擊標題列回到中間；Esc 關閉。',
   'views.locale.aria': '介面語言',
   'views.machines.summary': '{online} 台上線',
   'views.machines.summaryOff': '{online} 台上線・{off} 台失聯',
@@ -234,6 +238,10 @@ registerMessages('en', {
   'views.dialog.close': 'Close dialog',
   'views.panel.back': 'Back',
   'views.panel.closeHint': 'Close (Esc)',
+  'views.float.center': 'Back to center',
+  'views.float.dragHint': 'Drag the title bar to move; double-click to re-center',
+  'views.float.hint':
+    'This window does not block the canvas behind it. Drag the title bar to move it, or use Alt+arrow keys; double-click the title bar to re-center. Esc closes it.',
   'views.locale.aria': 'Interface language',
   'views.machines.summary': '{online} online',
   'views.machines.summaryOff': '{online} online, {off} offline',

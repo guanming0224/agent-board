@@ -192,6 +192,19 @@ test.afterAll(async () => {
   for (const dir of cleanupDirs) rmSync(dir, { recursive: true, force: true });
 });
 
+/**
+ * 新增團隊在桌面是浮動對話框（GM 2026-11-14，STYLE §5.2）：沒開就按「新增團隊」打開，回傳名稱欄。
+ * 關掉只是藏起來（已填的內容留著），所以用「看不看得到」判斷要不要開。
+ */
+async function newTeamName(page: Page) {
+  const dialog = page.getByTestId('new-team-dialog');
+  if (!(await dialog.isVisible())) {
+    await page.getByTestId('new-team-open').click();
+    await expect(dialog).toBeVisible();
+  }
+  return dialog.getByLabel('團隊名稱');
+}
+
 test('建立管理員、配對、開好 session', async ({ page }) => {
   const setup = await page.request.post('/api/auth/setup', {
     data: { name: 'owner', password: PASSWORD, locale: 'zh-TW' },
@@ -229,7 +242,7 @@ test('建立管理員、配對、開好 session', async ({ page }) => {
 
 test('在工作台建立團隊與成員；同資料夾沒 worktree 的被擋', async ({ page }) => {
   await page.goto('/#/team');
-  await page.getByLabel('團隊名稱').fill('整合團隊');
+  await (await newTeamName(page)).fill('整合團隊');
   await page.getByRole('button', { name: '建立團隊' }).click();
   await expect(page.getByRole('heading', { name: '整合團隊' })).toBeVisible();
   teamId = decodeURIComponent(new URL(page.url()).hash.split('/')[2]!);
@@ -574,7 +587,7 @@ test('建立團隊時一起開 LD + BD + RV：真的建出 session、BD 有自�
   page,
 }) => {
   await page.goto('/#/team');
-  await page.getByLabel('團隊名稱').fill('trio');
+  await (await newTeamName(page)).fill('trio');
   await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '標準' }).click();
   await page.getByRole('button', { name: '移除第 3 位' }).click();
   await expect(page.getByLabel('第 2 位的 session 名稱')).toHaveValue('trio-BD1');

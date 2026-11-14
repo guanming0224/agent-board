@@ -31,6 +31,19 @@ test.afterEach(() => {
   expect(problems, 'console 不該有錯誤').toEqual([]);
 });
 
+/**
+ * 新增團隊在桌面是浮動對話框（GM 2026-11-14，STYLE §5.2）：沒開就按「新增團隊」打開，回傳名稱欄。
+ * 關掉只是藏起來（已填的內容留著），所以用「看不看得到」判斷要不要開。
+ */
+async function newTeamName(page: Page) {
+  const dialog = page.getByTestId('new-team-dialog');
+  if (!(await dialog.isVisible())) {
+    await page.getByTestId('new-team-open').click();
+    await expect(dialog).toBeVisible();
+  }
+  return dialog.getByLabel('團隊名稱');
+}
+
 async function shot(page: Page, name: string) {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
 }
@@ -77,8 +90,9 @@ test('畫布上的團隊標籤打開右側團隊面板；#/team 是清單，新�
   await expect(page.locator('.team-row')).toContainText('2 位成員');
   await shot(page, 'team-list');
 
+  const teamName = await newTeamName(page);
   await expect(page.getByRole('button', { name: '建立團隊' })).toBeDisabled();
-  await page.getByLabel('團隊名稱').fill('資料搬遷');
+  await teamName.fill('資料搬遷');
   await page.getByRole('button', { name: '靛' }).click();
   await page.getByRole('button', { name: '建立團隊' }).click();
   await expect(page.getByRole('heading', { name: '資料搬遷' })).toBeVisible();
@@ -135,7 +149,7 @@ test('成員有放手線、模式晶片、狀態；角色可改；可移出，�
 
 test('同一資料夾沒有 worktree 不能加入團隊，要提示怎麼做', async ({ page }) => {
   await page.goto('/#/team');
-  await page.getByLabel('團隊名稱').fill('撞資料夾');
+  await (await newTeamName(page)).fill('撞資料夾');
   await page.getByRole('button', { name: '建立團隊' }).click();
   await expect(page.getByRole('heading', { name: '撞資料夾' })).toBeVisible();
 
@@ -205,7 +219,7 @@ async function sessionsNamed(page: Page, prefix: string) {
 
 async function startTeam(page: Page, name: string, preset: string) {
   await page.goto('/#/team');
-  await page.getByLabel('團隊名稱').fill(name);
+  await (await newTeamName(page)).fill(name);
   await page.getByRole('group', { name: '成員' }).getByRole('button', { name: preset }).click();
 }
 
@@ -226,17 +240,21 @@ test('建立團隊時一起開各角色的 session：標準組合 LD + 2 BD + RV
 
   // 改團隊名稱：沒改過的名稱跟著換，自己改過的不動。
   await page.getByLabel('第 2 位的 session 名稱').fill('builder-a');
-  await page.getByLabel('團隊名稱').fill('Move');
+  await (await newTeamName(page)).fill('Move');
   await expect(page.getByLabel('第 1 位的 session 名稱')).toHaveValue('Move-LD');
   await expect(page.getByLabel('第 2 位的 session 名稱')).toHaveValue('builder-a');
 
   // 團隊面板在桌面固定 420px 寬；≤ 640px 是手機全螢幕頁（另一個畫面，切過去表單會重來），這裡量桌面最窄的 641px。
   for (const width of [1024, 641]) {
     await page.setViewportSize({ width, height: 900 });
-    const overflow = await page.evaluate(() => {
-      const main = document.querySelector('.team-page')!;
-      return main.scrollWidth - main.clientWidth;
-    });
+    // 面板裡的團隊清單和浮動的新增團隊對話框（STYLE §5.2）都要量。
+    const overflow = await page.evaluate(() =>
+      Math.max(
+        ...[...document.querySelectorAll('.team-page')].map(
+          (main) => main.scrollWidth - main.clientWidth,
+        ),
+      ),
+    );
     expect(overflow, `寬度 ${width} 不能水平捲動`).toBeLessThanOrEqual(0);
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -345,7 +363,7 @@ test('資料夾不是 git：提醒 BD 會共用資料夾，探索組合拿掉 BD
     `const browse = backend.browseDirectory;
      backend.browseDirectory = async (m, p) => ({ ...(await browse(m, p)), repo: null });`,
   );
-  await page.getByLabel('團隊名稱').fill('Notes');
+  await (await newTeamName(page)).fill('Notes');
   await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '探索' }).click();
   await page.getByLabel('工作目錄').fill('/home/demo/notes');
   await expect(page.getByTestId('team-not-git')).toContainText('不是 git');
@@ -393,7 +411,7 @@ test('新增團隊、資料夾不是 git：按「在這裡 git init」確認後�
 }) => {
   await page.goto('/#/team');
   await fake(page, NOT_GIT);
-  await page.getByLabel('團隊名稱').fill('Init');
+  await (await newTeamName(page)).fill('Init');
   await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '標準' }).click();
   // 太大的位置：daemon 拒絕，寫出原因，什麼都沒改。
   await page.getByLabel('工作目錄').fill('/home/demo');
@@ -438,7 +456,7 @@ test('git init：daemon 太舊時說要先更新，不卡住', async ({ page }) 
        throw Object.assign(new Error('too old'), { code: 'daemon_too_old' });
      };`,
   );
-  await page.getByLabel('團隊名稱').fill('Old');
+  await (await newTeamName(page)).fill('Old');
   await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '探索' }).click();
   await page.getByLabel('工作目錄').fill('/home/demo/old');
   await page.getByTestId('git-init-open').click();
@@ -453,7 +471,7 @@ test('新增團隊、資料夾不是 git：勾「共用資料夾」就能建，�
 }) => {
   await page.goto('/#/team');
   await fake(page, NOT_GIT);
-  await page.getByLabel('團隊名稱').fill('Shared');
+  await (await newTeamName(page)).fill('Shared');
   await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '標準' }).click();
   await page.getByLabel('工作目錄').fill('/home/demo/shared');
   await expect(page.getByTestId('team-not-git')).toBeVisible();
@@ -495,7 +513,7 @@ test('不是 owner：看不到 git init 按鈕與共用勾選，只有說明', a
      const me = backend.currentUser;
      backend.currentUser = async () => ({ ...(await me()), role: 'member' });`,
   );
-  await page.getByLabel('團隊名稱').fill('Member');
+  await (await newTeamName(page)).fill('Member');
   await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '標準' }).click();
   await page.getByLabel('工作目錄').fill('/home/demo/member');
   await expect(page.getByTestId('team-not-git')).toBeVisible();
@@ -514,7 +532,7 @@ test('補成員時才勾共用、結果一位都沒加進去：共用設定還�
        throw Object.assign(new Error('Machine demo-studio is offline'), { code: 'machine_offline' });
      };`,
   );
-  await page.getByLabel('團隊名稱').fill('Revert');
+  await (await newTeamName(page)).fill('Revert');
   await page.getByRole('button', { name: '建立團隊', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Revert' })).toBeVisible();
   await page.getByTestId('add-members-toggle').click();
@@ -533,7 +551,7 @@ test('既有團隊補成員、資料夾不是 git：git init 或勾共用資料�
   // git init 這條路。
   await page.goto('/#/team');
   await fake(page, NOT_GIT);
-  await page.getByLabel('團隊名稱').fill('Later');
+  await (await newTeamName(page)).fill('Later');
   await page.getByRole('button', { name: '建立團隊', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Later' })).toBeVisible();
   await page.getByTestId('add-members-toggle').click();
@@ -552,7 +570,7 @@ test('既有團隊補成員、資料夾不是 git：git init 或勾共用資料�
 
   // 共用資料夾這條路：補成員時才勾，存到既有團隊上。
   await page.goto('/#/team');
-  await page.getByLabel('團隊名稱').fill('Later2');
+  await (await newTeamName(page)).fill('Later2');
   await page.getByRole('button', { name: '建立團隊', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Later2' })).toBeVisible();
   await page.getByTestId('add-members-toggle').click();
@@ -591,7 +609,7 @@ test('部分失敗：已建立的保留，列出哪一位在哪一步失敗與�
        return put(teamId, sessionId, role);
      };`,
   );
-  await page.getByLabel('團隊名稱').fill('Part');
+  await (await newTeamName(page)).fill('Part');
   await page.getByRole('group', { name: '成員' }).getByRole('button', { name: '標準' }).click();
   await page.getByLabel('工作目錄').fill('/home/demo/project');
   await page.getByRole('button', { name: '建立團隊和 4 個 session' }).click();
@@ -685,12 +703,13 @@ test('連按兩下建立只建一次', async ({ page }) => {
 
 test('團隊顏色有 8 種，每個色塊都有名稱；工作台可以換色', async ({ page }) => {
   await page.goto('/#/team');
+  await newTeamName(page);
   const picker = page.getByRole('group', { name: '團隊顏色' });
   const names = ['青', '萊姆', '靛', '杏', '冰', '沙', '梅', '堇'];
   await expect(picker.getByRole('button')).toHaveCount(names.length);
   for (const n of names) await expect(picker.getByRole('button', { name: n })).toBeVisible();
   await expect(picker.getByRole('button', { name: '青' })).toHaveAttribute('aria-pressed', 'true');
-  await page.getByLabel('團隊名稱').fill('Colors');
+  await (await newTeamName(page)).fill('Colors');
   await picker.getByRole('button', { name: '梅' }).click();
   await page.getByRole('button', { name: '建立團隊', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Colors' })).toBeVisible();
@@ -746,6 +765,8 @@ test('團隊、Memory 兩個右側面板的標題列同一個長相：h1 18px、
     );
     const h1 = head.locator('h1');
     expect(await h1.evaluate((el) => getComputedStyle(el).fontSize)).toBe('18px');
+    // 等面板滑入動畫（180ms）跑完再量：動畫中各框量到的位置不在同一格，差值會飄（12、13…）。
+    await panel.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
     const headBox = (await head.boundingBox())!;
     const panelBox = (await panel.boundingBox())!;
     // 標題列貼齊面板左右（左內距 16）。
@@ -1315,7 +1336,7 @@ test('學術研究團隊：依階段組隊、實驗 ⇄ 寫作雙向交接、TEA
   page,
 }) => {
   await page.goto('/#/team');
-  await page.getByLabel('團隊名稱').fill('論文');
+  await (await newTeamName(page)).fill('論文');
   await page
     .getByRole('group', { name: '團隊類型' })
     .getByRole('button', { name: '學術研究' })
@@ -1392,7 +1413,7 @@ test('學術研究團隊：依階段組隊、實驗 ⇄ 寫作雙向交接、TEA
 
 test('補成員：只建團隊之後一次補齊；再補時不重複隊長、名稱接著編號', async ({ page }) => {
   await page.goto('/#/team');
-  await page.getByLabel('團隊名稱').fill('空隊');
+  await (await newTeamName(page)).fill('空隊');
   await page.getByRole('button', { name: '建立團隊' }).click();
   await expect(page.getByRole('heading', { name: '空隊' })).toBeVisible();
 
@@ -1454,10 +1475,14 @@ test('沒有綠色，英文版面不撐爆', async ({ page }) => {
   await expect(page.locator('.decompose .chip.cost')).toHaveText('◈ Uses quota');
   for (const width of [1440, 1024, 640]) {
     await page.setViewportSize({ width, height: 900 });
-    const overflow = await page.evaluate(() => {
-      const main = document.querySelector('.team-page')!;
-      return main.scrollWidth - main.clientWidth;
-    });
+    // 面板裡的團隊清單和浮動的新增團隊對話框（STYLE §5.2）都要量。
+    const overflow = await page.evaluate(() =>
+      Math.max(
+        ...[...document.querySelectorAll('.team-page')].map(
+          (main) => main.scrollWidth - main.clientWidth,
+        ),
+      ),
+    );
     expect(overflow, `寬度 ${width} 不能水平捲動`).toBeLessThanOrEqual(0);
   }
   await page.setViewportSize({ width: 1440, height: 1700 });

@@ -2,37 +2,16 @@
 // 內容由各功能自己畫；這裡只管位置、關閉、焦點。
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { useT } from '../shared/i18n';
+import { CloseButton } from './CloseButton';
+import { FloatingDialog } from './FloatingDialog';
 import { PauseStrip } from './pause';
 import { useViewsUi } from './uiStore';
 import './messages';
 
+export { CloseButton };
+
 const FOCUSABLE =
   'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])';
-
-export function CloseButton({
-  onClose,
-  testId,
-  label,
-}: {
-  onClose: () => void;
-  testId?: string;
-  /** 可存取名稱；框裡另有文字「關閉」鈕時傳不同的名字（例如「關閉對話框」），兩顆才分得出來。 */
-  label?: string;
-}) {
-  const t = useT();
-  return (
-    <button
-      type="button"
-      className="close"
-      aria-label={label ?? t('views.panel.close')}
-      title={t('views.panel.closeHint')}
-      onClick={onClose}
-      data-testid={testId}
-    >
-      <span aria-hidden="true">✕</span>
-    </button>
-  );
-}
 
 /**
  * 右側面板的標題列（團隊、Memory、收件匣共用的長相，STYLE.md §5.1）：h1 18px、左右內距 16，
@@ -130,8 +109,49 @@ export function SidePanel({
 /**
  * 置中次畫面：背後畫布暗化 60%，焦點鎖在框裡（背後整層設 inert，由 App 負責），
  * 點暗化背景或 ✕ 關閉；Esc 由 App 統一處理（只關最上層）。
+ *
+ * floating：浮動模式（GM 2026-11-14，STYLE §5.2），給建立型的次畫面（新增 session）用。沒有暗化遮罩、
+ * 不鎖焦點、背後不 inert（App 依 isFloatingModal 決定），標題列可拖、位置記住；floatId 是記位置的名字。
  */
 export function ModalLayer({
+  label,
+  onClose,
+  testId,
+  className,
+  floating = false,
+  floatId,
+  children,
+}: {
+  label: string;
+  onClose: () => void;
+  testId: string;
+  /** 加在框上的 class（例如搜尋視窗用較小的尺寸）。 */
+  className?: string;
+  floating?: boolean;
+  floatId?: string;
+  children: ReactNode;
+}) {
+  if (floating) {
+    return (
+      <FloatingDialog
+        id={floatId ?? testId}
+        label={label}
+        onClose={onClose}
+        testId={testId}
+        className={`float-modal${className ? ` ${className}` : ''}`}
+      >
+        {children}
+      </FloatingDialog>
+    );
+  }
+  return (
+    <CenteredModal label={label} onClose={onClose} testId={testId} className={className}>
+      {children}
+    </CenteredModal>
+  );
+}
+
+function CenteredModal({
   label,
   onClose,
   testId,
@@ -141,7 +161,6 @@ export function ModalLayer({
   label: string;
   onClose: () => void;
   testId: string;
-  /** 加在框上的 class（例如搜尋視窗用較小的尺寸）。 */
   className?: string;
   children: ReactNode;
 }) {

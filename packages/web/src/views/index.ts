@@ -38,6 +38,7 @@ export {
 } from './overlayStore';
 export {
   inboxHash,
+  isFloatingModal,
   isSearchHash,
   MACHINES_HASH,
   MEMORY_HASH,
