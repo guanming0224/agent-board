@@ -2,6 +2,7 @@
 // 每則都是一個 JSON 物件，以 `type` 區分。
 import { z } from 'zod';
 import { TeamPreset } from './presets';
+import { ZoneGroups } from './zoneGroups';
 import {
   AgentKind,
   TeamActivity,
@@ -507,6 +508,11 @@ export const HubToClient = z.discriminatedUnion('type', [
     pause: BoardPauseState.default(NOT_PAUSED),
     /** 工作區（P2 項目二）。舊版 hub 不送＝空（前端當成只有預設工作區）。 */
     zones: z.array(Zone).default([]),
+    /**
+     * 分頁群組與頂部列順序（CONTRACTS §25）。舊版 hub 不送＝undefined（前端當成沒有群組、照 position 排）；
+     * 舊版網頁不認得這個欄位，zod 預設會丟掉，不會讓快照失敗。
+     */
+    zoneGroups: ZoneGroups.optional(),
     /** hub 記憶體裡的群發（hub 重啟就清空）。 */
     broadcasts: z.array(Broadcast).default([]),
     /** 進度卡（P3 項目一，含自動事實）。只有寫過的卡；舊版 hub 不送＝空。 */
@@ -538,6 +544,8 @@ export const HubToClient = z.discriminatedUnion('type', [
   z.object({ type: z.literal('preset.list'), presets: z.array(TeamPreset) }),
   /** 工作區清單變了（建立、改名、刪除）：整份推給每個 client。 */
   z.object({ type: z.literal('zone.list'), zones: z.array(Zone) }),
+  /** 分頁群組或頂部列順序變了（建立、改名、換色、取消群組、移動，刪工作區時也會推）：整份推給每個 client（§25）。 */
+  z.object({ type: z.literal('zone.groups'), zoneGroups: ZoneGroups }),
   /** 團隊建立或改了（含換工作區）：推給每個 client，不等輪詢。 */
   z.object({ type: z.literal('team.updated'), team: Team }),
   z.object({ type: z.literal('team.removed'), teamId: Id }),

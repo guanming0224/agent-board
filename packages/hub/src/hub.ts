@@ -86,6 +86,7 @@ import { InputLineBuffer, PromptWatcher, REDACTED_INPUT, redactSecrets } from '.
 import { AutoContinueEngine, isAutoContinueKey } from './autoContinue';
 import { BroadcastEngine } from './broadcast';
 import { TeamPresets } from './presets';
+import { ZoneGroupStore } from './zoneGroups';
 import { REVIEW_PREPARE_TIMEOUT_MS, ReviewEngine } from './reviews';
 import { conflict, HttpError, notFound } from './errors';
 import { SafeDelivery, type DeliveryItem } from './delivery';
@@ -383,6 +384,8 @@ export class Hub {
   readonly progress: ProgressEngine;
   /** 團隊 Presets（P3 項目二）：只存設定與 audit，不建立、不送字（套用在前端走 runPlan）。 */
   readonly presets: TeamPresets;
+  /** 分頁群組與頂部列順序（CONTRACTS §25）。 */
+  readonly zoneGroups: ZoneGroupStore;
   /** 全域搜尋的深層（P3 ③b）：扇出給各台 daemon、轉送片段、取消、audit。不存內容。 */
   private readonly deepSearch: DeepSearchEngine<ClientConn>;
   /** 合併通知（Settings.notifications.coalesce）：哪時候送；送什麼在 flushSummary 決定。 */
@@ -613,6 +616,11 @@ export class Hub {
       broadcasts: this.broadcasts,
       staffing: (caller, team) =>
         this.store.getSettings().dispatch ? this.dispatch.staffingFor(caller, team) : null,
+    });
+    this.zoneGroups = new ZoneGroupStore({
+      store: deps.store,
+      audit: (userId, sessionId, action, detail) => this.audit(userId, sessionId, action, detail),
+      changed: (zoneGroups) => this.broadcast({ type: 'zone.groups', zoneGroups }),
     });
     this.presets = new TeamPresets({
       db: deps.store.db,
@@ -1152,6 +1160,7 @@ export class Hub {
       waitingLimit: this.store.getSettings().notifications.waitingLimit,
       pause: this.boardPauseState(),
       zones: this.store.listZones(),
+      zoneGroups: this.zoneGroups.get(),
       broadcasts: this.broadcasts.list(),
       progress: this.progress.list(),
       presets: this.presets.list(),
@@ -2549,6 +2558,8 @@ export class Hub {
     );
     for (const sessionId of moved) this.broadcastSession(sessionId);
     this.broadcastZones();
+    // 分頁群組（§25）：刪掉的工作區從群組與順序拿掉；群組本身留著。
+    this.zoneGroups.zoneDeleted();
   }
 
   // ── 機器 ─────────────────────────────────────────────

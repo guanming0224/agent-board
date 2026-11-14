@@ -23,6 +23,13 @@ import {
   progressOwnerOf,
   TeamPresetConfig,
   zoneMoveShift,
+  createZoneGroup,
+  moveZoneBarItem,
+  normalizeZoneGroups,
+  patchZoneGroup,
+  ungroupZoneGroup,
+  ZoneGroupError,
+  type ZoneGroups,
 } from '@agent-board/protocol';
 import type {
   TeamActivity,
@@ -626,6 +633,22 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     },
   ];
   /** 工作區（P2 項目二）：和 hub 一樣一開始只有「主要」。 */
+  // 分頁群組（§25）：和 hub 同一套純函式（protocol zoneGroups.ts）。
+  let zoneGroups: ZoneGroups = { groups: [], order: [] };
+  const zoneIdList = () => [...zones].sort((a, b) => a.position - b.position).map((z) => z.id);
+  const changeZoneGroups = (fn: () => ZoneGroups): ZoneGroups => {
+    try {
+      zoneGroups = normalizeZoneGroups(fn(), zoneIdList());
+    } catch (e) {
+      if (e instanceof ZoneGroupError) {
+        const status = e.code === 'unknown_zone' ? 400 : e.code === 'unknown_group' ? 404 : 409;
+        throw apiError(status, e.code, e.message);
+      }
+      throw e;
+    }
+    publish();
+    return structuredClone(zoneGroups);
+  };
   let zones: Zone[] = [
     { id: DEFAULT_ZONE_ID, name: DEFAULT_ZONE_NAME, createdAt: minutesAgo(600), position: 0 },
   ];
@@ -829,6 +852,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     sessions: state.sessions.filter((x) => !x.archived),
     waitingLimit: settings.notifications.waitingLimit,
     zones,
+    zoneGroups: normalizeZoneGroups(zoneGroups, zoneIdList()),
     broadcasts,
     pause,
     progress: [...progress.values()].map((p) => ({ ...p.card, facts: factsOf(p.card) })),
@@ -2004,8 +2028,32 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       zones = zones.filter((z) => z.id !== id);
       const fallback = zones[0]!.id;
       for (const s of state.sessions) if (s.zoneId === id) s.zoneId = fallback;
+      zoneGroups = normalizeZoneGroups(zoneGroups, zoneIdList());
       publish();
     },
+    async createZoneGroup(input) {
+      const id = `zg-${crypto.randomUUID()}`;
+      const next = changeZoneGroups(() =>
+        createZoneGroup(zoneGroups, zoneIdList(), {
+          id,
+          name: input.name.trim(),
+          color: input.color,
+          zoneIds: input.zoneIds,
+        }),
+      );
+      return { group: next.groups.find((g) => g.id === id)!, zoneGroups: next };
+    },
+    updateZoneGroup: async (id, patch) =>
+      changeZoneGroups(() =>
+        patchZoneGroup(zoneGroups, zoneIdList(), id, {
+          ...patch,
+          ...(patch.name === undefined ? {} : { name: patch.name.trim() }),
+        }),
+      ),
+    deleteZoneGroup: async (id) =>
+      changeZoneGroups(() => ungroupZoneGroup(zoneGroups, zoneIdList(), id)),
+    moveZoneBarItem: async (move) =>
+      changeZoneGroups(() => moveZoneBarItem(zoneGroups, zoneIdList(), move)),
     listTeamPresets: async () => presets.map((p) => structuredClone(p)),
     async createTeamPreset({ name, config, position }) {
       if (presetNameTaken(name)) {
