@@ -1,4 +1,12 @@
-import { useCallback, useRef, useState, type CSSProperties, type RefObject } from 'react';
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type RefObject,
+} from 'react';
+import { createPortal } from 'react-dom';
 import {
   Handle,
   Position,
@@ -41,8 +49,12 @@ import { useLinkPick } from './linkPick';
 import { COMPACT_ZOOM, fitCardZoom, STRIP_W } from './layout';
 import { motion } from './motion';
 import { terminalHash } from './terminalRoute';
+import { canvasTerminals, useTerminalLease } from './terminalPool';
+import { TERMINAL_ZOOM, zoomGate } from './terminalZoom';
 
-export const TERMINAL_ZOOM = 0.9;
+export { TERMINAL_ZOOM, TERMINAL_ZOOM_OUT } from './terminalZoom';
+/** 畫布小卡的捲動保留行數；全尺寸終端機頁維持 xterm 預設的 1000 行。 */
+const CARD_SCROLLBACK = 300;
 /** 低於這個倍率，展開的 xterm 字太小看不清。 */
 const READABLE_ZOOM = 0.7;
 
@@ -229,7 +241,9 @@ export function SessionNode({
   const w = width ?? 0;
   const h = height ?? 0;
 
-  const zoomedIn = useStore((s) => s.transform[2] >= TERMINAL_ZOOM);
+  const store = useStoreApi();
+  // 門檻有緩衝區間（terminalZoom.ts）：往上 90% 才切終端機，往下 80% 才切回摘要條。
+  const zoomedIn = useStore((s) => zoomGate(store, s.transform[2]));
   const onScreen = useStore((s) => {
     const [tx, ty, zoom] = s.transform;
     const left = x * zoom + tx;
@@ -245,18 +259,33 @@ export function SessionNode({
   // 「建立交接線…」選目標中，出發的那張卡標出來。
   const pickSource = useLinkPick((s) => s.from === data.sessionId);
   const flow = useReactFlow();
-  const store = useStoreApi();
   const inputRef = useRef<HTMLInputElement>(null);
   const size = useSizeNote();
-  // 還沒進過畫面的卡不開 xterm，一次放大不會同時建幾十個終端機。
-  const everOnScreen = useRef(false);
-  if (onScreen) everOnScreen.current = true;
-
-  if (!session) return null;
 
   // 失聯的機器沒有串流可接，維持凍結的最後畫面（規則四）。
   const isTerminal =
-    session.status !== 'offline' && (zoomedIn || expanded || !summaryWhenZoomedOut);
+    !!session && session.status !== 'offline' && (zoomedIn || expanded || !summaryWhenZoomedOut);
+  // xterm 不是每張卡都有：只給畫面內＋最近看過的卡，展開／聚焦中的一定有（terminalPool.ts）。
+  const hasTerminal = useTerminalLease(data.sessionId, {
+    visible: isTerminal && onScreen,
+    pinned: isTerminal && (expanded || focused),
+  });
+  // xterm 掛在固定的 host 上（portal）：卡片在終端機與摘要條之間切換時 host 搬到插槽或藏起來，
+  // 寬限期內不必重建。
+  const [host] = useState(() => {
+    const element = document.createElement('div');
+    element.className = 'term-host';
+    return element;
+  });
+  const slotRef = useRef<HTMLDivElement>(null);
+  const parkRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    // 沒有 xterm 時 host 也收起來，插槽留給最後幾行的文字。
+    const target = (isTerminal && hasTerminal ? slotRef.current : null) ?? parkRef.current;
+    if (target && host.parentElement !== target) target.appendChild(host);
+  });
+
+  if (!session) return null;
   // 摘要條填滿外框的倍率。實際倍率在 CSS 依畫布縮放（--z）封頂，見 canvas.css 的 .strip。
   const fill = w / STRIP_W;
   // 外框留在原地，只移動鏡頭；停在 xterm 門檻以下，其他卡維持摘要條。
@@ -340,18 +369,18 @@ export function SessionNode({
           </header>
           {/* xterm 外框之內不疊任何東西（規則三之一）。 */}
           <div
+            ref={slotRef}
             className="term-slot nodrag nowheel nopan"
             data-testid="terminal-slot"
             data-visible={onScreen}
+            data-terminal={hasTerminal ? 'live' : 'idle'}
+            onPointerDownCapture={() => canvasTerminals.touch(session.id)}
           >
-            {everOnScreen.current && (
-              <TerminalView
-                sessionId={session.id}
-                stream={backend.terminal}
-                visible={onScreen}
-                autoFocus={expanded}
-                onSizeOwnerChange={size.onSizeOwnerChange}
-              />
+            {/* 還沒分到 xterm：先放最後幾行文字（不是疊在 xterm 上，xterm 來了就換掉）。 */}
+            {!hasTerminal && (
+              <pre className="term-idle" aria-hidden="true">
+                {mask(session.lastLines.join('\n'))}
+              </pre>
             )}
           </div>
           {size.note}
@@ -380,6 +409,20 @@ export function SessionNode({
           {canType && <CommandInput session={session} inputRef={inputRef} />}
         </article>
       )}
+      {/* 縮回摘要條時 xterm 先藏在這裡，寬限期內再放大不用重建。 */}
+      <div ref={parkRef} className="term-park" hidden />
+      {hasTerminal &&
+        createPortal(
+          <TerminalView
+            sessionId={session.id}
+            stream={backend.terminal}
+            visible={isTerminal && onScreen}
+            autoFocus={isTerminal && expanded}
+            onSizeOwnerChange={size.onSizeOwnerChange}
+            scrollback={CARD_SCROLLBACK}
+          />,
+          host,
+        )}
     </div>
   );
 }

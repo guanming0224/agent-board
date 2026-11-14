@@ -195,6 +195,22 @@ input.cmd {
   width: 100%;
   height: 100%;
 }
+/* 還沒分到 xterm 的卡（名額見 terminalPool.ts）：先放最後幾行，靠下對齊像終端機。 */
+.term-slot > .term-idle {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  margin: 0;
+  padding: var(--space-1h) var(--space-2);
+  overflow: hidden;
+  white-space: pre;
+  font: var(--fs-sm) / 1.45 var(--font-mono);
+  color: var(--fg-muted);
+}
+/* 縮回摘要條時暫放 xterm 的地方，寬限期過了就釋放。 */
+.term-park[hidden] {
+  display: none;
+}
 
 /* 團隊框：維持螢幕上的 1px 框與 12px 標籤 */
 /* 畫在卡片底下，8% 的底色才不會染到卡片 */
