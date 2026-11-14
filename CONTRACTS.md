@@ -1195,13 +1195,13 @@ GM 不要「工作區到第 7 個就收進『更多 ▾』」，要看得到自�
 
 ### 25.2 API（權限同工作區：REST `auth: 'user'`，登入的使用者都能改，沒登入 401）
 
-| 路由 | body | 回應 |
-|---|---|---|
-| `GET /api/zone-groups` | — | `ZoneGroups`（整理過） |
-| `POST /api/zone-groups` | `{ name, color?, zoneIds?: Id[] }` | `{ group, zoneGroups }`。帶的工作區從原本的地方拿出來放進去；群組放在第一個工作區原本的位置（它原本在別的群組＝那個群組右邊），沒帶＝最後 |
-| `PATCH /api/zone-groups/:id` | `{ name?, color? }`（至少一個） | `ZoneGroups` |
-| `DELETE /api/zone-groups/:id` | — | `ZoneGroups`。「取消群組」與「刪除群組」都是這個：群組不見，裡面的工作區照原順序回到群組原本的位置，**畫布不刪** |
-| `POST /api/zone-groups/move` | `ZoneBarMove`：`{ kind: 'zone', id, groupId?: Id\|null, before?: Id\|null }` 或 `{ kind: 'group', id, before?: Id\|null }` | `ZoneGroups`。`groupId` null／沒給＝頂部列；`before`＝放在同一排的誰前面，null／沒給＝最後。沒指定位置的「移出群組」放在群組右邊。群組只在頂部列排序 |
+| 路由                          | body                                                                                                                       | 回應                                                                                                                                                 |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/zone-groups`        | —                                                                                                                          | `ZoneGroups`（整理過）                                                                                                                               |
+| `POST /api/zone-groups`       | `{ name, color?, zoneIds?: Id[] }`                                                                                         | `{ group, zoneGroups }`。帶的工作區從原本的地方拿出來放進去；群組放在第一個工作區原本的位置（它原本在別的群組＝那個群組右邊），沒帶＝最後            |
+| `PATCH /api/zone-groups/:id`  | `{ name?, color? }`（至少一個）                                                                                            | `ZoneGroups`                                                                                                                                         |
+| `DELETE /api/zone-groups/:id` | —                                                                                                                          | `ZoneGroups`。「取消群組」與「刪除群組」都是這個：群組不見，裡面的工作區照原順序回到群組原本的位置，**畫布不刪**                                     |
+| `POST /api/zone-groups/move`  | `ZoneBarMove`：`{ kind: 'zone', id, groupId?: Id\|null, before?: Id\|null }` 或 `{ kind: 'group', id, before?: Id\|null }` | `ZoneGroups`。`groupId` null／沒給＝頂部列；`before`＝放在同一排的誰前面，null／沒給＝最後。沒指定位置的「移出群組」放在群組右邊。群組只在頂部列排序 |
 
 - 錯誤：不存在的工作區 400 `unknown_zone`；不存在的群組 404 `unknown_group`；超過 50 個群組（`ZONE_GROUPS_MAX`）409 `too_many_groups`；名稱空白、超過 40 字、顏色不是 id 格式 400。
 - **WS**：每次寫入（含刪工作區後的整理）推 `{ type: 'zone.groups', zoneGroups }` 給每個 client，所有裝置即時同步。`board.state` 帶選填的 `zoneGroups`。
