@@ -122,6 +122,25 @@ describe('TerminalPool', () => {
     expect(pool.grantedCount).toBe(3);
   });
 
+  it('同一輪 20 張卡同時進入畫面（另有 2 張寬限期內）：集中分配一次，總數不超過上限', () => {
+    const { clock, pool, notified } = setup(8);
+    pool.set('old1', { visible: true, pinned: false });
+    pool.set('old2', { visible: true, pinned: false });
+    clock.settle();
+    pool.set('old1', { visible: false, pinned: false });
+    pool.set('old2', { visible: false, pinned: false });
+    let maxSeen = 0;
+    pool.subscribe(() => (maxSeen = Math.max(maxSeen, pool.grantedCount)));
+    for (let i = 0; i < 20; i += 1) pool.set(`n${i}`, { visible: true, pinned: false });
+    // 排程跑之前沒有任何變化。
+    expect(pool.grantedCount).toBe(2);
+    clock.settle();
+    expect(pool.grantedCount).toBe(8);
+    expect(maxSeen).toBe(8);
+    expect(pool.granted('old1') || pool.granted('old2')).toBe(false);
+    expect(notified()).toBe(2);
+  });
+
   it('離開畫面延遲釋放；寬限期內回來不重建', () => {
     const { clock, pool } = setup(3, 5000);
     pool.set('a', { visible: true, pinned: false });

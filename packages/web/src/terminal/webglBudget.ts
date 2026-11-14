@@ -4,7 +4,7 @@
 // - 同時用 WebGL 的終端機最多 WEBGL_LIMIT 個，只給看得到或聚焦中的；
 // - WebKit 把「已經 loseContext、但 JS 物件還沒被 GC」的 context 也算進 16 個，所以另外數
 //   還沒回收的 context（FinalizationRegistry），到 CONTEXT_CEILING 就先用 DOM renderer，回收後再升級；
-//   聚焦中的、或頁面上唯一要 WebGL 的（全尺寸終端機頁）可以用到 CONTEXT_HARD_CEILING，仍低於 16；
+//   聚焦中的（全尺寸終端機頁會 autoFocus）可以用到 CONTEXT_HARD_CEILING，仍低於 16；
 // - 新拿 WebGL 要先連續看得到 WEBGL_GRANT_DELAY_MS（平移經過的卡不花 context），
 //   聚焦中的、或頁面上唯一的（全尺寸頁）立刻給；
 // - 剛看不到的先保留 WEBGL_LINGER_MS（縮放來回、平移經過不必反覆建 context），名額不夠時才提早收回。
@@ -14,7 +14,7 @@
 export const WEBGL_LIMIT = 6;
 /** 終端機建立、還沒被回收的 context 最多幾個（瀏覽器上限 16，留 4 個給其他元件與誤差）。 */
 export const CONTEXT_CEILING = 12;
-/** 聚焦中、或頁面上沒有別的終端機在用 WebGL 時，可以用到這裡（瀏覽器上限 16 減 1）。 */
+/** 聚焦中的終端機可以用到這裡（瀏覽器上限 16 減 1）。 */
 export const CONTEXT_HARD_CEILING = 15;
 /** 看不到之後還保留 WebGL 多久。 */
 export const WEBGL_LINGER_MS = 5000;
@@ -24,6 +24,11 @@ export const WEBGL_GRANT_DELAY_MS = 1000;
 export interface WebglClient {
   /** 畫面上看得到（畫布卡在畫面內、全尺寸頁）。 */
   readonly visible: boolean;
+  /**
+   * 看得到時要不要用 WebGL。畫布上一般的小卡是 false（只在展開、聚焦時 true）：
+   * WebKit 量到 WebGL addon 反覆建立／釋放留下的垃圾在 GC 前佔網頁程序上百 MB，DOM renderer 沒有這個問題。
+   */
+  readonly webglPreferred: boolean;
   /** 鍵盤焦點在這個終端機裡。 */
   readonly focused: boolean;
   /** WebGL 壞過（不支援或 context 遺失）：不再分配，維持 DOM renderer。 */
@@ -162,7 +167,8 @@ export class WebglBudget {
     const now = this.clock.now();
     const list = [...this.entries];
     for (const [client, entry] of list) {
-      const wanted = !client.webglBroken && (client.visible || client.focused);
+      const wanted =
+        !client.webglBroken && ((client.visible && client.webglPreferred) || client.focused);
       if (wanted || !entry.holding) entry.idleSince = null;
       else entry.idleSince ??= now;
       if (wanted) entry.wantedSince ??= now;
@@ -180,7 +186,7 @@ export class WebglBudget {
     const winners = allocateWebgl(
       list.map(([client, entry]) => ({
         id: entry.id,
-        visible: client.visible && settled(client, entry),
+        visible: client.visible && client.webglPreferred && settled(client, entry),
         focused: client.focused,
         lingering: entry.holding && lingering(entry),
         broken: client.webglBroken,
@@ -204,7 +210,9 @@ export class WebglBudget {
       const [client, entry] = byId.get(id)!;
       if (entry.holding || !this.entries.has(client)) continue;
       // 還沒回收的 context 太多：先用 DOM renderer，等回收後（onCollected）再升級。
-      const cap = client.focused || this.holding === 0 ? this.hardCeiling : this.ceiling;
+      // 只有聚焦中的（打字中的卡、全尺寸頁 autoFocus）能用到硬上限；畫布卡最多用到軟上限，
+      // 留幾個給切到全尺寸頁時用（WebKit 在 GC 前不會把已釋放的 context 扣掉）。
+      const cap = client.focused ? this.hardCeiling : this.ceiling;
       if (this.alive >= cap) continue;
       const owners = client.grantWebgl();
       entry.holding = !client.webglBroken && owners.length > 0;

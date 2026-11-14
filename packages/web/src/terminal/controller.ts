@@ -19,6 +19,8 @@ export const DEFAULT_SCROLLBACK = 1000;
 export interface TerminalOptions {
   /** 捲動保留行數（畫布小卡用比較少）。 */
   scrollback?: number;
+  /** 看得到時要不要用 WebGL（預設 true）；畫布小卡只在展開／聚焦時 true。 */
+  webgl?: boolean;
   /** WebGL 配額；預設全頁共用的那一份。 */
   budget?: WebglBudget;
 }
@@ -59,6 +61,7 @@ export class TerminalController implements WebglClient {
   private webglCanvases: HTMLCanvasElement[] = [];
   private readonly budget: WebglBudget;
   private hasFocus = false;
+  private preferWebgl: boolean;
   private broken = false;
   /** 正在還原的快照數；xterm 的 write 是非同步的，還原完才能 fit。 */
   private restoring = 0;
@@ -73,6 +76,7 @@ export class TerminalController implements WebglClient {
     options: TerminalOptions = {},
   ) {
     this.budget = options.budget ?? webglBudget;
+    this.preferWebgl = options.webgl ?? true;
     // 16 色 ANSI 不設定，用 xterm 預設（STYLE 規則三之一）。
     this.term = new Terminal({
       fontFamily: cssVar('--font-mono'),
@@ -133,6 +137,16 @@ export class TerminalController implements WebglClient {
     return this.hasFocus;
   }
 
+  get webglPreferred(): boolean {
+    return this.preferWebgl;
+  }
+
+  setWebglPreferred(preferred: boolean): void {
+    if (preferred === this.preferWebgl) return;
+    this.preferWebgl = preferred;
+    this.budget.changed(this, preferred);
+  }
+
   get webglBroken(): boolean {
     return this.broken;
   }
@@ -149,6 +163,14 @@ export class TerminalController implements WebglClient {
     this.term.focus();
   }
 
+  /** 改捲動保留行數。變多時重拿快照，已經被截掉的歷史才補得回來（例如小卡展開）。 */
+  setScrollback(lines: number): void {
+    const current = this.term.options.scrollback ?? DEFAULT_SCROLLBACK;
+    if (lines === current || this.disposed) return;
+    this.term.options.scrollback = lines;
+    if (lines > current) this.feed.resync();
+  }
+
   dispose(): void {
     this.disposed = true;
     // 先交還 WebGL（釋放 context），別的終端機才能遞補。
@@ -160,6 +182,7 @@ export class TerminalController implements WebglClient {
     this.resizeDebounce.cancel();
     this.observer.disconnect();
     this.listeners.abort();
+    terminals.delete(this.container);
     this.term.dispose();
   }
 
