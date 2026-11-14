@@ -735,6 +735,15 @@ test('團隊、Memory 兩個右側面板的標題列同一個長相：h1 18px、
     const panel = page.getByTestId(panelId);
     const head = panel.locator('.panel-head').first();
     await expect(head).toBeVisible();
+    // 面板滑入的動畫播完再量（量到一半位置會差幾 px；main 上就時好時壞）。
+    await panel.evaluate((el) =>
+      Promise.all(
+        [el, ...el.querySelectorAll('*')]
+          .flatMap((node) => node.getAnimations())
+          .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+          .map((a) => a.finished),
+      ),
+    );
     const h1 = head.locator('h1');
     expect(await h1.evaluate((el) => getComputedStyle(el).fontSize)).toBe('18px');
     const headBox = (await head.boundingBox())!;

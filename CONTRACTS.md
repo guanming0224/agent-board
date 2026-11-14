@@ -1164,3 +1164,18 @@ start → WS review.run → daemon 並行開 claude -p 與 codex exec（唯讀�
 - daemon `gitInit.test.ts`（暫存資料夾、測完刪；`GIT_CONFIG_GLOBAL` 指到空檔、`GIT_CONFIG_NOSYSTEM`、`GIT_CEILING_DIRECTORIES`，不碰使用者的 git 設定）：成功、`.gitignore` 不覆寫、身分只對單次、大檔略過、空資料夾、`~/`、各拒絕情況；`daemon.test.ts`：hello 宣告、init 後同資料夾 session 不中斷且回報新的 repo。hub `nongit.test.ts`：轉送與 audit、owner 限定、舊 daemon 409、逾時後的 late audit、共用設定存取／刪團隊清除、加成員不擋；`dispatch.test.ts`：非共用隊的固定指引、共用隊 BD 不開 worktree、git init 後隊長不用重開就開 worktree。web：`teamPlan.test.ts`、`canvas/teams.test.ts`；e2e `team.spec.ts`（新增團隊 git init／太大的位置／daemon 太舊、新增團隊勾共用與團隊面板關掉、既有團隊補成員兩條路）、`flows.spec.ts`（新增 session 的 git init）、`team-integration.spec.ts`（真 daemon、真 git：隊長被擋 → 補成員按 git init → 隊長不重開 `spawn_member` 開到 worktree）。
 - 獨立審查後（2026-11-13）補：hook 不跑（全域 hooksPath＋範本）、`.git` 裡的路徑、git 判斷失敗不 init、已有空 `.git` 不刪、同時兩次 `busy`、大檔名有換行整次還原、掛載點／隱藏資料夾／iCloud、`gitEnv`（daemon）；非 owner 403、git 資料夾不生效（hub）；非 owner 看不到按鈕與勾選、補成員全失敗還原（e2e）。
 - 未驗證：Windows 實機（`gitInit.test.ts` 已列進 `test:windows`，只在 macOS 跑過；hook 測試在 Windows 上靠 Git for Windows 的 sh）；非常大的資料夾（上萬檔）的實際耗時；N7 的 2 秒補掃沒有獨立的單元測試（`daemon.test.ts` 測的是第一次掃）。
+
+### 24.5 session 卡片上的 git init（GM 2026-11-14）
+
+還沒有團隊、之後要自己當隊長的 session 在不是 git 的資料夾 `spawn_member` 開會改檔案的成員會被擋（固定指引叫使用者按 git init），但這時沒有團隊可勾共用，git init 按鈕又只在新增 session 等頁面。改成每個 session 自己就有入口。
+
+- **顯示條件**（`flows/gitInitState.ts` 的 `needsGitInit`）：沒封存、`repoRoot === null`、`worktreePath === null`（不是自己的 worktree）、狀態不是 `offline`／`done`（daemon 只替活的 session 換 repo，失聯或已結束的提示消不掉，所以不顯示）。
+- **畫布卡片**：標題下 `.sign` 那一行多一個「不是 git」晶片（`.chip.not-git`，`NotGitChip`）——是說明不是按鈕，不加觸控高度、卡片不變高；畫布縮到 30% 以下跟著 `.sign` 一起藏起來。所有人都看得到。git init 在卡片「⋯」選單的「在這裡 git init…」（`card-git-init`，**只有 owner**，還沒讀到使用者資料前不顯示），打開置中次畫面 `#/git-init/<sessionId>`（`ModalKind` `gitInit`，`flows/SessionGitInit.tsx` 的 `GitInitPage`；手機是全螢幕頁），一打開就是確認步驟（`GitInitAction startOpen`），路徑是 session 的 `cwd`；確認內容、結果、略過的大檔、daemon 太舊「請先更新」都和 §24.1 同一個元件。非 owner 直接開網址只看到「只有擁有者能在這裡 git init」；已經不需要時顯示一句說明。
+- **全尺寸頁**（`#/terminal/<id>`）：標題下同一個晶片；側欄最上面「這個資料夾不是 git」區塊（`SessionGitInitPanel`，只有 owner），先按「在這裡 git init」再確認。側欄按鈕在手機／觸控照 `.touch` 回到 44px。
+- **成功後**：不另外重新偵測——daemon 照 §24.1 讓這個 session 換上新的 `repoRoot` 並送 `session.runtime`，hub 推給網頁，晶片與選單項目自己消失，不用重整。次畫面／側欄按過確認後留著結果（標題改「已 git init」）；新的 `repoRoot` 比 API 回應早到也不會把結果卸掉（`GitInitAction onStart`）。
+- **團隊已勾共用資料夾**：照樣顯示 git init，多一句「共用只在不是 git 的資料夾生效：git init 之後，新開的會改檔案成員改用各自的 worktree；已在跑的成員不受影響」。
+- **隊長被擋的提示**：hub 在 `spawn_member` 回 `NOT_GIT_WRITER_GUIDE` 的兩條路（`worktree_unavailable`、不是 git 時的 `worktree_required`）上，audit `dispatch.blocked` `{ fromSessionId, tool: 'spawn_member', reason: 'not_git' }`，並在呼叫者記事件 `dispatch.not_git`（`NOT_GIT_BLOCKED_EVENT`），payload 固定 `{ tool: 'spawn_member' }`，不帶任何模型寫的字。唯讀角色或共用隊收到的「Set useWorktree: false」不算。網頁（畫布、全尺寸頁開著時）收到後把那張卡的晶片改成「開成員被擋：不是 git」（`.chip.not-git.blocked`，等你的琥珀色），git init 區塊也多一句說明。**只認頁面開著時收到的事件**：重新整理後回到一般的「不是 git」（事件存在資料庫，但網頁開機不回讀）。事件沒有 `toSessionId`，畫布的往來動畫不畫它。
+- **沒做**：收件匣項目與推播（現有的團隊動態要有團隊，這個情況多半還沒有團隊；要做得新增一種收件匣項目，另案）。
+- **不呼叫模型**：同 §24.3；新增的只有固定文字與固定事件。
+- **測試**：hub `dispatch.test.ts`（兩條路都記事件與 audit、還沒有團隊的 session 也記、唯讀角色不記）；web `gitInitState.test.ts`、`overlay.test.ts`；e2e `canvas.spec.ts`「session 卡片上的 git init」（git 資料夾／worktree／失聯不顯示、被擋提示、⋯ 次畫面確認後晶片消失、非 owner 沒有按鈕、全尺寸頁側欄、共用隊說明、縮小時藏起來）；`team-integration.spec.ts`（真 daemon、真 git：沒有團隊的 session 開 BD 被擋 → 全尺寸頁提示 → git init → 晶片消失、不重開就開到 worktree）。假後端：`s-docs` 是不是 git 的 session，`s-etl`、`s-ml` 改成 git。截圖 `docs/card-gitinit/`。
+- **未驗證**：真 claude 收到固定指引後的實際反應（沒跑真 CLI）；手機實機上的次畫面；網頁重新整理後被擋提示不保留（設計如此）。
