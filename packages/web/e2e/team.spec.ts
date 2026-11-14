@@ -756,6 +756,8 @@ test('團隊、Memory 兩個右側面板的標題列同一個長相：h1 18px、
     await expect(head).toBeVisible();
     const h1 = head.locator('h1');
     expect(await h1.evaluate((el) => getComputedStyle(el).fontSize)).toBe('18px');
+    // 等面板滑入動畫（180ms）跑完再量：動畫中各框量到的位置不在同一格，差值會飄（12、13…）。
+    await panel.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
     const headBox = (await head.boundingBox())!;
     const panelBox = (await panel.boundingBox())!;
     // 標題列貼齊面板左右（左內距 16）。
