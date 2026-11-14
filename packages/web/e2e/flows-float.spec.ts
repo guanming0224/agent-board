@@ -312,3 +312,182 @@ test.describe('浮動對話框：新增團隊、補成員、Preset（桌面）',
     await expect(dialog).toHaveCount(0);
   });
 });
+
+test.describe('浮動對話框：審查修正（S1、W1–W6、N1–N3）', () => {
+  test.use({ viewport: DESKTOP, locale: 'zh-TW' });
+
+  test('S1：選了交接線、在框裡的按鈕上按 Backspace／Delete，交接規則還在', async ({ page }) => {
+    await openCanvas(page);
+    const rule = page.getByTestId('handoff-s-auth-s-tests');
+    const edge = page.locator('.react-flow__edge[data-id="s-auth->s-tests"]');
+    await expect(rule).toBeVisible();
+    await edge.click({ force: true });
+    await expect(edge).toHaveClass(/selected/);
+    await page.evaluate(() => (location.hash = '#/new'));
+    const modal = page.getByTestId('modal');
+    await expect(modal).toBeVisible();
+    await page.getByTestId('modal-center').focus();
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Delete');
+    await expect(modal).toBeVisible();
+    await expect(edge).toHaveClass(/selected/);
+    await expect(rule).toBeVisible();
+    // 對照組：焦點不在框裡（回到 body）時，同樣的鍵照舊刪掉選取的交接線（證明上面真的會被誤刪）。
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('Delete');
+    await expect(rule).toHaveCount(0);
+  });
+
+  test('W1：新增 session 填一半 → 點收件匣（換網址）→ 再開，內容還在；✕ 明確關閉才清', async ({
+    page,
+  }) => {
+    await openCanvas(page);
+    await page.evaluate(() => (location.hash = '#/new'));
+    const modal = page.getByTestId('modal');
+    const name = modal.getByLabel('名稱', { exact: true });
+    await name.fill('填一半');
+    await modal.getByLabel('工作目錄').fill('/work/half');
+    await page.getByTestId('inbox-button').click();
+    await expect(page).toHaveURL(/#\/inbox/);
+    await expect(modal).toHaveCount(0);
+    await page.evaluate(() => (location.hash = '#/new'));
+    await expect(name).toHaveValue('填一半');
+    await expect(modal.getByLabel('工作目錄')).toHaveValue('/work/half');
+    // ✕ 是明確關閉：草稿清掉。
+    await page.getByTestId('modal-close').click();
+    await expect(modal).toHaveCount(0);
+    await page.evaluate(() => (location.hash = '#/new'));
+    await expect(name).toHaveValue('');
+  });
+
+  test('W2：焦點在畫布時 Esc 不關浮動框；焦點在框裡才關', async ({ page }) => {
+    await openCanvas(page);
+    await page.evaluate(() => (location.hash = '#/new'));
+    const modal = page.getByTestId('modal');
+    await expect(modal).toBeVisible();
+    const blank = await blankPane(page);
+    expect(blank).not.toBeNull();
+    await page.mouse.click(blank!.x, blank!.y);
+    await page.keyboard.press('Escape');
+    // App 的 Esc 在 setTimeout 0 之後才動：頁面裡排一個 setTimeout 0 當屏障，確定它已經跑過。
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    await expect(page).toHaveURL(/#\/new$/);
+    await expect(modal).toBeVisible();
+    await modal.focus();
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('W3：焦點在輸入框時 Alt＋方向鍵不移動框（Mac 的 Option＋方向鍵是按詞移動）', async ({
+    page,
+  }) => {
+    await openCanvas(page);
+    await page.evaluate(() => (location.hash = '#/new'));
+    const modal = page.getByTestId('modal');
+    const name = modal.getByLabel('名稱', { exact: true });
+    await name.fill('one two');
+    const before = await box(modal);
+    await name.press('Alt+ArrowLeft');
+    await name.press('Alt+ArrowUp');
+    expect(Math.round((await box(modal)).x)).toBe(Math.round(before.x));
+    expect(Math.round((await box(modal)).y)).toBe(Math.round(before.y));
+    // 焦點在框上（不是輸入框）照樣可以移。
+    await modal.focus();
+    await page.keyboard.press('Alt+ArrowLeft');
+    await expect.poll(async () => Math.round((await box(modal)).x)).toBe(Math.round(before.x - 16));
+  });
+
+  test('W4：放開按鍵的 pointerup 沒送到（之後的 pointermove buttons＝0）也會結束拖曳', async ({
+    page,
+  }) => {
+    await openCanvas(page);
+    await page.evaluate(() => (location.hash = '#/new'));
+    const modal = page.getByTestId('modal');
+    const handle = page.getByTestId('modal-handle');
+    const b = await box(handle);
+    await page.mouse.move(b.x + 60, b.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(b.x + 160, b.y + 10, { steps: 4 });
+    await expect(modal).toHaveClass(/is-dragging/);
+    await handle.dispatchEvent('pointermove', {
+      pointerId: 1,
+      buttons: 0,
+      clientX: b.x + 300,
+      clientY: b.y + 10,
+      bubbles: true,
+    });
+    await expect(modal).not.toHaveClass(/is-dragging/);
+    await page.mouse.up();
+  });
+
+  test('W5、W6：補成員框不跟著區塊收起而消失；焦點在框裡的按鈕上按 I 不切收件匣', async ({
+    page,
+  }) => {
+    await page.goto('/#/team/team-demo-auth');
+    await expect(page.getByTestId('team-workbench')).toBeVisible();
+    const fold = page.getByTestId('fold-toggle-add');
+    if ((await fold.getAttribute('aria-expanded')) !== 'true') await fold.click();
+    await page.getByTestId('add-members-toggle').click();
+    const dialog = page.getByTestId('add-members-dialog');
+    await expect(dialog).toBeVisible();
+    // 填一半：選「標準」組合（既有團隊的位置沿用隊長的，沒有工作目錄欄）。
+    const standard = dialog
+      .getByRole('group', { name: '成員' })
+      .getByRole('button', { name: '標準' });
+    await standard.click();
+    await expect(dialog.locator('.plan-row').first()).toBeVisible();
+    const rows = await dialog.locator('.plan-row').count();
+    expect(rows).toBeGreaterThan(0);
+    await fold.click();
+    await expect(fold).toHaveAttribute('aria-expanded', 'false');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('.plan-row')).toHaveCount(rows);
+
+    await page.getByTestId('add-members-dialog-center').focus();
+    await page.keyboard.press('i');
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    await expect(page).toHaveURL(/#\/team\/team-demo-auth$/);
+    await expect(page.getByTestId('inbox-drawer')).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+  });
+
+  test('N1–N3：兩個框錯開、最後按的在上；置中次畫面開著時浮動框 inert；換到手機寬度新增團隊內容還在', async ({
+    page,
+  }) => {
+    await page.goto('/#/team');
+    await expect(page.getByTestId('team-list')).toBeVisible();
+    await page.getByTestId('new-team-open').click();
+    const team = page.getByTestId('new-team-dialog');
+    await expect(team).toBeVisible();
+    await page.getByTestId('preset-entry').click();
+    const preset = page.getByTestId('preset-entry-dialog');
+    await expect(preset).toBeVisible();
+    // 第二個置中時錯開，不完全疊在一起。
+    expect(Math.round((await box(preset)).x) - Math.round((await box(team)).x)).toBe(24);
+    await expect(preset).toHaveClass(/is-front/);
+    await expect(team).not.toHaveClass(/is-front/);
+    // 點標題列最左邊（第二個框往右錯開 24px，這一條沒被蓋住）。
+    await page.getByTestId('new-team-dialog-handle').click({ position: { x: 8, y: 10 } });
+    await expect(team).toHaveClass(/is-front/);
+    await expect(preset).not.toHaveClass(/is-front/);
+    const z = (l: Locator) => l.evaluate((el) => Number(getComputedStyle(el).zIndex));
+    expect(await z(team)).toBeGreaterThan(await z(preset));
+    // 新增團隊框現在蓋在上面：用鍵盤按 Preset 框的 ✕。
+    await page.getByTestId('preset-entry-dialog-close').press('Enter');
+    await expect(preset).toHaveCount(0);
+
+    // 置中次畫面（搜尋）開著：浮動框 inert；關掉就恢復。
+    await team.getByLabel('團隊名稱').fill('換寬度');
+    await page.getByTestId('search-button').click();
+    await expect(page.getByTestId('modal')).toBeVisible();
+    await expect(team).toHaveAttribute('inert', /.*/);
+    await page.getByTestId('modal-close').click();
+    await expect(page.getByTestId('modal')).toHaveCount(0);
+    await expect(team).not.toHaveAttribute('inert', /.*/);
+
+    // 跨 640px：手機的內嵌表單還原同一份草稿。
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByTestId('phone-team')).toBeVisible();
+    await expect(page.getByLabel('團隊名稱')).toHaveValue('換寬度');
+  });
+});

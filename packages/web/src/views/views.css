@@ -735,6 +735,10 @@ button.primary kbd {
   box-shadow: var(--shadow-modal);
   overflow: hidden;
 }
+/* 同時開好幾個：最後按過的在最上面（仍低於置中次畫面 40）。 */
+.float-box.is-front {
+  z-index: 36;
+}
 .float-box[hidden] {
   display: none;
 }

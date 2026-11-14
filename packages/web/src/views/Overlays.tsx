@@ -204,7 +204,8 @@ function CenteredModal({
     >
       <div
         ref={box}
-        className={className ? `modal-box ${className}` : 'modal-box'}
+        // nokey：xyflow 的 Delete／Backspace 不吃框裡的按鍵（背後選取的交接線不會被刪）。
+        className={className ? `modal-box nokey ${className}` : 'modal-box nokey'}
         role="dialog"
         aria-modal="true"
         aria-label={label}
