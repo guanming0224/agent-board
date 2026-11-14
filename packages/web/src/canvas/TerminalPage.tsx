@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { HandoffTrigger } from '@agent-board/protocol';
 import type { HandoffRule, Session } from '@agent-board/protocol';
 import { SessionReviewCards } from '../flows';
+import { SessionGitInitPanel } from '../flows/SessionGitInit';
+import { useNotGitEvents } from '../flows/gitInitState';
 import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
@@ -254,6 +256,8 @@ function Expanded({ session }: { session: Session }) {
         </div>
         <aside className="xpand-side" aria-label={t('canvas.full.side')}>
           <SessionReviewCards sessionId={session.id} />
+          {/* 資料夾不是 git 時的 git init（§24.5，只有 owner）。 */}
+          <SessionGitInitPanel key={session.id} session={session} />
           <HandoffBox session={session} />
         </aside>
       </div>
@@ -267,6 +271,8 @@ export function TerminalPage() {
   const t = useT();
   const load = useBoardLoad();
   useTeamSync();
+  const backend = useBoard((s) => s.backend);
+  useNotGitEvents(backend);
   const sessionId = useHashSession();
   const connected = useBoard((s) => s.connected);
   const session = useBoard((s) => s.sessions.find((x) => x.id === sessionId && !x.archived));

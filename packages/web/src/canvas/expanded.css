@@ -218,3 +218,10 @@
     padding: 10px 10px 10px 16px;
   }
 }
+
+/* 側欄的 git init（§24.5）：上面 .xpand-panel button 把按鈕壓成精簡 32；手機／觸控照 .touch 回到 44。 */
+@media (max-width: 640px), (pointer: coarse) {
+  .xpand-panel .git-init button.touch {
+    min-height: var(--ctl-h-touch);
+  }
+}

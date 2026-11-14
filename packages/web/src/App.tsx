@@ -22,6 +22,7 @@ import { TeamContent, TeamDrawer } from './team';
 import { MachinesPage } from './machines';
 import { UsagePage } from './usage';
 import { CrossReviewPage } from './review';
+import { GitInitPage } from './flows/SessionGitInit';
 import {
   cameFrom,
   closeModal,
@@ -107,6 +108,7 @@ function ModalContent({ kind }: { kind: ModalKind }) {
   if (kind === 'usage') return <UsagePage />;
   if (kind === 'machines') return <MachinesPage />;
   if (kind === 'crossReview') return <CrossReviewPage />;
+  if (kind === 'gitInit') return <GitInitPage />;
   return <NewSessionPage />;
 }
 
@@ -140,6 +142,7 @@ const MODAL_LABEL: Record<ModalKind, string> = {
   usage: 'usage.title',
   machines: 'machines.title',
   crossReview: 'review.title',
+  gitInit: 'flows.gitInit.pageTitle',
 };
 
 /** 手機：上一筆歷史就是 app 裡的畫面就上一頁，否則回收件匣（手機的首頁）。 */
@@ -197,7 +200,9 @@ function Board({ nav, phone }: { nav: Nav; phone: boolean }) {
           label={t(MODAL_LABEL[modal])}
           onClose={closeModal}
           testId="modal"
-          className={modal === 'search' ? 'search-modal' : undefined}
+          className={
+            modal === 'search' ? 'search-modal' : modal === 'gitInit' ? 'git-init-modal' : undefined
+          }
         >
           <ModalStack modal={modal} />
         </ModalLayer>

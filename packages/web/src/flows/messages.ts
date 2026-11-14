@@ -277,6 +277,24 @@ export const zhTW: Record<string, string> = {
     '這個位置太大（根目錄、外接或網路碟的根目錄、家目錄、整個桌面或文件、家目錄的隱藏資料夾、iCloud／雲端硬碟根目錄、系統資料夾），請選專案資料夾。',
   'flows.gitInit.err.git_missing': '這台機器找不到 git，請先安裝 git。',
   'flows.gitInit.err.git_failed': 'git 執行失敗，資料夾已還原。',
+  'flows.gitInit.chip': '不是 git',
+  'flows.gitInit.chipTitle':
+    '這個資料夾不是 git：會改檔案的成員開不了自己的 worktree。擁有者可以在卡片的「⋯」選單按「在這裡 git init」。',
+  'flows.gitInit.chipBlocked': '開成員被擋：不是 git',
+  'flows.gitInit.chipBlockedTitle':
+    '這個 session 剛才想開會改檔案的成員，因為資料夾不是 git 被擋下。擁有者可以在卡片的「⋯」選單按「在這裡 git init」，session 不用重開。',
+  'flows.gitInit.menu': '在這裡 git init…',
+  'flows.gitInit.pageTitle': '在這裡 git init',
+  'flows.gitInit.pageNone':
+    '這個 session 的資料夾已經是 git、有自己的 worktree，或 session 已結束、失聯或不在了，不需要 git init。',
+  'flows.gitInit.sessionTitle': '這個資料夾不是 git',
+  'flows.gitInit.sessionDoneTitle': '已 git init',
+  'flows.gitInit.sessionWhy':
+    '會改檔案的成員開不了自己的 worktree，隊長用 spawn_member 開這類成員會被擋。在這裡 git init 之後，這個 session 不用重開就能開 worktree。',
+  'flows.gitInit.sessionShared':
+    '這一隊已設定共用資料夾。共用只在不是 git 的資料夾生效：git init 之後，新開的會改檔案成員改用各自的 worktree；已在跑的成員不受影響。',
+  'flows.gitInit.sessionBlocked':
+    '這個 session 剛才想開會改檔案的成員，因為資料夾不是 git 被擋下。',
   'flows.new.agent': 'Agent',
   'flows.new.agent.claude': 'Claude Code',
   'flows.new.agent.codex': 'Codex',
@@ -1103,6 +1121,24 @@ export const en: Record<string, string> = {
     'This location is too broad (root, the root of a disk or network drive, home, the whole Desktop or Documents, a hidden folder in home, the iCloud or cloud drive root, a system folder). Pick a project folder.',
   'flows.gitInit.err.git_missing': 'git is not installed on this machine.',
   'flows.gitInit.err.git_failed': 'git failed; the folder was restored.',
+  'flows.gitInit.chip': 'Not git',
+  'flows.gitInit.chipTitle':
+    'This folder is not a git repo: members that edit files cannot get their own worktree. The owner can choose "git init here" in the card\'s "⋯" menu.',
+  'flows.gitInit.chipBlocked': 'Member blocked: not git',
+  'flows.gitInit.chipBlockedTitle':
+    'This session just tried to add a member that edits files and was blocked because the folder is not a git repo. The owner can choose "git init here" in the card\'s "⋯" menu; the session does not need a restart.',
+  'flows.gitInit.menu': 'git init here…',
+  'flows.gitInit.pageTitle': 'git init here',
+  'flows.gitInit.pageNone':
+    "This session's folder is already a git repo or its own worktree, or the session has ended, is offline or is gone. No git init needed.",
+  'flows.gitInit.sessionTitle': 'This folder is not a git repo',
+  'flows.gitInit.sessionDoneTitle': 'git init done',
+  'flows.gitInit.sessionWhy':
+    "Members that edit files cannot get their own worktree, so the lead's spawn_member for them is blocked. After git init here, this session can open worktrees without a restart.",
+  'flows.gitInit.sessionShared':
+    'This team shares its folder. Sharing only applies to folders that are not git: after git init, new members that edit files get their own worktree; members already running are not affected.',
+  'flows.gitInit.sessionBlocked':
+    'This session just tried to add a member that edits files and was blocked because the folder is not a git repo.',
   'flows.new.agent': 'Agent',
   'flows.new.agent.claude': 'Claude Code',
   'flows.new.agent.codex': 'Codex',

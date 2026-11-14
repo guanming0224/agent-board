@@ -17,6 +17,7 @@ import {
   isReadOnlyMember,
   LEAD_STAFFING_REMINDER,
   MEMBER_STAFFING_GUIDE,
+  NOT_GIT_BLOCKED_EVENT,
   NOT_GIT_WRITER_GUIDE,
   STAFFING_REASON_MAX,
   SPAWN_PROMPT_MAX,
@@ -800,16 +801,22 @@ export class DispatchEngine {
     // 寫入者預設開 worktree；不是 git（或 daemon 還沒回報）就開不了，除非明確說不要（或這一隊共用資料夾）。
     const useWorktree = args.useWorktree ?? (!readOnly && !(sharedTeam && notGit));
     if (useWorktree && notGit) {
+      if (readOnly || sharedTeam) {
+        return fail(
+          'worktree_unavailable',
+          `${caller.cwd} is not a git repository (or Agent Board has not detected it yet), so a member cannot get its own worktree. Set useWorktree: false.`,
+        );
+      }
+      this.notGitBlocked(caller);
       return fail(
         'worktree_unavailable',
-        readOnly || sharedTeam
-          ? `${caller.cwd} is not a git repository (or Agent Board has not detected it yet), so a member cannot get its own worktree. Set useWorktree: false.`
-          : `${caller.cwd} is not a git repository (or Agent Board has not detected it yet). ${NOT_GIT_WRITER_GUIDE}`,
+        `${caller.cwd} is not a git repository (or Agent Board has not detected it yet). ${NOT_GIT_WRITER_GUIDE}`,
       );
     }
     if (!readOnly && !useWorktree && !sharedTeam) {
       const clash = this.writerClash(caller, members);
       if (clash.length > 0) {
+        if (notGit) this.notGitBlocked(caller);
         return fail(
           'worktree_required',
           notGit
@@ -1275,6 +1282,15 @@ export class DispatchEngine {
       ...(toSessionId ? { toSessionId } : {}),
     };
     this.deps.audit(caller.id, 'dispatch.blocked', JSON.stringify(detail));
+  }
+
+  /**
+   * 開會改檔案的成員因為資料夾不是 git 被擋（回 NOT_GIT_WRITER_GUIDE 時，CONTRACTS §24.5）：audit 一筆，
+   * 並在呼叫者記固定的事件，網頁在那張卡上提示 GM 可以在這裡 git init。payload 不帶模型寫的字。
+   */
+  private notGitBlocked(caller: Session): void {
+    this.blockedTool(caller, 'spawn_member', 'not_git');
+    this.deps.addEvent(caller.id, NOT_GIT_BLOCKED_EVENT, { tool: 'spawn_member' });
   }
 
   /** 新成員（不開 worktree、會改檔案）和團隊裡同一個 working tree 的寫入者衝突（同 hub/worktree.ts 的規則）。 */

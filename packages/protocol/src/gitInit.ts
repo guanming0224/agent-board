@@ -122,3 +122,10 @@ export const GitInitResult = z.discriminatedUnion('ok', [
   }),
 ]);
 export type GitInitResult = z.infer<typeof GitInitResult>;
+
+/**
+ * 隊長（或還沒有團隊、要自己組隊的 session）用 `spawn_member` 開會改檔案的成員，因為資料夾不是 git 被擋下
+ * （回 `NOT_GIT_WRITER_GUIDE` 的那兩條路）時，hub 在呼叫者 session 記的事件（CONTRACTS §24.5）。
+ * payload 固定 `{ tool: 'spawn_member' }`，不帶任何模型寫的字；網頁把那張卡的「不是 git」改成「開成員被擋」。
+ */
+export const NOT_GIT_BLOCKED_EVENT = 'dispatch.not_git';

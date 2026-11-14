@@ -14,10 +14,19 @@ export type RightPanel =
  * usage：用量詳情 `#/usage`（GM 2026-11-09），從頁首的「近 30 天 N token」或側欄用量打開。
  * machines：機器面板（發版與自動更新）`#/machines`，從設定的機器區或側欄的機器區打開；推播「更新失敗」也開這裡。
  * crossReview：交叉審查（Codex 第二輪）`#/cross-review/<id>`；發起是 `#/cross-review/new?session=<id>`。
+ * gitInit：在這個 session 的資料夾 git init `#/git-init/<sessionId>`（卡片「⋯」，CONTRACTS §24.5）。
  * （`#/review/` 是舊的收件匣網址，已經轉址，不能用。）
  */
 export type ModalKind =
-  'settings' | 'archive' | 'new' | 'search' | 'transcript' | 'usage' | 'machines' | 'crossReview';
+  | 'settings'
+  | 'archive'
+  | 'new'
+  | 'search'
+  | 'transcript'
+  | 'usage'
+  | 'machines'
+  | 'crossReview'
+  | 'gitInit';
 
 export type RouteView =
   /** 不疊在畫布上的整頁：全尺寸終端機、登入、首次引導（規格 §1.4 不變）。 */
@@ -75,6 +84,10 @@ export function parseHash(hash: string): RouteView {
       return { kind: 'board', right: 'keep', modal: 'machines' };
     case 'cross-review':
       return { kind: 'board', right: 'keep', modal: 'crossReview' };
+    case 'git-init':
+      return param
+        ? { kind: 'board', right: 'keep', modal: 'gitInit' }
+        : { kind: 'board', right: null, modal: null };
     case 'transcript':
       return param
         ? { kind: 'board', right: 'keep', modal: 'transcript' }
@@ -119,6 +132,15 @@ export function crossReviewTarget(
     return { id: null, session: new URLSearchParams(query).get('session') || null };
   }
   return { id, session: null };
+}
+
+/** 在這個 session 的資料夾 git init（§24.5）。 */
+export const gitInitHash = (sessionId: string) => `#/git-init/${encodeURIComponent(sessionId)}`;
+
+/** `#/git-init/<id>` → id；不是這個畫面或解不開是 null。 */
+export function gitInitTarget(hash: string): string | null {
+  const [name, raw] = (hash.replace(/^#\/?/, '').split('?')[0] ?? '').split('/');
+  return name === 'git-init' ? part(raw) : null;
 }
 
 /** 機器面板（版本與更新）。 */

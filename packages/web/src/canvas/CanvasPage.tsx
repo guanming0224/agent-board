@@ -46,6 +46,7 @@ import {
 } from './archive';
 import { EDGE_LABEL_BADGE_W, EDGE_LABEL_H, EDGE_LABEL_MARGIN, TIDY_FIT_MIN_ZOOM } from './arrange';
 import { HandoffEdge, type LinkEdgeType } from './HandoffEdge';
+import { useNotGitEvents } from '../flows/gitInitState';
 import { useHandoffActivity, useHandoffEvents, useLinkFilters } from './handoffActivity';
 import { activityKey, type Channel } from './handoffActivityState';
 import { buildLinks, COUNT_MS, trafficHosts } from './interactions';
@@ -211,6 +212,8 @@ function Flow({
   const rules = useTeams((s) => s.rules);
   const handoffs = useMemo(() => groupHandoffs(rules), [rules]);
   useHandoffEvents(backend);
+  // 隊長開成員因為不是 git 被擋（§24.5）：卡片上的「不是 git」改成「開成員被擋」。
+  useNotGitEvents(backend);
   const filters = useLinkFilters((s) => s.filters);
   // 最近有往來（10 分鐘內）或正在播動畫的一對與用到的類別。字串比較：只有這個集合變了才重算線。
   const trafficSig = useHandoffActivity((s) => {

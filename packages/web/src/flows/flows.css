@@ -2225,3 +2225,57 @@
 .git-init .mono {
   overflow-wrap: anywhere;
 }
+
+/*
+ * session 卡片與全尺寸頁的 git init（§24.5，flows/SessionGitInit.tsx）。
+ * 卡片上只有「不是 git」小晶片（不是按鈕，不加觸控高度）；隊長開成員被擋過時改成等你的琥珀色。
+ */
+.chip.not-git.blocked {
+  border-color: var(--you);
+  background: var(--you-tint);
+  color: var(--fg);
+}
+.session-git-init {
+  display: grid;
+  gap: var(--space-2);
+}
+.session-git-init h3,
+.session-git-init p {
+  margin: 0;
+}
+.session-git-init-blocked {
+  color: var(--you);
+  font-size: var(--fs-ctl-sm);
+}
+/* 次畫面只裝說明與確認，不用撐滿 85vh：高度跟著內容，太長才捲。 */
+.modal-box.git-init-modal {
+  width: min(720px, calc(100vw - 96px));
+  height: auto;
+  max-height: min(85vh, calc(100vh - 96px));
+}
+.page.git-init-page {
+  max-width: none;
+  padding: 0 var(--space-6) var(--space-8);
+  display: grid;
+  gap: var(--space-3);
+}
+.modal-body .page.git-init-page {
+  padding-top: 0;
+}
+/* 標題列貼齊次畫面左右兩邊，右邊讓出外框的 ✕。 */
+.git-init-page > .git-init-page-head {
+  margin: 0 calc(-1 * var(--space-6));
+  padding-right: calc(var(--ctl-h-sm) + var(--space-2) * 2);
+}
+.git-init-page-where {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .page.git-init-page {
+    padding: 0 var(--space-4) var(--space-6);
+  }
+  .git-init-page > .git-init-page-head {
+    margin: 0 calc(-1 * var(--space-4));
+  }
+}

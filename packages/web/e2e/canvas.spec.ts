@@ -3677,3 +3677,160 @@ test.describe('設計統一：畫布區（GM 2026-11-09 Q1、Q2、Q4）', () => 
     await toggle.click();
   });
 });
+
+test.describe('session 卡片上的 git init（CONTRACTS §24.5）', () => {
+  const menuBtn = (page: Page, id: string) =>
+    card(page, id).getByRole('button', { name: /的更多動作$/ });
+  /** 在 Vite 的模組實例上改假後端（和 App 同一份）。 */
+  const fakeBackend = (page: Page, script: string) =>
+    patchStore(page, `const backend = useBoard.getState().backend; ${script}`);
+  const asMember = (page: Page) =>
+    fakeBackend(
+      page,
+      `const me = backend.currentUser;
+       backend.currentUser = async () => ({ ...(await me()), role: 'member' });`,
+    );
+
+  test('不是 git：卡片標示、隊長被擋的提示、⋯ 打開 git init，成功後標示自己消失', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    const docs = card(page, 's-docs');
+    // s-docs 的資料夾不是 git；s-etl 是 git、s-auth 有自己的 worktree、s-web 已失聯：都沒有標示。
+    await expect(docs.getByTestId('not-git')).toHaveText('不是 git');
+    for (const id of ['s-etl', 's-auth', 's-web']) {
+      await expect(card(page, id).getByTestId('not-git')).toHaveCount(0);
+    }
+    // 標示只是一行晶片：不是按鈕，不會讓卡片多出觸控高度。
+    await expect(docs.locator('.sign button')).toHaveCount(0);
+
+    // git 資料夾的卡：選單裡沒有 git init。
+    await menuBtn(page, 's-etl').click();
+    await expect(card(page, 's-etl').getByRole('menuitem', { name: '重新命名' })).toBeVisible();
+    await expect(card(page, 's-etl').getByTestId('card-git-init')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    // hub 記下隊長開成員因為不是 git 被擋（固定事件）：標示改成「開成員被擋」。
+    await fakeBackend(
+      page,
+      `backend.addSessionEvent('s-docs', 'dispatch.not_git', { tool: 'spawn_member' });`,
+    );
+    await expect(docs.getByTestId('not-git-blocked')).toHaveText('開成員被擋：不是 git');
+    await shot(page, 'card-git-init-chip');
+
+    await menuBtn(page, 's-docs').click();
+    await docs.getByTestId('card-git-init').click();
+    const dialog = page.getByTestId('modal');
+    await expect(dialog.getByTestId('git-init-page')).toBeVisible();
+    await expect(page).toHaveURL(/#\/git-init\/s-docs$/);
+    await expect(dialog).toContainText('Tidy docs');
+    await expect(dialog.getByTestId('session-git-init-blocked')).toBeVisible();
+    // 已經按了「在這裡 git init…」：一打開就是確認步驟（同一套 GitInit.tsx）。
+    await expect(dialog.locator('.git-init-confirm')).toContainText('session 不會中斷');
+    // 等次畫面的淡入播完再截圖。
+    await page.waitForFunction(() =>
+      (document.querySelector('.modal-layer')?.getAnimations({ subtree: true }) ?? []).every(
+        (a) => a.playState !== 'running',
+      ),
+    );
+    await shot(page, 'card-git-init-confirm');
+    await dialog.getByTestId('git-init-confirm').click();
+    await expect(dialog.getByTestId('git-init-done')).toContainText('12 個檔案');
+    await expect(dialog.getByTestId('session-git-init')).toContainText('已 git init');
+    await shot(page, 'card-git-init-done');
+    // 背後的卡：hub 推來新的 repoRoot，標示消失，不用重整。
+    await dialog.getByTestId('modal-close').click();
+    await expect(docs.getByTestId('not-git-blocked')).toHaveCount(0);
+    await expect(docs.getByTestId('not-git')).toHaveCount(0);
+    await menuBtn(page, 's-docs').click();
+    await expect(docs.getByRole('menuitem', { name: '重新命名' })).toBeVisible();
+    await expect(docs.getByTestId('card-git-init')).toHaveCount(0);
+  });
+
+  test('不是 owner：看得到「不是 git」，選單、次畫面、全尺寸頁都沒有 git init 按鈕', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await asMember(page);
+    await expect(card(page, 's-docs').getByTestId('not-git')).toBeVisible();
+    await menuBtn(page, 's-docs').click();
+    await expect(card(page, 's-docs').getByRole('menuitem', { name: '重新命名' })).toBeVisible();
+    await expect(card(page, 's-docs').getByTestId('card-git-init')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    // 直接開網址：只有說明，沒有按鈕。
+    await page.evaluate(() => (location.hash = '#/git-init/s-docs'));
+    await expect(page.getByTestId('git-init-owner-only')).toBeVisible();
+    await expect(page.getByTestId('git-init-open')).toHaveCount(0);
+    await expect(page.getByTestId('git-init-confirm')).toHaveCount(0);
+    await page.evaluate(() => (location.hash = '#/terminal/s-docs'));
+    await expect(page.getByTestId('full-s-docs')).toBeVisible();
+    await expect(page.getByTestId('full-s-docs').getByTestId('not-git')).toBeVisible();
+    await expect(page.getByTestId('session-git-init')).toHaveCount(0);
+    await expect(page.getByTestId('git-init-open')).toHaveCount(0);
+  });
+
+  test('全尺寸頁：側欄有 git init；git 資料夾的 session 沒有；成功後側欄改成結果、標示消失', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    await page.evaluate(() => (location.hash = '#/terminal/s-etl'));
+    await expect(page.getByTestId('full-s-etl')).toBeVisible();
+    await expect(page.getByTestId('full-handoff')).toBeVisible();
+    await expect(page.getByTestId('session-git-init')).toHaveCount(0);
+
+    await page.evaluate(() => (location.hash = '#/terminal/s-docs'));
+    const full = page.getByTestId('full-s-docs');
+    await expect(full.getByTestId('not-git')).toBeVisible();
+    const panel = page.getByTestId('session-git-init');
+    await expect(panel).toContainText('這個資料夾不是 git');
+    await expect(panel).toContainText('不用重開');
+    // 側欄不自動展開確認，先按「在這裡 git init」。
+    await expect(panel.locator('.git-init-confirm')).toHaveCount(0);
+    await panel.getByTestId('git-init-open').click();
+    await expect(panel.locator('.git-init-confirm')).toBeVisible();
+    await shot(page, 'full-git-init-confirm');
+    await panel.getByTestId('git-init-confirm').click();
+    await expect(panel.getByTestId('git-init-done')).toBeVisible();
+    await expect(full.getByTestId('not-git')).toHaveCount(0);
+  });
+
+  test('團隊已勾共用資料夾：git init 照樣顯示，並說明共用只在不是 git 時生效', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    // 把 s-docs 放進一個勾了共用資料夾的團隊（假後端的 API，和網頁送的一樣）。
+    await page.evaluate(
+      async ({ store, teams }) => {
+        const { useBoard } = await import(/* @vite-ignore */ store);
+        const { refreshTeams } = await import(/* @vite-ignore */ teams);
+        const backend = useBoard.getState().backend;
+        const team = await backend.createTeam({
+          name: 'Shared docs',
+          goal: '',
+          doneCriteria: '',
+          color: '#4aa3ff',
+          contextMd: '',
+          sharedWriters: true,
+        });
+        await backend.putTeamMember(team.id, 's-docs', 'lead');
+        await refreshTeams(backend);
+      },
+      { store: STORE, teams: '/src/team/store.ts' },
+    );
+    await page.evaluate(() => (location.hash = '#/git-init/s-docs'));
+    const dialog = page.getByTestId('modal');
+    await expect(dialog.getByTestId('session-git-init-shared')).toContainText(
+      '共用只在不是 git 的資料夾生效',
+    );
+    await expect(dialog.getByTestId('git-init-confirm')).toBeVisible();
+  });
+
+  test('畫布縮很小：「不是 git」跟著標題以外的內容一起藏起來', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvasAt(page, 0.25);
+    await expect(page.locator('.canvas')).toHaveAttribute('data-compact', '');
+    await expect(card(page, 's-docs').getByTestId('not-git')).toBeHidden();
+  });
+});

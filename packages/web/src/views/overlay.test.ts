@@ -1,6 +1,15 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { closeStep, isSearchHash, MACHINES_HASH, parseHash, resolve, rightHash } from './overlay';
+import {
+  closeStep,
+  gitInitHash,
+  gitInitTarget,
+  isSearchHash,
+  MACHINES_HASH,
+  parseHash,
+  resolve,
+  rightHash,
+} from './overlay';
 
 describe('網址規則（P2 §1.4）', () => {
   it('畫布、收件匣、團隊、設定、新增、封存細節', () => {
@@ -116,5 +125,22 @@ describe('網址規則（P2 §1.4）', () => {
     expect(isSearchHash('#/search?q=a')).toBe(true);
     expect(isSearchHash('#/transcript/s1')).toBe(false);
     expect(isSearchHash(null)).toBe(false);
+  });
+});
+
+describe('session 的 git init 次畫面（CONTRACTS §24.5）', () => {
+  it('#/git-init/<id> 是疊在畫布上的次畫面，沿用右側面板；沒帶 id 當畫布', () => {
+    expect(gitInitHash('s 1')).toBe('#/git-init/s%201');
+    expect(parseHash(gitInitHash('s 1'))).toEqual({
+      kind: 'board',
+      right: 'keep',
+      modal: 'gitInit',
+    });
+    expect(parseHash('#/git-init')).toEqual({ kind: 'board', right: null, modal: null });
+    expect(gitInitTarget('#/git-init/s%201')).toBe('s 1');
+    expect(gitInitTarget('#/git-init/%E0%A4%A')).toBeNull();
+    expect(gitInitTarget('#/canvas')).toBeNull();
+    const right = { kind: 'inbox' as const, target: null };
+    expect(resolve(gitInitHash('a'), right).right).toEqual(right);
   });
 });

@@ -1,5 +1,5 @@
 // 卡片標題列的「⋯」：重新命名、建立交接線（P2 §4.2）、移到工作區（單獨 session，P2 §2.3 Q11）、
-// 進度卡（單獨 session，P3）、接續（已結束才有）、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
+// 進度卡（單獨 session，P3）、在這裡 git init（資料夾不是 git、只有 owner，§24.5）、接續（已結束才有）、封存。選單展開在標題列下方（不浮在 xterm 上，規則三之一）。
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
@@ -8,7 +8,10 @@ import { canResume, errorText, useResume } from '../views';
 import { requestArchive } from './archive';
 import { useTeams } from '../team/store';
 import { moveSessionToZone, useCurrentZoneId, useZones } from '../zones';
-import { newCrossReviewHash } from '../views/overlay';
+import { gitInitHash, newCrossReviewHash } from '../views/overlay';
+import { useCurrentUser } from '../flows/common';
+import { needsGitInit } from '../flows/gitInitState';
+import '../flows/messages';
 import '../review/messages';
 import { useLinkPick } from './linkPick';
 import { useProgressUi } from '../progress/uiStore';
@@ -114,6 +117,30 @@ function ProgressItem({ session, onClose }: { session: Session; onClose: () => v
   );
 }
 
+/**
+ * 「在這裡 git init…」（CONTRACTS §24.5）：資料夾不是 git、只有 owner（讀到使用者資料前不顯示）。
+ * 打開置中次畫面（確認步驟、結果、略過的大檔都在那裡，卡片不用變高）。
+ */
+function GitInitItem({ session, onClose }: { session: Session; onClose: () => void }) {
+  const t = useT();
+  const me = useCurrentUser();
+  if (!needsGitInit(session) || me.data?.role !== 'owner') return null;
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      className="sm"
+      onClick={() => {
+        onClose();
+        location.hash = gitInitHash(session.id);
+      }}
+      data-testid="card-git-init"
+    >
+      {t('flows.gitInit.menu')}
+    </button>
+  );
+}
+
 export function CardMenu({
   session,
   onRename,
@@ -188,6 +215,7 @@ export function CardMenu({
       >
         {t('review.open')}
       </button>
+      <GitInitItem session={session} onClose={onClose} />
       {canResume(session) && (
         <button
           type="button"

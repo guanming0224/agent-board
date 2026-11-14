@@ -160,6 +160,9 @@ export function demoSnapshot(): BoardSnapshot {
         machineId: 'm-gpu',
         status: 'plan_review',
         permissionMode: 'plan',
+        // m-gpu 上的這個資料夾是 git repo；s-docs（m-studio）不是，卡片上會有「不是 git」（§24.5）。
+        repoRoot: '/home/demo/project',
+        repoCommonDir: '/home/demo/project/.git',
         statusSince: minutesAgo(4),
         claudeSessionId: DEMO_ETL_CONVERSATION,
         lastLines: [
@@ -175,6 +178,8 @@ export function demoSnapshot(): BoardSnapshot {
         machineId: 'm-gpu',
         status: 'stuck',
         branch: 'ab/train-v2',
+        repoRoot: '/home/demo/project',
+        repoCommonDir: '/home/demo/project/.git',
         permissionMode: 'bypassPermissions',
         statusSince: minutesAgo(14),
         lastLines: ['epoch 12/40', 'loss 0.4182', 'loading checkpoint'],
@@ -1155,6 +1160,15 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         cwd: input.cwd,
         worktreePath: input.useWorktree ? `/home/demo/.agent-board-wt/${slug}` : null,
         branch: input.useWorktree ? `ab/${slug}` : 'main',
+        // 假的 git init 做過的資料夾（或它底下）：開的 session 一開始就是 repo（§24.5 卡片不顯示「不是 git」）。
+        ...(() => {
+          const root = [...gitInited].find(
+            (dir) => input.cwd === dir || input.cwd.startsWith(`${dir}/`),
+          );
+          return !input.useWorktree && root
+            ? { repoRoot: root, repoCommonDir: `${root}/.git` }
+            : {};
+        })(),
         readOnly: input.readOnly,
         permissionMode: input.permissionMode,
         model: input.model,

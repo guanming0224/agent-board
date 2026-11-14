@@ -30,6 +30,7 @@ import {
   DispatchedByChip,
   useViewsUi,
 } from '../views';
+import { NotGitChip } from '../flows/SessionGitInit';
 import { HeldFirstPrompt } from '../team/HeldFirstPrompt';
 import { CardMenu, MenuButton, RenameInput } from './CardMenu';
 import { CommandInput } from './CommandInput';
@@ -174,6 +175,8 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
         <ReadOnlyChip session={session} />
         <DispatchedByChip session={session} />
         <AutoContinueNote session={session} />
+        {/* 資料夾不是 git（§24.5）：小標示，git init 在「⋯」；成功後 repoRoot 更新就消失。 */}
+        <NotGitChip session={session} />
       </div>
     </>
   );

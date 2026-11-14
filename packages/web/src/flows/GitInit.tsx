@@ -1,4 +1,5 @@
-// 不是 git 的資料夾：「在這裡 git init」（GM 2026-11-13，CONTRACTS §24）。新增團隊、補成員、新增 session 共用。
+// 不是 git 的資料夾：「在這裡 git init」（GM 2026-11-13，CONTRACTS §24）。新增團隊、補成員、新增 session、
+// session 卡片與全尺寸頁（§24.5，flows/SessionGitInit.tsx）共用。
 // 只有 owner 能按；按下先顯示會做什麼（確認步驟），確認後 hub 請那台 daemon 執行，結果寫在這裡。
 // 成功後呼叫 onDone（重新偵測資料夾），BD 就能開 worktree；正在這個資料夾跑的 session 不會中斷。
 // 呼叫端用 `key={machineId + path}` 掛：換資料夾時結果清掉。
@@ -28,6 +29,8 @@ export function GitInitAction({
   path,
   notGit,
   onDone,
+  startOpen = false,
+  onStart,
 }: {
   machine: Machine | undefined;
   path: string;
@@ -35,11 +38,15 @@ export function GitInitAction({
   notGit: boolean;
   /** 成功後（重新偵測資料夾是不是 git）。 */
   onDone: () => void;
+  /** 一打開就是確認步驟（卡片「⋯」的「在這裡 git init…」已經表示要做，§24.5）。 */
+  startOpen?: boolean;
+  /** 按下確認、送出之前（呼叫端據此在結果回來前就保留這個元件）。 */
+  onStart?: () => void;
 }) {
   const t = useT();
   const { backend } = useBoard();
   const me = useCurrentUser();
-  const [state, setState] = useState<State>({ step: 'idle' });
+  const [state, setState] = useState<State>({ step: startOpen ? 'confirm' : 'idle' });
   const dir = path.trim();
   if (!machine || !dir) return null;
   if (!notGit && state.step !== 'done') return null;
@@ -54,6 +61,7 @@ export function GitInitAction({
   }
 
   const run = async () => {
+    onStart?.();
     setState({ step: 'busy' });
     try {
       const result = await backend.gitInit(machine.id, dir);

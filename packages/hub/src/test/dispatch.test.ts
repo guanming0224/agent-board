@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   AUTO_STAFF_DEFAULT,
   DISPATCH_SPAWN_RATE_MAX,
+  NOT_GIT_BLOCKED_EVENT,
   NOT_GIT_WRITER_GUIDE,
   type Session,
   type SessionSpec,
@@ -2139,6 +2140,40 @@ describe('不是 git 的資料夾（§24）', () => {
     });
     expect(clash.text).toMatch(/^worktree_required: Same folder as Lead/);
     expect(clash.text).toContain(NOT_GIT_WRITER_GUIDE);
+    // 兩次被擋都在隊長身上記固定的事件（網頁卡片提示 git init，§24.5）與 audit；不帶模型寫的字。
+    const notGit = eventsOf(b.caller).filter((e) => e.type === NOT_GIT_BLOCKED_EVENT);
+    expect(notGit.map((e) => e.payload)).toEqual([
+      { tool: 'spawn_member' },
+      { tool: 'spawn_member' },
+    ]);
+    expect(
+      hub.running.store
+        .listAudit({ limit: 500 })
+        .filter(
+          (a) => a.action === 'dispatch.blocked' && JSON.parse(a.detail).reason === 'not_git',
+        ),
+    ).toHaveLength(2);
+  });
+
+  it('還沒有團隊、要自己組隊的 session：開 BD 被擋也記事件（§24.5）', async () => {
+    const b = await board({ permissionMode: 'acceptEdits' }, null);
+    await setAutoStaff(b, {});
+    const refused = await ask(b, 'spawn_member', {
+      reason: 'Needed.',
+      role: 'worker',
+      prompt: 'x',
+    });
+    expect(refused.text).toMatch(/^worktree_unavailable:/);
+    expect(eventsOf(b.caller).map((e) => e.type)).toEqual([NOT_GIT_BLOCKED_EVENT]);
+    // 唯讀角色在不是 git 的資料夾不開 worktree 就能開，不記被擋。
+    const ro = await ask(b, 'spawn_member', {
+      reason: 'Needed.',
+      role: 'researcher',
+      prompt: 'x',
+      useWorktree: true,
+    });
+    expect(ro.text).toMatch(/^worktree_unavailable:.*Set useWorktree: false/);
+    expect(eventsOf(b.caller).map((e) => e.type)).toEqual([NOT_GIT_BLOCKED_EVENT]);
   });
 
   it('共用資料夾的團隊：BD 不開 worktree、直接在主資料夾，兩位都可以', async () => {

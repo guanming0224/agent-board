@@ -1130,3 +1130,69 @@ test('不是 git 的資料夾（§24，真 daemon、真 git）：隊長開 BD �
   const gitInits = await auditOf(page, 'fs.git_init');
   expect(gitInits.some((a) => a.detail.includes('"ok":true'))).toBe(true);
 });
+
+test('還沒有團隊的 session（§24.5，真 daemon、真 git）：開 BD 被擋 → 卡片提示 → 在 session 頁 git init → 提示消失、不用重開就開到 worktree', async ({
+  page,
+}) => {
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'ab-team-e2e-solo-')));
+  cleanupDirs.push(parent);
+  const plain = join(parent, 'draft');
+  mkdirSync(plain);
+  writeFileSync(join(plain, 'draft.md'), '# draft\n');
+
+  await page.goto('/#/canvas');
+  const solo = await createSession(page, 'solo-ld', false, plain);
+  expect(solo.repoRoot).toBeNull();
+  // 全尺寸頁：標題下「不是 git」，側欄有 git init（owner）。
+  await page.goto(`/#/terminal/${solo.id}`);
+  const full = page.getByTestId(`full-${solo.id}`);
+  await expect(full.getByTestId('not-git')).toBeVisible({ timeout: 20_000 });
+  const panel = page.getByTestId('session-git-init');
+  await expect(panel).toContainText('這個資料夾不是 git');
+
+  // 沒有團隊的 session 開 BD：被擋，hub 記固定事件，標示改成「開成員被擋」。
+  await typeInto(
+    page,
+    solo.id,
+    'mcp spawn_member {"role":"worker","prompt":"Edit draft.","reason":"Need an editor."}',
+  );
+  await screenOf(page, solo.id).toContain('MCP error worktree_unavailable');
+  await expect(full.getByTestId('not-git-blocked')).toBeVisible({ timeout: 20_000 });
+  await expect(panel.getByTestId('session-git-init-blocked')).toBeVisible();
+  const blocked = await auditOf(page, 'dispatch.blocked');
+  expect(
+    blocked.some((a) => a.sessionId === solo.id && a.detail.includes('"reason":"not_git"')),
+  ).toBe(true);
+
+  await panel.getByTestId('git-init-open').click();
+  await panel.getByTestId('git-init-confirm').click();
+  await expect(panel.getByTestId('git-init-done')).toContainText('已 git init', {
+    timeout: 30_000,
+  });
+  // daemon 讓這個 session 即時換上 repo：標示消失，不用重整。
+  await expect(full.getByTestId('not-git-blocked')).toHaveCount(0, { timeout: 20_000 });
+  await expect(full.getByTestId('not-git')).toHaveCount(0);
+  const soloNow = await getSession(page.request, solo.id);
+  expect(soloNow).toMatchObject({ endedAt: null, branch: 'main' });
+  expect(soloNow.repoRoot).not.toBeNull();
+  expect(
+    execFileSync('git', ['-C', plain, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim(),
+  ).toBe('Agent Board：初始 commit');
+
+  // 不用重開：spawn_member 開 BD 成功（自己成為新團隊的隊長），有自己的 worktree。
+  await typeInto(
+    page,
+    solo.id,
+    'mcp spawn_member {"role":"worker","prompt":"Edit draft now.","reason":"Folder is a repo now."}',
+  );
+  await screenOf(page, solo.id).toContain('MCP ok');
+  await expect
+    .poll(
+      async () => {
+        const all = (await (await page.request.get('/api/sessions')).json()) as Session[];
+        return all.find((s) => s.dispatchedBy === solo.id)?.worktreePath ?? null;
+      },
+      { timeout: 20_000 },
+    )
+    .not.toBeNull();
+});
