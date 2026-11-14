@@ -246,8 +246,9 @@ export function FloatingDialog({
       style={
         shown
           ? { left: shown.x, top: shown.y }
-          : // 還沒量好大小：先藏起來（只差一個 layout effect，看不到閃動）。
-            { visibility: 'hidden' }
+          : // 還沒量好大小：先透明（只差一個 layout effect，看不到閃動）。不用 visibility: hidden，
+            // 那樣打開時的 focus() 會失敗（焦點要先進對話框）。
+            { left: 0, top: 0, opacity: 0 }
       }
       onKeyDown={onKeyDown}
     >

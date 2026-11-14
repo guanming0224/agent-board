@@ -58,6 +58,19 @@ async function uncoveredCard(page: Page, dialogTestId: string) {
   }, dialogTestId);
 }
 
+/** 畫布空白（滑鼠下就是 xyflow 的底板，不是卡片、對話框或工具列）的一點。 */
+async function blankPane(page: Page) {
+  return page.evaluate(() => {
+    for (let y = innerHeight - 120; y > 120; y -= 40) {
+      for (let x = 20; x < innerWidth - 20; x += 40) {
+        if (document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'))
+          return { x, y };
+      }
+    }
+    return null;
+  });
+}
+
 test.describe('浮動對話框：新增 session（桌面）', () => {
   test.use({ viewport: DESKTOP, locale: 'zh-TW' });
 
@@ -124,12 +137,16 @@ test.describe('浮動對話框：新增 session（桌面）', () => {
     await expect(page).toHaveURL(/#\/new$/);
 
     // 點畫布空白處也不關。
-    await page.mouse.click(40, DESKTOP.height - 140);
+    const empty = await blankPane(page);
+    expect(empty).not.toBeNull();
+    await page.mouse.click(empty!.x, empty!.y);
     await expect(modal).toBeVisible();
 
     // 捲動（縮放）畫布有效。
     const zoomBefore = await page.getByTestId('zoom-level').textContent();
-    await page.mouse.move(target!.x, target!.y + 40);
+    const blank = await blankPane(page);
+    expect(blank, '要有一塊沒被蓋住的畫布空白').not.toBeNull();
+    await page.mouse.move(blank!.x, blank!.y);
     await page.mouse.wheel(0, -400);
     await expect.poll(() => page.getByTestId('zoom-level').textContent()).not.toBe(zoomBefore);
     await expect(modal).toBeVisible();
@@ -271,8 +288,8 @@ test.describe('浮動對話框：新增團隊、補成員、Preset（桌面）',
     await expect
       .poll(async () => Math.round((await box(dialog)).x))
       .toBe(Math.round(start.x - 120));
-    // 表單自己的「取消」也關。
-    await dialog.getByRole('button', { name: '取消' }).click();
+    // 表單自己的「收起」也關。
+    await dialog.getByRole('button', { name: '收起', exact: true }).click();
     await expect(dialog).toHaveCount(0);
   });
 
