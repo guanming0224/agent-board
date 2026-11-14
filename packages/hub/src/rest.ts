@@ -448,6 +448,11 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       hub.deleteZone(param(ctx), ctx.user);
       return ok;
     },
+    zoneGroupsGet: () => hub.zoneGroups.get(),
+    zoneGroupsCreate: (ctx) => hub.zoneGroups.create(ctx.body, ctx.user),
+    zoneGroupsMove: (ctx) => hub.zoneGroups.move(ctx.body, ctx.user),
+    zoneGroupsUpdate: (ctx) => hub.zoneGroups.update(param(ctx), ctx.body, ctx.user),
+    zoneGroupsDelete: (ctx) => hub.zoneGroups.ungroup(param(ctx), ctx.user),
 
     teamsList: () => store.listTeams(),
     teamsCreate: (ctx) => {

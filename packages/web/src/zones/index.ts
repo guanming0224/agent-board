@@ -6,6 +6,8 @@ export {
   sessionZone,
   useCurrentZoneId,
   useSessionZones,
+  useZoneBar,
+  useZoneGroups,
   useZones,
   useZoneUi,
   useZoneWaiting,

@@ -24,6 +24,7 @@ import type {
   StaffActivity,
   Review,
   User,
+  ZoneGroups,
 } from '@agent-board/protocol';
 import type {
   BoardBackend,
@@ -294,6 +295,7 @@ class HubConnection implements TerminalStream {
           approvals: message.approvals,
           waitingLimit: message.waitingLimit,
           zones: message.zones,
+          zoneGroups: message.zoneGroups,
           broadcasts: mergeAfterReconnect(this.state?.broadcasts ?? [], message.broadcasts),
           pause: message.pause,
           progress: message.progress,
@@ -319,6 +321,8 @@ class HubConnection implements TerminalStream {
         return this.patch((s) => ({ ...s, progress: upsertCard(s.progress ?? [], message.card) }));
       case 'zone.list':
         return this.patch((s) => ({ ...s, zones: message.zones }));
+      case 'zone.groups':
+        return this.setZoneGroups(message.zoneGroups);
       case 'preset.list':
         return this.patch((s) => ({ ...s, presets: message.presets }));
       case 'broadcast.updated':
@@ -444,6 +448,11 @@ class HubConnection implements TerminalStream {
       ...s,
       staffRequests: (s.staffRequests ?? []).filter((r) => r.id !== id),
     }));
+  }
+
+  /** 分頁群組（WS zone.groups 或 REST 回應）：整份換掉（§25）。 */
+  setZoneGroups(zoneGroups: ZoneGroups): void {
+    this.patch((s) => ({ ...s, zoneGroups }));
   }
 
   /** 團隊動態（WS team.activity 或 REST 回應）：整份換掉。 */
@@ -772,6 +781,27 @@ export function createHubBackend() {
     renameZone: (id, name) => call('zonesUpdate', { params: { id }, body: { name } }),
     async deleteZone(id) {
       await call('zonesDelete', { params: { id } });
+    },
+    // 分頁群組（§25）：不等 WS，回應到了就先換上（WS zone.groups 隨後也會到，內容一樣）。
+    async createZoneGroup(input) {
+      const result = await call('zoneGroupsCreate', { body: input });
+      hub.setZoneGroups(result.zoneGroups);
+      return result;
+    },
+    async updateZoneGroup(id, patch) {
+      const result = await call('zoneGroupsUpdate', { params: { id }, body: patch });
+      hub.setZoneGroups(result);
+      return result;
+    },
+    async deleteZoneGroup(id) {
+      const result = await call('zoneGroupsDelete', { params: { id } });
+      hub.setZoneGroups(result);
+      return result;
+    },
+    async moveZoneBarItem(move) {
+      const result = await call('zoneGroupsMove', { body: move });
+      hub.setZoneGroups(result);
+      return result;
     },
     listTeamPresets: () => call('teamPresetsList'),
     createTeamPreset: (input) => call('teamPresetsCreate', { body: input }),

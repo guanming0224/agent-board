@@ -58,6 +58,13 @@ import { SearchQuery, SearchResults } from './search';
 import { TeamPreset, TeamPresetConfig, TeamPresetName, TeamPresetUsed } from './presets';
 import { DirEntry, FolderName, RepoInfo, SessionSpec } from './ws';
 import { GitInitResult } from './gitInit';
+import {
+  ZoneBarMove,
+  ZoneGroupCreate,
+  ZoneGroupCreated,
+  ZoneGroupPatch,
+  ZoneGroups,
+} from './zoneGroups';
 
 export type Auth = 'public' | 'user' | 'owner';
 
@@ -557,6 +564,42 @@ export const routes = {
     response: Zone,
   }),
   zonesDelete: route({ method: 'DELETE', path: '/api/zones/:id', auth: 'user', response: Ok }),
+
+  // 分頁群組（GM 2026-11-14，CONTRACTS §25）：權限和工作區相同（登入的使用者都能改）。每個寫入都回整份
+  // ZoneGroups（已整理過），並推 WS zone.groups。取消群組／刪除群組都是 DELETE：工作區（畫布）不會被刪。
+  zoneGroupsGet: route({
+    method: 'GET',
+    path: '/api/zone-groups',
+    auth: 'user',
+    response: ZoneGroups,
+  }),
+  zoneGroupsCreate: route({
+    method: 'POST',
+    path: '/api/zone-groups',
+    auth: 'user',
+    body: ZoneGroupCreate,
+    response: ZoneGroupCreated,
+  }),
+  zoneGroupsMove: route({
+    method: 'POST',
+    path: '/api/zone-groups/move',
+    auth: 'user',
+    body: ZoneBarMove,
+    response: ZoneGroups,
+  }),
+  zoneGroupsUpdate: route({
+    method: 'PATCH',
+    path: '/api/zone-groups/:id',
+    auth: 'user',
+    body: ZoneGroupPatch,
+    response: ZoneGroups,
+  }),
+  zoneGroupsDelete: route({
+    method: 'DELETE',
+    path: '/api/zone-groups/:id',
+    auth: 'user',
+    response: ZoneGroups,
+  }),
 
   // 團隊（Phase 3 實作，合約先定）
   teamsList: route({ method: 'GET', path: '/api/teams', auth: 'user', response: z.array(Team) }),

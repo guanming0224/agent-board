@@ -3,17 +3,24 @@
 // 「目前看哪一個」每台裝置自己記（localStorage）。收件匣與頁首「等你 N」一律全域，分頁上另外顯示各自的等你數。
 import { useMemo } from 'react';
 import { create } from 'zustand';
-import { DEFAULT_ZONE_ID, type Session, type Zone } from '@agent-board/protocol';
+import {
+  DEFAULT_ZONE_ID,
+  normalizeZoneGroups,
+  zoneBarItems,
+  type Session,
+  type Zone,
+  type ZoneBarItem,
+  type ZoneGroups,
+} from '@agent-board/protocol';
 import { useBoard } from '../shared/store';
 import { useTeams } from '../team/store';
+import { readCollapsed, writeCollapsed, type KeyValueStorage } from './bar';
 import { validZone, zoneOfSession, zonesOf, zoneWaitingCounts } from './model';
 
 export { validZone, zoneOfSession, zonesOf, zoneWaitingCounts } from './model';
 
 const CURRENT_KEY = 'agent-board.zone.current';
 const VIEWPORTS_KEY = 'agent-board.zone.viewports';
-/** 頂部列直接顯示的分頁數；多的收進「更多」（Q4）。 */
-export const VISIBLE_TABS = 6;
 
 export interface ZoneViewport {
   x: number;
@@ -27,6 +34,15 @@ function read<T>(key: string, fallback: T): T {
     return raw === null ? fallback : (JSON.parse(raw) as T);
   } catch {
     return fallback;
+  }
+}
+
+/** localStorage；連拿都會丟錯（某些無痕模式）就當沒有。 */
+function storage(): KeyValueStorage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
   }
 }
 
@@ -58,6 +74,9 @@ interface ZoneUi {
   moveError: string | null;
   showMoveError(detail: string): void;
   clearNotice(): void;
+  /** 收合中的分頁群組（每台裝置各自記）。 */
+  collapsed: Record<string, true>;
+  setCollapsed(groupId: string, collapsed: boolean): void;
   /** 正在拖曳的團隊（拖到分頁上放開＝移過去）。 */
   dragging: string | null;
   setDragging(teamId: string | null): void;
@@ -82,6 +101,9 @@ export const useZoneUi = create<ZoneUi>((set) => ({
   moveError: null,
   showMoveError: (moveError) => set({ moveError, notice: null }),
   clearNotice: () => set({ notice: null, moveError: null }),
+  collapsed: readCollapsed(storage()),
+  setCollapsed: (groupId, collapsed) =>
+    set((s) => ({ collapsed: writeCollapsed(storage(), s.collapsed, groupId, collapsed) })),
   dragging: null,
   setDragging: (dragging) => set({ dragging }),
 }));
@@ -89,6 +111,27 @@ export const useZoneUi = create<ZoneUi>((set) => ({
 export function useZones(): Zone[] {
   const list = useBoard((s) => s.zones);
   return useMemo(() => zonesOf(list), [list]);
+}
+
+/** 整理過的分頁群組（§25）：舊版 hub 沒送＝沒有群組。 */
+export function useZoneGroups(): ZoneGroups {
+  const zones = useZones();
+  const raw = useBoard((s) => s.zoneGroups);
+  return useMemo(
+    () =>
+      normalizeZoneGroups(
+        raw,
+        zones.map((z) => z.id),
+      ),
+    [raw, zones],
+  );
+}
+
+/** 頂部列由左到右要畫的東西（沒分組的分頁與群組）。 */
+export function useZoneBar(): ZoneBarItem<Zone>[] {
+  const zones = useZones();
+  const raw = useBoard((s) => s.zoneGroups);
+  return useMemo(() => zoneBarItems(raw, zones), [raw, zones]);
 }
 
 export function useCurrentZoneId(): string {

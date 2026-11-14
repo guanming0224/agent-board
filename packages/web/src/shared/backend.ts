@@ -54,6 +54,11 @@ import type {
   UsageSummary,
   User,
   Zone,
+  ZoneBarMove,
+  ZoneGroup,
+  ZoneGroupCreate,
+  ZoneGroupPatch,
+  ZoneGroups,
 } from '@agent-board/protocol';
 import type { TerminalStream } from './terminal-contract';
 
@@ -86,6 +91,11 @@ export interface BoardSnapshot {
   waitingLimit?: number;
   /** 工作區（P2 項目二）。舊版 hub 沒有＝undefined（當成只有預設工作區）。 */
   zones?: Zone[];
+  /**
+   * 分頁群組與頂部列順序（CONTRACTS §25）。舊版 hub 沒有＝undefined（當成沒有群組、照 position 排）。
+   * 用之前一律過 normalizeZoneGroups（被刪的工作區拿掉、新建的接在最後）。
+   */
+  zoneGroups?: ZoneGroups;
   /**
    * 群發的結果（hub 只放在記憶體）。hub 重啟後重連時，原本還在排隊的對象會被標成 failed／hub_restarted
    * （畫面寫「沒送出（hub 重啟）」），不默默消失。
@@ -355,6 +365,14 @@ export interface BoardBackend {
   createZone(name: string): Promise<Zone>;
   renameZone(id: string, name: string): Promise<Zone>;
   deleteZone(id: string): Promise<void>;
+  /**
+   * 分頁群組（§25）：每個寫入都回整份（已整理過），也會由 hub 推 zone.groups。取消群組＝刪除群組（工作區不刪）。
+   * 舊版 hub 沒有這些路由：回 404，畫面顯示錯誤，不影響分頁本身。
+   */
+  createZoneGroup(input: ZoneGroupCreate): Promise<{ group: ZoneGroup; zoneGroups: ZoneGroups }>;
+  updateZoneGroup(id: string, patch: ZoneGroupPatch): Promise<ZoneGroups>;
+  deleteZoneGroup(id: string): Promise<ZoneGroups>;
+  moveZoneBarItem(move: ZoneBarMove): Promise<ZoneGroups>;
 
   /**
    * 團隊 Presets（P3 項目二，CONTRACTS §15）。清單也在 board 快照的 presets（hub 推 preset.list）。
