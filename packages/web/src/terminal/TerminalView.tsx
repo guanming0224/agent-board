@@ -18,6 +18,7 @@ export function TerminalView({
   className,
   onSizeOwnerChange,
   scrollback,
+  webgl,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<TerminalController | null>(null);
@@ -32,7 +33,7 @@ export function TerminalView({
       stream,
       visible,
       (owner) => onSizeOwnerRef.current?.(owner),
-      { scrollback },
+      { scrollback, webgl },
     );
     controllerRef.current = controller;
     return () => {
@@ -40,12 +41,20 @@ export function TerminalView({
       controller.dispose();
       onSizeOwnerRef.current?.(null);
     };
-    // visible 只取建立當下的值，之後的變化由下面的 effect 處理，不重建終端機；scrollback 只在建立時取用。
+    // visible、scrollback、webgl 只取建立當下的值，之後的變化由下面的 effect 處理，不重建終端機。
   }, [sessionId, stream]);
 
   useEffect(() => {
     controllerRef.current?.setVisible(visible);
   }, [visible]);
+
+  useEffect(() => {
+    if (scrollback !== undefined) controllerRef.current?.setScrollback(scrollback);
+  }, [scrollback]);
+
+  useEffect(() => {
+    controllerRef.current?.setWebglPreferred(webgl ?? true);
+  }, [webgl]);
 
   useEffect(() => {
     if (autoFocus && visible) controllerRef.current?.focus();

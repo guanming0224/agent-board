@@ -237,3 +237,128 @@ test('放大後離開畫面的卡過幾秒釋放、留在畫面的保留；全�
   await page.goBack();
   await expect(card(page, 's-auth')).toBeVisible();
 });
+
+type Resize = { type: string; sessionId: string; cols: number; rows: number; claim?: boolean };
+
+/** 記下送給 hub 的 resize（假後端和 App 同一份）。 */
+async function spyResize(page: Page) {
+  await page.evaluate(async (url) => {
+    const { useBoard } = await import(/* @vite-ignore */ url);
+    const term = useBoard.getState().backend.terminal;
+    const w = window as never as { __resizes: unknown[] };
+    w.__resizes = [];
+    const send = term.send.bind(term);
+    term.send = (m: { type: string }) => {
+      if (m.type === 'terminal.resize') w.__resizes.push(m);
+      send(m);
+    };
+  }, STORE);
+}
+const resizes = (page: Page) =>
+  page.evaluate(() => (window as never as { __resizes: Resize[] }).__resizes);
+
+test('停放（縮回摘要條）期間不送 resize；回到畫面只送卡片插槽的正確尺寸', async ({ page }) => {
+  await open25(page);
+  await spyResize(page);
+  await zoomUntil(page, 90);
+  await visibleTerminalsShowContent(page);
+  const shown = await resizes(page);
+  expect(shown.length).toBeGreaterThan(0);
+  // 縮回摘要條：xterm 搬到隱藏的停放處（寬限期內），這段時間 hub 不該收到任何 resize。
+  await page.getByRole('button', { name: '全部顯示' }).click();
+  await expect(page.locator('.term-park .xterm').first()).toBeAttached();
+  await page.waitForTimeout(1500);
+  expect((await resizes(page)).length).toBe(shown.length);
+  // 寬限期內再放大：沿用同一個 xterm，送的尺寸和第一次一樣（插槽沒變），不是停放處的 0 或很小的值。
+  await zoomUntil(page, 90);
+  await visibleTerminalsShowContent(page);
+  await page.waitForTimeout(500);
+  const all = await resizes(page);
+  for (const m of all) {
+    expect(m.cols, JSON.stringify(m)).toBeGreaterThanOrEqual(20);
+    expect(m.rows, JSON.stringify(m)).toBeGreaterThanOrEqual(5);
+  }
+  const first = new Map(shown.map((m) => [m.sessionId, `${m.cols}x${m.rows}`]));
+  for (const m of all.slice(shown.length)) {
+    if (first.has(m.sessionId)) expect(`${m.cols}x${m.rows}`).toBe(first.get(m.sessionId));
+  }
+});
+
+test('焦點在卡片的 xterm 裡（打字中）：平移出畫面超過寬限期也不釋放', async ({
+  page,
+  browserName,
+}) => {
+  // WebKit 下 Playwright 的滾輪推不動畫布（30 次後卡仍在畫面內），焦點規則只在 Chromium 驗。
+  test.skip(browserName === 'webkit', 'WebKit 的滾輪無法把卡推出畫面');
+  await open25(page);
+  await zoomUntil(page, 90);
+  await visibleTerminalsShowContent(page);
+  const slot = page
+    .locator('[data-testid="terminal-slot"][data-visible="true"][data-terminal="live"]')
+    .first();
+  const id = await slot.locator('[data-terminal-session]').getAttribute('data-terminal-session');
+  // 讓 xterm 取得焦點（和點進去一樣走 focusin；點擊可能被側欄擋到）。
+  await page.evaluate(
+    async ({ url, id }) => {
+      const { terminalForTest } = (await import(/* @vite-ignore */ url)) as {
+        terminalForTest: (el: HTMLElement) => { focus(): void } | undefined;
+      };
+      terminalForTest(
+        document.querySelector<HTMLElement>(`[data-terminal-session="${id}"]`)!,
+      )!.focus();
+    },
+    { url: CONTROLLER, id },
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        document.activeElement
+          ?.closest('[data-terminal-session]')
+          ?.getAttribute('data-terminal-session'),
+      ),
+    )
+    .toBe(id);
+  // 在畫面另一側用滾輪放大，把這張卡推出畫面（滾輪不會移走焦點）。
+  const box = (await page.locator(`[data-terminal-session="${id}"]`).boundingBox())!;
+  const viewport = page.viewportSize()!;
+  const x = box.x + box.width / 2 < viewport.width / 2 ? viewport.width - 120 : 300;
+  await page.mouse.move(x, viewport.height / 2);
+  const mySlot = page.locator(`[data-testid="card-${id}"] [data-testid="terminal-slot"]`);
+  for (let i = 0; i < 30 && (await mySlot.getAttribute('data-visible')) === 'true'; i += 1) {
+    await page.mouse.wheel(0, -400);
+    await page.waitForTimeout(50);
+  }
+  const mine = page.locator(`[data-testid="card-${id}"] [data-testid="terminal-slot"]`);
+  // 一般的卡離開畫面 5 秒會釋放；這張焦點還在，要留著。
+  await page.waitForTimeout(RELEASE_MS + 1500);
+  const focused = await page.evaluate(() =>
+    document.activeElement
+      ?.closest('[data-terminal-session]')
+      ?.getAttribute('data-terminal-session'),
+  );
+  expect(focused, '滾輪不該移走焦點').toBe(id);
+  await expect(mine, '要真的離開畫面才算數').toHaveAttribute('data-visible', 'false');
+  await expect(mine).toHaveAttribute('data-terminal', 'live');
+});
+
+test('小卡 300 行；展開時改回 1000 行（重拿快照補回歷史）', async ({ page }) => {
+  await open25(page);
+  const auth = card(page, 's-auth');
+  await auth.locator('.strip').dblclick();
+  await expect(auth).toHaveAttribute('data-mode', 'terminal');
+  const sb = () =>
+    page.evaluate(
+      async ({ url }) => {
+        const { terminalForTest } = (await import(/* @vite-ignore */ url)) as TermModule;
+        const el = document.querySelector<HTMLElement>('[data-terminal-session="s-auth"]');
+        return el ? terminalForTest(el)?.options.scrollback : null;
+      },
+      { url: CONTROLLER },
+    );
+  await expect.poll(sb).toBe(1000);
+  // 收回：同一個 xterm（寬限期內）改回 300 行。
+  await auth.getByRole('button', { name: '回摘要' }).click();
+  await zoomUntil(page, 90);
+  await expect(auth).toHaveAttribute('data-mode', 'terminal');
+  await expect.poll(sb).toBe(300);
+});

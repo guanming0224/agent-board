@@ -56,6 +56,7 @@ class FakeGc {
 class FakeClient implements WebglClient {
   visible = false;
   focused = false;
+  webglPreferred = true;
   webglBroken = false;
   /** 下一次 grant 失敗（不支援 WebGL2）。 */
   failNext = false;
@@ -204,23 +205,30 @@ describe('WebglBudget', () => {
     expect(a.holding).toBe(true);
   });
 
-  it('context 快滿時：聚焦中的、或頁面上唯一要 WebGL 的（全尺寸頁）可以用到硬上限', () => {
+  it('context 快滿時：畫布卡只用到軟上限，聚焦中的（全尺寸頁 autoFocus）可以用到硬上限', () => {
     const { budget, clock, client, show } = setup(6, 2, 0, 3);
     const a = client(true);
     const b = client(true);
     clock.settle();
     expect(budget.contexts).toBe(2);
-    // 兩個都看不到又回來：軟上限 2 已滿，一般的不給。
+    // 兩個都看不到（例如切到全尺寸頁前）：釋放了，但還沒被 GC。
     show(a, false);
     show(b, false);
     clock.advance(1);
     expect(budget.holding).toBe(0);
+    // 沒聚焦的：軟上限 2 已滿，就算頁面上沒人在用也維持 DOM。
     const c = client(true);
     clock.settle();
-    // 頁面上沒有人在用 WebGL（例如剛切到全尺寸頁）：可以用到硬上限。
-    expect(c.holding).toBe(true);
+    expect(c.holding).toBe(false);
+    // 聚焦中的（全尺寸頁）：可以用到硬上限 3。
+    const full = client(true);
+    full.focused = true;
+    budget.changed(full, true);
+    clock.settle();
+    expect(full.holding).toBe(true);
     expect(budget.contexts).toBe(3);
-    // 再來一個：已到硬上限，維持 DOM。
+    // 再來一個聚焦中的：已到硬上限，維持 DOM。
+    full.focused = false;
     const d = client(true);
     d.focused = true;
     budget.changed(d, true);
@@ -254,6 +262,31 @@ describe('WebglBudget', () => {
     budget.changed(focused, true);
     clock.settle();
     expect(focused.holding).toBe(true);
+  });
+
+  it('不偏好 WebGL 的（畫布一般小卡）看得到也不給；改成偏好（展開）或聚焦時才給', () => {
+    const { budget, clock } = setup();
+    const card = new FakeClient(() => {});
+    card.visible = true;
+    card.webglPreferred = false;
+    budget.register(card);
+    clock.settle();
+    expect(card.holding).toBe(false);
+    card.webglPreferred = true;
+    budget.changed(card, true);
+    clock.settle();
+    expect(card.holding).toBe(true);
+    // 收回展開：先保留 5 秒再降級。
+    card.webglPreferred = false;
+    budget.changed(card);
+    clock.settle();
+    expect(card.holding).toBe(true);
+    clock.advance(5000);
+    expect(card.holding).toBe(false);
+    card.focused = true;
+    budget.changed(card, true);
+    clock.settle();
+    expect(card.holding).toBe(true);
   });
 
   it('聚焦中的會搶到名額（擠掉只是看得到的）', () => {

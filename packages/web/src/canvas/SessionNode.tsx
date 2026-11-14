@@ -53,8 +53,9 @@ import { canvasTerminals, useTerminalLease } from './terminalPool';
 import { TERMINAL_ZOOM, zoomGate } from './terminalZoom';
 
 export { TERMINAL_ZOOM, TERMINAL_ZOOM_OUT } from './terminalZoom';
-/** 畫布小卡的捲動保留行數；全尺寸終端機頁維持 xterm 預設的 1000 行。 */
+/** 畫布小卡的捲動保留行數；展開的卡與全尺寸終端機頁維持 xterm 預設的 1000 行。 */
 const CARD_SCROLLBACK = 300;
+const EXPANDED_SCROLLBACK = 1000;
 /** 低於這個倍率，展開的 xterm 字太小看不清。 */
 const READABLE_ZOOM = 0.7;
 
@@ -265,17 +266,36 @@ export function SessionNode({
   // 失聯的機器沒有串流可接，維持凍結的最後畫面（規則四）。
   const isTerminal =
     !!session && session.status !== 'offline' && (zoomedIn || expanded || !summaryWhenZoomedOut);
-  // xterm 不是每張卡都有：只給畫面內＋最近看過的卡，展開／聚焦中的一定有（terminalPool.ts）。
-  const hasTerminal = useTerminalLease(data.sessionId, {
-    visible: isTerminal && onScreen,
-    pinned: isTerminal && (expanded || focused),
-  });
   // xterm 掛在固定的 host 上（portal）：卡片在終端機與摘要條之間切換時 host 搬到插槽或藏起來，
   // 寬限期內不必重建。
   const [host] = useState(() => {
     const element = document.createElement('div');
     element.className = 'term-host';
     return element;
+  });
+  // 鍵盤焦點在這張卡的 xterm 裡（打字、IME 組字中）：平移出畫面也不釋放。
+  const [typingHere, setTypingHere] = useState(false);
+  useLayoutEffect(() => {
+    const enter = () => setTypingHere(true);
+    const leave = (event: FocusEvent) => {
+      if (!(event.relatedTarget instanceof Node && host.contains(event.relatedTarget))) {
+        setTypingHere(false);
+      }
+    };
+    host.addEventListener('focusin', enter);
+    host.addEventListener('focusout', leave);
+    return () => {
+      host.removeEventListener('focusin', enter);
+      host.removeEventListener('focusout', leave);
+    };
+  }, [host]);
+  // 縮回摘要條時 xterm 被藏起來，焦點跟著消失（瀏覽器不一定送 focusout）。
+  if (!isTerminal && typingHere) setTypingHere(false);
+  // xterm 不是每張卡都有：只給畫面內＋最近看過的卡，展開／聚焦中的一定有（terminalPool.ts）。
+  const pinned = isTerminal && (expanded || focused || typingHere);
+  const hasTerminal = useTerminalLease(data.sessionId, {
+    visible: isTerminal && onScreen,
+    pinned,
   });
   const slotRef = useRef<HTMLDivElement>(null);
   const parkRef = useRef<HTMLDivElement>(null);
@@ -419,7 +439,9 @@ export function SessionNode({
             visible={isTerminal && onScreen}
             autoFocus={isTerminal && expanded}
             onSizeOwnerChange={size.onSizeOwnerChange}
-            scrollback={CARD_SCROLLBACK}
+            scrollback={isTerminal && expanded ? EXPANDED_SCROLLBACK : CARD_SCROLLBACK}
+            // 一般小卡用 DOM renderer；展開、聚焦、打字中的才用 WebGL（webglBudget.ts 的說明）。
+            webgl={pinned}
           />,
           host,
         )}

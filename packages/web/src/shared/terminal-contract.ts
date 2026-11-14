@@ -30,7 +30,12 @@ export interface TerminalViewProps {
    * null 表示 hub 沒有告知（假 PTY）。給外框顯示說明用；xterm 內不疊東西。
    */
   onSizeOwnerChange?: (owner: 'you' | 'other' | 'none' | null) => void;
-  /** 捲動保留行數，只在建立時取用。預設 1000（全尺寸頁）；畫布小卡用 300 省記憶體。 */
+  /** 捲動保留行數。預設 1000（全尺寸頁）；畫布小卡用 300 省記憶體，展開時改回 1000。 */
   scrollback?: number;
+  /**
+   * 看得到時要不要用 WebGL renderer（預設 true；實際給不給由全頁配額決定）。
+   * 畫布小卡只在展開／聚焦時 true，其他用 DOM renderer。
+   */
+  webgl?: boolean;
   className?: string;
 }
