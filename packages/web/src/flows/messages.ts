@@ -370,6 +370,14 @@ export const zhTW: Record<string, string> = {
   'flows.settings.signedIn': '登入身分',
   'flows.settings.stuck': '卡住判定',
   'flows.settings.machines': '機器',
+  // 發版與自動更新（GM 2026-11-14）：升 stable 前 canary 至少要跑幾小時。
+  'flows.settings.release': '發版與自動更新',
+  'flows.release.soak': '升為 stable 前，canary 至少要跑幾小時',
+  'flows.release.soakHint':
+    '0＝不提醒，在機器面板按「升為 stable」就直接升。大於 0 時，canary 還沒跑滿這麼久，機器面板會提示並要再確認一次。',
+  'flows.release.soakRange': '要填 {min}–{max} 的整數',
+  'flows.release.soakUnsupported':
+    '這台 hub 的版本較舊，還沒有這個設定：升 stable 前 canary 固定要跑滿 {hours} 小時（不到要再確認一次）。hub 更新後就能調整。',
   'flows.settings.users': '使用者',
   'flows.settings.templates': '範本',
   'flows.settings.notify': '通知與勿擾',
@@ -1224,6 +1232,13 @@ export const en: Record<string, string> = {
   'flows.settings.signedIn': 'Signed in',
   'flows.settings.stuck': 'Stuck detection',
   'flows.settings.machines': 'Machines',
+  'flows.settings.release': 'Releases and updates',
+  'flows.release.soak': 'Minimum hours a canary must run before promoting to stable',
+  'flows.release.soakHint':
+    '0 = no reminder: “Promote to stable” on the machines panel promotes right away. Above 0, promoting a canary that hasn’t run that long shows a warning and asks you to confirm.',
+  'flows.release.soakRange': 'Enter a whole number from {min} to {max}',
+  'flows.release.soakUnsupported':
+    'This hub is an older version without this setting: a canary must run {hours} hours before promoting to stable (or you confirm again). Update the hub to change it.',
   'flows.settings.users': 'Users',
   'flows.settings.templates': 'Templates',
   'flows.settings.notify': 'Notifications and quiet hours',

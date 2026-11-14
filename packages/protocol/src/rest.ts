@@ -1,6 +1,8 @@
 // REST 介面表：hub 依此註冊路由並驗證，web 依此產生型別。路徑一律在 /api 底下。
 import { z } from 'zod';
 import {
+  CANARY_SOAK_HOURS_MAX,
+  CANARY_SOAK_HOURS_MIN,
   AuditEntry,
   AutoStaff,
   ReviewSettings,
@@ -112,7 +114,7 @@ export const ZoneNotEmpty = z.object({
 export type ZoneNotEmpty = z.infer<typeof ZoneNotEmpty>;
 
 /**
- * 修改設定的 body：只改有帶的鍵。`Settings` 頂層有預設值的欄位（autoContinue、dispatch）在這裡拿掉預設，
+ * 修改設定的 body：只改有帶的鍵。`Settings` 頂層有預設值的欄位（autoContinue、dispatch、canarySoakHours…）在這裡拿掉預設，
  * 否則 zod 的 partial 會把沒帶的鍵補成預設值，存別的設定時就悄悄改掉它們（例如把關掉的派工又打開）。
  */
 export const SettingsPatch = Settings.extend({
@@ -122,6 +124,7 @@ export const SettingsPatch = Settings.extend({
   codexMcp: z.boolean(),
   autoStaff: AutoStaff,
   review: ReviewSettings,
+  canarySoakHours: z.number().int().min(CANARY_SOAK_HOURS_MIN).max(CANARY_SOAK_HOURS_MAX),
 }).partial();
 
 /**
@@ -978,8 +981,8 @@ export const routes = {
     response: ReleaseOverview,
   }),
   /**
-   * 「升為 stable」。canary 跑不到 24 小時要帶 `confirm: true`（不帶回 409 `canary_too_new`）；
-   * 版本不在 release-cache 回 409 `not_cached`。
+   * 「升為 stable」。設定 `canarySoakHours` > 0 而 canary 跑不到這麼久，要帶 `confirm: true`
+   * （不帶回 409 `canary_too_new`）；0（預設）不檢查。版本不在 release-cache 回 409 `not_cached`。
    */
   releasesPromote: route({
     method: 'POST',

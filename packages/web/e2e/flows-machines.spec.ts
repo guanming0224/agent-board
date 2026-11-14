@@ -72,18 +72,16 @@ test.describe('機器面板（桌面）', () => {
     await expect(page.getByTestId('machines-page')).toHaveCount(0);
   });
 
-  test('升 stable 不到 24 小時要再確認；切通道、回滾、更新延後都會改狀態', async ({ page }) => {
+  test('門檻 0（預設）：升 stable 不提醒、直接升；切通道、回滾、更新延後都會改狀態', async ({
+    page,
+  }) => {
     await open(page, '#/machines');
+    await expect(page.getByTestId('machines-soak')).toContainText('canary 已跑 6 小時');
+    await expect(page.getByTestId('machines-soak')).not.toContainText('建議');
     await page.getByTestId('machines-promote-btn').click();
-    const confirm = page.getByTestId('machines-promote-confirm');
-    await expect(confirm).toContainText('還不到 24 小時');
-    await page.getByTestId('machines-promote-no').click();
-    await expect(confirm).toHaveCount(0);
-    await expect(page.getByTestId('machines-stable')).toHaveText('0.1.0');
-    await page.getByTestId('machines-promote-btn').click();
-    await page.getByTestId('machines-promote-yes').click();
     await expect(page.getByTestId('machines-stable')).toHaveText('0.1.1');
     await expect(page.getByTestId('machines-promote-note')).toHaveText('已升為 stable');
+    await expect(page.getByTestId('machines-promote-confirm')).toHaveCount(0);
 
     // 切通道
     const canary = page.getByTestId('machine-channel-m-studio-canary');
@@ -108,6 +106,83 @@ test.describe('機器面板（桌面）', () => {
     });
     await expect(page.getByTestId('machine-status-m-gpu')).toHaveText('已手動回滾到 0.1.0');
     await expect(page.getByTestId('machine-rollback-m-gpu')).toBeDisabled();
+  });
+
+  test('門檻 > 0：在設定頁改成 12 小時，面板顯示實際小時數、不到要再確認', async ({ page }) => {
+    await open(page, '#/settings/machines');
+    const input = page.getByTestId('release-soak-hours');
+    await expect(input).toHaveValue('0');
+    await expect(page.locator('#s-release')).toContainText('0＝不提醒');
+    // 範圍外：標錯、不能存。
+    await input.fill('169');
+    await expect(page.locator('#s-release .field-error')).toHaveText('要填 0–168 的整數');
+    await input.fill('12');
+    await expect(page.locator('#s-release .field-error')).toHaveCount(0);
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+
+    await page.getByTestId('settings-machines-versions').click();
+    await expect(page.getByTestId('machines-page')).toBeVisible();
+    await expect(page.getByTestId('machines-soak')).toContainText('（建議跑滿 12 小時）');
+    await page.getByTestId('machines-promote-btn').click();
+    const confirm = page.getByTestId('machines-promote-confirm');
+    await expect(confirm).toContainText('還不到 12 小時');
+    await page.getByTestId('machines-promote-no').click();
+    await expect(confirm).toHaveCount(0);
+    await expect(page.getByTestId('machines-stable')).toHaveText('0.1.0');
+    await page.getByTestId('machines-promote-btn').click();
+    await page.getByTestId('machines-promote-yes').click();
+    await expect(page.getByTestId('machines-stable')).toHaveText('0.1.1');
+    await expect(page.getByTestId('machines-promote-note')).toHaveText('已升為 stable');
+    await expect(confirm).toHaveCount(0);
+  });
+
+  test('門檻比 canary 跑的時間短（設 2 小時）：不用再確認', async ({ page }) => {
+    // 先在畫布改設定，再打開面板（面板掛上時才讀總覽）。
+    await open(page, '#/canvas', 'void backend.updateSettings({ canarySoakHours: 2 });');
+    await page.evaluate(() => (location.hash = '#/machines'));
+    await expect(page.getByTestId('machines-soak')).toContainText('canary 已跑 6 小時');
+    await expect(page.getByTestId('machines-soak')).not.toContainText('建議');
+    await page.getByTestId('machines-promote-btn').click();
+    await expect(page.getByTestId('machines-stable')).toHaveText('0.1.1');
+    await expect(page.getByTestId('machines-promote-confirm')).toHaveCount(0);
+  });
+
+  test('連到舊 hub（面板沒有門檻欄位）：照舊 24 小時、要再確認；設定頁說明不支援', async ({
+    page,
+  }) => {
+    // 模擬舊 hub：總覽與設定都沒有 canarySoakHours，升 stable 照舊 24 小時規則。
+    await open(
+      page,
+      '#/canvas',
+      `
+      const strip = (o) => { const { canarySoakHours, ...rest } = o; return rest; };
+      for (const name of ['releases', 'checkReleases', 'setReleaseRepo']) {
+        const orig = backend[name].bind(backend);
+        backend[name] = async (...args) => strip(await orig(...args));
+      }
+      const promote = backend.promoteRelease.bind(backend);
+      backend.promoteRelease = async (version, confirm) => {
+        if (!confirm) throw Object.assign(new Error('too new'), { status: 409, code: 'canary_too_new' });
+        return strip(await promote(version, confirm));
+      };
+      const get = backend.getSettings.bind(backend);
+      backend.getSettings = async () => strip(await get());
+      `,
+    );
+    await page.evaluate(() => (location.hash = '#/machines'));
+    await expect(page.getByTestId('machines-soak')).toContainText('（建議跑滿 24 小時）');
+    await page.getByTestId('machines-promote-btn').click();
+    const confirm = page.getByTestId('machines-promote-confirm');
+    await expect(confirm).toContainText('還不到 24 小時');
+    await page.getByTestId('machines-promote-yes').click();
+    await expect(page.getByTestId('machines-stable')).toHaveText('0.1.1');
+
+    // 設定頁（不重新載入，補丁還在）：沒有輸入框，說明舊 hub 固定 24 小時；儲存列沒有未存的項目。
+    await page.evaluate(() => (location.hash = '#/settings/machines'));
+    await expect(page.getByTestId('release-soak-unsupported')).toContainText('固定要跑滿 24 小時');
+    await expect(page.getByTestId('release-soak-hours')).toHaveCount(0);
+    await expect(page.getByTestId('save-bar')).toContainText('都已存檔');
   });
 
   test('Windows（未驗證平台）：說明預設不自動更新；打開要再確認，關掉不用', async ({ page }) => {

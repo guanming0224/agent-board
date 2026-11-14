@@ -10,11 +10,12 @@ describe('假的機器面板（demo／e2e）', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  const setup = () => {
+  const setup = (soakHours = 0) => {
     const snapshot = demoSnapshot();
     const releases = createFakeReleases(
       () => snapshot.machines,
       (id) => snapshot.sessions.filter((s) => s.machineId === id).map((s) => s.status),
+      () => soakHours,
     );
     return { snapshot, releases };
   };
@@ -32,8 +33,16 @@ describe('假的機器面板（demo／e2e）', () => {
     });
   });
 
-  it('升 stable：不到 24 小時要第二次確認；確認後 stable 換版', async () => {
+  it('升 stable：門檻 0（預設）直接升', async () => {
     const { releases } = setup();
+    expect((await releases.releases()).canarySoakHours).toBe(0);
+    const overview = await releases.promoteRelease('0.1.1', false);
+    expect(overview.stable).toBe('0.1.1');
+  });
+
+  it('升 stable：門檻 24、canary 才 6 小時要第二次確認；確認後 stable 換版', async () => {
+    const { releases } = setup(24);
+    expect((await releases.releases()).canarySoakHours).toBe(24);
     await expect(releases.promoteRelease('0.1.1', false)).rejects.toSatisfy(
       (e) => codeOf(e) === 'canary_too_new',
     );

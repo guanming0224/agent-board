@@ -842,7 +842,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 - **gh**：`AGENT_BOARD_GH_BIN` 或 PATH 上的 `gh`；子程序環境拿掉 `GH_TOKEN`、`GITHUB_TOKEN`、`GH_ENTERPRISE_TOKEN`、`GITHUB_ENTERPRISE_TOKEN`，加 `GH_PROMPT_DISABLED=1`。hub 不讀任何權杖檔。找不到 gh → `gh.state: missing`；沒登入 → `not_logged_in`（帶 gh 的第一行訊息）；沒設 repo → `no_repo`。都只影響這個功能。
 - 目標：`channelTarget`（canary 跟 canary 與 stable 較新的那個，stable 只跟 stable），而且這台回報的平台在 cache 裡有成品才有（`ReleaseTarget { version, platform, asset, sha256, size }`），放在 `hub.welcome.release`；canary／stable／通道變了送 `release.target { target, force: false }` 給每台連著的 daemon。
 - `GET /api/releases/:version/:platform`：**機器 token**（`Authorization: Bearer`），只回 cache 裡驗過的檔（`x-agent-board-sha256`），audit `release.download`。瀏覽器 cookie 不行。
-- REST（`protocol/src/rest.ts`）：`GET /api/releases`（user，`ReleaseOverview`）；以下 owner：`POST /api/releases/check`、`POST /api/releases/promote { version, confirm }`（canary 不到 24 小時 `CANARY_SOAK_MS` 而沒 `confirm` → 409 `canary_too_new`；不在 cache → 409 `not_cached`）、`PATCH /api/releases/config { repo }`、`PUT /api/machines/:id/channel { channel }`、`POST /api/machines/:id/update`（送 `release.target { force: true }`；離線 409 `machine_offline`、沒目標 409 `no_target`）、`POST /api/machines/:id/rollback`（送 `release.rollback`；不知道上一版 409 `no_previous`）、`PUT /api/machines/:id/allow-unverified { allow, confirm }`（2026-11-12，見下）。audit：`release.repo`、`release.channel`、`release.promote`（`early` 標不到 24 小時）、`release.update_now`、`release.rollback`、`release.update_failed`、`release.allow_unverified`。
+- REST（`protocol/src/rest.ts`）：`GET /api/releases`（user，`ReleaseOverview`）；以下 owner：`POST /api/releases/check`、`POST /api/releases/promote { version, confirm }`（設定 `canarySoakHours` > 0 而 canary 還沒跑滿這麼多小時、沒帶 `confirm` → 409 `canary_too_new`；門檻 0（預設）不檢查；不在 cache → 409 `not_cached`。見 21.11）、`PATCH /api/releases/config { repo }`、`PUT /api/machines/:id/channel { channel }`、`POST /api/machines/:id/update`（送 `release.target { force: true }`；離線 409 `machine_offline`、沒目標 409 `no_target`）、`POST /api/machines/:id/rollback`（送 `release.rollback`；不知道上一版 409 `no_previous`）、`PUT /api/machines/:id/allow-unverified { allow, confirm }`（2026-11-12，見下）。audit：`release.repo`、`release.channel`、`release.promote`（`early` 標還沒跑滿設定的門檻；門檻 0 一律 false）、`release.update_now`、`release.rollback`、`release.update_failed`、`release.allow_unverified`。
 - **未驗證平台逐台允許（2026-11-12，§20.7）**：settings `machineAllowUnverified:<機器 id>`（`true` 或沒有）。`PUT /api/machines/:id/allow-unverified`：owner 才能改；打開沒帶 `confirm: true` 回 400 `confirm_required`；這台回報的平台不在 `UNVERIFIED_PLATFORMS`（或還沒回報）回 409 `platform_verified`；關掉不用 confirm；audit `release.allow_unverified`（machineId、platform、allow）；改了就重送目標；刪機器一起刪。預設照舊不發 win-x64（`platform_unverified`）。`MachineRelease` 多 `unverifiedPlatform`、`allowUnverified`（舊 hub 不送＝false）。面板對未驗證平台的機器顯示說明與「允許自動更新」（打開要再確認一次）／「停止自動更新」（不用確認），中英文；demo 的 demo-gpu（Windows）是已允許的。
 - 「升為 stable」旁的統計（`CanaryStats`）：canary 開始時間、期間 canary 機器 session 進入 error 的狀態事件數、daemon 非預期斷線數（更新中的斷線不算）、更新失敗數。
 - 更新失敗（`UPDATE_FAILED`：failed、rolled_back、rollback_failed；同一次只算一次）：audit、canary 統計、推播 `{ kind: 'update_failed', machineId, machine, version, phase, reason, at }`（只有機器名稱、版本、原因代碼，**不帶 `detail`、不帶任何 Claude 寫的內容**；遵守通知開關與勿擾時段）。
@@ -883,7 +883,7 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
 
 ### 21.7 測試與未驗證
 
-- 單元：`protocol/src/release.test.ts`（版本比較、通道、延後條件、協定相容、SHA256SUMS）、`hub/src/test/release.test.ts`（假 gh：沒 repo、gh 不存在／沒登入、下載驗證、SHA 不符、權杖環境變數不給 gh、通道與目標、下載端點驗證、升 stable 的 24 小時、協定拒絕、失敗推播只推一次、回滾）、`daemon/src/selfUpdate.test.ts`、`scripts/updater.test.mjs`（`test:install`：遷移、保留 3 版、同版不同內容、更新成功、壞版回滾＋schema 還原、安裝程式失敗、鎖、手動回滾與 schema_changed、detached 存活）。
+- 單元：`protocol/src/release.test.ts`（版本比較、通道、延後條件、協定相容、SHA256SUMS）、`hub/src/test/release.test.ts`（假 gh：沒 repo、gh 不存在／沒登入、下載驗證、SHA 不符、權杖環境變數不給 gh、通道與目標、下載端點驗證、升 stable 的門檻（預設 0 直接升、設 24 未滿 409、帶 confirm 照升、只有 owner 能改設定）、協定拒絕、失敗推播只推一次、回滾）、`daemon/src/selfUpdate.test.ts`、`scripts/updater.test.mjs`（`test:install`：遷移、保留 3 版、同版不同內容、更新成功、壞版回滾＋schema 還原、安裝程式失敗、鎖、手動回滾與 schema_changed、detached 存活）。
 - e2e：`corepack pnpm e2e:update`（先 `build:release`；只在 Apple Silicon Mac）：真的成品改版本號當假 Release、假 gh、假 launchctl（照 plist 真的跑），hub 從原始碼跑。canary 自動更新成功；壞版（新 daemon 起不來）在健康檢查時限後自動回滾、面板標失敗。
 - **未驗證**：真的 GitHub Actions（workflow 只做過 YAML 解析）、Windows 成品的建置與安裝（junction、zip、工作排程器停服務時 detached 更新程式會不會被收掉；實機驗證前 hub 不發 win-x64 目標）、真的 gh（只測假的）。
 - **已驗證**：macOS 真的 launchd 停服務（`launchctl bootout`）時，detached（setsid）＋stdio 導到檔案的子程序會活下來（2026-11-11，Lead 用拋棄式 label 在真機實測）；`scripts/updater.test.mjs` 另用「停服務時殺整個 process group」的假 launchctl 驗證同一件事。
@@ -948,6 +948,16 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
 
 - **已驗證**（2026-11-11，Apple Silicon Mac、系統 Node 24.17，假 launchctl 照真的語意）：`test:install`（含回歸測試）、`smoke:release`、`e2e:update`（真的 0.1.0 → 0.1.1 自帶 Node 成品＋host plist 手動改回系統 node → 開著 session 手動升 0.1.2：host 沒重啟、agent 還在、三個服務都在系統 node；再自動更新、壞版回滾；daemon 用 `AGENT_BOARD_TEST_NODE_VERSION` 假裝 Node 26 照樣拿到目標；`E2E_LEGACY_AUTO=1` 走舊 daemon 自動更新）。
 - **未驗證**：真的 launchd 的時序（只用照語意寫的假 launchctl；修正是保守的「等到卸載完」）；真的 Node 26 機器（只用回報值模擬）；TCC 的確切規則；Windows、Linux systemd。
+
+### 21.11 升 stable 的 canary 門檻改成設定（GM 2026-11-14）
+
+GM 不需要「canary 跑滿 24 小時才升 stable」的規定，改成設定可調、**預設關**。
+
+- **設定**：`Settings.canarySoakHours`（整數 0–168，預設 `CANARY_SOAK_HOURS_DEFAULT = 0`＝不提醒、直接升）。存在 settings 表鍵 `canarySoakHours`，**不升 schema**；舊設定沒有這個鍵＝0。`PATCH /api/settings { canarySoakHours }`（owner；範圍外或非整數 400；`SettingsPatch` 這個鍵沒有預設，存別的設定不會改掉它）。設定頁「機器與使用者」→「發版與自動更新」（區塊 id `release`，只有 owner 看得到）。
+- **hub**：`ReleaseManager.promote` 每次讀設定。門檻 0 不檢查；>0 時 canary 開始時間（`canaryStats.since`）到現在不滿門檻、或要升的不是目前 canary，沒帶 `confirm` 回 409 `canary_too_new`（訊息帶實際小時數）。audit `release.promote` 的 `early` 依新門檻算。
+- **面板**：`ReleaseOverview.canarySoakHours`（選填；`GET /api/releases` 是 user 權限，面板讀不到 settings，所以放這裡）。門檻 0：不顯示「建議跑滿…」、按「升為 stable」直接升；>0：顯示「（建議跑滿 N 小時）」，不到時跳二次確認「…還不到 N 小時…」，N 是實際設定值。面板資料舊了（例如別的分頁剛把門檻從 0 改大）而 hub 回 409：照樣跳二次確認，改用不帶小時數的訊息。
+- **舊版相容**：舊網頁連新 hub：舊網頁照舊用固定 24 小時判斷要不要先跳確認，確認後帶 `confirm: true`，hub 照升（只是多問一次）。新網頁連舊 hub：總覽沒有 `canarySoakHours` → 當成 `LEGACY_CANARY_SOAK_HOURS = 24`，照舊提示與二次確認；設定頁讀到的設定沒有這個鍵 → 區塊只顯示「hub 版本較舊、固定 24 小時」，不給輸入、不送出這個鍵。`CANARY_SOAK_MS` 保留為舊行為的 24 小時。
+- 測試：`protocol/src/release.test.ts`（預設 0、範圍、`SettingsPatch` 不補預設、總覽選填）、`hub/src/test/release.test.ts`（0 直接升、24 未滿 409、帶 confirm 照升與 `early`、owner 權限與範圍、成員從總覽讀得到門檻）、`web/src/machines/model.test.ts`（`canarySoak` 依門檻；舊 hub 24）、`web/src/shared/fakeRelease.test.ts`、e2e `flows-machines.spec.ts`（門檻 0 直接升；設定頁改 12 小時後面板顯示 12、未滿要確認；門檻 2 小時不用確認；舊 hub 照 24 小時並說明不支援）。
 
 ## 22. Codex 第二輪：Codex 用量、Codex 派工、交叉審查（GM 2026-11-12）
 

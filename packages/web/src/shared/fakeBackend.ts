@@ -3,6 +3,7 @@ import {
   AUDIT_SYSTEM_USER,
   AUTO_STAFF_DEFAULT,
   REVIEW_SETTINGS_DEFAULT,
+  CANARY_SOAK_HOURS_DEFAULT,
   CANVAS_LAYOUT_SET,
   DEFAULT_ZONE_ID,
   DEFAULT_ZONE_NAME,
@@ -536,6 +537,7 @@ const defaultSettings: Settings = {
   codexMcp: false,
   autoStaff: { ...AUTO_STAFF_DEFAULT },
   review: { ...REVIEW_SETTINGS_DEFAULT },
+  canarySoakHours: CANARY_SOAK_HOURS_DEFAULT,
 };
 
 /** 測試可以改掉 demoReply，模擬隊長回了無法解析的內容。 */
@@ -1617,6 +1619,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       () => state.machines,
       (machineId) =>
         state.sessions.filter((s) => s.machineId === machineId && !s.archived).map((s) => s.status),
+      () => settings.canarySoakHours,
     ),
     getLayouts: async () => layouts,
     async saveLayouts(next) {

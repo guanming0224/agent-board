@@ -1,10 +1,10 @@
 // demo／e2e 用的機器面板資料（發版與自動更新，docs/release-update-spec.md §7）。
-// canary 0.1.1（6 小時前，升 stable 要再確認一次）、stable 0.1.0；三台 demo 機器：
+// canary 0.1.1（6 小時前；設定的門檻 > 6 小時時升 stable 要再確認一次，預設 0 不用）、stable 0.1.0；三台 demo 機器：
 //   demo-gpu（Windows）canary 已是最新（owner 打開了「允許自動更新」）；demo-studio stable、有 session 在等你允許
 //   所以延後；demo-laptop 更新失敗已回滾（離線）。新配對的 Windows 機器預設不自動更新（platform_unverified）。
 // 按鈕會真的改這份資料，規則照 hub 的（protocol/release.ts 與 rest.ts 的錯誤碼）。
 import {
-  CANARY_SOAK_MS,
+  canarySoakMs,
   channelTarget,
   compareVersions,
   PROTOCOL_VERSION,
@@ -44,6 +44,8 @@ export function createFakeReleases(
   machines: () => Machine[],
   /** 這台機器上 session 的狀態（延後條件：有 PERM 就延後）。 */
   statusesOf: (machineId: string) => string[] = () => [],
+  /** 升 stable 前 canary 至少要跑幾小時（假後端設定的 `canarySoakHours`）；0＝不檢查。 */
+  soakHours: () => number = () => 0,
 ) {
   let canary: string | null = '0.1.1';
   let stable: string | null = '0.1.0';
@@ -163,6 +165,7 @@ export function createFakeReleases(
     lastCheckAt,
     lastCheckError: null,
     checking: false,
+    canarySoakHours: soakHours(),
     machines: machines().map((machine) => {
       const r = entry(machine);
       return {
@@ -233,9 +236,10 @@ export function createFakeReleases(
       if (!cached.some((c) => c.version === version)) {
         throw apiError(409, 'not_cached', 'version is not in the release cache');
       }
+      const hours = soakHours();
       const since = canarySince ? Date.parse(canarySince) : Date.now();
-      if (version === canary && Date.now() - since < CANARY_SOAK_MS && !confirm) {
-        throw apiError(409, 'canary_too_new', 'canary has run for less than 24 hours');
+      if (hours > 0 && version === canary && Date.now() - since < canarySoakMs(hours) && !confirm) {
+        throw apiError(409, 'canary_too_new', `canary has run for less than ${hours} hours`);
       }
       stable = version;
       if (canary && compareVersions(canary, version) <= 0) {

@@ -13,6 +13,9 @@ import {
   versionFromTag,
 } from './release';
 import { DaemonToHub, HubToDaemon } from './ws';
+import { CANARY_SOAK_HOURS_DEFAULT, Settings } from './models';
+import { SettingsPatch } from './rest';
+import { CANARY_SOAK_MS, canarySoakMs, LEGACY_CANARY_SOAK_HOURS, ReleaseOverview } from './release';
 import { MIN_ROLLBACK_VERSION, rollbackSupported } from './release';
 
 describe('回滾的最低版本（審查 W4）', () => {
@@ -167,5 +170,55 @@ describe('協定版本相容（§21.4）', () => {
         force: false,
       }),
     ).toThrow();
+  });
+});
+
+describe('升 stable 的 canary 門檻設定（GM 2026-11-14）', () => {
+  const base = {
+    listenAddress: '127.0.0.1',
+    publicOrigin: null,
+    stuckMinutes: 10,
+    dangerRules: [],
+    quotaGuards: { denyReadPaths: [], maxConcurrentSessions: null, queueWhenRateLimited: true },
+    notifications: { enabled: true, quietHours: null },
+  };
+
+  it('舊設定沒有 canarySoakHours＝預設 0（不檢查）', () => {
+    expect(Settings.parse(base).canarySoakHours).toBe(CANARY_SOAK_HOURS_DEFAULT);
+    expect(CANARY_SOAK_HOURS_DEFAULT).toBe(0);
+  });
+
+  it('只收 0–168 的整數', () => {
+    expect(Settings.parse({ ...base, canarySoakHours: 168 }).canarySoakHours).toBe(168);
+    expect(Settings.safeParse({ ...base, canarySoakHours: 169 }).success).toBe(false);
+    expect(Settings.safeParse({ ...base, canarySoakHours: -1 }).success).toBe(false);
+    expect(Settings.safeParse({ ...base, canarySoakHours: 1.5 }).success).toBe(false);
+    expect(SettingsPatch.safeParse({ canarySoakHours: 169 }).success).toBe(false);
+  });
+
+  it('SettingsPatch 沒帶就不補預設（存別的設定不會改掉門檻）', () => {
+    expect(SettingsPatch.parse({ dispatch: true })).toEqual({ dispatch: true });
+    expect(SettingsPatch.parse({ canarySoakHours: 24 })).toEqual({ canarySoakHours: 24 });
+  });
+
+  it('ReleaseOverview.canarySoakHours 選填：舊 hub 沒帶也能解析', () => {
+    const overview = {
+      hub: { version: '0.1.0', buildId: 'x', protocolVersion: PROTOCOL_VERSION },
+      repo: null,
+      gh: { state: 'no_repo', message: null },
+      canary: null,
+      stable: null,
+      canaryStats: { since: null, errors: 0, disconnects: 0, updateFailures: 0 },
+      cached: [],
+      lastCheckAt: null,
+      lastCheckError: null,
+      checking: false,
+      machines: [],
+    };
+    expect(ReleaseOverview.parse(overview).canarySoakHours).toBeUndefined();
+    expect(ReleaseOverview.parse({ ...overview, canarySoakHours: 0 }).canarySoakHours).toBe(0);
+    expect(LEGACY_CANARY_SOAK_HOURS).toBe(24);
+    expect(canarySoakMs(LEGACY_CANARY_SOAK_HOURS)).toBe(CANARY_SOAK_MS);
+    expect(canarySoakMs(0)).toBe(0);
   });
 });

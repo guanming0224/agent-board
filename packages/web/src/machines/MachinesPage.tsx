@@ -261,7 +261,7 @@ function Promote({
         () => backend.promoteRelease(canary, confirm),
         t('machines.promoted'),
         (e) => {
-          // 時鐘不準或 hub 算的不一樣：hub 說還不到 24 小時，就改成要再確認一次。
+          // 時鐘不準或面板資料舊了（門檻剛改過）：hub 說還沒跑滿門檻，就改成要再確認一次。
           if (errorCode(e) !== 'canary_too_new') return false;
           setConfirming(true);
           return true;
@@ -293,7 +293,7 @@ function Promote({
         </button>
         <span className="sub" data-testid="machines-soak">
           {age === null ? t('machines.soakNone') : t('machines.soak', { age })}
-          {age !== null && soak.short && t('machines.soakShort')}
+          {age !== null && soak.short && t('machines.soakShort', { hours: soak.hours })}
         </span>
         <span
           className={`sub${canaryTroubled(stats) ? ' l-fault' : ''}`}
@@ -316,10 +316,13 @@ function Promote({
           <span aria-hidden="true">⚠</span>
           <div>
             <p>
-              {t('machines.promoteShort', {
-                version: canary,
-                age: age ?? t('machines.span.m', { m: 0 }),
-              })}
+              {soak.hours > 0
+                ? t('machines.promoteShort', {
+                    version: canary,
+                    age: age ?? t('machines.span.m', { m: 0 }),
+                    hours: soak.hours,
+                  })
+                : t('machines.promoteShortHub', { version: canary })}
             </p>
             <div className="row">
               <button

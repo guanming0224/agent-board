@@ -317,8 +317,16 @@ export const CanaryStats = z.object({
 });
 export type CanaryStats = z.infer<typeof CanaryStats>;
 
-/** 「升為 stable」建議 canary 先跑滿的時間（派工單：24 小時無錯誤再升）。 */
+/**
+ * 舊 hub 的固定門檻：「升為 stable」前 canary 要跑滿 24 小時（派工單：24 小時無錯誤再升）。
+ * 2026-11-14 起門檻改成設定 `Settings.canarySoakHours`（預設 0＝不檢查）；新網頁連到沒有
+ * `ReleaseOverview.canarySoakHours` 的舊 hub 時，照這個舊行為提示與二次確認。
+ */
 export const CANARY_SOAK_MS = 24 * 60 * 60 * 1000;
+export const LEGACY_CANARY_SOAK_HOURS = 24;
+
+/** 小時數門檻轉毫秒；0 或更小＝不檢查（回 0）。 */
+export const canarySoakMs = (hours: number): number => Math.max(0, hours) * 60 * 60 * 1000;
 
 export const ReleaseOverview = z.object({
   hub: z.object({ version: z.string(), buildId: z.string(), protocolVersion: z.number().int() }),
@@ -334,6 +342,11 @@ export const ReleaseOverview = z.object({
   lastCheckError: z.string().nullable(),
   checking: z.boolean(),
   machines: z.array(MachineRelease),
+  /**
+   * 升 stable 前 canary 至少要跑幾小時（hub 從 `Settings.canarySoakHours` 帶出來，2026-11-14）；0＝不檢查。
+   * 機器面板是 user 權限、讀不到 settings，所以放在這裡。舊 hub 沒有這個欄位＝舊行為 24 小時（`LEGACY_CANARY_SOAK_HOURS`）。
+   */
+  canarySoakHours: z.number().int().nonnegative().optional(),
 });
 export type ReleaseOverview = z.infer<typeof ReleaseOverview>;
 

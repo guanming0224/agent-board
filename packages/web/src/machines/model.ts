@@ -2,8 +2,9 @@
 // 哪些按鈕不能按與為什麼、canary 跑了多久。不碰 React、不碰網路，畫面與測試共用。
 import {
   type TargetNote,
-  CANARY_SOAK_MS,
+  canarySoakMs,
   compareVersions,
+  LEGACY_CANARY_SOAK_HOURS,
   ReleaseRepo,
   UPDATE_FAILED,
   UPDATE_IN_PROGRESS,
@@ -119,19 +120,26 @@ export function rollbackBlock(
 export interface CanarySoak {
   /** canary 已經跑了多久（毫秒）；沒有 canary 為 null。 */
   ms: number | null;
-  /** 還沒跑滿 24 小時（升 stable 要再確認一次）。 */
+  /** 門檻（小時）：hub 的設定 `canarySoakHours`；0＝不檢查。舊 hub 沒帶＝舊行為 24。 */
+  hours: number;
+  /** 門檻 > 0 而且還沒跑滿（升 stable 要再確認一次）。門檻 0 一律 false。 */
   short: boolean;
 }
 
+/** 升 stable 前 canary 至少要跑幾小時：新 hub 帶設定值；舊 hub 沒有這個欄位＝固定 24 小時（舊行為）。 */
+export const soakHoursOf = (overview: Pick<ReleaseOverview, 'canarySoakHours'>): number =>
+  overview.canarySoakHours ?? LEGACY_CANARY_SOAK_HOURS;
+
 export function canarySoak(
-  overview: Pick<ReleaseOverview, 'canaryStats'>,
+  overview: Pick<ReleaseOverview, 'canaryStats' | 'canarySoakHours'>,
   now: number,
 ): CanarySoak {
+  const hours = soakHoursOf(overview);
   const since = overview.canaryStats.since;
   const at = since ? Date.parse(since) : NaN;
-  if (!Number.isFinite(at)) return { ms: null, short: true };
+  if (!Number.isFinite(at)) return { ms: null, hours, short: hours > 0 };
   const ms = Math.max(0, now - at);
-  return { ms, short: ms < CANARY_SOAK_MS };
+  return { ms, hours, short: hours > 0 && ms < canarySoakMs(hours) };
 }
 
 /** 「升為 stable」能不能按：要有 canary，而且比 stable 新。 */

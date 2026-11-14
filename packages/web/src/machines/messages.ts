@@ -47,13 +47,16 @@ export const zhTW: Record<string, string> = {
   'machines.promoteConfirm': '確定升為 stable',
   'machines.promoteCancel': '取消',
   'machines.promoteShort':
-    'canary {version} 才跑了 {age}，還不到 24 小時。確定現在就讓所有 stable 機器更新到這一版？',
+    'canary {version} 才跑了 {age}，還不到 {hours} 小時。確定現在就讓所有 stable 機器更新到這一版？',
+  // 面板資料是舊的（例如別的分頁剛把門檻從 0 改大）：hub 回 canary_too_new 時不知道實際小時數。
+  'machines.promoteShortHub':
+    'hub 說 canary {version} 還沒跑滿設定的時數。確定現在就讓所有 stable 機器更新到這一版？',
   'machines.promoted': '已升為 stable',
   'machines.promote.no_canary': '目前沒有 canary 版本',
   'machines.promote.same': 'canary 和 stable 是同一版',
   'machines.soak': 'canary 已跑 {age}',
   'machines.soakNone': 'canary 還沒開始',
-  'machines.soakShort': '（建議跑滿 24 小時）',
+  'machines.soakShort': '（建議跑滿 {hours} 小時）',
   'machines.stats': '期間 ERR {errors}・斷線 {disconnects}・更新失敗 {failures}',
 
   'machines.span.dhm': '{d} 天 {h} 小時',
@@ -149,7 +152,7 @@ export const zhTW: Record<string, string> = {
   'machines.block.no_previous': '不知道上一版，不能回滾',
   'machines.block.member': '只有管理員能操作',
 
-  'machines.err.canary_too_new': 'canary 還不到 24 小時，要再確認一次',
+  'machines.err.canary_too_new': 'canary 還沒跑滿設定的時數，要再確認一次',
   'machines.err.not_cached': '這一版還沒下載驗證完成，先按「檢查新版」',
   'machines.err.machine_offline': '機器離線，連上後再試',
   'machines.err.no_previous': '不知道上一版，不能回滾',
@@ -205,13 +208,15 @@ export const en: Record<string, string> = {
   'machines.promoteConfirm': 'Promote anyway',
   'machines.promoteCancel': 'Cancel',
   'machines.promoteShort':
-    'canary {version} has only run for {age}, less than 24 hours. Update every stable machine to it now?',
+    'canary {version} has only run for {age}, less than {hours} hours. Update every stable machine to it now?',
+  'machines.promoteShortHub':
+    'The hub says canary {version} hasn’t run for the configured time yet. Update every stable machine to it now?',
   'machines.promoted': 'Promoted to stable',
   'machines.promote.no_canary': 'No canary release yet',
   'machines.promote.same': 'canary and stable are the same release',
   'machines.soak': 'canary has run for {age}',
   'machines.soakNone': 'canary hasn’t started',
-  'machines.soakShort': ' (24 hours recommended)',
+  'machines.soakShort': ' ({hours} hours recommended)',
   'machines.stats':
     'Since then: ERR {errors} · disconnects {disconnects} · failed updates {failures}',
 
@@ -313,7 +318,7 @@ export const en: Record<string, string> = {
   'machines.block.no_previous': 'Previous version unknown, can’t roll back',
   'machines.block.member': 'Owner only',
 
-  'machines.err.canary_too_new': 'canary has run for less than 24 hours; confirm again',
+  'machines.err.canary_too_new': 'canary hasn’t run for the configured time yet; confirm again',
   'machines.err.not_cached':
     'This release isn’t downloaded and verified yet. Press “Check for releases” first.',
   'machines.err.machine_offline': 'Machine is offline. Try again once it reconnects.',

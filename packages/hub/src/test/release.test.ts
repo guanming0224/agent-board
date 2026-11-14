@@ -18,6 +18,7 @@ import {
   PROTOCOL_VERSION,
   releaseAssetName,
   type ReleaseOverview,
+  type Settings,
   type UpdateState,
 } from '@agent-board/protocol';
 import { CLOSE_INCOMPATIBLE } from '../hub';
@@ -273,10 +274,64 @@ describe('通道、目標與 daemon', () => {
     expect((await get('/api/releases/..%2F..%2Fhub.db/darwin-arm64', token)).status).toBe(404);
   });
 
-  it('升為 stable：不到 24 小時要 confirm；stable 機器拿到目標', async () => {
+  it('升為 stable：預設門檻 0，剛出來的 canary 直接升、audit early=false', async () => {
+    const now = new Date('2026-11-11T00:00:00Z');
+    const gh = fakeGh({ releases: [release('0.2.0')] });
+    const { hub, cookie } = await setup(gh, () => now);
+    expect((await hub.api<Settings>('GET', '/api/settings', { cookie })).body.canarySoakHours).toBe(
+      0,
+    );
+    await hub.api('PATCH', '/api/releases/config', { cookie, body: { repo: 'acme/agent-board' } });
+    await hub.api('POST', '/api/releases/check', { cookie });
+    const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
+    expect(overview.body.canarySoakHours).toBe(0);
+    const res = await hub.api<ReleaseOverview>('POST', '/api/releases/promote', {
+      cookie,
+      body: { version: '0.2.0' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.stable).toBe('0.2.0');
+    const audit = await hub.api('GET', '/api/audit?action=release.promote', { cookie });
+    expect(JSON.stringify(audit.body)).toContain('\\"early\\":false');
+  });
+
+  it('門檻設定：只有 owner 能改、範圍 0–168；成員也從面板讀得到門檻', async () => {
+    const gh = fakeGh({ releases: [] });
+    const { hub, cookie } = await setup(gh);
+    const member = await hub.createMember(cookie);
+    const denied = await hub.api('PATCH', '/api/settings', {
+      cookie: member.cookie,
+      body: { canarySoakHours: 24 },
+    });
+    expect(denied.status).toBe(403);
+    expect(
+      (await hub.api('PATCH', '/api/settings', { cookie, body: { canarySoakHours: 169 } })).status,
+    ).toBe(400);
+    expect(
+      (await hub.api('PATCH', '/api/settings', { cookie, body: { canarySoakHours: 1.5 } })).status,
+    ).toBe(400);
+    const saved = await hub.api<Settings>('PATCH', '/api/settings', {
+      cookie,
+      body: { canarySoakHours: 48 },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.canarySoakHours).toBe(48);
+    // 存別的設定不會把門檻改回預設。
+    const other = await hub.api<Settings>('PATCH', '/api/settings', {
+      cookie,
+      body: { dispatch: false },
+    });
+    expect(other.body.canarySoakHours).toBe(48);
+    const seen = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie: member.cookie });
+    expect(seen.status).toBe(200);
+    expect(seen.body.canarySoakHours).toBe(48);
+  });
+
+  it('升為 stable：門檻設 24 時不到 24 小時要 confirm；帶 confirm 照升；stable 機器拿到目標', async () => {
     let now = new Date('2026-11-11T00:00:00Z');
     const gh = fakeGh({ releases: [release('0.2.0')] });
     const { hub, cookie } = await setup(gh, () => now);
+    await hub.api('PATCH', '/api/settings', { cookie, body: { canarySoakHours: 24 } });
     await hub.api('PATCH', '/api/releases/config', { cookie, body: { repo: 'acme/agent-board' } });
     await hub.api('POST', '/api/releases/check', { cookie });
     const early = await hub.api('POST', '/api/releases/promote', {
@@ -300,6 +355,31 @@ describe('通道、目標與 daemon', () => {
     expect(((await daemon.next('release.target')).target as { version: string }).version).toBe(
       '0.2.0',
     );
+    const audit = await hub.api('GET', '/api/audit?action=release.promote', { cookie });
+    expect(JSON.stringify(audit.body)).toContain('\\"early\\":false');
+  });
+
+  it('升為 stable：門檻未滿帶 confirm 照升，audit 標 early=true（依設定的門檻算）', async () => {
+    const now = new Date('2026-11-11T00:00:00Z');
+    const gh = fakeGh({ releases: [release('0.2.0')] });
+    const { hub, cookie } = await setup(gh, () => now);
+    await hub.api('PATCH', '/api/settings', { cookie, body: { canarySoakHours: 2 } });
+    await hub.api('PATCH', '/api/releases/config', { cookie, body: { repo: 'acme/agent-board' } });
+    await hub.api('POST', '/api/releases/check', { cookie });
+    const early = await hub.api('POST', '/api/releases/promote', {
+      cookie,
+      body: { version: '0.2.0' },
+    });
+    expect(early.status).toBe(409);
+    expect(early.body.message).toContain('2 hours');
+    const res = await hub.api<ReleaseOverview>('POST', '/api/releases/promote', {
+      cookie,
+      body: { version: '0.2.0', confirm: true },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.stable).toBe('0.2.0');
+    const audit = await hub.api('GET', '/api/audit?action=release.promote', { cookie });
+    expect(JSON.stringify(audit.body)).toContain('\\"early\\":true');
   });
 
   it('協定版本差太多：daemon.rejected 帶可更新的版本並斷線，面板顯示需要更新', async () => {

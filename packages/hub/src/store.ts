@@ -5,6 +5,7 @@ import {
   AUDIT_SYSTEM_USER,
   AUTO_STAFF_DEFAULT,
   REVIEW_SETTINGS_DEFAULT,
+  CANARY_SOAK_HOURS_DEFAULT,
   AutoContinue,
   BoardPause,
   DEFAULT_WAITING_LIMIT,
@@ -110,6 +111,7 @@ const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   codexMcp: false,
   autoStaff: { ...AUTO_STAFF_DEFAULT },
   review: { ...REVIEW_SETTINGS_DEFAULT },
+  canarySoakHours: CANARY_SOAK_HOURS_DEFAULT,
 });
 
 interface UserRow {

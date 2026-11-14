@@ -886,6 +886,14 @@ export const REVIEW_SETTINGS_DEFAULT: ReviewSettings = {
   codexEffort: null,
 };
 
+/**
+ * 「升為 stable」前 canary 至少要跑幾小時（GM 2026-11-14，`Settings.canarySoakHours`）。
+ * 0＝不提醒、直接升（預設）；>0 時 canary 跑不到這麼久，升 stable 要再確認一次（hub 回 409 `canary_too_new`）。
+ */
+export const CANARY_SOAK_HOURS_MIN = 0;
+export const CANARY_SOAK_HOURS_MAX = 168;
+export const CANARY_SOAK_HOURS_DEFAULT = 0;
+
 /** Lead 增補的 `settings` 鍵值表內容（§3 沒有列，但 §5.3-7、§7、§8 都需要）。 */
 export const Settings = z.object({
   listenAddress: z.string(),
@@ -941,6 +949,16 @@ export const Settings = z.object({
   codexMcp: z.boolean().default(false),
   /** 交叉審查（Codex 第二輪）：隊長頻率上限、兩邊的模型。舊設定沒有這個鍵＝預設。 */
   review: ReviewSettings.default(REVIEW_SETTINGS_DEFAULT),
+  /**
+   * 升 stable 前 canary 至少要跑幾小時（GM 2026-11-14，CONTRACTS §21）：0–168 的整數，0＝不檢查、直接升。
+   * 舊設定沒有這個鍵＝預設 0（GM 決定不需要原本固定 24 小時的規定）。
+   */
+  canarySoakHours: z
+    .number()
+    .int()
+    .min(CANARY_SOAK_HOURS_MIN)
+    .max(CANARY_SOAK_HOURS_MAX)
+    .default(CANARY_SOAK_HOURS_DEFAULT),
 });
 export type Settings = z.infer<typeof Settings>;
 

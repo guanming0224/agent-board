@@ -11,6 +11,9 @@ import {
   TEAM_SIZE_MIN,
   REVIEW_LEAD_RATE_MAX,
   REVIEW_BOARD_RATE_MAX,
+  CANARY_SOAK_HOURS_MAX,
+  CANARY_SOAK_HOURS_MIN,
+  LEGACY_CANARY_SOAK_HOURS,
   type Settings,
 } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
@@ -33,6 +36,7 @@ interface Texts {
   stuck: string;
   limit: string;
   teamLimit: string;
+  soak: string;
   newRule: string;
 }
 
@@ -42,6 +46,7 @@ const textsOf = (s: Settings | null): Texts => ({
   stuck: s ? String(s.stuckMinutes) : '',
   limit: s ? String(s.notifications.waitingLimit) : '',
   teamLimit: s ? String(s.autoStaff.teamLimit) : '',
+  soak: soakSupported(s) ? String(s.canarySoakHours) : '',
   newRule: '',
 });
 
@@ -61,6 +66,7 @@ export interface ServerSettingsForm {
   maxValid: boolean;
   limitValid: boolean;
   teamLimitValid: boolean;
+  soakValid: boolean;
   quietInvalid: boolean;
   ruleNote: Note | null;
   addRule: () => void;
@@ -117,11 +123,14 @@ export function useServerSettings(loaded: Settings | null): ServerSettingsForm |
   const quietInvalid = quiet !== null && (!quiet.start || !quiet.end);
   const limitValid = waitingLimitOf(texts.limit) !== null;
   const teamLimitValid = teamLimitOf(texts.teamLimit) !== null;
+  // 舊 hub 沒有這個設定：不顯示輸入框，也不擋儲存。
+  const soakValid = !soakSupported(saved) || soakHoursOf(texts.soak) !== null;
 
   const invalidCategories = new Set<Category>();
   if (quietInvalid || !limitValid) invalidCategories.add('notify');
   if (!stuckValid || !maxValid || !teamLimitValid) invalidCategories.add('sessions');
   if (addressError !== null || badOrigin) invalidCategories.add('security');
+  if (!soakValid) invalidCategories.add('machines');
 
   const addRule = () => {
     const rule = texts.newRule.trim().replace(/\s+/g, ' ');
@@ -178,6 +187,7 @@ export function useServerSettings(loaded: Settings | null): ServerSettingsForm |
     maxValid,
     limitValid,
     teamLimitValid,
+    soakValid,
     quietInvalid,
     ruleNote,
     addRule,
@@ -203,6 +213,18 @@ export function teamLimitOf(text: string): number | null {
   const n = Number(value);
   return n >= TEAM_SIZE_MIN && n <= TEAM_SIZE_MAX ? n : null;
 }
+
+/** 升 stable 前 canary 至少要跑幾小時：CANARY_SOAK_HOURS_MIN–MAX 的整數（可以是 0）；不合法回 null。 */
+export function soakHoursOf(text: string): number | null {
+  const value = text.trim();
+  if (!/^\d+$/.test(value)) return null;
+  const n = Number(value);
+  return n >= CANARY_SOAK_HOURS_MIN && n <= CANARY_SOAK_HOURS_MAX ? n : null;
+}
+
+/** hub 有沒有這個設定（2026-11-14 以前的 hub 沒有 `canarySoakHours`，回應裡就沒這個鍵）。 */
+export const soakSupported = (s: Settings | null): s is Settings =>
+  typeof s?.canarySoakHours === 'number';
 
 const seconds = (ms: number) => Math.round(ms / 1000);
 
@@ -818,5 +840,50 @@ export function SaveBar({
         <Msg note={form.note} />
       </div>
     </div>
+  );
+}
+
+/** 發版與自動更新（「機器與使用者」分類，GM 2026-11-14）：升 stable 前 canary 至少要跑幾小時。 */
+export function ReleaseSection({ form }: { form: ServerSettingsForm }) {
+  const t = useT();
+  const { draft, texts, soakValid } = form;
+  return (
+    <Section
+      id="release"
+      title={t('flows.settings.release')}
+      dirty={form.isDirty('canarySoakHours')}
+    >
+      {soakSupported(draft) ? (
+        <div className="field">
+          <label htmlFor="st-canary-soak">{t('flows.release.soak')}</label>
+          <input
+            id="st-canary-soak"
+            data-testid="release-soak-hours"
+            className="short num"
+            inputMode="numeric"
+            value={texts.soak}
+            aria-invalid={!soakValid}
+            onChange={(e) => {
+              form.setText('soak', e.target.value);
+              const n = soakHoursOf(e.target.value);
+              if (n !== null) form.patch({ canarySoakHours: n });
+            }}
+          />
+          <p className="hint">{t('flows.release.soakHint')}</p>
+          {!soakValid && (
+            <p className="field-error">
+              {t('flows.release.soakRange', {
+                min: CANARY_SOAK_HOURS_MIN,
+                max: CANARY_SOAK_HOURS_MAX,
+              })}
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="hint" data-testid="release-soak-unsupported">
+          {t('flows.release.soakUnsupported', { hours: LEGACY_CANARY_SOAK_HOURS })}
+        </p>
+      )}
+    </Section>
   );
 }

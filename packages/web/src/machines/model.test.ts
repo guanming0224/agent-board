@@ -259,18 +259,43 @@ describe('canary 跑了多久', () => {
   });
   const now = Date.parse('2026-11-11T12:00:00.000Z');
 
-  it('不到 24 小時要再確認；滿了不用；沒有 canary 為 null', () => {
+  it('舊 hub（沒帶門檻）：不到 24 小時要再確認；滿了不用；沒有 canary 為 null', () => {
     expect(canarySoak(stats('2026-11-11T06:00:00.000Z'), now)).toEqual({
       ms: 6 * 3600_000,
+      hours: 24,
       short: true,
     });
     expect(canarySoak(stats(new Date(now - CANARY_SOAK_MS).toISOString()), now)).toEqual({
       ms: CANARY_SOAK_MS,
+      hours: 24,
       short: false,
     });
-    expect(canarySoak(stats(null), now)).toEqual({ ms: null, short: true });
+    expect(canarySoak(stats(null), now)).toEqual({ ms: null, hours: 24, short: true });
     // 時鐘比 hub 慢：不出現負數
     expect(canarySoak(stats('2026-11-11T13:00:00.000Z'), now).ms).toBe(0);
+  });
+
+  it('門檻 0（新 hub 預設）：一律不用再確認', () => {
+    const zero = (since: string | null) => ({ ...stats(since), canarySoakHours: 0 });
+    expect(canarySoak(zero('2026-11-11T11:59:00.000Z'), now)).toEqual({
+      ms: 60_000,
+      hours: 0,
+      short: false,
+    });
+    expect(canarySoak(zero(null), now)).toEqual({ ms: null, hours: 0, short: false });
+  });
+
+  it('門檻 > 0 照設定的小時數算', () => {
+    const six = (since: string) => ({ ...stats(since), canarySoakHours: 6 });
+    expect(canarySoak(six('2026-11-11T06:00:01.000Z'), now).short).toBe(true);
+    expect(canarySoak(six('2026-11-11T06:00:00.000Z'), now)).toEqual({
+      ms: 6 * 3600_000,
+      hours: 6,
+      short: false,
+    });
+    expect(
+      canarySoak({ ...stats('2026-11-11T06:00:00.000Z'), canarySoakHours: 48 }, now).short,
+    ).toBe(true);
   });
 
   it('期間有任何 ERR／斷線／更新失敗就標出來', () => {

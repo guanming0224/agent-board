@@ -42,7 +42,7 @@
 
 - hub settings：`release.canary`、`release.stable`（版本字串）；每台機器的通道存 settings `machineChannel:<machineId>`（`canary`／`stable`，預設 stable；MacBook 設 canary）。派工單原文寫在各機 `machine.toml`，改放 hub 是為了在機器面板直接切換，不用登進各機。
 - 新 tag 出現時（hub 每 10 分鐘用 `gh release list` 查，或面板按「檢查新版」）：hub 下載成品到 `~/.agent-board/release-cache/<version>/`、驗 SHA-256，成功後設為 canary 目標。
-- 「升為 stable」：面板按鈕；按鈕旁顯示 canary 已跑多久、期間 canary 機器的 ERR／崩潰／更新失敗次數（派工單：用滿 24 小時無錯誤再升）。不到 24 小時也能按，但要再確認一次。
+- 「升為 stable」：面板按鈕；按鈕旁顯示 canary 已跑多久、期間 canary 機器的 ERR／崩潰／更新失敗次數。~~派工單：用滿 24 小時無錯誤再升；不到 24 小時也能按，但要再確認一次。~~ **2026-11-14 GM 改**：門檻改成伺服器設定「升為 stable 前，canary 至少要跑幾小時」（`Settings.canarySoakHours`，0–168，**預設 0＝不提醒、直接升**；設定頁「機器與使用者」→「發版與自動更新」）。設成 >0 時，canary 還沒跑滿就要再確認一次，提示文字顯示實際小時數。連到沒有這個設定的舊 hub 照舊 24 小時。細節見 CONTRACTS §21.11。
 
 ## 5. daemon 更新流程
 

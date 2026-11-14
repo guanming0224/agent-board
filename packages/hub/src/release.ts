@@ -12,7 +12,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  CANARY_SOAK_MS,
+  canarySoakMs,
   channelTarget,
   compareVersions,
   DEFAULT_RELEASE_CHANNEL,
@@ -232,6 +232,11 @@ export class ReleaseManager {
   }
 
   // ── 設定 ─────────────────────────────────────────────
+
+  /** 升 stable 前 canary 至少要跑幾小時（`Settings.canarySoakHours`，預設 0＝不檢查）。 */
+  private soakHours(): number {
+    return this.deps.store.getSettings().canarySoakHours;
+  }
 
   private str(key: string): string | null {
     const value = this.deps.store.getRawJson(key);
@@ -794,13 +799,17 @@ export class ReleaseManager {
     if (!this.cacheIndex.has(version)) {
       throw new HttpError(409, 'not_cached', 'This version is not in the release cache');
     }
+    // 門檻是設定（GM 2026-11-14）：0（預設）不檢查、直接升；>0 時 canary 跑不到這麼久要帶 confirm。
+    const hours = this.soakHours();
     const since = this.canary === version ? this.stats()?.since : null;
-    const young = since ? this.deps.now().getTime() - Date.parse(since) < CANARY_SOAK_MS : true;
+    const young =
+      hours > 0 &&
+      (since ? this.deps.now().getTime() - Date.parse(since) < canarySoakMs(hours) : true);
     if (young && !confirm) {
       throw new HttpError(
         409,
         'canary_too_new',
-        'Canary has run for less than 24 hours. Send confirm: true to promote anyway.',
+        `Canary has run for less than ${hours} hours. Send confirm: true to promote anyway.`,
       );
     }
     const previous = this.stable;
@@ -854,6 +863,7 @@ export class ReleaseManager {
       lastCheckAt: last.at,
       lastCheckError: last.error,
       checking: this.isChecking(),
+      canarySoakHours: this.soakHours(),
       machines,
     };
   }

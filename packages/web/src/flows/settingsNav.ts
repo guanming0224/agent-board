@@ -43,6 +43,7 @@ export const SECTION_CATEGORY: Readonly<Record<string, Category>> = {
   presets: 'presets',
   security: 'security',
   machines: 'machines',
+  release: 'machines',
   users: 'machines',
   archived: 'data',
   audit: 'data',
@@ -62,6 +63,7 @@ export const KEY_CATEGORY: Record<keyof Settings, Category> = {
   listenAddress: 'security',
   publicOrigin: 'security',
   dangerRules: 'security',
+  canarySoakHours: 'machines',
 };
 
 /** 有伺服器設定欄位的分類：儲存列一直顯示。 */

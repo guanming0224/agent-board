@@ -20,6 +20,7 @@ import {
   CodexMcpSection,
   NotifySection,
   QuotaSection,
+  ReleaseSection,
   SaveBar,
   SecuritySection,
   StuckSection,
@@ -267,6 +268,7 @@ export function SettingsPage() {
               'machines',
               <>
                 <MachinesSection canManage={owner} />
+                {current === 'machines' && owner && server((f) => <ReleaseSection form={f} />)}
                 {owner && <UsersSection />}
               </>,
             )}

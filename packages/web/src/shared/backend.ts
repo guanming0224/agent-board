@@ -264,7 +264,7 @@ export interface BoardBackend {
   releases(): Promise<ReleaseOverview>;
   /** 「檢查新版」：hub 用已登入的 gh 查 Release、下載並驗 SHA-256。 */
   checkReleases(): Promise<ReleaseOverview>;
-  /** 「升為 stable」；canary 跑不到 24 小時要第二次帶 confirm=true。 */
+  /** 「升為 stable」；設定的門檻（`canarySoakHours`）> 0 而 canary 還沒跑滿，要第二次帶 confirm=true。 */
   promoteRelease(version: string, confirm: boolean): Promise<ReleaseOverview>;
   /** Release 所在的 GitHub repo（`owner/name`）；null 清掉。 */
   setReleaseRepo(repo: string | null): Promise<ReleaseOverview>;
