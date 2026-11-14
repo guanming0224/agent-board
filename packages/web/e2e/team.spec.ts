@@ -90,8 +90,9 @@ test('畫布上的團隊標籤打開右側團隊面板；#/team 是清單，新�
   await expect(page.locator('.team-row')).toContainText('2 位成員');
   await shot(page, 'team-list');
 
+  const teamName = await newTeamName(page);
   await expect(page.getByRole('button', { name: '建立團隊' })).toBeDisabled();
-  await (await newTeamName(page)).fill('資料搬遷');
+  await teamName.fill('資料搬遷');
   await page.getByRole('button', { name: '靛' }).click();
   await page.getByRole('button', { name: '建立團隊' }).click();
   await expect(page.getByRole('heading', { name: '資料搬遷' })).toBeVisible();
