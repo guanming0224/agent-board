@@ -487,8 +487,13 @@ function Popover({
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+  // 子畫面有輸入框（新群組、改名）就先給輸入框，打字就好；沒有就給第一個項目。
   const focusFirst = useCallback(() => {
-    box.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    const el = box.current;
+    (
+      el?.querySelector<HTMLElement>('input:not(:disabled)') ??
+      el?.querySelector<HTMLElement>(FOCUSABLE)
+    )?.focus();
   }, []);
   useEffect(() => {
     const away = (e: PointerEvent) => {
@@ -541,7 +546,8 @@ function Popover({
       style={
         pos
           ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight }
-          : { left: 0, top: 0, visibility: 'hidden' }
+          : // 還沒量好位置：先透明（不用 visibility: hidden，那樣焦點放不進去）。
+            { left: 0, top: 0, opacity: 0 }
       }
     >
       <MenuFocus.Provider value={focusFirst}>{children}</MenuFocus.Provider>
