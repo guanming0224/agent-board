@@ -3,12 +3,21 @@
 // （像 Chrome 的分頁群組）：點群組標籤展開／收合（每台裝置各自記），收合時標籤寫畫布數、目前畫布在裡面會標出來。
 // 沒有數量上限：放不下時整列左右捲動（觸控滑、滑鼠滾輪轉橫向、目前分頁自動捲進可見範圍），手機也一樣。
 // 「+」原地輸入名稱建立並切過去；右鍵（觸控：長按）開選單：改名、加入／移出群組、往左／右移、刪除；
-// 群組標籤的選單：改名、換顏色、往左／右移、取消群組、刪除群組（不刪畫布）。桌面可拖曳分頁排序、拖進拖出群組。
+// 群組標籤的選單：改名、換顏色、往左／右移、取消群組（畫布保留）。桌面可拖曳分頁排序、拖進拖出群組。
 // 團隊框標籤拖到分頁上放開＝把團隊移過去；拖著團隊經過收合的群組會暫時展開。
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import type { Zone, ZoneBarItem, ZoneBarMove, ZoneGroup } from '@agent-board/protocol';
-import { useTwoStep } from '../flows/common';
 import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { TEAM_COLORS, teamColorVar } from '../team/colors';
@@ -17,6 +26,8 @@ import { moveTeamToZone, zoneContents } from './actions';
 import {
   dropMove,
   groupOpen,
+  placeMenu,
+  pruneCollapsed,
   revealScroll,
   stepMove,
   wheelToHorizontal,
@@ -48,6 +59,8 @@ const canDragTabs = (): boolean => {
     return true;
   }
 };
+
+type TeamColor = (typeof TEAM_COLORS)[number];
 
 /** 選單開在哪一格、對齊哪個元素。 */
 interface MenuState {
@@ -178,8 +191,14 @@ interface BarApi {
   items: ZoneBarItem<Zone>[];
   tabDrag: BarTarget | null;
   setTabDrag(target: BarTarget | null): void;
-  peek: string | null;
-  setPeek(groupId: string | null): void;
+  /** 拖曳中暫時展開的群組（拖曳結束前都不收，經過好幾個也不來回跳）。 */
+  peek: string[];
+  addPeek(groupId: string): void;
+  dropPeek(groupId: string): void;
+  /** 收合中的群組（只留現有的群組）。 */
+  collapsed: Record<string, true>;
+  /** hub 有送群組資料（舊版 hub 沒有：群組相關選單項目與拖曳都不給）。 */
+  groups: boolean;
   openMenu(target: BarTarget, anchor: HTMLElement): void;
   move(move: ZoneBarMove | null): void;
   renaming: string | null;
@@ -238,7 +257,7 @@ function ZoneTab({
         data-testid={`zone-tab-${zone.id}`}
         data-zone-name={zone.name}
         data-zone-current={current ? 'true' : undefined}
-        draggable={canDragTabs()}
+        draggable={bar.groups && canDragTabs()}
         onDragStart={(e) => {
           e.dataTransfer.setData(TAB_DRAG_TYPE, zone.id);
           e.dataTransfer.effectAllowed = 'move';
@@ -310,11 +329,10 @@ function GroupChunk({
   bar: BarApi;
 }) {
   const t = useT();
-  const collapsed = useZoneUi((s) => s.collapsed);
   const setCollapsed = useZoneUi((s) => s.setCollapsed);
   const dragging = useZoneUi((s) => s.dragging);
   const [over, setOver] = useState<'into' | 'before' | 'after' | null>(null);
-  const open = groupOpen(group.id, collapsed, bar.peek);
+  const open = groupOpen(group.id, bar.collapsed, bar.peek);
   const inside = zones.find((z) => z.id === current);
   const total = zones.reduce((n, z) => n + (waiting.get(z.id) ?? 0), 0);
   const trigger = useMenuTrigger((anchor) => bar.openMenu({ kind: 'group', id: group.id }, anchor));
@@ -346,14 +364,14 @@ function GroupChunk({
         onClick={() => {
           if (trigger.consumePress()) return;
           setCollapsed(group.id, open);
-          if (bar.peek === group.id) bar.setPeek(null);
+          bar.dropPeek(group.id);
         }}
         {...trigger.handlers}
         onDragEnter={(e) => {
           // 拖著團隊或分頁經過收合的群組：暫時展開（放開或拖走結束後收回去），原本「更多」的等價做法。
           const types = e.dataTransfer.types;
           if (types.includes(TEAM_DRAG_TYPE) || (types.includes(TAB_DRAG_TYPE) && bar.tabDrag)) {
-            if (!open) bar.setPeek(group.id);
+            if (!open) bar.addPeek(group.id);
           }
         }}
         onDragOver={(e) => {
@@ -418,7 +436,23 @@ function GroupChunk({
   );
 }
 
-/** 浮層選單：掛在 body 上（頂部列會橫向捲動，選單放在裡面會被切掉），對齊開它的那一格。 */
+/** 選單切換子畫面（加入群組 ▸、新群組…、換顏色 ▸）後把焦點移到子畫面第一個元素。 */
+const MenuFocus = createContext<() => void>(() => undefined);
+
+/** 選單內容切換畫面時呼叫（view 變了就把焦點放到第一個元素）。 */
+function useMenuView<V>(view: V): void {
+  const focusFirst = useContext(MenuFocus);
+  useEffect(() => {
+    focusFirst();
+  }, [view, focusFirst]);
+}
+
+const FOCUSABLE = 'button:not(:disabled), input:not(:disabled)';
+
+/**
+ * 浮層選單：掛在 body 上（頂部列會橫向捲動，選單放在裡面會被切掉），對齊開它的那一格。下面放不下就往上翻，
+ * 高度不超過可視範圍（選單自己捲）。鍵盤：↑↓ 在項目間移動（Home／End 到頭尾）、Esc 關並回到分頁、Tab 離開＝關。
+ */
 function Popover({
   anchor,
   label,
@@ -433,20 +467,35 @@ function Popover({
   testId: string;
 }) {
   const box = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
+  // 每次畫完都重算（子畫面換了高度會變）；值一樣就不 setState，不會一直重畫。
   useLayoutEffect(() => {
-    const place = () => {
-      const r = anchor.getBoundingClientRect();
-      const width = box.current?.offsetWidth ?? 0;
-      const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
-      setPos({ left, top: r.bottom + 2 });
-    };
-    place();
-    window.addEventListener('resize', place);
-    return () => window.removeEventListener('resize', place);
-  }, [anchor]);
+    const el = box.current;
+    if (!el) return;
+    const r = anchor.getBoundingClientRect();
+    const next = placeMenu(
+      r,
+      { width: el.offsetWidth, height: el.scrollHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+    );
+    setPos((p) =>
+      p && p.left === next.left && p.top === next.top && p.maxHeight === next.maxHeight ? p : next,
+    );
+  });
   useEffect(() => {
-    box.current?.querySelector<HTMLElement>('button:not(:disabled), input')?.focus();
+    const onResize = () => setPos(null);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  // 子畫面有輸入框（新群組、改名）就先給輸入框，打字就好；沒有就給第一個項目。
+  const focusFirst = useCallback(() => {
+    const el = box.current;
+    (
+      el?.querySelector<HTMLElement>('input:not(:disabled)') ??
+      el?.querySelector<HTMLElement>(FOCUSABLE)
+    )?.focus();
+  }, []);
+  useEffect(() => {
     const away = (e: PointerEvent) => {
       if (!box.current?.contains(e.target as Node)) onClose();
     };
@@ -463,6 +512,29 @@ function Popover({
       document.removeEventListener('keydown', esc);
     };
   }, [anchor, onClose]);
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Tab') {
+      // 離開選單＝關掉（焦點照瀏覽器的 Tab 順序走）。
+      onClose();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    // 輸入框裡的 Home／End 是移游標，不搶。
+    if ((e.key === 'Home' || e.key === 'End') && e.target instanceof HTMLInputElement) return;
+    const items = [...(box.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
+    if (items.length === 0) return;
+    e.preventDefault();
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const next =
+      e.key === 'Home'
+        ? 0
+        : e.key === 'End'
+          ? items.length - 1
+          : e.key === 'ArrowDown'
+            ? (at + 1) % items.length
+            : (at - 1 + items.length) % items.length;
+    items[next]!.focus();
+  };
   return createPortal(
     <div
       ref={box}
@@ -470,9 +542,15 @@ function Popover({
       role="menu"
       aria-label={label}
       data-testid={testId}
-      style={pos ? { left: pos.left, top: pos.top } : { visibility: 'hidden' }}
+      onKeyDown={onKeyDown}
+      style={
+        pos
+          ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight }
+          : // 還沒量好位置：先透明（不用 visibility: hidden，那樣焦點放不進去）。
+            { left: 0, top: 0, opacity: 0 }
+      }
     >
-      {children}
+      <MenuFocus.Provider value={focusFirst}>{children}</MenuFocus.Provider>
     </div>,
     document.body,
   );
@@ -483,7 +561,7 @@ function ColorChoices({
   onPick,
 }: {
   value: string | null;
-  onPick: (color: string) => void;
+  onPick: (color: TeamColor) => void;
 }) {
   const t = useT();
   return (
@@ -514,7 +592,7 @@ function ColorChoices({
 function NewGroupForm({ zoneId, onDone }: { zoneId: string; onDone: () => void }) {
   const t = useT();
   const backend = useBoard((s) => s.backend);
-  const [color, setColor] = useState<string>(TEAM_COLORS[0]);
+  const [color, setColor] = useState<TeamColor>(TEAM_COLORS[0]);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -533,6 +611,7 @@ function NewGroupForm({ zoneId, onDone }: { zoneId: string; onDone: () => void }
   return (
     <div className="zone-group-form">
       <input
+        autoFocus
         aria-label={t('zones.group.name.aria')}
         placeholder={t('zones.group.newName')}
         value={name}
@@ -581,6 +660,7 @@ function ZoneMenuBody({
   const t = useT();
   const backend = useBoard((s) => s.backend);
   const [view, setView] = useState<'main' | 'groups' | 'new'>('main');
+  useMenuView(view);
   const [error, setError] = useState<string | null>(null);
   const contents = zoneContents(zone.id);
   const blocked = contents.teams > 0 || contents.sessions > 0;
@@ -672,17 +752,20 @@ function ZoneMenuBody({
       >
         {t('zones.menu.rename')}
       </button>
-      <button
-        type="button"
-        role="menuitem"
-        className="menu-item"
-        aria-haspopup="menu"
-        onClick={() => setView('groups')}
-        data-testid="zone-add-to-group"
-      >
-        {t('zones.menu.addToGroup')} ▸
-      </button>
-      {mine && (
+      {/* 連到舊版 hub（快照沒有 zoneGroups）：沒有群組 API，群組與排序的項目都不給。 */}
+      {bar.groups && (
+        <button
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          aria-haspopup="menu"
+          onClick={() => setView('groups')}
+          data-testid="zone-add-to-group"
+        >
+          {t('zones.menu.addToGroup')} ▸
+        </button>
+      )}
+      {bar.groups && mine && (
         <button
           type="button"
           role="menuitem"
@@ -695,26 +778,30 @@ function ZoneMenuBody({
           {t('zones.menu.ungroupTab')}
         </button>
       )}
-      <button
-        type="button"
-        role="menuitem"
-        className="menu-item"
-        disabled={!left}
-        onClick={() => left && run(() => backend.moveZoneBarItem(left))}
-        data-testid="zone-move-left"
-      >
-        {t('zones.menu.left')}
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        className="menu-item"
-        disabled={!right}
-        onClick={() => right && run(() => backend.moveZoneBarItem(right))}
-        data-testid="zone-move-right"
-      >
-        {t('zones.menu.right')}
-      </button>
+      {bar.groups && (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            disabled={!left}
+            onClick={() => left && run(() => backend.moveZoneBarItem(left))}
+            data-testid="zone-move-left"
+          >
+            {t('zones.menu.left')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            disabled={!right}
+            onClick={() => right && run(() => backend.moveZoneBarItem(right))}
+            data-testid="zone-move-right"
+          >
+            {t('zones.menu.right')}
+          </button>
+        </>
+      )}
       <button
         type="button"
         role="menuitem"
@@ -737,7 +824,10 @@ function ZoneMenuBody({
   );
 }
 
-/** 群組標籤的選單：改名、換顏色、往左／右移、取消群組、刪除群組（按兩次；畫布不刪）。 */
+/**
+ * 群組標籤的選單：改名、換顏色、往左／右移、取消群組（畫布保留）。取消群組不會刪任何東西，所以不用確認
+ * （原本另有「刪除群組」，資料上和取消群組相同，審查 N10 合併成一項）。
+ */
 function GroupMenuBody({
   group,
   count,
@@ -752,8 +842,8 @@ function GroupMenuBody({
   const t = useT();
   const backend = useBoard((s) => s.backend);
   const [view, setView] = useState<'main' | 'rename' | 'color'>('main');
+  useMenuView(view);
   const [error, setError] = useState<string | null>(null);
-  const { armed, press, disarm } = useTwoStep();
   const left = stepMove(bar.items, { kind: 'group', id: group.id }, -1);
   const right = stepMove(bar.items, { kind: 'group', id: group.id }, 1);
   const run = (task: () => Promise<unknown>) => {
@@ -841,19 +931,7 @@ function GroupMenuBody({
         data-testid="zone-group-ungroup"
       >
         {t('zones.group.ungroup')}
-        <span className="sub">{t('zones.group.ungroup.sub')}</span>
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        className="menu-item danger"
-        data-armed={armed ? 'true' : undefined}
-        onClick={() => press(() => run(() => backend.deleteZoneGroup(group.id)))}
-        onBlur={disarm}
-        data-testid="zone-group-delete"
-      >
-        {armed ? t('zones.group.delete.armed') : t('zones.group.delete')}
-        <span className="sub">{t('zones.group.delete.sub', { n: count })}</span>
+        <span className="sub">{t('zones.group.ungroup.sub', { n: count })}</span>
       </button>
       {err}
     </>
@@ -869,19 +947,35 @@ export function ZoneTabs() {
   const backend = useBoard((s) => s.backend);
   const setCurrent = useZoneUi((s) => s.setCurrent);
   const dragging = useZoneUi((s) => s.dragging);
-  const collapsed = useZoneUi((s) => s.collapsed);
+  const storedCollapsed = useZoneUi((s) => s.collapsed);
+  const keepCollapsed = useZoneUi((s) => s.keepCollapsed);
+  const rawGroups = useBoard((s) => s.zoneGroups);
+  const groupsSupported = rawGroups !== undefined;
+  const groupIds = useMemo(
+    () => items.flatMap((i) => (i.kind === 'group' ? [i.group.id] : [])),
+    [items],
+  );
+  const groupKey = groupIds.join(',');
+  // 收合記錄只看現有的群組（別台刪掉的群組不留）。連到舊 hub（沒有群組資料）時不清，換回新 hub 還在。
+  const collapsed = useMemo(
+    () => (groupsSupported ? pruneCollapsed(storedCollapsed, groupIds) : storedCollapsed),
+    [storedCollapsed, groupIds, groupsSupported],
+  );
+  useEffect(() => {
+    if (groupsSupported) keepCollapsed(groupKey ? groupKey.split(',') : []);
+  }, [groupsSupported, groupKey, keepCollapsed]);
   const showMoveError = useZoneUi((s) => s.showMoveError);
   const [adding, setAdding] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [tabDrag, setTabDrag] = useState<BarTarget | null>(null);
-  const [peek, setPeek] = useState<string | null>(null);
+  const [peek, setPeek] = useState<string[]>([]);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [endOver, setEndOver] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
 
-  // 拖曳結束（團隊放下或取消、分頁放下）：暫時展開的群組收回去。
+  // 拖曳結束（團隊放下或取消、分頁放下）：暫時展開的群組收回去（拖曳中都不收）。
   useEffect(() => {
-    if (dragging === null && tabDrag === null) setPeek(null);
+    if (dragging === null && tabDrag === null) setPeek((p) => (p.length ? [] : p));
   }, [dragging, tabDrag]);
 
   // 滑鼠滾輪轉成橫向捲動（React 的 onWheel 是 passive，不能 preventDefault，所以自己掛）。
@@ -898,7 +992,8 @@ export function ZoneTabs() {
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  // 目前分頁（或收合著、裝著目前分頁的群組標籤）自動捲進可見範圍。
+  // 目前分頁（或收合著、裝著目前分頁的群組標籤）自動捲進可見範圍。只在目前畫布或收合狀態變了才做：
+  // 別台改了群組或順序不要把人拉回來。
   useLayoutEffect(() => {
     const el = scroller.current;
     const target = el?.querySelector<HTMLElement>('[data-zone-current="true"]');
@@ -907,7 +1002,7 @@ export function ZoneTabs() {
     const r = target.getBoundingClientRect();
     const next = revealScroll(el, { left: r.left - box.left + el.scrollLeft, width: r.width });
     if (next !== null) el.scrollLeft = next;
-  }, [current, items, collapsed, renaming]);
+  }, [current, collapsed]);
 
   const move = useCallback(
     (m: ZoneBarMove | null) => {
@@ -923,7 +1018,10 @@ export function ZoneTabs() {
     tabDrag,
     setTabDrag,
     peek,
-    setPeek,
+    addPeek: (id) => setPeek((p) => (p.includes(id) ? p : [...p, id])),
+    dropPeek: (id) => setPeek((p) => (p.includes(id) ? p.filter((x) => x !== id) : p)),
+    collapsed,
+    groups: groupsSupported,
     openMenu: (target, anchor) => setMenu({ target, anchor }),
     move,
     renaming,

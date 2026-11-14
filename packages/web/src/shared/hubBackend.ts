@@ -6,7 +6,7 @@ import {
   SEARCH_DEEP_GRACE_MS,
   WS_PATHS,
 } from '@agent-board/protocol';
-import { progressOwnerKey, progressOwnerOf } from '@agent-board/protocol';
+import { isNewerZoneGroups, progressOwnerKey, progressOwnerOf } from '@agent-board/protocol';
 import type {
   BoardPauseState,
   Broadcast,
@@ -452,7 +452,8 @@ class HubConnection implements TerminalStream {
 
   /** 分頁群組（WS zone.groups 或 REST 回應）：整份換掉（§25）。 */
   setZoneGroups(zoneGroups: ZoneGroups): void {
-    this.patch((s) => ({ ...s, zoneGroups }));
+    // REST 回應與 WS 推送走兩條連線，到達順序不保證（同一台連點兩下也會亂序）：只收比手上新的（rev）。
+    this.patch((s) => (isNewerZoneGroups(s.zoneGroups, zoneGroups) ? { ...s, zoneGroups } : s));
   }
 
   /** 團隊動態（WS team.activity 或 REST 回應）：整份換掉。 */

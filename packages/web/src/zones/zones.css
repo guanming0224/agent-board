@@ -182,12 +182,18 @@
 .zone-name-input input {
   width: 12em;
 }
-/* 浮層選單：掛在 body、position fixed（座標由 ZoneTabs 算），在置中次畫面（40）之上、確認對話框（60）之下。 */
+/*
+ * 浮層選單：掛在 body、position fixed（座標由 ZoneTabs 算：下面放不下就往上翻、夾在視窗內），
+ * 在置中次畫面（40）之上、確認對話框（60）之下。
+ */
 .zone-menu {
   position: fixed;
   z-index: 50;
   min-width: 14em;
   max-width: min(22em, calc(100vw - 16px));
+  /* 高度上限由 ZoneTabs 依可視高度算（max-height 行內樣式）；放不下自己捲。 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .zone-menu .sub {
   margin: 2px var(--space-1);

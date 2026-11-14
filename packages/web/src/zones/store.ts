@@ -14,7 +14,13 @@ import {
 } from '@agent-board/protocol';
 import { useBoard } from '../shared/store';
 import { useTeams } from '../team/store';
-import { readCollapsed, writeCollapsed, type KeyValueStorage } from './bar';
+import {
+  COLLAPSED_KEY,
+  pruneCollapsed,
+  readCollapsed,
+  writeCollapsed,
+  type KeyValueStorage,
+} from './bar';
 import { validZone, zoneOfSession, zonesOf, zoneWaitingCounts } from './model';
 
 export { validZone, zoneOfSession, zonesOf, zoneWaitingCounts } from './model';
@@ -77,6 +83,8 @@ interface ZoneUi {
   /** 收合中的分頁群組（每台裝置各自記）。 */
   collapsed: Record<string, true>;
   setCollapsed(groupId: string, collapsed: boolean): void;
+  /** 收合記錄只留現有群組（hub 有送群組資料時才呼叫；連到舊 hub 不清）。 */
+  keepCollapsed(groupIds: readonly string[]): void;
   /** 正在拖曳的團隊（拖到分頁上放開＝移過去）。 */
   dragging: string | null;
   setDragging(teamId: string | null): void;
@@ -104,6 +112,13 @@ export const useZoneUi = create<ZoneUi>((set) => ({
   collapsed: readCollapsed(storage()),
   setCollapsed: (groupId, collapsed) =>
     set((s) => ({ collapsed: writeCollapsed(storage(), s.collapsed, groupId, collapsed) })),
+  keepCollapsed: (groupIds) =>
+    set((s) => {
+      const next = pruneCollapsed(s.collapsed, groupIds);
+      if (Object.keys(next).length === Object.keys(s.collapsed).length) return s;
+      write(COLLAPSED_KEY, next);
+      return { collapsed: next };
+    }),
   dragging: null,
   setDragging: (dragging) => set({ dragging }),
 }));

@@ -309,3 +309,38 @@ describe('hubBackend 深層搜尋的看門狗', () => {
     expect(done.map((e) => e.type)).toEqual(['search.deepStarted', 'search.deepDone']);
   });
 });
+
+describe('hubBackend 分頁群組（CONTRACTS §25，審查 W1）', () => {
+  const state = (rev: number, name: string) => ({
+    groups: [{ id: 'zg-1', name, color: 'teal', zoneIds: [] }],
+    order: ['zg-1'],
+    rev,
+  });
+
+  it('REST 回應比較新的 zone.groups 晚到：不倒退', async () => {
+    const { backend, ws, snapshot } = await connect();
+    const done = backend.updateZoneGroup('zg-1', { name: 'A' });
+    // 別台（或自己第二下）的推送 rev 3 先到，這一下的 REST 回應 rev 2 後到。
+    ws.push({ type: 'zone.groups', zoneGroups: state(3, 'B') });
+    await settle(0, state(2, 'A'));
+    await done;
+    expect(snapshot()?.zoneGroups?.rev).toBe(3);
+    expect(snapshot()?.zoneGroups?.groups[0]?.name).toBe('B');
+  });
+
+  it('推送亂序：舊的 rev 晚到也不蓋掉；新的照收', async () => {
+    const { ws, snapshot } = await connect();
+    ws.push({ type: 'zone.groups', zoneGroups: state(5, 'new') });
+    ws.push({ type: 'zone.groups', zoneGroups: state(4, 'old') });
+    expect(snapshot()?.zoneGroups?.groups[0]?.name).toBe('new');
+    ws.push({ type: 'zone.groups', zoneGroups: state(6, 'newer') });
+    expect(snapshot()?.zoneGroups?.groups[0]?.name).toBe('newer');
+  });
+
+  it('舊版 hub 沒有 rev：照收（不比較）', async () => {
+    const { ws, snapshot } = await connect();
+    ws.push({ type: 'zone.groups', zoneGroups: { groups: [], order: ['a'] } });
+    ws.push({ type: 'zone.groups', zoneGroups: { groups: [], order: ['b'] } });
+    expect(snapshot()?.zoneGroups?.order).toEqual(['b']);
+  });
+});

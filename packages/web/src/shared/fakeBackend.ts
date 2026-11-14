@@ -638,7 +638,8 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
   const zoneIdList = () => [...zones].sort((a, b) => a.position - b.position).map((z) => z.id);
   const changeZoneGroups = (fn: () => ZoneGroups): ZoneGroups => {
     try {
-      zoneGroups = normalizeZoneGroups(fn(), zoneIdList());
+      // 和 hub 一樣每次存 +1。
+      zoneGroups = { ...normalizeZoneGroups(fn(), zoneIdList()), rev: (zoneGroups.rev ?? 0) + 1 };
     } catch (e) {
       if (e instanceof ZoneGroupError) {
         const status = e.code === 'unknown_zone' ? 400 : e.code === 'unknown_group' ? 404 : 409;
@@ -2028,7 +2029,10 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       zones = zones.filter((z) => z.id !== id);
       const fallback = zones[0]!.id;
       for (const s of state.sessions) if (s.zoneId === id) s.zoneId = fallback;
-      zoneGroups = normalizeZoneGroups(zoneGroups, zoneIdList());
+      zoneGroups = {
+        ...normalizeZoneGroups(zoneGroups, zoneIdList()),
+        rev: (zoneGroups.rev ?? 0) + 1,
+      };
       publish();
     },
     async createZoneGroup(input) {
