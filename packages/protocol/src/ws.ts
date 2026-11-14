@@ -512,7 +512,7 @@ export const HubToClient = z.discriminatedUnion('type', [
      * 分頁群組與頂部列順序（CONTRACTS §25）。舊版 hub 不送＝undefined（前端當成沒有群組、照 position 排）；
      * 舊版網頁不認得這個欄位，zod 預設會丟掉，不會讓快照失敗。
      */
-    zoneGroups: ZoneGroups.optional(),
+    zoneGroups: ZoneGroups.optional().catch(undefined),
     /** hub 記憶體裡的群發（hub 重啟就清空）。 */
     broadcasts: z.array(Broadcast).default([]),
     /** 進度卡（P3 項目一，含自動事實）。只有寫過的卡；舊版 hub 不送＝空。 */

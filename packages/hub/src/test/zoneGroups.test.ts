@@ -13,7 +13,7 @@ afterEach(async () => {
 const auditRows = (action: string) =>
   hub.running.db
     .prepare('SELECT detail FROM audit_log WHERE action = ? ORDER BY rowid')
-    .all(action);
+    .all(action) as { detail: string }[];
 
 async function zone(cookie: string, name: string): Promise<string> {
   const res = await hub.api('POST', '/api/zones', { cookie, body: { name } });
@@ -95,6 +95,21 @@ describe('分頁群組', () => {
       body: { kind: 'group', id: gid, before: 'main' },
     });
     expect(moved.body.order).toEqual([gid, 'main', c]);
+    // 版本：每次存 +1（建立 1、改名 2、移動 3–5）。
+    expect(moved.body.rev).toBe(5);
+    // audit 只記移動後的實際位置，不原樣記送來的 before／groupId。
+    expect(JSON.parse(auditRows('zoneGroup.move').at(-1)!.detail)).toEqual({
+      kind: 'group',
+      id: gid,
+      groupId: null,
+      index: 0,
+    });
+    expect(JSON.parse(auditRows('zoneGroup.move')[0]!.detail)).toEqual({
+      kind: 'zone',
+      id: a,
+      groupId: gid,
+      index: 0,
+    });
 
     // 重啟後還在（存在 settings 表）。
     const { dbPath } = hub;
@@ -108,12 +123,13 @@ describe('分頁群組', () => {
     expect(after.body).toEqual({
       groups: [{ id: gid, name: '伺服器', color: 'lime', zoneIds: [a, b] }],
       order: [gid, 'main', c],
+      rev: 5,
     });
 
     // 取消群組：工作區回到群組原本的位置，畫布都還在。
     const ungrouped = await hub.api('DELETE', `/api/zone-groups/${gid}`, { cookie: cookie2 });
     expect(ungrouped.status).toBe(200);
-    expect(ungrouped.body).toEqual({ groups: [], order: [a, b, 'main', c] });
+    expect(ungrouped.body).toEqual({ groups: [], order: [a, b, 'main', c], rev: 6 });
     const zones = await hub.api('GET', '/api/zones', { cookie: cookie2 });
     expect(zones.body).toHaveLength(4);
 
@@ -145,7 +161,7 @@ describe('分頁群組', () => {
     ).toEqual([b]);
     expect((await hub.api('DELETE', `/api/zones/${b}`, { cookie })).status).toBe(200);
     const res = await hub.api('GET', '/api/zone-groups', { cookie });
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       groups: [{ id: gid, name: 'G', color: 'teal', zoneIds: [] }],
       order: ['main', gid],
     });
@@ -191,7 +207,29 @@ describe('分頁群組', () => {
         })
       ).status,
     ).toBe(400);
+    // 顏色只收色票（寫入用 enum）；id 長度有上限（不讓超長字串進 audit）。
+    expect(
+      (await hub.api('POST', '/api/zone-groups', { cookie, body: { name: 'G', color: 'red' } }))
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        await hub.api('POST', '/api/zone-groups/move', {
+          cookie,
+          body: { kind: 'zone', id: 'main', before: 'x'.repeat(129) },
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await hub.api('POST', '/api/zone-groups', {
+          cookie,
+          body: { name: 'G', zoneIds: Array.from({ length: 501 }, () => 'main') },
+        })
+      ).status,
+    ).toBe(400);
     expect(hub.running.store.getRawJson(ZONE_GROUPS_KEY)).toBeNull();
+    expect(auditRows('zoneGroup.create')).toHaveLength(0);
   });
 
   it('權限和工作區相同：沒登入 401；一般成員（member）可以建立、改、刪群組', async () => {
@@ -223,6 +261,34 @@ describe('分頁群組', () => {
     expect(
       (await hub.api('DELETE', `/api/zone-groups/${gid}`, { cookie: member.cookie })).status,
     ).toBe(200);
+  });
+
+  it('存的資料只壞一個群組：只丟那一個，其他群組與順序保留；下一次寫入不會把好的蓋掉', async () => {
+    hub = await startHub();
+    const cookie = await hub.setupOwner();
+    const a = await zone(cookie, 'A');
+    hub.running.store.setRawJson(ZONE_GROUPS_KEY, {
+      groups: [
+        { id: 'zg-good', name: 'G', color: 'lime', zoneIds: [a] },
+        { id: 'zg-bad', name: '', zoneIds: 'oops' },
+      ],
+      order: ['zg-good', 42, 'main'],
+      rev: 7,
+    });
+    expect((await hub.api('GET', '/api/zone-groups', { cookie })).body).toEqual({
+      groups: [{ id: 'zg-good', name: 'G', color: 'lime', zoneIds: [a] }],
+      order: ['zg-good', 'main'],
+      rev: 7,
+    });
+    const renamed = await hub.api('PATCH', '/api/zone-groups/zg-good', {
+      cookie,
+      body: { name: 'H' },
+    });
+    expect(renamed.body).toEqual({
+      groups: [{ id: 'zg-good', name: 'H', color: 'lime', zoneIds: [a] }],
+      order: ['zg-good', 'main'],
+      rev: 8,
+    });
   });
 
   it('存的資料壞掉：當成沒有群組，不讓快照或 GET 失敗', async () => {

@@ -4,40 +4,85 @@
 //
 // 這裡只有資料格式與純函式：hub、前端假後端、前端畫面都用同一套，排出來才一樣。
 import { z } from 'zod';
-import { Id } from './models';
 
 export const ZONE_GROUP_NAME_MAX = 40;
 /** 群組數上限（防呆，正常用不到）。 */
 export const ZONE_GROUPS_MAX = 50;
+/** 群組、工作區 id 的長度上限（hub 產生的是 uuid；使用者送來的字串一律有上限，audit 也不會被灌爆）。 */
+export const ZONE_REF_MAX = 128;
+/** 寫入時一次最多帶幾個工作區。 */
+export const ZONE_GROUP_WRITE_ZONES_MAX = 500;
+/** 讀取（存的資料、快照）時陣列的上限：遠大於實際會有的，只防壞資料。 */
+const READ_LIST_MAX = 5000;
+
+/** 群組或工作區的 id（有長度上限）。 */
+export const ZoneRef = z.string().min(1).max(ZONE_REF_MAX);
 
 export const ZoneGroupName = z.string().trim().min(1).max(ZONE_GROUP_NAME_MAX);
 /**
- * 群組顏色：存色票 id（和團隊框同一組，STYLE §4：teal、lime、indigo、apricot、ice、sand、plum、violet，避開狀態色）。
- * 不認得的 id 前端當 teal，不把任意字串放進 CSS。
+ * 群組顏色：團隊框同一組色票（STYLE §4，避開狀態色）。web `team/colors.ts` 的 TEAM_COLORS 和這裡相同（web 單元測試比對）。
+ * 寫入只收這 8 個；讀取寬鬆（id 格式即可，前端不認得的當 teal，不把任意字串放進 CSS），舊資料或未來新增的顏色不會讓整份讀不出來。
  */
+export const ZONE_GROUP_COLORS = [
+  'teal',
+  'lime',
+  'indigo',
+  'apricot',
+  'ice',
+  'sand',
+  'plum',
+  'violet',
+] as const;
 export const ZoneGroupColorId = z.string().regex(/^[a-z][a-z0-9-]{0,19}$/);
 export const ZoneGroupColor = ZoneGroupColorId.default('teal');
+/** 寫入用（建立、改顏色）。 */
+export const ZoneGroupColorInput = z.enum(ZONE_GROUP_COLORS);
 
 export const ZoneGroup = z.object({
-  id: Id,
+  id: ZoneRef,
   name: ZoneGroupName,
   color: ZoneGroupColor,
   /** 群組裡的工作區，照顯示順序。一個工作區最多在一個群組裡。 */
-  zoneIds: z.array(Id).default([]),
+  zoneIds: z.array(ZoneRef).max(READ_LIST_MAX).default([]),
 });
 export type ZoneGroup = z.infer<typeof ZoneGroup>;
 
 export const ZoneGroups = z.object({
-  groups: z.array(ZoneGroup).default([]),
+  groups: z.array(ZoneGroup).max(READ_LIST_MAX).default([]),
   /**
    * 頂部列由左到右的順序：群組 id 或「沒分組的工作區」id 混在一起。沒列到的（新建的工作區、舊資料）
    * 由 normalizeZoneGroups 接在最後面，照工作區的 position。
    */
-  order: z.array(Id).default([]),
+  order: z.array(ZoneRef).max(READ_LIST_MAX).default([]),
+  /**
+   * 版本：hub 每次存都 +1。REST 回應與 WS 推送可能亂序到達（兩條連線），前端只收比手上新的（`rev` 較大）。
+   * 選填：舊版 hub 沒有＝不比較。
+   */
+  rev: z.number().int().nonnegative().optional(),
 });
 export type ZoneGroups = z.infer<typeof ZoneGroups>;
 
 export const EMPTY_ZONE_GROUPS: ZoneGroups = { groups: [], order: [] };
+
+/**
+ * 讀存的資料（hub settings 表）：壞掉的群組只丟那一個，順序裡壞掉的 id 只丟那一個，不要整份當空（之後一寫就把好的也蓋掉）。
+ * 整個都不是物件＝沒有群組。
+ */
+export function parseZoneGroups(value: unknown): ZoneGroups {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return EMPTY_ZONE_GROUPS;
+  const raw = value as { groups?: unknown; order?: unknown; rev?: unknown };
+  const list = (v: unknown): unknown[] => (Array.isArray(v) ? v.slice(0, READ_LIST_MAX) : []);
+  const groups = list(raw.groups).flatMap((g) => {
+    const parsed = ZoneGroup.safeParse(g);
+    return parsed.success ? [parsed.data] : [];
+  });
+  const order = list(raw.order).flatMap((t) => {
+    const parsed = ZoneRef.safeParse(t);
+    return parsed.success ? [parsed.data] : [];
+  });
+  const rev = z.number().int().nonnegative().safeParse(raw.rev);
+  return rev.success ? { groups, order, rev: rev.data } : { groups, order };
+}
 
 /** 頂部列上的一格：沒分組的工作區，或一個群組（帶它的工作區）。 */
 export type ZoneBarItem<Z extends { id: string }> =
@@ -47,31 +92,42 @@ export type ZoneBarItem<Z extends { id: string }> =
 export const ZoneBarMove = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('zone'),
-    id: Id,
+    id: ZoneRef,
     /** 放進哪個群組；null／沒給＝頂部列（沒分組）。 */
-    groupId: Id.nullable().optional(),
-    before: Id.nullable().optional(),
+    groupId: ZoneRef.nullable().optional(),
+    before: ZoneRef.nullable().optional(),
   }),
-  z.object({ kind: z.literal('group'), id: Id, before: Id.nullable().optional() }),
+  z.object({ kind: z.literal('group'), id: ZoneRef, before: ZoneRef.nullable().optional() }),
 ]);
 export type ZoneBarMove = z.infer<typeof ZoneBarMove>;
 
 export const ZoneGroupCreate = z.object({
   name: ZoneGroupName,
-  color: ZoneGroupColor,
+  color: ZoneGroupColorInput.default('teal'),
   /** 建立時一起放進去的工作區（例如分頁選單「加入群組 → 新群組…」帶這一個）。 */
-  zoneIds: z.array(Id).max(200).default([]),
+  zoneIds: z.array(ZoneRef).max(ZONE_GROUP_WRITE_ZONES_MAX).default([]),
 });
 export type ZoneGroupCreate = z.infer<typeof ZoneGroupCreate>;
 
 export const ZoneGroupPatch = z
-  .object({ name: ZoneGroupName.optional(), color: ZoneGroupColorId.optional() })
+  .object({ name: ZoneGroupName.optional(), color: ZoneGroupColorInput.optional() })
   .refine((p) => p.name !== undefined || p.color !== undefined, 'name or color required');
 export type ZoneGroupPatch = z.infer<typeof ZoneGroupPatch>;
 
 /** 建立群組的回應：新群組與整份群組資料。 */
 export const ZoneGroupCreated = z.object({ group: ZoneGroup, zoneGroups: ZoneGroups });
 export type ZoneGroupCreated = z.infer<typeof ZoneGroupCreated>;
+
+/**
+ * 前端收到新的一份（REST 回應或 WS 推送）時要不要換上：兩邊都有 rev 才比，只收比手上新的；任一邊沒有（舊版 hub）就換。
+ */
+export function isNewerZoneGroups(
+  current: Pick<ZoneGroups, 'rev'> | null | undefined,
+  next: Pick<ZoneGroups, 'rev'>,
+): boolean {
+  if (current?.rev === undefined || next.rev === undefined) return true;
+  return next.rev > current.rev;
+}
 
 /** 純函式丟出的錯誤（hub 轉成 HTTP：unknown_zone 400、unknown_group 404、too_many_groups 409）。 */
 export class ZoneGroupError extends Error {
@@ -122,7 +178,8 @@ export function normalizeZoneGroups(
       placed.add(id);
     }
   }
-  return { groups, order };
+  // 版本照帶（hub 存檔時才 +1）。
+  return state?.rev === undefined ? { groups, order } : { groups, order, rev: state.rev };
 }
 
 /** 頂部列由左到右要畫什麼。zones 照 position 排好。 */

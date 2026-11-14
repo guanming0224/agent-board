@@ -8,7 +8,15 @@ import {
   normalizeZoneGroups,
   patchZoneGroup,
   ungroupZoneGroup,
+  isNewerZoneGroups,
+  parseZoneGroups,
+  ZONE_GROUP_COLORS,
+  ZONE_REF_MAX,
+  ZoneBarMove,
+  ZoneGroup,
+  ZoneGroupCreate,
   ZoneGroupError,
+  ZoneGroupPatch,
   ZoneGroups,
   zoneBarItems,
 } from './zoneGroups';
@@ -139,5 +147,57 @@ describe('格式相容', () => {
       routes.zoneGroupsMove.body.safeParse({ kind: 'group', id: 'g', groupId: 'x' }).success,
     ).toBe(true);
     expect(routes.zoneGroupsMove.body.safeParse({ kind: 'tab', id: 'g' }).success).toBe(false);
+  });
+});
+
+describe('審查後補（W1、W2、N1、N2）', () => {
+  it('版本 rev：整理時照帶；亂序到達時只收比手上新的；舊版 hub 沒有 rev 就照收', () => {
+    expect(normalizeZoneGroups({ groups: [], order: [], rev: 4 }, Z).rev).toBe(4);
+    expect(isNewerZoneGroups({ rev: 5 }, { rev: 4 })).toBe(false);
+    expect(isNewerZoneGroups({ rev: 5 }, { rev: 5 })).toBe(false);
+    expect(isNewerZoneGroups({ rev: 5 }, { rev: 6 })).toBe(true);
+    expect(isNewerZoneGroups(undefined, { rev: 1 })).toBe(true);
+    expect(isNewerZoneGroups({}, {})).toBe(true);
+  });
+
+  it('寫入的 id 與陣列有上限、顏色只收色票；讀取的顏色寬鬆', () => {
+    const long = 'x'.repeat(ZONE_REF_MAX + 1);
+    expect(ZoneBarMove.safeParse({ kind: 'zone', id: 'a', before: long }).success).toBe(false);
+    expect(ZoneBarMove.safeParse({ kind: 'zone', id: 'a', groupId: long }).success).toBe(false);
+    expect(ZoneBarMove.safeParse({ kind: 'group', id: long }).success).toBe(false);
+    expect(
+      ZoneGroupCreate.safeParse({ name: 'G', zoneIds: Array.from({ length: 501 }, () => 'a') })
+        .success,
+    ).toBe(false);
+    expect(ZoneGroupCreate.safeParse({ name: 'G', color: 'red' }).success).toBe(false);
+    expect(ZoneGroupPatch.safeParse({ color: 'mauve' }).success).toBe(false);
+    expect(ZoneGroupPatch.parse({ color: 'plum' })).toEqual({ color: 'plum' });
+    expect(ZONE_GROUP_COLORS).toHaveLength(8);
+    // 讀：未來的新色不讓整份讀不出來。
+    expect(ZoneGroup.parse({ id: 'g', name: 'G', color: 'mauve' }).color).toBe('mauve');
+  });
+
+  it('parseZoneGroups：壞掉的群組或順序項目只丟那一個；整個不是物件＝沒有群組', () => {
+    expect(
+      parseZoneGroups({
+        groups: [g('g1', ['a']), { id: '', name: 'x' }, 'oops', g('g2', [])],
+        order: ['g1', 3, null, 'x'.repeat(ZONE_REF_MAX + 1), 'g2'],
+        rev: 9,
+      }),
+    ).toEqual({ groups: [g('g1', ['a']), g('g2', [])], order: ['g1', 'g2'], rev: 9 });
+    expect(parseZoneGroups('nope')).toEqual({ groups: [], order: [] });
+    expect(parseZoneGroups(null)).toEqual({ groups: [], order: [] });
+    expect(parseZoneGroups({ groups: 'x', order: 1, rev: -1 })).toEqual({ groups: [], order: [] });
+  });
+
+  it('快照的 zoneGroups 不合格式：只有這個欄位變 undefined，整份快照照常解析', () => {
+    const parsed = HubToClient.parse({
+      type: 'board.state',
+      machines: [],
+      sessions: [],
+      approvals: [],
+      zoneGroups: { groups: 'future-format' },
+    });
+    expect(parsed.type === 'board.state' && parsed.zoneGroups).toBeUndefined();
   });
 });
