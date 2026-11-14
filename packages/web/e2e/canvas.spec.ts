@@ -2891,6 +2891,9 @@ test.describe('疊加面板（P2 §1.6 驗收）', () => {
 
   test('1. 開關收件匣、團隊、設定：畫布位置與縮放不變，終端機不重新訂閱', async ({ page }) => {
     await openCanvas(page);
+    // 畫布剛開、fitView 之前是 100%，那時畫面內的卡拿到的 xterm 會保留 5 秒（terminalPool.ts），
+    // 點兩下會直接沿用而不重新訂閱。等它們釋放，下面的訂閱數才是這次點兩下建的。
+    await expect.poll(() => page.locator('.xterm').count(), { timeout: 10_000 }).toBe(0);
     await watchTerminal(page);
     const auth = card(page, 's-auth');
     await auth.locator('.tail').dblclick();

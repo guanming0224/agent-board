@@ -69,7 +69,7 @@ import {
   type Rect,
 } from './layout';
 import { TidyPanel, TidyToast, useTidy, type TidyState } from './tidy';
-import { SessionNode, TERMINAL_ZOOM, type SessionNodeType } from './SessionNode';
+import { SessionNode, TERMINAL_ZOOM_OUT, type SessionNodeType } from './SessionNode';
 import { TeamFrames } from './TeamFrames';
 import { CanvasProgress } from '../progress/CanvasProgress';
 import { canvasTeams, groupHandoffs, teamForHandoff, teamRect } from './teams';
@@ -82,14 +82,14 @@ import './messages';
 const nodeTypes = { session: SessionNode };
 const edgeTypes = { handoff: HandoffEdge };
 
-/** 「全部顯示」不跨過 xterm 門檻，總覽一定是摘要條。 */
+/** 「全部顯示」低於切回摘要條的門檻（TERMINAL_ZOOM_OUT），總覽一定是摘要條。 */
 /**
  * 全部顯示：左右留 6%；上面讓開左上「線」與右上「整理畫布」那一列（top 8＋精簡鈕 32＋8），
  * 下面讓開底部指令列（離底 16＋高 42＋6），卡片的標題列與輸入框才不會被浮動工具蓋住。
  */
 const FIT_OPTIONS = {
   padding: { x: 0.06, top: '56px', bottom: '64px' },
-  maxZoom: TERMINAL_ZOOM - 0.05,
+  maxZoom: TERMINAL_ZOOM_OUT - 0.05,
   minZoom: 0.05,
 } as const;
 const SAVE_DEBOUNCE_MS = 400;

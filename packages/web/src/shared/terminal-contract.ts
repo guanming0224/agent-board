@@ -30,5 +30,7 @@ export interface TerminalViewProps {
    * null 表示 hub 沒有告知（假 PTY）。給外框顯示說明用；xterm 內不疊東西。
    */
   onSizeOwnerChange?: (owner: 'you' | 'other' | 'none' | null) => void;
+  /** 捲動保留行數，只在建立時取用。預設 1000（全尺寸頁）；畫布小卡用 300 省記憶體。 */
+  scrollback?: number;
   className?: string;
 }
