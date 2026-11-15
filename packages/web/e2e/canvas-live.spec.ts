@@ -31,7 +31,7 @@ async function setup(page: Page, summary: 'on' | 'off') {
   await page.addInitScript((summary) => {
     localStorage.setItem('agent-board.canvas.summary-when-zoomed-out', summary);
   }, summary);
-  // 接近 Mac mini 的大螢幕：畫面內同時有很多張卡。
+  // 桌面大螢幕（2560×1440）：畫面內同時有很多張卡。
   await page.setViewportSize({ width: 2560, height: 1440 });
   // 在全尺寸頁補 session（畫布不在）：畫布開著時一口氣建 26 個，React Flow 的 setNodes 會連鎖更新，
   // 機器忙時 React 開發版會在 console 印 Maximum update depth（只發生在測試這種瞬間大量建立）。
