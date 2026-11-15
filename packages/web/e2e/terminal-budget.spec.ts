@@ -84,6 +84,9 @@ async function open25(page: Page) {
         firstPrompt: null,
       });
       backend.setSessionStatus(s.id, 'running');
+      // 每建一個讓出一次：同步迴圈一口氣建 20 多個時，React Flow 的 StoreUpdater 連鎖更新，
+      // 機器忙時 React 開發版會丟 Maximum update depth（只發生在測試這種瞬間大量建立）。
+      await new Promise((r) => setTimeout(r, 20));
     }
   }, STORE);
   await page.evaluate(() => (location.hash = '#/'));

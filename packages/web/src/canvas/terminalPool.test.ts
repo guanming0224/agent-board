@@ -45,6 +45,7 @@ const card = (id: string, patch: Partial<PoolCard> = {}): PoolCard => ({
   pinned: false,
   granted: false,
   lastSeen: 0,
+  visibleSince: -Infinity,
   touched: 0,
   touchedAt: -Infinity,
   ...patch,
@@ -149,9 +150,10 @@ describe('allocateTerminals', () => {
 });
 
 describe('TerminalPool', () => {
-  const setup = (limit = 3, grace = 5000) => {
+  // 停留時間另外測（預設 0：進畫面就給）。
+  const setup = (limit = 3, grace = 5000, dwell = 0) => {
     const clock = new FakeClock();
-    const pool = new TerminalPool(limit, grace, clock);
+    const pool = new TerminalPool(limit, grace, clock, dwell);
     let notified = 0;
     pool.subscribe(() => (notified += 1));
     return { clock, pool, notified: () => notified };
@@ -254,6 +256,42 @@ describe('TerminalPool', () => {
     pool.touch('s3');
     clock.settle();
     expect(pool.grantedCount).toBe(9);
+  });
+
+  it('進畫面要停留夠久才給：鏡頭動畫途中掃過的卡不建 xterm', () => {
+    const { clock, pool } = setup(8, 5000, 250);
+    pool.set('a', { visible: true, pinned: false });
+    clock.advance(100);
+    expect(pool.granted('a')).toBe(false);
+    // 動畫繼續，卡又離開畫面：一直沒拿到。
+    pool.set('a', { visible: false, pinned: false });
+    clock.advance(1000);
+    expect(pool.granted('a')).toBe(false);
+    // 停下來留在畫面內：250ms 後拿到（計時器觸發，不必等別的變化）。
+    pool.set('a', { visible: true, pinned: false });
+    clock.advance(249);
+    expect(pool.granted('a')).toBe(false);
+    clock.advance(1);
+    expect(pool.granted('a')).toBe(true);
+    expect(clock.pendingTimers).toBe(0);
+  });
+
+  it('停留時間：已經有的（寬限期內回來）、剛被點的、展開／聚焦中的不用等', () => {
+    const { clock, pool } = setup(8, 5000, 250);
+    pool.set('a', { visible: true, pinned: false });
+    clock.advance(300);
+    pool.set('a', { visible: false, pinned: false });
+    clock.advance(1000);
+    pool.set('a', { visible: true, pinned: false });
+    clock.settle();
+    expect(pool.granted('a')).toBe(true);
+    pool.set('b', { visible: true, pinned: false });
+    pool.touch('b');
+    clock.settle();
+    expect(pool.granted('b')).toBe(true);
+    pool.set('c', { visible: true, pinned: true });
+    clock.settle();
+    expect(pool.granted('c')).toBe(true);
   });
 
   it('remove 立刻釋放（卡片卸載）', () => {

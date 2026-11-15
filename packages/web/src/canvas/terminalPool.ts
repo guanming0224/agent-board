@@ -3,7 +3,9 @@
 // 再縮小又整批卸載，來回幾次就建了幾百個 WebGL context。這裡集中決定哪些卡可以有 xterm：
 // - 畫面內、顯示成終端機的卡一律有（GM 2026-11-16，0.1.13 熱修）：0.1.11–0.1.12 畫面內也有上限 8，
 //   超過的卡只放 lastLines 的靜態文字，結果「送出了看不到回覆」「點進去打不了字」。
-//   記憶體的主要改善來自畫布一律 DOM renderer（不用 WebGL），不是這個上限；
+//   記憶體的主要改善來自畫布一律 DOM renderer（不用 WebGL），不是這個上限。
+//   但要在畫面內停留 VISIBLE_DWELL_MS 才建：「全部顯示」的鏡頭動畫經過 80–90% 時一路掃過的卡
+//   不必各建一個 xterm（每個都要向 hub 訂閱、拿快照、送 resize），已經有的、剛被點的不用等；
 // - 展開或聚焦中、顯示成終端機的卡（pinned）即使離開畫面也保留，但最多 PINNED_LIMIT 張（展開很多張時最舊的讓位）；
 // - 剛離開畫面（含縮回摘要條）還在寬限期內的：只用剩下的名額保留（總數不超過 CANVAS_TERMINAL_LIMIT，
 //   畫面內的卡已經用掉的不算剩下），剛點過的、已經有的、最近看過的優先；
@@ -20,6 +22,11 @@ export const CANVAS_TERMINAL_LIMIT = 8;
 export const RELEASE_AFTER_MS = 5000;
 /** 展開／聚焦中的卡最多幾張一定保留；超過的最舊的改成和一般卡一起排。 */
 export const PINNED_LIMIT = 4;
+/**
+ * 進入畫面多久後才建 xterm。鏡頭動畫是 200ms（motion.ts），動畫途中短暫經過畫面的卡不建；
+ * 平移或縮放停下後最多慢這麼久出現。
+ */
+export const VISIBLE_DWELL_MS = 250;
 /** 剛被點的卡在這段時間內優先（寬限期內保留時）。 */
 export const TOUCH_PRIORITY_MS = 10_000;
 
@@ -35,6 +42,8 @@ export interface PoolCard extends TerminalDemand {
   granted: boolean;
   /** 最後一次在畫面內（或 pinned）的時間。 */
   lastSeen: number;
+  /** 這次進入畫面的時間（visible 從 false 變 true 的那一刻）。 */
+  visibleSince: number;
   /** 最近一次被聚焦、展開或點擊的順序，越大越新。 */
   touched: number;
   /** 最近一次被點的時間；沒點過是 -Infinity。 */
@@ -46,16 +55,30 @@ export interface AllocateOptions {
   graceMs: number;
   pinnedLimit?: number;
   touchMs?: number;
+  /** 進入畫面多久後才給；已經有的、剛被點的不用等。 */
+  dwellMs?: number;
 }
+
+/** 畫面內的卡現在能不能拿（停留夠久、已經有、或剛被點）。 */
+const settledVisible = (c: PoolCard, now: number, dwellMs: number, touchMs: number) =>
+  c.visible && (c.granted || now - c.visibleSince >= dwellMs || now - c.touchedAt < touchMs);
 
 /** 決定哪些卡有 xterm。 */
 export function allocateTerminals(
   cards: readonly PoolCard[],
   now: number,
-  { limit, graceMs, pinnedLimit = PINNED_LIMIT, touchMs = TOUCH_PRIORITY_MS }: AllocateOptions,
+  {
+    limit,
+    graceMs,
+    pinnedLimit = PINNED_LIMIT,
+    touchMs = TOUCH_PRIORITY_MS,
+    dwellMs = VISIBLE_DWELL_MS,
+  }: AllocateOptions,
 ): Set<string> {
-  // 畫面內的一律給（不受名額限制）。
-  const winners = new Set(cards.filter((c) => c.visible).map((c) => c.id));
+  // 畫面內的一律給（不受名額限制），只要停留夠久。
+  const winners = new Set(
+    cards.filter((c) => settledVisible(c, now, dwellMs, touchMs)).map((c) => c.id),
+  );
   // 畫面外但展開／聚焦中的：最近的優先保留，超過 pinnedLimit 的和寬限期內的一起排。
   const pinned = cards
     .filter((c) => c.pinned && !winners.has(c.id))
@@ -110,6 +133,7 @@ export class TerminalPool {
     readonly limit = CANVAS_TERMINAL_LIMIT,
     readonly graceMs = RELEASE_AFTER_MS,
     private readonly clock: PoolClock = realClock,
+    readonly dwellMs = VISIBLE_DWELL_MS,
   ) {}
 
   set(id: string, demand: TerminalDemand): void {
@@ -121,6 +145,7 @@ export class TerminalPool {
         ...demand,
         granted: false,
         lastSeen: now,
+        visibleSince: now,
         touched: demand.pinned ? ++this.touchClock : 0,
         touchedAt: -Infinity,
       });
@@ -130,6 +155,8 @@ export class TerminalPool {
       if (card.visible || card.pinned || demand.visible || demand.pinned) card.lastSeen = now;
       // 剛被聚焦／展開：最近操作過的優先。
       if (demand.pinned && !card.pinned) card.touched = ++this.touchClock;
+      // 剛進入畫面：從這一刻起算停留時間。
+      if (demand.visible && !card.visible) card.visibleSince = now;
       card.visible = demand.visible;
       card.pinned = demand.pinned;
     }
@@ -170,8 +197,13 @@ export class TerminalPool {
     this.scheduled = false;
     const now = this.clock.now();
     const cards = [...this.cards.values()];
-    const winners = allocateTerminals(cards, now, { limit: this.limit, graceMs: this.graceMs });
+    const winners = allocateTerminals(cards, now, {
+      limit: this.limit,
+      graceMs: this.graceMs,
+      dwellMs: this.dwellMs,
+    });
     let changed = false;
+    // 下一次要重新分配的時間：寬限期到期，或畫面內的卡停留夠久。
     let nextExpiry = Infinity;
     for (const card of cards) {
       const granted = winners.has(card.id);
@@ -181,6 +213,9 @@ export class TerminalPool {
       }
       if (granted && !card.visible && !card.pinned) {
         nextExpiry = Math.min(nextExpiry, card.lastSeen + this.graceMs);
+      }
+      if (!granted && card.visible) {
+        nextExpiry = Math.min(nextExpiry, card.visibleSince + this.dwellMs);
       }
     }
     if (this.timer !== null) this.clock.clearTimeout(this.timer);
