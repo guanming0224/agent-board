@@ -33,11 +33,18 @@ async function setup(page: Page, summary: 'on' | 'off') {
   }, summary);
   // 接近 Mac mini 的大螢幕：畫面內同時有很多張卡。
   await page.setViewportSize({ width: 2560, height: 1440 });
+  // 在全尺寸頁補 session（畫布不在）：畫布開著時一口氣建 26 個，React Flow 的 setNodes 會連鎖更新，
+  // 機器忙時 React 開發版會在 console 印 Maximum update depth（只發生在測試這種瞬間大量建立）。
   await page.goto('/#/canvas');
   await expect(page.getByTestId('card-s-auth')).toBeVisible();
+  await page.evaluate(() => (location.hash = '#/terminal/s-auth'));
+  await expect(page.getByTestId('full-s-auth')).toBeVisible();
   await page.evaluate(
     async ({ url, total }) => {
       const { useBoard } = await import(/* @vite-ignore */ url);
+      for (let i = 0; i < 100 && useBoard.getState().sessions.length === 0; i += 1) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
       const backend = useBoard.getState().backend;
       const live = useBoard
         .getState()
@@ -56,9 +63,12 @@ async function setup(page: Page, summary: 'on' | 'off') {
         });
         backend.setSessionStatus(s.id, 'running');
       }
-      const w = window as never as { __tick: number };
+      const w = window as never as { __tick: number; __paused: boolean };
       w.__tick = 0;
+      w.__paused = false;
       setInterval(() => {
+        // 打字的回顯是一個字一個字送的，中間插進 tick 會把字拆到不同行；打字時先停。
+        if (w.__paused) return;
         w.__tick += 1;
         for (const s of useBoard.getState().sessions) {
           if (s.status !== 'offline') backend.terminal.emit(s.id, `tick-${w.__tick}\r\n`);
@@ -246,6 +256,9 @@ for (const { zoom, summary, crowded } of SCENARIOS) {
     // 優先挑還沒有 xterm 的卡（最壞情況）。
     cards.sort((a, b) => Number(a.live) - Number(b.live));
     await spyInput(page);
+    const pauseTicks = (paused: boolean) =>
+      page.evaluate((p) => ((window as never as { __paused: boolean }).__paused = p), paused);
+    await pauseTicks(true);
 
     // (a) 點進終端機打字送出：只點一下，就要能打字。
     const a = cards[0]!;
@@ -278,6 +291,7 @@ for (const { zoom, summary, crowded } of SCENARIOS) {
     await expect.poll(async () => (await bufferText(page, b.id)) ?? '').toContain('REPLY-for-b');
 
     // 操作之後，畫面內其他終端機卡也仍在即時更新（沒有被擠掉）。
+    await pauseTicks(false);
     await allVisibleTerminalsLive(page);
   });
 }
