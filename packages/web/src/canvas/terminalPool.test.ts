@@ -55,12 +55,26 @@ describe('allocateTerminals', () => {
     expect([...allocateTerminals([card('a')], 0, { limit: 8, graceMs: 5000 })]).toEqual([]);
   });
 
-  it('畫面內的優先，超過上限的不給', () => {
+  it('畫面內的一律給，不受上限限制（GM 2026-11-16：超過名額的卡看不到回覆、打不了字）', () => {
     const cards = ['a', 'b', 'c', 'd'].map((id) => card(id, { visible: true }));
-    expect(allocateTerminals(cards, 0, { limit: 3, graceMs: 5000 }).size).toBe(3);
+    expect(allocateTerminals(cards, 0, { limit: 3, graceMs: 5000 }).size).toBe(4);
+    const many = Array.from({ length: 30 }, (_, i) => card(`v${i}`, { visible: true }));
+    expect(allocateTerminals(many, 0, { limit: 8, graceMs: 5000 }).size).toBe(30);
   });
 
-  it('展開／聚焦中的一定給，而且佔掉其他卡的名額', () => {
+  it('畫面內的卡已經超過上限：畫面外的一張都不保留（寬限期內、沒在打字的）', () => {
+    const cards = [
+      ...['a', 'b', 'c'].map((id) => card(id, { visible: true })),
+      card('left', { granted: true, lastSeen: 900 }),
+    ];
+    expect([...allocateTerminals(cards, 1000, { limit: 3, graceMs: 5000 })].sort()).toEqual([
+      'a',
+      'b',
+      'c',
+    ]);
+  });
+
+  it('展開／聚焦中（畫面外）的一定給；畫面內的也照樣全給', () => {
     const cards = [
       card('p1', { pinned: true }),
       card('p2', { pinned: true }),
@@ -71,11 +85,14 @@ describe('allocateTerminals', () => {
       'p1',
       'p2',
       'v1',
+      'v2',
     ]);
     // 名額比 pinned 少也照樣給 pinned。
     expect([...allocateTerminals(cards, 0, { limit: 1, graceMs: 5000 })].sort()).toEqual([
       'p1',
       'p2',
+      'v1',
+      'v2',
     ]);
   });
 
@@ -97,31 +114,27 @@ describe('allocateTerminals', () => {
     ]);
   });
 
-  it('畫面內超過上限：已經有的留著，再來是最近點過的', () => {
+  it('寬限期內超過剩下的名額：已經有的、剛點過的、最近看過的優先', () => {
     const cards = [
-      card('a', { visible: true, granted: true }),
-      card('b', { visible: true, touched: 5 }),
-      card('c', { visible: true, touched: 1 }),
+      card('v', { visible: true }),
+      card('old', { granted: true, lastSeen: 100 }),
+      card('clicked', { granted: true, lastSeen: 50, touched: 9, touchedAt: 900 }),
+      card('newer', { granted: true, lastSeen: 800 }),
     ];
-    expect([...allocateTerminals(cards, 0, { limit: 2, graceMs: 5000 })].sort()).toEqual([
-      'a',
-      'b',
+    expect([...allocateTerminals(cards, 1000, { limit: 3, graceMs: 5000 })].sort()).toEqual([
+      'clicked',
+      'newer',
+      'v',
     ]);
   });
 
-  it('畫面內 9 張、名額 8 張都滿：剛點的第 9 張拿到，擠掉最久沒碰的', () => {
+  it('畫面內 9 張、名額 8：9 張都有，沒有誰被擠掉', () => {
     const cards = Array.from({ length: 8 }, (_, i) =>
       card(`g${i}`, { visible: true, granted: true, touched: i + 1, lastSeen: 100 }),
     );
     cards.push(card('clicked', { visible: true, touched: 99, touchedAt: 1000 }));
     const winners = allocateTerminals(cards, 1500, { limit: 8, graceMs: 5000 });
-    expect(winners.has('clicked')).toBe(true);
-    expect(winners.has('g0')).toBe(false);
-    expect(winners.size).toBe(8);
-    // 10 秒後不再優先，但已經拿到的照「已有名額」留著。
-    const later = cards.map((c) => (c.id === 'clicked' ? { ...c, granted: true } : c));
-    const after = allocateTerminals(later, 20_000, { limit: 8, graceMs: 5000 });
-    expect(after.has('clicked')).toBe(true);
+    expect(winners.size).toBe(9);
   });
 
   it('展開／聚焦的卡最多保留 4 張，最舊的展開讓位給一般排序', () => {
@@ -154,14 +167,14 @@ describe('TerminalPool', () => {
     expect(notified()).toBe(1);
   });
 
-  it('上限：一次很多張進畫面，只給上限數', () => {
+  it('一次很多張進畫面：畫面內的全給（上限只管畫面外保留）', () => {
     const { clock, pool } = setup(3);
     for (let i = 0; i < 25; i += 1) pool.set(`s${i}`, { visible: true, pinned: false });
     clock.settle();
-    expect(pool.grantedCount).toBe(3);
+    expect(pool.grantedCount).toBe(25);
   });
 
-  it('同一輪 20 張卡同時進入畫面（另有 2 張寬限期內）：集中分配一次，總數不超過上限', () => {
+  it('同一輪 20 張卡同時進入畫面（另有 2 張寬限期內）：集中分配一次，寬限期內的立刻讓出', () => {
     const { clock, pool, notified } = setup(8);
     pool.set('old1', { visible: true, pinned: false });
     pool.set('old2', { visible: true, pinned: false });
@@ -174,8 +187,8 @@ describe('TerminalPool', () => {
     // 排程跑之前沒有任何變化。
     expect(pool.grantedCount).toBe(2);
     clock.settle();
-    expect(pool.grantedCount).toBe(8);
-    expect(maxSeen).toBe(8);
+    expect(pool.grantedCount).toBe(20);
+    expect(maxSeen).toBe(20);
     expect(pool.granted('old1') || pool.granted('old2')).toBe(false);
     expect(notified()).toBe(2);
   });
@@ -219,38 +232,40 @@ describe('TerminalPool', () => {
     expect(pool.granted('a')).toBe(true);
   });
 
-  it('touch：畫面內超過上限時，最近點過的優先', () => {
+  it('touch：寬限期內保留時，最近點過的優先', () => {
     const { clock, pool } = setup(1);
     pool.set('a', { visible: true, pinned: false });
     pool.set('b', { visible: true, pinned: false });
+    clock.settle();
     pool.touch('b');
+    pool.set('a', { visible: false, pinned: false });
+    pool.set('b', { visible: false, pinned: false });
     clock.settle();
     expect(pool.granted('b')).toBe(true);
     expect(pool.granted('a')).toBe(false);
   });
 
-  it('畫面內 9 張卡、名額 8：點第 9 張會拿到 xterm', () => {
+  it('畫面內 9 張卡、名額 8：9 張都有 xterm，點哪張都不會擠掉別張', () => {
     const { clock, pool } = setup(8);
     for (let i = 0; i < 9; i += 1) pool.set(`s${i}`, { visible: true, pinned: false });
     clock.settle();
-    const left = [...Array(9).keys()].map((i) => `s${i}`).find((id) => !pool.granted(id))!;
+    expect(pool.grantedCount).toBe(9);
     clock.advance(1000);
-    pool.touch(left);
+    pool.touch('s3');
     clock.settle();
-    expect(pool.granted(left)).toBe(true);
-    expect(pool.grantedCount).toBe(8);
+    expect(pool.grantedCount).toBe(9);
   });
 
-  it('remove 立刻讓出名額', () => {
+  it('remove 立刻釋放（卡片卸載）', () => {
     const { clock, pool } = setup(1);
     pool.set('a', { visible: true, pinned: false });
-    clock.settle();
     pool.set('b', { visible: true, pinned: false });
     clock.settle();
-    expect(pool.granted('b')).toBe(false);
+    expect(pool.grantedCount).toBe(2);
     pool.remove('a');
     clock.settle();
-    expect(pool.granted('b')).toBe(true);
+    expect(pool.granted('a')).toBe(false);
+    expect(pool.grantedCount).toBe(1);
   });
 
   it('縮放來回（全覽↔放大）在寬限期內不會整批釋放再重建', () => {

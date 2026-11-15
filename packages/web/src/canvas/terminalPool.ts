@@ -1,20 +1,26 @@
 // 畫布卡的 xterm 名額：只替「畫面內＋最近看過」的卡建終端機（GM 2026-11-14，分頁記憶體 1GB 多）。
 // 每個 xterm 在網頁程序約 4MB、用 WebGL 時 GPU 程序再十幾 MB；放大時一次替幾十張卡建 xterm，
 // 再縮小又整批卸載，來回幾次就建了幾百個 WebGL context。這裡集中決定哪些卡可以有 xterm：
-// - 展開或聚焦中、顯示成終端機的卡（pinned）一定有，但最多 PINNED_LIMIT 張（展開很多張時最舊的讓位）；
-// - 剛被點的卡（TOUCH_PRIORITY_MS 內）排在已有名額的卡前面，畫面內滿了也拿得到；
-// - 其他：畫面內的優先，其次是剛離開畫面（含縮回摘要條）還在寬限期內的，最多 CANVAS_TERMINAL_LIMIT 個；
+// - 畫面內、顯示成終端機的卡一律有（GM 2026-11-16，0.1.13 熱修）：0.1.11–0.1.12 畫面內也有上限 8，
+//   超過的卡只放 lastLines 的靜態文字，結果「送出了看不到回覆」「點進去打不了字」。
+//   記憶體的主要改善來自畫布一律 DOM renderer（不用 WebGL），不是這個上限；
+// - 展開或聚焦中、顯示成終端機的卡（pinned）即使離開畫面也保留，但最多 PINNED_LIMIT 張（展開很多張時最舊的讓位）；
+// - 剛離開畫面（含縮回摘要條）還在寬限期內的：只用剩下的名額保留（總數不超過 CANVAS_TERMINAL_LIMIT，
+//   畫面內的卡已經用掉的不算剩下），剛點過的、已經有的、最近看過的優先；
 // - 離開畫面超過 RELEASE_AFTER_MS 或被擠出名額就釋放；回到畫面再建，內容從 hub 的快照重拿。
 // 不碰 DOM，方便單元測試；React 的部分是 useTerminalLease。
 import { useLayoutEffect, useSyncExternalStore } from 'react';
 
-/** 畫布上同時最多幾張卡有 xterm（不含展開／聚焦中的卡）。 */
+/**
+ * 畫面外保留 xterm 的上限：畫面內的卡加上寬限期內保留的，超過這個數就不再替畫面外的卡保留。
+ * 畫面內的卡不受這個數限制（一律有 xterm）。
+ */
 export const CANVAS_TERMINAL_LIMIT = 8;
 /** 離開畫面（或縮回摘要條）多久後釋放 xterm。縮放來回、平移經過時不必重建。 */
 export const RELEASE_AFTER_MS = 5000;
 /** 展開／聚焦中的卡最多幾張一定保留；超過的最舊的改成和一般卡一起排。 */
 export const PINNED_LIMIT = 4;
-/** 剛被點的卡在這段時間內優先拿名額。 */
+/** 剛被點的卡在這段時間內優先（寬限期內保留時）。 */
 export const TOUCH_PRIORITY_MS = 10_000;
 
 export interface TerminalDemand {
@@ -48,18 +54,21 @@ export function allocateTerminals(
   now: number,
   { limit, graceMs, pinnedLimit = PINNED_LIMIT, touchMs = TOUCH_PRIORITY_MS }: AllocateOptions,
 ): Set<string> {
-  // 最近展開／聚焦的優先保留，超過 pinnedLimit 的當一般卡。
-  const pinned = cards.filter((c) => c.pinned).sort((a, b) => b.touched - a.touched);
-  const winners = new Set(pinned.slice(0, Math.max(0, pinnedLimit)).map((c) => c.id));
+  // 畫面內的一律給（不受名額限制）。
+  const winners = new Set(cards.filter((c) => c.visible).map((c) => c.id));
+  // 畫面外但展開／聚焦中的：最近的優先保留，超過 pinnedLimit 的和寬限期內的一起排。
+  const pinned = cards
+    .filter((c) => c.pinned && !winners.has(c.id))
+    .sort((a, b) => b.touched - a.touched);
+  for (const card of pinned.slice(0, Math.max(0, pinnedLimit))) winners.add(card.id);
   const recent = (c: PoolCard) => now - c.touchedAt < touchMs;
   const rest = cards.filter(
-    (c) =>
-      !winners.has(c.id) && (c.visible || c.pinned || (c.granted && now - c.lastSeen < graceMs)),
+    (c) => !winners.has(c.id) && (c.pinned || (c.granted && now - c.lastSeen < graceMs)),
   );
   rest.sort(
     (a, b) =>
-      // 畫面內 > 寬限期內
-      Number(b.visible || b.pinned) - Number(a.visible || a.pinned) ||
+      // 展開／聚焦中 > 寬限期內
+      Number(b.pinned) - Number(a.pinned) ||
       // 剛被點的 > 已經有的
       Number(recent(b)) - Number(recent(a)) ||
       // 已經有的先留著，不來回搶

@@ -195,7 +195,7 @@ input.cmd {
   width: 100%;
   height: 100%;
 }
-/* 還沒分到 xterm 的卡（名額見 terminalPool.ts）：先放最後幾行，靠下對齊像終端機。 */
+/* 沒有 xterm 的卡（畫面外、或剛進畫面還沒分配，見 terminalPool.ts）：先放最後幾行，靠下對齊像終端機。 */
 .term-slot > .term-idle {
   display: flex;
   flex-direction: column;

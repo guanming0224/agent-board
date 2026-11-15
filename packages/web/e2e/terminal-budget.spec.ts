@@ -1,5 +1,6 @@
 // GM 2026-11-14：分頁記憶體 1GB 多。畫布卡的 xterm 只給畫面內＋最近看過的（canvas/terminalPool.ts），
 // WebGL 全頁共用配額（terminal/webglBudget.ts）。這裡用 25 個 session 反覆縮放確認不會超過上限。
+// 0.1.13（GM 2026-11-16）：畫面內的終端機卡一律有 xterm（不受名額限制），名額只管畫面外保留幾個。
 // 單獨跑：e2e/terminal-budget.config.ts（chromium 與 webkit 各一輪）。
 import { expect, test, type Page } from '@playwright/test';
 
@@ -56,7 +57,10 @@ async function zoomUntil(page: Page, atLeast: number) {
   expect(await zoomLevel(page)).toBeGreaterThanOrEqual(atLeast);
 }
 
-/** 補到 25 個活著的 session，重開畫布，裝上取樣器（記錄 .xterm 與 WebGL 數的最大值）。 */
+/**
+ * 補到 25 個活著的 session，重開畫布，裝上取樣器：記錄 .xterm 與 WebGL 數的最大值，
+ * 以及 xterm 數超過「max(名額, 畫面內的終端機卡數)」的最大量（畫面內的全給，畫面外最多補到名額）。
+ */
 async function open25(page: Page) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/#/canvas');
@@ -89,33 +93,39 @@ async function open25(page: Page) {
   await expect
     .poll(() => page.locator('[data-testid^="card-"]').count())
     .toBeGreaterThanOrEqual(25);
-  await page.evaluate(() => {
-    const w = window as never as { __max: { xterm: number; webgl: number } };
-    w.__max = { xterm: 0, webgl: 0 };
+  await page.evaluate((limit) => {
+    const w = window as never as { __max: { xterm: number; webgl: number; excess: number } };
+    w.__max = { xterm: 0, webgl: 0, excess: -Infinity };
     setInterval(() => {
-      w.__max.xterm = Math.max(w.__max.xterm, document.querySelectorAll('.xterm').length);
+      const xterms = document.querySelectorAll('.xterm').length;
+      const visible = document.querySelectorAll(
+        '[data-mode="terminal"] [data-testid="terminal-slot"][data-visible="true"]',
+      ).length;
+      w.__max.xterm = Math.max(w.__max.xterm, xterms);
+      w.__max.excess = Math.max(w.__max.excess, xterms - Math.max(limit, visible));
       w.__max.webgl = Math.max(
         w.__max.webgl,
         document.querySelectorAll('[data-renderer="webgl"]').length,
       );
     }, 20);
-  });
+  }, CARD_XTERM_LIMIT);
 }
 
 const peaks = (page: Page) =>
-  page.evaluate(() => (window as never as { __max: { xterm: number; webgl: number } }).__max);
+  page.evaluate(
+    () => (window as never as { __max: { xterm: number; webgl: number; excess: number } }).__max,
+  );
 const xtermCount = (page: Page) => page.locator('.xterm').count();
 
 /**
- * 畫面內、顯示成終端機的卡：分到 xterm（畫面內超過名額時只有名額數那麼多），
- * 而且 buffer 裡有內容（WebGL 畫的字從 DOM 讀不到）。
+ * 畫面內、顯示成終端機的卡：每張都分到 xterm，而且 buffer 裡有內容（WebGL 畫的字從 DOM 讀不到）。
  */
 async function visibleTerminalsShowContent(page: Page) {
   await expect
     .poll(
       () =>
         page.evaluate(
-          async ({ url, limit }) => {
+          async ({ url }) => {
             const { terminalForTest } = (await import(/* @vite-ignore */ url)) as TermModule;
             const slots = [
               ...document.querySelectorAll<HTMLElement>(
@@ -124,7 +134,7 @@ async function visibleTerminalsShowContent(page: Page) {
             ];
             if (slots.length === 0) return 'no-visible-slot';
             const live = slots.filter((slot) => slot.querySelector('[data-terminal-session]'));
-            if (live.length < Math.min(slots.length, limit)) {
+            if (live.length < slots.length) {
               return `live ${live.length} / visible ${slots.length}`;
             }
             for (const slot of live) {
@@ -139,7 +149,7 @@ async function visibleTerminalsShowContent(page: Page) {
             }
             return 'ok';
           },
-          { url: CONTROLLER, limit: CARD_XTERM_LIMIT },
+          { url: CONTROLLER },
         ),
       { timeout: 5000 },
     )
@@ -165,13 +175,13 @@ test('縮放全覽↔放大來回 10 次：xterm、WebGL 不超過上限，畫�
   }
   const peak = await peaks(page);
   expect(peak.xterm).toBeGreaterThan(0);
-  expect(peak.xterm).toBeLessThanOrEqual(CARD_XTERM_LIMIT);
+  expect(peak.excess, 'xterm 數不超過 max(名額, 畫面內的終端機卡)').toBeLessThanOrEqual(0);
   expect(peak.webgl).toBeLessThanOrEqual(WEBGL_LIMIT);
   // 縮回摘要條後寬限期過了就全部釋放。
   await expect.poll(() => xtermCount(page), { timeout: RELEASE_MS + 5000 }).toBe(0);
 });
 
-test('摘要條關：全覽時畫面內 25 張都是終端機，xterm 仍不超過名額，其他卡顯示最後幾行', async ({
+test('摘要條關：全覽時畫面內的終端機卡每張都有 xterm（不受名額限制），畫面外的不留', async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -181,17 +191,50 @@ test('摘要條關：全覽時畫面內 25 張都是終端機，xterm 仍不超�
   await expect
     .poll(() => page.locator('[data-mode="terminal"]').count())
     .toBeGreaterThanOrEqual(25);
-  await expect.poll(() => page.locator('[data-terminal="live"]').count()).toBe(CARD_XTERM_LIMIT);
-  // 沒分到的卡在插槽放最後幾行文字（不是空白）。
-  await expect(page.locator('[data-terminal="idle"] .term-idle').first()).toBeAttached();
+  const visibleSlots = page.locator(
+    '[data-mode="terminal"] [data-testid="terminal-slot"][data-visible="true"]',
+  );
+  /** 全部顯示後再縮小兩格：畫面內的終端機卡超過舊的名額 8 張。 */
+  const overview = async () => {
+    await page.getByRole('button', { name: '全部顯示' }).click();
+    // 等「全部顯示」的鏡頭動畫停下（倍率連續兩次一樣），再一格一格縮小。
+    let last = -1;
+    await expect
+      .poll(async () => {
+        const now = await zoomLevel(page);
+        const settled = now === last && now < 80;
+        last = now;
+        return settled;
+      })
+      .toBe(true);
+    for (let i = 0; i < 2; i += 1) {
+      const before = await zoomLevel(page);
+      await page.getByRole('button', { name: '縮小' }).click();
+      await expect.poll(() => zoomLevel(page)).toBeLessThan(before);
+    }
+    await expect
+      .poll(() => visibleSlots.count(), { message: '畫面內要超過舊的名額 8 張，才測得到' })
+      .toBeGreaterThan(CARD_XTERM_LIMIT);
+    await visibleTerminalsShowContent(page);
+  };
+  await overview();
   for (let round = 0; round < 3; round += 1) {
     await zoomUntil(page, 90);
     await visibleTerminalsShowContent(page);
-    await page.getByRole('button', { name: '全部顯示' }).click();
+    await overview();
   }
   const peak = await peaks(page);
-  expect(peak.xterm).toBeLessThanOrEqual(CARD_XTERM_LIMIT);
+  expect(peak.xterm).toBeGreaterThan(CARD_XTERM_LIMIT);
+  expect(peak.excess, 'xterm 數不超過 max(名額, 畫面內的終端機卡)').toBeLessThanOrEqual(0);
   expect(peak.webgl).toBeLessThanOrEqual(WEBGL_LIMIT);
+  // 放大後被推出畫面的卡（寬限期內）：縮小後畫面內已經超過名額，一張都不留。
+  await expect
+    .poll(() =>
+      page
+        .locator('[data-testid="terminal-slot"][data-visible="false"][data-terminal="live"]')
+        .count(),
+    )
+    .toBe(0);
 });
 
 test('放大後離開畫面的卡過幾秒釋放、留在畫面的保留；全尺寸頁正常', async ({ page }) => {
@@ -211,7 +254,7 @@ test('放大後離開畫面的卡過幾秒釋放、留在畫面的保留；全�
   expect(await stays.count()).toBeGreaterThan(0);
   await visibleTerminalsShowContent(page);
   const peak = await peaks(page);
-  expect(peak.xterm).toBeLessThanOrEqual(CARD_XTERM_LIMIT);
+  expect(peak.excess, 'xterm 數不超過 max(名額, 畫面內的終端機卡)').toBeLessThanOrEqual(0);
   expect(peak.webgl).toBeLessThanOrEqual(WEBGL_LIMIT);
 
   // 全尺寸頁：只有一個 xterm，內容正常，捲動保留 1000 行（畫布小卡是 300）。

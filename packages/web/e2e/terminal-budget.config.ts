@@ -1,9 +1,9 @@
 import { defineConfig } from '@playwright/test';
 
-// 畫布終端機名額（25 個 session 反覆縮放）。自己的埠，不連到其他 worktree 的 dev server。
+// 畫布終端機名額（25 個 session 反覆縮放）與畫布卡即時輸出／輸入（canvas-live，30 個 session）。自己的埠，不連到其他 worktree 的 dev server。
 export default defineConfig({
   testDir: '.',
-  testMatch: 'terminal-budget.spec.ts',
+  testMatch: ['terminal-budget.spec.ts', 'canvas-live.spec.ts'],
   outputDir: '../test-results/terminal-budget',
   use: { baseURL: 'http://127.0.0.1:5221', locale: 'zh-TW' },
   projects: [

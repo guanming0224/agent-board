@@ -293,7 +293,7 @@ export function SessionNode({
   if (!isTerminal && typingHere) setTypingHere(false);
   // focusout 不一定會來（textarea 被藏起來或拆下）：以目前焦點實際在不在 host 裡為準。
   const typing = typingHere && host.contains(document.activeElement);
-  // xterm 不是每張卡都有：只給畫面內＋最近看過的卡，展開／聚焦中的一定有（terminalPool.ts）。
+  // xterm 不是每張卡都有：畫面內顯示成終端機的一律有，畫面外只保留最近看過、展開／聚焦中的（terminalPool.ts）。
   const pinned = isTerminal && (expanded || focused || typing);
   const hasTerminal = useTerminalLease(data.sessionId, {
     visible: isTerminal && onScreen,
@@ -334,7 +334,7 @@ export function SessionNode({
   return (
     <div
       className={`frame ${codeClass(statusCode(session))}${focused ? ' spot' : ''}`}
-      // 點了這張卡（含 portal 底下的 xterm：React 事件照 React 樹往上傳）：名額優先給它。
+      // 點了這張卡（含 portal 底下的 xterm：React 事件照 React 樹往上傳）：離開畫面後優先保留它。
       onPointerDownCapture={() => canvasTerminals.touch(data.sessionId)}
       // --fill 放在外框上：摘要條的倍率（--strip-scale）由外框算，外框的圓角才跟得上（canvas.css）。
       style={
@@ -399,7 +399,7 @@ export function SessionNode({
             data-visible={onScreen}
             data-terminal={hasTerminal ? 'live' : 'idle'}
           >
-            {/* 還沒分到 xterm：先放最後幾行文字（不是疊在 xterm 上，xterm 來了就換掉）。 */}
+            {/* 沒有 xterm（畫面外、或剛進畫面還沒分配）：先放最後幾行文字（不是疊在 xterm 上，xterm 來了就換掉）。 */}
             {!hasTerminal && (
               <pre className="term-idle" aria-hidden="true">
                 {mask(session.lastLines.join('\n'))}
