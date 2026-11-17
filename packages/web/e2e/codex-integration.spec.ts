@@ -187,13 +187,23 @@ test('新增頁選 Codex：預覽是 codex 的參數；建立後卡片標 Codex�
     '-s workspace-write -a on-request',
   );
   await expect(page.getByTestId('codex-hooks-note')).toContainText('config.toml');
+  // 推理強度（§26）：Codex 的白名單、沒有備援模型；預覽與實際參數都帶 -c model_reasoning_effort。
+  await expect(page.getByLabel('備援模型', { exact: true })).toHaveCount(0);
+  await page.getByLabel('推理強度', { exact: true }).selectOption('low');
+  await expect(page.getByTestId('command-preview')).toContainText(
+    `-c 'model_reasoning_effort="low"'`,
+  );
   await page.getByRole('button', { name: '建立 session' }).click();
   await expect(page.getByText('已建立 codex-node')).toBeVisible();
 
   const sessions = (await (await page.request.get('/api/sessions')).json()) as Session[];
   session = sessions.find((s) => s.name === 'codex-node')!;
   expect(session.agent).toBe('codex');
+  expect(session.effort).toBe('low');
   await expectStatus(page.request, session.id, 'waiting_input');
+  await expect
+    .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
+    .toContain('effort model_reasoning_effort="low"');
   const fresh = await getSession(page.request, session.id);
   expect(fresh.statusDetail).toBe('idle:start'); // NEW：剛開好、閒著
   expect(fresh.claudeSessionId).toMatch(/^[0-9a-f-]{36}$/); // SessionStart 回報的 thread id
@@ -324,6 +334,10 @@ test('daemon 被殺：失聯；重啟：codex resume <thread id> 接回', async 
     .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
     .toContain(`args=resume ${thread}`);
   expect((await getSession(page.request, session.id)).agent).toBe('codex');
+  // daemon 重啟接回：同一組推理強度（存在 daemon 的 sessions.json）。
+  await expect
+    .poll(async () => readScreen(page, session.id), { timeout: 20_000 })
+    .toContain('effort model_reasoning_effort="low"');
 });
 
 test('Codex 自己結束（exit 0）→ DONE', async ({ page }) => {

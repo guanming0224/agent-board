@@ -379,6 +379,31 @@ test.describe('浮動對話框：審查修正（S1、W1–W6、N1–N3）', () =
     await expect(name).toHaveValue('');
   });
 
+  test('W1（§26）：模型、自訂名稱、推理強度、備援模型也在草稿裡，換網址再開都還在', async ({
+    page,
+  }) => {
+    await openCanvas(page);
+    await page.evaluate(() => (location.hash = '#/new'));
+    const modal = page.getByTestId('modal');
+    await modal.getByLabel('模型', { exact: true }).selectOption({ label: '自訂…' });
+    await modal.locator('#ns-model-custom').fill('claude-opus-5-5');
+    await modal.getByLabel('推理強度', { exact: true }).selectOption('high');
+    await modal.getByLabel('備援模型', { exact: true }).selectOption('sonnet');
+    await page.getByTestId('inbox-button').click();
+    await expect(modal).toHaveCount(0);
+    await page.evaluate(() => (location.hash = '#/new'));
+    await expect(modal.locator('#ns-model-custom')).toHaveValue('claude-opus-5-5');
+    await expect(modal.getByLabel('推理強度', { exact: true })).toHaveValue('high');
+    await expect(modal.getByLabel('備援模型', { exact: true })).toHaveValue('sonnet');
+    await expect(modal.getByTestId('command-preview')).toContainText(
+      '--model claude-opus-5-5 --effort high --fallback-model sonnet',
+    );
+    await page.getByTestId('modal-close').click();
+    await page.evaluate(() => (location.hash = '#/new'));
+    await expect(modal.getByLabel('模型', { exact: true })).toHaveValue('');
+    await expect(modal.getByLabel('推理強度', { exact: true })).toHaveValue('');
+  });
+
   test('W2：焦點在畫布時 Esc 不關浮動框；焦點在框裡才關', async ({ page }) => {
     await openCanvas(page);
     await page.evaluate(() => (location.hash = '#/new'));

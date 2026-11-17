@@ -21,6 +21,8 @@ const machine = (over: Partial<Machine> & Pick<Machine, 'id' | 'name'>): Machine
     cpuCores: 8,
     memoryBytes: 16 * 1024 ** 3,
     claudeVersion: '0.0.0-test',
+    // 認得推理強度與備援模型（§26）；舊 daemon 的測試另外拿掉。
+    modelOptions: true,
   },
   ...over,
 });
@@ -1001,7 +1003,7 @@ test.describe('新增 session', () => {
     await expect(preview(page)).toHaveText(
       "cd /work/web\nclaude --session-id <uuid> --permission-mode manual --name 'Fix login'",
     );
-    await page.getByLabel('模型').fill('opus');
+    await page.getByLabel('模型', { exact: true }).selectOption('opus');
     await page.getByLabel('帳號').fill('/home/me/.claude-b');
     await page.getByRole('radio', { name: /acceptEdits/ }).check();
     await page.getByLabel('接續舊對話').fill(OLD_CONV);
@@ -1011,6 +1013,115 @@ test.describe('新增 session', () => {
     );
     await expect(page.locator('aside').getByText('run tests')).toBeVisible();
     await expect(page.getByTestId('quota-warnings')).toContainText('150k tokens');
+  });
+
+  test('模型下拉（§26）：清單、自訂、推理強度、備援；預覽與送出同步，不合的擋下', async ({
+    page,
+  }) => {
+    await open(page, 'new', newSeed());
+    await page.getByLabel('名稱').fill('m');
+    await page.getByLabel('工作目錄').fill('/w');
+    const model = page.getByLabel('模型', { exact: true });
+    const fallback = page.getByLabel('備援模型', { exact: true });
+    const effort = page.getByLabel('推理強度', { exact: true });
+    // 選項：預設＋內建清單（CLI 別名）＋自訂…；強度是 Claude 的白名單。
+    await expect(model.locator('option')).toHaveText([
+      '預設（不指定）',
+      'fable',
+      'opus',
+      'sonnet',
+      'haiku',
+      '自訂…',
+    ]);
+    await expect(effort.locator('option')).toHaveText([
+      '跟 CLI 預設',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ]);
+    await expect(fallback.locator('option').first()).toHaveText('不指定');
+    await model.selectOption('opus');
+    await effort.selectOption('xhigh');
+    await fallback.selectOption('sonnet');
+    await expect(preview(page)).toHaveText(
+      'cd /w\nclaude --session-id <uuid> --permission-mode manual --model opus --effort xhigh --fallback-model sonnet --name m',
+    );
+    // 自訂…：切成輸入框，帶著原本的名稱方便改。
+    await model.selectOption({ label: '自訂…' });
+    const custom = page.locator('#ns-model-custom');
+    await expect(custom).toHaveValue('opus');
+    await custom.fill('claude-opus-5-5');
+    await expect(preview(page)).toContainText('--model claude-opus-5-5 --effort xhigh');
+    // 不安全的字元與備援相同：顯示錯誤、不送出。
+    await custom.fill('opus; rm -rf');
+    await expect(page.getByText('模型名稱只能有英數')).toBeVisible();
+    await page.getByRole('button', { name: '建立 session' }).click();
+    await expect(page.locator('form .acts .msg.err')).toContainText('模型名稱只能有英數');
+    await custom.fill('sonnet');
+    await expect(page.getByText('備援模型和主模型一樣')).toBeVisible();
+    await custom.fill('claude-opus-5-5');
+    await page.getByRole('button', { name: '建立 session' }).click();
+    await expect(page.locator('form .acts .msg')).toContainText('已建立 m');
+    const [created] = (await calls(page)) as { input: Record<string, unknown> }[];
+    expect(created?.input).toMatchObject({
+      model: 'claude-opus-5-5',
+      effort: 'xhigh',
+      fallbackModel: 'sonnet',
+    });
+  });
+
+  test('模型下拉（§26）：換成 Codex 時清單與強度換成 Codex 的、備援隱藏', async ({ page }) => {
+    const rigCodex = machine({
+      id: 'm-c',
+      name: 'rig-codex',
+      capabilities: { ...rigA.capabilities, codexVersion: '0.167.0' },
+    });
+    await open(page, 'new', { ...newSeed(), machines: [rigCodex, rigA] });
+    await page.getByLabel('機器', { exact: true }).selectOption('m-c');
+    await page.getByLabel('名稱').fill('cx');
+    await page.getByLabel('工作目錄').fill('/w');
+    await page.getByLabel('模型', { exact: true }).selectOption('opus');
+    await page.getByLabel('推理強度', { exact: true }).selectOption('xhigh');
+    const picker = page.getByTestId('agent-picker');
+    await picker.getByText('Codex', { exact: true }).click();
+    await expect(picker.getByRole('radio', { name: 'Codex' })).toBeChecked();
+    // Claude 的別名不帶到 Codex；xhigh 不是 Codex 的強度，回到「跟 CLI 預設」。
+    await expect(page.getByLabel('模型', { exact: true })).toHaveValue('');
+    await expect(page.getByLabel('模型', { exact: true }).locator('option')).toHaveText([
+      '預設（不指定）',
+      'gpt-6-luna',
+      '自訂…',
+    ]);
+    await expect(page.getByLabel('推理強度', { exact: true })).toHaveValue('');
+    await expect(page.getByLabel('備援模型', { exact: true })).toHaveCount(0);
+    await page.getByLabel('推理強度', { exact: true }).selectOption('minimal');
+    await expect(preview(page)).toContainText(
+      `codex -s read-only -a on-request -c 'model_reasoning_effort="minimal"' --dangerously-bypass-hook-trust`,
+    );
+    // 換回 Claude：備援欄位回來。
+    await picker.getByText('Claude Code', { exact: true }).click();
+    await expect(page.getByLabel('備援模型', { exact: true })).toBeVisible();
+  });
+
+  test('模型下拉（§26）：舊 daemon 提示強度與備援不會生效，預覽與送出都不帶', async ({ page }) => {
+    const oldCaps = { ...rigA.capabilities };
+    delete oldCaps.modelOptions;
+    const rigOld = machine({ id: 'm-old', name: 'rig-old', capabilities: oldCaps });
+    await open(page, 'new', { ...newSeed(), machines: [rigOld] });
+    await page.getByLabel('名稱').fill('old');
+    await page.getByLabel('工作目錄').fill('/w');
+    await page.getByLabel('推理強度', { exact: true }).selectOption('high');
+    await page.getByLabel('備援模型', { exact: true }).selectOption('haiku');
+    await expect(page.getByTestId('model-options-old')).toContainText('rig-old 的 daemon 太舊');
+    await expect(preview(page)).not.toContainText('--effort');
+    await expect(preview(page)).not.toContainText('--fallback-model');
+    await page.getByRole('button', { name: '建立 session' }).click();
+    await expect(page.locator('form .acts .msg')).toContainText('已建立 old');
+    const [created] = (await calls(page)) as { input: Record<string, unknown> }[];
+    expect(created?.input).not.toHaveProperty('effort');
+    expect(created?.input).not.toHaveProperty('fallbackModel');
   });
 
   test('任務類型建議機器：GPU 任務選有 GPU 的；沒有就照實說', async ({ page }) => {
@@ -1285,7 +1396,7 @@ test.describe('新增 session', () => {
     await open(page, 'new', newSeed());
     await page.getByLabel('機器', { exact: true }).selectOption('m-g');
     await page.getByLabel('工作目錄').fill('/work/tpl');
-    await page.getByLabel('模型').fill('sonnet');
+    await page.getByLabel('模型', { exact: true }).selectOption('sonnet');
     await page.getByRole('radio', { name: /^plan/ }).check();
     await page.getByRole('button', { name: '存成範本' }).click();
     await expect(page.locator('.template-save .msg')).toHaveText('要填範本名稱才能存');
@@ -1294,12 +1405,12 @@ test.describe('新增 session', () => {
     await expect(page.locator('.template-save .msg')).toHaveText('已存成範本 我的範本');
 
     await page.getByLabel('工作目錄').fill('/other');
-    await page.getByLabel('模型').fill('');
+    await page.getByLabel('模型', { exact: true }).selectOption('');
     await page.getByRole('radio', { name: /^default/ }).check();
     await page.getByLabel('機器', { exact: true }).selectOption('m-a');
     await page.getByLabel('範本', { exact: true }).selectOption({ label: '我的範本' });
     await expect(page.getByLabel('工作目錄')).toHaveValue('/work/tpl');
-    await expect(page.getByLabel('模型')).toHaveValue('sonnet');
+    await expect(page.getByLabel('模型', { exact: true })).toHaveValue('sonnet');
     await expect(page.getByLabel('機器', { exact: true })).toHaveValue('m-g');
     await expect(page.getByRole('radio', { name: /^plan/ })).toBeChecked();
   });
@@ -1715,6 +1826,74 @@ test.describe('設定', () => {
     await page.getByRole('button', { name: '儲存設定' }).click();
     await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
     expect(await calls(page)).toEqual([{ type: 'settings', patch: { dangerRules: [] } }]);
+  });
+
+  test('模型清單（§26）：新增、擋不合的名稱與重複、上下移、移除；存檔只送 modelLists，新增 session 的下拉跟著換', async ({
+    page,
+  }) => {
+    await open(page, 'settings/sessions');
+    const section = page.locator('#s-modelLists');
+    await expect(section).toContainText('模型清單');
+    const claude = section.getByTestId('model-list-claude');
+    const codex = section.getByTestId('model-list-codex');
+    await expect(claude.locator('li code')).toHaveText(['fable', 'opus', 'sonnet', 'haiku']);
+    await expect(codex.locator('li code')).toHaveText(['gpt-6-luna']);
+
+    const input = claude.getByLabel('新增到 Claude Code 的模型名稱');
+    await input.fill('bad name');
+    await claude.getByRole('button', { name: '新增' }).click();
+    await expect(claude.locator('.msg.err')).toContainText('模型名稱只能有英數');
+    await input.fill('opus');
+    await claude.getByRole('button', { name: '新增' }).click();
+    await expect(claude.locator('.msg.err')).toHaveText('清單裡已經有這個名稱。');
+    await input.fill('claude-opus-5-5');
+    await input.press('Enter');
+    await expect(claude.locator('li code')).toHaveText([
+      'fable',
+      'opus',
+      'sonnet',
+      'haiku',
+      'claude-opus-5-5',
+    ]);
+    await claude.getByRole('button', { name: 'claude-opus-5-5 往上移' }).click();
+    await claude.getByRole('button', { name: 'fable 往下移' }).click();
+    await claude.getByRole('button', { name: '從清單移除 haiku' }).click();
+    await expect(claude.locator('li code')).toHaveText([
+      'opus',
+      'fable',
+      'sonnet',
+      'claude-opus-5-5',
+    ]);
+    // 第一個不能再往上、最後一個不能再往下。
+    await expect(claude.getByRole('button', { name: 'opus 往上移' })).toBeDisabled();
+    await expect(claude.getByRole('button', { name: 'claude-opus-5-5 往下移' })).toBeDisabled();
+    await codex.getByRole('button', { name: '從清單移除 gpt-6-luna' }).click();
+    await expect(codex).toContainText('清單是空的');
+    await expect(section.locator('.chip.unsaved')).toHaveText('未存檔');
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    expect(await calls(page)).toEqual([
+      {
+        type: 'settings',
+        patch: {
+          modelLists: { claude: ['opus', 'fable', 'sonnet', 'claude-opus-5-5'], codex: [] },
+        },
+      },
+    ]);
+    // 同一頁換到新增 session：下拉是剛存的清單。
+    await page.evaluate(() => (location.hash = '#/new'));
+    await expect(page.getByLabel('模型', { exact: true }).locator('option')).toHaveText([
+      '預設（不指定）',
+      'opus',
+      'fable',
+      'sonnet',
+      'claude-opus-5-5',
+      '自訂…',
+    ]);
+    // 恢復內建清單。
+    await page.evaluate(() => (location.hash = '#/settings/sessions'));
+    await page.getByTestId('model-lists-reset').click();
+    await expect(claude.locator('li code')).toHaveText(['fable', 'opus', 'sonnet', 'haiku']);
   });
 
   test('機器：配對碼，移除要按兩次', async ({ page }) => {
@@ -2503,6 +2682,7 @@ test.describe('語系與版面', () => {
             'settings',
             'settings/machines',
             'settings/security',
+            'settings/sessions',
             'settings/data',
             'onboarding',
             'login',
@@ -2522,6 +2702,15 @@ test.describe('語系與版面', () => {
                 .getByLabel(/工作目錄|Working directory/)
                 .fill('/home/someone/projects/a-really-long-repository-name-goes-here/sub');
               await page.getByRole('radio', { name: /略過權限|Bypass permissions/ }).check();
+              // 模型「自訂…」切成輸入框、長名稱、強度與備援（§26）。
+              await page
+                .getByLabel(/^(模型|Model)$/)
+                .selectOption({ label: locale === 'en-US' ? 'Custom…' : '自訂…' });
+              await page
+                .locator('#ns-model-custom')
+                .fill('claude-opus-5-5-a-really-long-model-name');
+              await page.getByLabel(/^(推理強度|Reasoning effort)$/).selectOption('xhigh');
+              await page.getByLabel(/^(備援模型|Fallback model)$/).selectOption('sonnet');
               await page.getByRole('button', { name: /^(瀏覽|Browse)$/ }).click();
               await page.getByTestId('folder-browser').getByRole('button').first().waitFor();
             }
@@ -2546,6 +2735,70 @@ test.describe('語系與版面', () => {
       }
     });
   }
+
+  test.describe('模型下拉（繁中）', () => {
+    test.use({ locale: 'zh-TW' });
+    test('模型下拉與模型清單（§26）：手機上控制項至少 44px；截圖', async ({ page }, info) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await open(page, 'new', rich());
+      await page.getByLabel('名稱', { exact: true }).fill('tuned');
+      await page.getByLabel('工作目錄').fill('/work/api');
+      await page.getByLabel('模型', { exact: true }).selectOption({ label: '自訂…' });
+      await page.locator('#ns-model-custom').fill('claude-opus-5-5');
+      await page.getByLabel('推理強度', { exact: true }).selectOption('high');
+      await page.getByLabel('備援模型', { exact: true }).selectOption('sonnet');
+      for (const id of ['#ns-model', '#ns-model-custom', '#ns-effort', '#ns-fallback']) {
+        const box = await page.locator(id).boundingBox();
+        expect(box?.height ?? 0, id).toBeGreaterThanOrEqual(44);
+      }
+      const center = () =>
+        page.evaluate(() =>
+          document.querySelector('#ns-effort')?.scrollIntoView({ block: 'center' }),
+        );
+      await center();
+      await page.screenshot({ path: shot(info, 'model-new-390') });
+      // 跨 640px 換成浮動框：草稿還原同樣的值。
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await expect(page.locator('#ns-model-custom')).toHaveValue('claude-opus-5-5');
+      await expect(page.locator('#ns-effort')).toHaveValue('high');
+      await center();
+      await page.screenshot({ path: shot(info, 'model-new-1280') });
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      await open(page, 'settings/modelLists', rich());
+      const section = page.locator('#s-modelLists');
+      await section.scrollIntoViewIfNeeded();
+      for (const button of await section.getByRole('button').all()) {
+        const box = await button.boundingBox();
+        expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+      }
+      await expectNoPageOverflow(page);
+      await page.evaluate(() =>
+        document.querySelector('#s-modelLists')?.scrollIntoView({ block: 'start' }),
+      );
+      await page.screenshot({ path: shot(info, 'model-lists-390') });
+      // 桌面版另外開一次（換寬度時設定頁會換版面、元素重建）。
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await open(page, 'settings/modelLists', rich());
+      // 次畫面有淡入動畫：等動畫跑完再截。
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              document
+                .getAnimations()
+                .filter(
+                  (x) => x.playState === 'running' && x.effect?.getTiming().iterations !== Infinity,
+                ).length,
+          ),
+        )
+        .toBe(0);
+      await page.evaluate(() =>
+        document.querySelector('#s-modelLists')?.scrollIntoView({ block: 'start' }),
+      );
+      await page.screenshot({ path: shot(info, 'model-lists-1280') });
+    });
+  });
 
   test.describe('英文固定用詞', () => {
     test.use({ locale: 'en-US' });

@@ -148,6 +148,10 @@ const CLAUDE_FLAGS = new Set([
   // 唯讀 session 拿掉改檔工具；只會減少 claude 能做的事（2026-11-06 Lead 決策）。
   '--disallowedTools',
   '--model',
+  // 新增 session 的推理強度與備援模型（GM 2026-11-17，CONTRACTS §26）：值只收白名單（CLAUDE_EFFORTS）或安全字元的
+  // 模型名稱，只改用哪個模型、想多深，不放寬任何工具或權限，仍是互動模式。
+  '--effort',
+  '--fallback-model',
   '--name',
   // agent-board 工具（派工 2026-11-06 審查、進度卡 2026-11-08）：掛 daemon 產生的 MCP 設定檔（本機 MCP server，
   // 只連 daemon 的 socket），並事先允許開著的那幾個工具（最多 7 個，見 AGENT_BOARD_TOOLS）；
@@ -167,7 +171,7 @@ const CODEX_FLAGS = new Set([
   '-s', // --sandbox
   '-a', // --ask-for-approval
   '-m', // --model
-  '-c', // 這次啟動的設定覆寫：只用來帶 hooks（不寫進 ~/.codex）
+  '-c', // 這次啟動的設定覆寫：hooks、agent-board MCP、推理強度 model_reasoning_effort（§26，白名單），不寫進 ~/.codex
   '--dangerously-bypass-hook-trust', // 只讓這次啟動跳過 hook 信任確認（GM 決策 1）
   '--dangerously-bypass-approvals-and-sandbox', // 使用者選 bypassPermissions 時（沿用 bypass 警示）
 ]);

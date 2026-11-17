@@ -34,6 +34,7 @@ import {
   Lamp,
   ModeChip,
   AgentChip,
+  ModelOptsChip,
   ReadOnlyChip,
   DispatchedByChip,
   useViewsUi,
@@ -185,6 +186,7 @@ export function CardHead({ session, menu = false }: { session: Session; menu?: b
         <Callsign session={session} />
         <ModeChip mode={session.permissionMode} />
         <AgentChip session={session} />
+        <ModelOptsChip session={session} />
         <ReadOnlyChip session={session} />
         <DispatchedByChip session={session} />
         <AutoContinueNote session={session} />

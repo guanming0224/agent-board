@@ -1011,6 +1011,12 @@
 .flows .rule-list button {
   flex-shrink: 0;
 }
+/* 模型清單（§26）：↑ ↓ 移除 三顆靠右，同一列只用精簡尺寸（手機自動 44）。 */
+.flows .model-list-acts {
+  display: inline-flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
 
 /* 聚焦時別被底部黏住的儲存列蓋住 */
 .flows .settings-panel input,

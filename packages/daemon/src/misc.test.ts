@@ -175,6 +175,45 @@ describe('buildClaudeArgs', () => {
     ).toEqual(['--resume', 'r', '--permission-mode', 'plan', '--model', 'opus', '--name', 'n']);
   });
 
+  it('推理強度與備援模型（§26）：白名單／安全字元才帶，備援和主模型相同不帶', () => {
+    const base = { newSessionId: 'u', permissionMode: 'plan' as const, name: 'n' };
+    expect(
+      buildClaudeArgs({ ...base, model: 'opus', effort: 'max', fallbackModel: 'claude-sonnet-5' }),
+    ).toEqual([
+      '--session-id',
+      'u',
+      '--permission-mode',
+      'plan',
+      '--model',
+      'opus',
+      '--effort',
+      'max',
+      '--fallback-model',
+      'claude-sonnet-5',
+      '--name',
+      'n',
+    ]);
+    // minimal 是 Codex 才有的；不在白名單的、含空白或以 - 開頭的名稱都不帶。
+    expect(
+      buildClaudeArgs({ ...base, model: null, effort: 'minimal', fallbackModel: '--dangerous' }),
+    ).toEqual(['--session-id', 'u', '--permission-mode', 'plan', '--name', 'n']);
+    expect(
+      buildClaudeArgs({ ...base, model: 'opus; rm -rf', effort: 'turbo', fallbackModel: 'a b' }),
+    ).toEqual(['--session-id', 'u', '--permission-mode', 'plan', '--name', 'n']);
+    expect(buildClaudeArgs({ ...base, model: 'opus', fallbackModel: 'opus' })).toEqual([
+      '--session-id',
+      'u',
+      '--permission-mode',
+      'plan',
+      '--model',
+      'opus',
+      '--name',
+      'n',
+    ]);
+    // [1m] 這類寫法照樣能用。
+    expect(buildClaudeArgs({ ...base, model: 'opus[1m]' })).toContain('opus[1m]');
+  });
+
   it('唯讀：每個工具一個 argv，後面接著別的選項，可變長度參數才不會吞掉 --name', () => {
     const args = buildClaudeArgs({
       newSessionId: 'u',

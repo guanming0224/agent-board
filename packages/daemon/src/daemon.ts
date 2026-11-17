@@ -1037,6 +1037,8 @@ export class Daemon {
         DAEMON_FEATURES.review,
         // 不是 git 的資料夾一鍵 git init（CONTRACTS §24）。
         DAEMON_FEATURES.gitInit,
+        // 新增 session 的推理強度與備援模型（CONTRACTS §26）。
+        DAEMON_FEATURES.modelOptions,
       ],
       // 發版與自動更新（CONTRACTS §21）
       protocolVersion: this.deps.config.protocolVersionOverride ?? PROTOCOL_VERSION,
@@ -1632,6 +1634,7 @@ export class Daemon {
         permissionMode: spec.permissionMode,
         readOnly: spec.readOnly,
         model: spec.model,
+        effort: spec.effort ?? null,
         firstPrompt: resumeId ? null : entry.pendingFirstPrompt,
         hookTarget: {
           sessionId,
@@ -1661,6 +1664,9 @@ export class Daemon {
         ...claudeHow,
         permissionMode: spec.permissionMode,
         model: spec.model,
+        // 推理強度與備援模型（§26）存在本機 sessions.json 的 spec 裡：--resume、daemon 重啟接回都沿用同一組。
+        effort: spec.effort ?? null,
+        fallbackModel: spec.fallbackModel ?? null,
         name: spec.name,
         readOnly: spec.readOnly,
         mcp: this.prepareMcp(sessionId),

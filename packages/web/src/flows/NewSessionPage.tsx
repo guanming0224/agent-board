@@ -44,6 +44,15 @@ import {
   type TaskType,
 } from './sessionForm';
 import { PairMachineNext } from './settingsParts';
+import { modelFieldErrors, ModelFields, useModelLists } from './ModelFields';
+import {
+  modelOptionsSupported,
+  modelSpec,
+  NO_MODEL,
+  pickedName,
+  pickForAgent,
+  type ModelPick,
+} from './modelChoice';
 
 const LONG_CONTEXT_TOKENS = 100_000;
 const D = NEW_SESSION_DRAFT;
@@ -52,7 +61,6 @@ const NO_GUARDS: Settings['quotaGuards'] = {
   maxConcurrentSessions: null,
   queueWhenRateLimited: true,
 };
-const MODEL_ALIASES = ['sonnet', 'opus', 'haiku'];
 
 function suggestionReason(t: T, machine: Machine, task: TaskType): string {
   const { gpuName, cpuCores, memoryBytes } = machine.capabilities;
@@ -147,7 +155,10 @@ export function NewSessionPage() {
   const [worktreeChoice, setWorktreeChoice] = useDraftState<boolean | null>(D, 'worktree', null);
   const [agent, setAgent] = useDraftState<AgentKind>(D, 'agent', 'claude');
   const [mode, setMode] = useDraftState<PermissionMode>(D, 'mode', 'default');
-  const [model, setModel] = useDraftState(D, 'model', '');
+  // 模型、推理強度、備援（§26）：也在草稿裡。
+  const [model, setModel] = useDraftState<ModelPick>(D, 'model', NO_MODEL);
+  const [effort, setEffort] = useDraftState(D, 'effort', '');
+  const [fallback, setFallback] = useDraftState<ModelPick>(D, 'fallback', NO_MODEL);
   const [account, setAccount] = useDraftState(D, 'account', '');
   const [resume, setResume] = useDraftState(D, 'resume', '');
   const [firstPrompt, setFirstPrompt] = useDraftState(D, 'firstPrompt', '');
@@ -169,6 +180,20 @@ export function NewSessionPage() {
   // Codex 只在那台的 daemon 回報了 codex 版本時可選（舊版 daemon、沒裝 codex 都不行，CONTRACTS §19）。
   const codexVersion = machine?.capabilities.codexVersion ?? null;
   const codex = agent === 'codex';
+  const modelLists = useModelLists();
+  const chooseAgent = (next: AgentKind) => {
+    setAgent(next);
+    // 別家的別名（opus 之於 Codex）清回「預設」；自己打的自訂名稱留著。
+    setModel(pickForAgent(model, next === 'codex' ? modelLists.codex : modelLists.claude));
+  };
+  const modelErrors = modelFieldErrors(t, agent, model, fallback);
+  const models = modelSpec({
+    agent,
+    model,
+    effort,
+    fallback,
+    supported: modelOptionsSupported(machine),
+  });
   // 舊資料可能有不合格的 id（hub 會拒絕），不放進建議清單。接續只列同一種 CLI 的對話。
   const resumable = sessions.filter(
     (s) =>
@@ -210,6 +235,8 @@ export function NewSessionPage() {
       resume.trim() && !ClaudeSessionId.safeParse(resume.trim()).success
         ? t('flows.new.err.resume')
         : null,
+    model: modelErrors.model,
+    fallback: modelErrors.fallback,
   };
   const firstError = Object.values(errors).find(Boolean) ?? null;
 
@@ -220,7 +247,7 @@ export function NewSessionPage() {
     cwd: cwd.trim(),
     useWorktree,
     permissionMode: mode,
-    model: model.trim() || null,
+    ...models,
     accountProfile: trimmedAccount || null,
     resumeClaudeSessionId: resume.trim() || null,
   });
@@ -235,7 +262,7 @@ export function NewSessionPage() {
     const { config } = template;
     setCwd(config.cwd ?? '');
     setMode(config.permissionMode);
-    setModel(config.model ?? '');
+    setModel({ value: config.model ?? '', custom: false });
     setFirstPrompt(config.firstPrompt ?? '');
     if (config.machineId && machines.some((m) => m.id === config.machineId)) {
       setChosenMachine(config.machineId);
@@ -261,7 +288,7 @@ export function NewSessionPage() {
         cwd: cwd.trim(),
         useWorktree,
         permissionMode: mode,
-        model: model.trim() || null,
+        ...models,
         accountProfile: trimmedAccount || null,
         resumeClaudeSessionId: resume.trim() || null,
         firstPrompt: firstPrompt.trim() || null,
@@ -301,7 +328,7 @@ export function NewSessionPage() {
           machineId: machineId || null,
           cwd: cwd.trim() || null,
           permissionMode: mode,
-          model: model.trim() || null,
+          model: pickedName(model),
           firstPrompt: firstPrompt.trim() || null,
           quotaGuards: guards ?? NO_GUARDS,
         },
@@ -461,7 +488,7 @@ export function NewSessionPage() {
                     name="ns-agent"
                     checked={agent === option}
                     disabled={option === 'codex' && !codexVersion}
-                    onChange={() => setAgent(option)}
+                    onChange={() => chooseAgent(option)}
                   />
                   {t(`flows.new.agent.${option}`)}
                 </label>
@@ -553,23 +580,19 @@ export function NewSessionPage() {
             {codex && <p className="hint">{t('flows.new.codexModeNote')}</p>}
           </fieldset>
 
-          <Field
-            label={t('flows.new.model')}
-            htmlFor="ns-model"
-            hint={t(codex ? 'flows.new.modelHintCodex' : 'flows.new.modelHint')}
-          >
-            <input
-              id="ns-model"
-              list="ns-model-list"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            />
-            <datalist id="ns-model-list">
-              {(codex ? [] : MODEL_ALIASES).map((alias) => (
-                <option key={alias} value={alias} />
-              ))}
-            </datalist>
-          </Field>
+          <ModelFields
+            idPrefix="ns"
+            agent={agent}
+            lists={modelLists}
+            machine={machine}
+            model={model}
+            setModel={setModel}
+            effort={effort}
+            setEffort={setEffort}
+            fallback={fallback}
+            setFallback={setFallback}
+            t={t}
+          />
 
           <Field
             label={t('flows.new.account')}

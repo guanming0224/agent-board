@@ -59,6 +59,7 @@ import type {
   ZoneGroupCreate,
   ZoneGroupPatch,
   ZoneGroups,
+  ModelLists,
 } from '@agent-board/protocol';
 import type { TerminalStream } from './terminal-contract';
 
@@ -288,6 +289,8 @@ export interface BoardBackend {
   /** 某個工作區的便利貼（畫布尚未顯示便利貼）。 */
   getNotes(zoneId: string): Promise<Note[]>;
   getSettings(): Promise<Settings>;
+  /** 新增 session 的模型下拉清單（CONTRACTS §26）。一般使用者也讀得到（設定本身只有 owner 能讀）。 */
+  getModelLists(): Promise<ModelLists>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   /** 操作紀錄（只有 owner）。由新到舊。 */
   listAudit(filter: AuditFilter): Promise<AuditEntry[]>;

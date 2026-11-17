@@ -10,7 +10,12 @@ import type {
   SessionRuntime,
   SessionStatus,
 } from '@agent-board/protocol';
-import { ClaudeSessionId, READ_ONLY_DISALLOWED_TOOLS } from '@agent-board/protocol';
+import {
+  ClaudeSessionId,
+  isSafeModelName,
+  READ_ONLY_DISALLOWED_TOOLS,
+  validEffort,
+} from '@agent-board/protocol';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import type { Terminal as TerminalType } from '@xterm/headless';
 import { readLastTurn, resolveContextWindow } from './contextWindow';
@@ -58,6 +63,10 @@ export interface ClaudeArgsInput {
   resumeId?: string;
   permissionMode: PermissionMode;
   model: string | null;
+  /** 推理強度（§26）：只收 CLAUDE_EFFORTS 裡的值，其他（含 Codex 才有的 minimal）不帶。 */
+  effort?: string | null;
+  /** 備援模型（§26）：只收安全字元的模型名稱，和主模型相同就不帶（claude 不接受）。 */
+  fallbackModel?: string | null;
   name: string;
   /** 唯讀 session：拿掉改檔工具（SessionSpec.readOnly）。 */
   readOnly?: boolean;
@@ -82,7 +91,12 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
   // `--disallowedTools <tools...>` 是可變長度參數：一個工具一個 argv，後面一定接著 --name
   // （另一個選項），參數才不會被吞掉。只擋這些工具，Bash 仍然寫得了檔案（CONTRACTS 團隊事件）。
   if (input.readOnly) args.push('--disallowedTools', ...READ_ONLY_DISALLOWED_TOOLS);
-  if (input.model) args.push('--model', input.model);
+  // 值直接進 argv（不經 shell）；仍只收安全字元，Windows 經 .cmd 啟動時也不會被拆壞（§26）。
+  const model = safeModel(input.model);
+  if (model) args.push('--model', model);
+  if (validEffort('claude', input.effort)) args.push('--effort', input.effort!);
+  const fallback = safeModel(input.fallbackModel);
+  if (fallback && fallback !== model) args.push('--fallback-model', fallback);
   // 兩個都是可變長度參數：一個值一個 argv，最後一定接 --name，才不會吞到別的參數。
   // `--allowedTools` 只列設定開著的 agent-board 工具（派工 4 個、進度卡 2 個），不放寬任何其他工具
   // （docs/claude-code-notes.md、docs/no-llm-review.md）。
@@ -92,6 +106,14 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
   }
   args.push('--name', input.name);
   return args;
+}
+
+/** 模型名稱只收安全字元（`MODEL_NAME_RE`）；不合的不帶並記 log（hub 已經擋過，這裡是第二層）。 */
+export function safeModel(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (isSafeModelName(value)) return value;
+  log.warn(`模型名稱含不允許的字元，已略過：${JSON.stringify(value.slice(0, 120))}`);
+  return null;
 }
 
 /** 畫面上最後幾行非空白的純文字。從 xterm 緩衝區讀，TUI 重繪時才不會拿到一堆殘段。 */

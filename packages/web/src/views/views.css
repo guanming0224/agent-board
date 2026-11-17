@@ -78,6 +78,14 @@ a.waiting:hover b {
   color: inherit;
   font-weight: 600;
 }
+/* 模型・推理強度・備援（§26）：中性小字，長名稱截斷（完整在提示框）。 */
+.chip.model-opts {
+  font-weight: 500;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+}
 .chip.auto-continue {
   border-color: var(--quota);
   color: var(--quota);

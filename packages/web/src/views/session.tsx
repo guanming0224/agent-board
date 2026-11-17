@@ -125,6 +125,39 @@ export function AgentChip({ session }: { session: { agent?: AgentKind } }) {
   );
 }
 
+/**
+ * 模型、推理強度、備援模型（CONTRACTS §26）：小字一行，三個都沒指定（全跟 CLI 預設）就不顯示。
+ * 格式「opus · high · ↪ sonnet」，提示框寫完整說明。
+ */
+export function ModelOptsChip({
+  session,
+}: {
+  session: { model: string | null; effort?: string; fallbackModel?: string };
+}) {
+  const t = useT();
+  const { model, effort, fallbackModel } = session;
+  if (!model && !effort && !fallbackModel) return null;
+  const none = t('views.modelOpts.default');
+  const parts = [
+    model ?? none,
+    ...(effort ? [effort] : []),
+    ...(fallbackModel ? [`↪ ${fallbackModel}`] : []),
+  ];
+  return (
+    <span
+      className="chip model-opts mono"
+      data-testid="model-opts"
+      title={t('views.modelOpts.title', {
+        model: model ?? none,
+        effort: effort ?? none,
+        fallback: fallbackModel ?? none,
+      })}
+    >
+      {parts.join(' · ')}
+    </span>
+  );
+}
+
 /** 唯讀 session（建立時拿掉改檔工具）。只擋 Edit、Write 等工具，Bash 仍寫得了檔案，title 說清楚。 */
 export function ReadOnlyChip({ session }: { session: { readOnly: boolean } }) {
   const t = useT();

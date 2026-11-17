@@ -10,10 +10,13 @@ import { connect } from 'node:net';
 import { createInterface } from 'node:readline';
 // 隊長守則與工具說明集中在 protocol（GM 2026-11-10）。leadGuide.ts 不 import 任何東西（沒有 zod），可以直接用 node 執行。
 import {
+  CLAUDE_EFFORTS,
+  CODEX_EFFORTS,
   DISPATCH_INSTRUCTIONS,
   DISPATCH_TOOL_DESCRIPTIONS,
   RELEASE_REASON_DESCRIPTION,
   REVIEW_REASON_DESCRIPTION,
+  SPAWN_EFFORT_DESCRIPTION,
   SPAWN_REASON_DESCRIPTION,
 } from '@agent-board/protocol/lead-guide';
 import {
@@ -71,6 +74,11 @@ const ALL_TOOLS = [
           type: 'string',
           description:
             "Optional model; defaults to yours (or to that CLI's default when agent differs from yours).",
+        },
+        effort: {
+          type: 'string',
+          enum: [...new Set([...CLAUDE_EFFORTS, ...CODEX_EFFORTS])],
+          description: SPAWN_EFFORT_DESCRIPTION,
         },
         agent: {
           type: 'string',

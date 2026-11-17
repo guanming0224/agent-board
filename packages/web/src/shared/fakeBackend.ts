@@ -31,6 +31,7 @@ import {
   ungroupZoneGroup,
   ZoneGroupError,
   type ZoneGroups,
+  MODEL_LISTS_DEFAULT,
 } from '@agent-board/protocol';
 import type {
   TeamActivity,
@@ -99,6 +100,8 @@ const machine = (id: string, name: string, online: boolean, hasGpu: boolean): Ma
     claudeVersion: '0.0.0-demo',
     // 示範：有 GPU 的那台也裝了 Codex CLI（新增 session 頁可以選 Codex，CONTRACTS §19）。
     ...(hasGpu ? { codexVersion: '0.0.0-demo' } : {}),
+    // 示範：離線的那台是舊版 daemon（不認得推理強度與備援模型，§26），上線後新增 session 會提示。
+    ...(online ? { modelOptions: true } : {}),
   },
 });
 
@@ -538,6 +541,7 @@ const defaultSettings: Settings = {
   autoStaff: { ...AUTO_STAFF_DEFAULT },
   review: { ...REVIEW_SETTINGS_DEFAULT },
   canarySoakHours: CANARY_SOAK_HOURS_DEFAULT,
+  modelLists: { claude: [...MODEL_LISTS_DEFAULT.claude], codex: [...MODEL_LISTS_DEFAULT.codex] },
 };
 
 /** 測試可以改掉 demoReply，模擬隊長回了無法解析的內容。 */
@@ -1201,6 +1205,15 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         model: input.model,
         projectId: input.projectId,
         ...(input.agent === 'codex' ? { agent: 'codex' as const } : {}),
+        // 和 hub 一樣：daemon 太舊就不記（§26）。
+        ...(input.effort &&
+        state.machines.find((m) => m.id === input.machineId)?.capabilities.modelOptions
+          ? { effort: input.effort }
+          : {}),
+        ...(input.fallbackModel &&
+        state.machines.find((m) => m.id === input.machineId)?.capabilities.modelOptions
+          ? { fallbackModel: input.fallbackModel }
+          : {}),
         zoneId: input.zoneId ?? DEFAULT_ZONE_ID,
       });
       state.sessions = [...state.sessions, created];
@@ -1663,6 +1676,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     cancelReview: (id) => fakeReviews.cancel(id),
     readReviews: (ids) => fakeReviews.read(ids),
     getSettings: async () => settings,
+    getModelLists: async () => settings.modelLists,
     async updateSettings(patch) {
       settings = { ...settings, ...patch };
       // hub 會把新的上限廣播給每個人（board.waitingLimit）。

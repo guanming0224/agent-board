@@ -23,6 +23,7 @@ import {
   LEAD_STAFFING_RHYTHM,
   MEMBER_STAFFING_GUIDE,
   RELEASE_REASON_DESCRIPTION,
+  SPAWN_EFFORT_DESCRIPTION,
   SPAWN_REASON_DESCRIPTION,
 } from '@agent-board/protocol/lead-guide';
 import { localProof } from '@agent-board/protocol/local-auth';
@@ -492,6 +493,15 @@ describe('agent-board-mcp', () => {
     expect(tool('release_member').description).toMatch(/Settings → Archived/);
     expect(tool('spawn_member').inputSchema.properties?.reason?.description).toBe(
       SPAWN_REASON_DESCRIPTION,
+    );
+    // 推理強度（§26）：選填、只列兩邊白名單的聯集（哪個 agent 能用哪些由 hub 再擋），說明是 protocol 那份。
+    const effort = tool('spawn_member').inputSchema.properties?.effort as
+      { description?: string; enum?: string[] } | undefined;
+    expect(effort?.description).toBe(SPAWN_EFFORT_DESCRIPTION);
+    expect(effort?.enum).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'minimal']);
+    expect(tool('spawn_member').inputSchema.required).not.toContain('effort');
+    expect(tool('spawn_member').description).toMatch(
+      /model and effort \(reasoning effort\) default to yours/,
     );
     expect(tool('release_member').inputSchema.required).toEqual(['member', 'reason']);
     expect(Object.keys(tool('release_member').inputSchema.properties!)).toEqual([

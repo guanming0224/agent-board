@@ -56,6 +56,7 @@ import {
   SearchItem,
 } from './search';
 import { GIT_INIT_FEATURE, GitInitResult } from './gitInit';
+import { MODEL_OPTIONS_FEATURE, ModelName, SessionEffort } from './modelOptions';
 
 export const WS_PATHS = { daemon: '/ws/daemon', client: '/ws/client' } as const;
 
@@ -82,6 +83,11 @@ export const DAEMON_FEATURES = {
   review: REVIEW_FEATURE,
   /** 認得 `fs.gitInit`（不是 git 的資料夾一鍵 git init，CONTRACTS §24）。舊 daemon 沒有：hub 回 409 daemon_too_old。 */
   gitInit: GIT_INIT_FEATURE,
+  /**
+   * 認得 `SessionSpec.effort`／`fallbackModel`（CONTRACTS §26）。舊 daemon 不認得：hub 不送、不記這兩個欄位
+   * （送了也會被 zod 丟掉，session 照開但參數沒生效，畫面會誤以為有）。
+   */
+  modelOptions: MODEL_OPTIONS_FEATURE,
 } as const;
 
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);
@@ -135,6 +141,13 @@ export const SessionSpec = z.object({
    * 不適用（hub 拒絕）；權限模式照 `codexPermissionArgs` 換算成 sandbox／approval（CONTRACTS §19）。
    */
   agent: AgentKind.optional(),
+  /**
+   * 推理強度（CONTRACTS §26）：Claude `--effort <level>`、Codex `-c model_reasoning_effort="<level>"`。
+   * 不送／null＝跟 CLI 預設（不帶參數）。這裡只驗聯集，哪個 agent 能用哪些看 `validEffort`（hub 拒絕、daemon 略過）。
+   */
+  effort: SessionEffort.nullable().optional(),
+  /** 備援模型（只有 Claude，`--fallback-model <model>`）。Codex 帶了 hub 拒絕、daemon 略過。 */
+  fallbackModel: ModelName.nullable().optional(),
 });
 export type SessionSpec = z.infer<typeof SessionSpec>;
 

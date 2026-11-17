@@ -13,6 +13,9 @@ import {
   type UpdateState,
   ClientToHub,
   DAEMON_FEATURES,
+  isSafeModelName,
+  supportsFallbackModel,
+  validEffort,
   type GitInitResult,
   SEARCH_DEEP_DEADLINE_MS,
   SEARCH_DEEP_GRACE_MS,
@@ -1583,12 +1586,13 @@ export class Hub {
     userId: string | null,
     dispatchedBy: string | null,
   ): Session {
-    const { machineId, zoneId = this.store.defaultZoneId(), ...spec } = input;
+    const { machineId, zoneId = this.store.defaultZoneId(), ...given } = input;
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     this.requireZone(zoneId);
     if (!this.daemonFor(machineId)) throw conflict('machine_offline', 'Machine is offline');
-    const agent = agentOf(spec);
-    if (agent === 'codex') this.assertCodexReady(machineId, spec);
+    const agent = agentOf(given);
+    if (agent === 'codex') this.assertCodexReady(machineId, given);
+    const spec = this.checkModelOptions(machineId, given);
     this.assertCwdNotDeleting(machineId, spec.cwd);
     const now = this.nowIso();
     const session: Session = {
@@ -1621,6 +1625,8 @@ export class Hub {
       dispatchedBy,
       zoneId,
       ...(agent === 'codex' ? { agent } : {}),
+      ...(spec.effort ? { effort: spec.effort } : {}),
+      ...(spec.fallbackModel ? { fallbackModel: spec.fallbackModel } : {}),
     };
     const blocked = this.queueReason(session);
     if (blocked !== undefined) {
@@ -1630,6 +1636,7 @@ export class Hub {
     this.store.db.transaction(() => {
       this.store.insertSession(session, spec);
       if (agent === 'codex') this.store.setSessionAgent(session.id, agent);
+      this.store.setSessionModelOpts(session.id, spec);
       this.audit(
         userId,
         session.id,
@@ -1641,6 +1648,8 @@ export class Hub {
           cwd: spec.cwd,
           permissionMode: spec.permissionMode,
           model: spec.model,
+          ...(spec.effort ? { effort: spec.effort } : {}),
+          ...(spec.fallbackModel ? { fallbackModel: spec.fallbackModel } : {}),
           useWorktree: spec.useWorktree,
           readOnly: spec.readOnly,
           ...(dispatchedBy ? { dispatchedBy } : {}),
@@ -1658,6 +1667,48 @@ export class Hub {
       this.pauseCountsChanged();
     }
     return session;
+  }
+
+  /**
+   * 模型細部設定（CONTRACTS §26）：模型名稱只收安全字元、推理強度依 agent 白名單、備援只有 Claude 而且不能和主模型相同，
+   * 不合就 400。daemon 太舊（hello 沒有 `session.modelOptions`）：強度與備援拿掉（不送、不記），session 照開。
+   */
+  private checkModelOptions(machineId: string, spec: SessionSpec): SessionSpec {
+    const agent = agentOf(spec);
+    if (spec.model && !isSafeModelName(spec.model)) {
+      throw new HttpError(
+        400,
+        'invalid_model',
+        'Model names may only use letters, digits and . _ : / - [ ] (up to 100, not starting with -)',
+      );
+    }
+    if (spec.effort && !validEffort(agent, spec.effort)) {
+      throw new HttpError(
+        400,
+        'invalid_effort',
+        `Effort ${spec.effort} is not available for ${agent}`,
+      );
+    }
+    if (spec.fallbackModel) {
+      if (!supportsFallbackModel(agent)) {
+        throw new HttpError(400, 'fallback_unsupported', 'Codex has no fallback model');
+      }
+      if (spec.fallbackModel === spec.model) {
+        throw new HttpError(
+          400,
+          'fallback_same_as_model',
+          'The fallback model must differ from the main model',
+        );
+      }
+    }
+    const { effort, fallbackModel, ...rest } = spec;
+    if (!effort && !fallbackModel) return rest;
+    if (!this.daemonFor(machineId)?.features.has(DAEMON_FEATURES.modelOptions)) return rest;
+    return {
+      ...rest,
+      ...(effort ? { effort } : {}),
+      ...(fallbackModel ? { fallbackModel } : {}),
+    };
   }
 
   private slotAvailable(): boolean {
@@ -1757,6 +1808,13 @@ export class Hub {
     if (agentOf(spec) === 'codex' && !conn.features.has(DAEMON_FEATURES.codex)) {
       this.guarded('codex unavailable', () => this.failStart(session.id, 'codex_unavailable'));
       return;
+    }
+    // 排隊或接續期間 daemon 換成不認得強度／備援的舊版（§26）：不送（送了也會被丟掉），也不再記著，畫面才不會誤顯示。
+    if ((spec.effort || spec.fallbackModel) && !conn.features.has(DAEMON_FEATURES.modelOptions)) {
+      spec = { ...spec };
+      delete spec.effort;
+      delete spec.fallbackModel;
+      this.store.setSessionModelOpts(session.id, {});
     }
     const requestId = randomUUID();
     const timer = setTimeout(() => {
@@ -1875,6 +1933,9 @@ export class Hub {
       readOnly: session.readOnly,
       // Codex：`codex resume <thread id>`（claudeSessionId 存的是 thread id）。
       ...(agentOf(session) === 'codex' ? { agent: 'codex' as const } : {}),
+      // 推理強度與備援模型（§26）：建立時指定的，接續照舊帶。
+      ...(session.effort ? { effort: session.effort } : {}),
+      ...(session.fallbackModel ? { fallbackModel: session.fallbackModel } : {}),
     };
     this.audit(user.id, id, 'session.resume', '');
     this.store.setPendingSpec(id, spec);

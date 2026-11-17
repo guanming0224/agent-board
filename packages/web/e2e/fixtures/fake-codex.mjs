@@ -175,6 +175,9 @@ function handle(line) {
 }
 
 console.log(`fake codex ${threadId} args=${args.join(' ')}`);
+// 推理強度（§26）另外印一行短的：參數那行很長、會折行，測試比對不到。
+const effortArg = args.find((arg) => arg.startsWith('model_reasoning_effort='));
+if (effortArg) console.log(`effort ${effortArg}`);
 console.log('>_ OpenAI Codex (fake)');
 if (model !== 'fake-late-start') sessionStart();
 console.log('READY');

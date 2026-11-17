@@ -101,6 +101,8 @@ export async function probeCapabilities(
     memoryBytes: totalmem(),
     claudeVersion,
     ...(codexVersion ? { codexVersion } : {}),
+    // 認得 SessionSpec.effort／fallbackModel（§26）：網頁據此決定要不要提示「daemon 太舊」。
+    modelOptions: true,
   };
 }
 

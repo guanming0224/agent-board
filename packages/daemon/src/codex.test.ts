@@ -64,6 +64,26 @@ describe('buildCodexArgs', () => {
     expect(args).not.toContain('不該出現');
   });
 
+  it('推理強度（§26）：白名單內用 -c model_reasoning_effort，接回時也帶；Claude 才有的 max／不安全的模型名稱不帶', () => {
+    const args = build({
+      resumeId: THREAD,
+      permissionMode: 'plan',
+      model: 'gpt-6-luna',
+      effort: 'minimal',
+    });
+    expect(args.slice(6, 10)).toEqual([
+      '-m',
+      'gpt-6-luna',
+      '-c',
+      'model_reasoning_effort="minimal"',
+    ]);
+    const bad = build({ permissionMode: 'plan', model: 'gpt x;rm', effort: 'max' });
+    expect(bad).not.toContain('-m');
+    expect(bad.some((a) => a.includes('model_reasoning_effort'))).toBe(false);
+    const injected = build({ permissionMode: 'plan', model: null, effort: 'high"\nsandbox="x' });
+    expect(injected.some((a) => a.includes('model_reasoning_effort'))).toBe(false);
+  });
+
   it('第一句放在 -- 之後（以 - 開頭也不會被當成參數）', () => {
     const args = build({ permissionMode: 'plan', model: null, firstPrompt: '-v 回答 ok' });
     expect(args.slice(-2)).toEqual(['--', '-v 回答 ok']);

@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   promptLength,
+  SessionEffort,
   STAFF_PROMPT_PREVIEW_MAX,
   StaffRequest,
   StaffLastDecision,
@@ -164,6 +165,9 @@ export class StaffRequestEngine implements StaffRequestPort {
       ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
       ...(args.useWorktree !== undefined ? { useWorktree: args.useWorktree } : {}),
       ...(args.model ? { model: clip(args.model, 100) } : {}),
+      ...(args.effort && SessionEffort.safeParse(args.effort).success
+        ? { effort: SessionEffort.parse(args.effort) }
+        : {}),
       reason,
       promptPreview: clip(args.prompt, STAFF_PROMPT_PREVIEW_MAX),
       promptChars: promptLength(args.prompt),

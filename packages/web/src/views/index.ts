@@ -15,6 +15,7 @@ export {
   ModeChip,
   AgentChip,
   ReadOnlyChip,
+  ModelOptsChip,
   DispatchedByChip,
   useClock,
   useNow,

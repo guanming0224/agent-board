@@ -866,6 +866,43 @@ test.describe('在畫布上直接新增', () => {
     expect(Math.abs((nbox?.y ?? 0) - spot.y)).toBeLessThan(4);
   });
 
+  test('快速建立（§26）：更多設定裡選模型、推理強度、備援；卡片小字顯示三個值', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCanvas(page);
+    const spot = await blankSpot(page);
+    await page.mouse.dblclick(spot.x, spot.y);
+    const quick = page.getByTestId('quick-create');
+    await quick.locator('#qc-name').fill('tuned');
+    await quick.locator('#qc-cwd').fill('/home/demo/tuned');
+    await quick.getByRole('button', { name: '更多設定' }).click();
+    await expect(quick.locator('#qc-model option')).toHaveText([
+      '預設（不指定）',
+      'fable',
+      'opus',
+      'sonnet',
+      'haiku',
+      '自訂…',
+    ]);
+    await quick.locator('#qc-model').selectOption('opus');
+    await quick.locator('#qc-effort').selectOption('max');
+    // 備援和主模型相同：擋下。
+    await quick.locator('#qc-fallback').selectOption('opus');
+    await quick.getByRole('button', { name: '建立 session' }).click();
+    await expect(quick).toContainText('備援模型和主模型一樣');
+    await quick.locator('#qc-fallback').selectOption({ label: '自訂…' });
+    await quick.locator('#qc-fallback-custom').fill('claude-sonnet-5');
+    await quick.getByRole('button', { name: '建立 session' }).click();
+    await expect(quick).toHaveCount(0);
+    const created = page.locator('.react-flow__node', { hasText: 'tuned' });
+    await expect(created.getByTestId('model-opts')).toHaveText('opus · max · ↪ claude-sonnet-5');
+    await expect(created.getByTestId('model-opts')).toHaveAttribute(
+      'title',
+      '模型 opus・推理強度 max・備援 claude-sonnet-5',
+    );
+  });
+
   test('hub 先回應、廣播晚到：卡片仍放在雙擊的位置', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openCanvas(page);

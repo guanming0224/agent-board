@@ -126,6 +126,8 @@ registerMessages('zh-TW', {
   'views.dispatchedBy.title':
     '{name} 用派工工具開了這個 session，做完一回合的結果會自動送回 {name}。',
   'views.readOnly': '唯讀',
+  'views.modelOpts.title': '模型 {model}・推理強度 {effort}・備援 {fallback}',
+  'views.modelOpts.default': '預設',
   'views.readOnly.title': '拿掉了改檔工具（Edit、Write 等）。Bash 仍然寫得了檔案。',
   'views.agent.codex': 'Codex',
   'views.agent.codex.title': '這個 session 跑的是 Codex CLI（不是 Claude Code）。',
@@ -286,6 +288,8 @@ registerMessages('en', {
   'views.dispatchedBy.title':
     '{name} started this session with the dispatch tools; each finished turn reports back to {name}.',
   'views.readOnly': 'Read-only',
+  'views.modelOpts.title': 'Model {model} · reasoning effort {effort} · fallback {fallback}',
+  'views.modelOpts.default': 'default',
   'views.readOnly.title':
     'File-edit tools (Edit, Write, …) are removed. Bash can still write files.',
   'views.agent.codex': 'Codex',

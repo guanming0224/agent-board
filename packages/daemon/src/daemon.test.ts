@@ -808,6 +808,39 @@ describe('daemon 重啟', () => {
     await h.waitForOutput('s1', 'INPUT:after-restart');
   });
 
+  it('推理強度與備援模型（§26）：開的時候帶，記在清單裡，重啟用 --resume 接回時沿用同一組', async () => {
+    await h.createAndSubscribe('mo', {
+      permissionMode: 'plan',
+      model: 'opus',
+      effort: 'xhigh',
+      fallbackModel: 'sonnet',
+      name: 'mo',
+    });
+    const claudeId = h.runs()[0]?.argv[1] as string;
+    const tail = [
+      '--model',
+      'opus',
+      '--effort',
+      'xhigh',
+      '--fallback-model',
+      'sonnet',
+      '--name',
+      'mo',
+    ];
+    expect(h.runs()[0]?.argv.slice(2)).toEqual(['--permission-mode', 'plan', ...tail]);
+    expect(persisted().sessions[0]?.spec).toMatchObject({
+      effort: 'xhigh',
+      fallbackModel: 'sonnet',
+    });
+    // hello 宣告認得這兩個欄位（hub 才會送）。
+    expect(h.hellos().at(-1)?.features).toContain(DAEMON_FEATURES.modelOptions);
+
+    writeTranscript(claudeId);
+    await h.restartDaemon();
+    await waitUntil(() => h.runs().length === 2, '第二次啟動');
+    expect(h.runs()[1]?.argv).toEqual(['--resume', claudeId, '--permission-mode', 'plan', ...tail]);
+  });
+
   it('唯讀 session：拿掉改檔工具；記在清單裡，重啟接回時照樣帶', async () => {
     await h.createAndSubscribe('ro', { readOnly: true, permissionMode: 'plan', name: 'rv' });
     const tools = ['--disallowedTools', 'Edit', 'Write', 'NotebookEdit'];

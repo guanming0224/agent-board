@@ -11,6 +11,7 @@ import {
   type Routes,
   type TeamMember,
   type User,
+  normalizeModelList,
 } from '@agent-board/protocol';
 import { z } from 'zod';
 import {
@@ -625,6 +626,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     boardPause: (ctx) => hub.pauseBoard(ctx.user, ctx.body.mode),
     boardResume: (ctx) => hub.resumeBoard(ctx.user),
     settingsGet: () => store.getSettings(),
+    // 新增 session 的模型下拉清單（§26）：一般使用者也讀得到，只回清單本身。
+    modelListsGet: () => store.getSettings().modelLists,
     teamActivityRead: (ctx) => hub.readTeamActivity(ctx.body.ids, ctx.user),
     // 加開申請（CONTRACTS §23）：GM 同意 → 照申請開成員；拒絕 → 告訴隊長。audit 由 StaffRequestEngine 寫。
     staffRequestList: () => hub.staffRequests.list(),
@@ -801,6 +804,13 @@ function normalizeSettings<T extends Parameters<Store['updateSettings']>[0]>(pat
       throw new HttpError(400, 'invalid_public_origin', 'publicOrigin must be http or https');
     }
     next.publicOrigin = url.origin;
+  }
+  // 模型清單（§26）：去空白、去重；格式已由 SettingsPatch（ModelName）擋過。
+  if (next.modelLists) {
+    next.modelLists = {
+      claude: normalizeModelList(next.modelLists.claude),
+      codex: normalizeModelList(next.modelLists.codex),
+    };
   }
   const quiet = next.notifications?.quietHours;
   if (quiet && !(isValidClockTime(quiet.start) && isValidClockTime(quiet.end))) {

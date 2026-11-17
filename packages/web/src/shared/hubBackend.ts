@@ -693,6 +693,7 @@ export function createHubBackend() {
       return reviews;
     },
     getSettings: () => call('settingsGet'),
+    getModelLists: () => call('modelListsGet'),
     updateSettings: (patch) => call('settingsUpdate', { body: patch }),
     pushVapidKey: async () => (await call('pushVapidKey')).publicKey,
     async pushSubscribe(subscription) {

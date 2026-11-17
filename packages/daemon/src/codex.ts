@@ -6,6 +6,7 @@ import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import {
+  validEffort,
   codexHookOverrides,
   codexMcpOverrides,
   type CodexMcpServer,
@@ -15,6 +16,7 @@ import {
   type PermissionMode,
 } from '@agent-board/protocol';
 import type { HookOutput } from './hookServer';
+import { safeModel } from './session';
 
 export interface CodexArgsInput {
   /** 接續的 thread id：`codex resume <id>`。 */
@@ -22,6 +24,8 @@ export interface CodexArgsInput {
   permissionMode: PermissionMode;
   readOnly?: boolean;
   model: string | null;
+  /** 推理強度（§26）：只收 CODEX_EFFORTS 裡的值，`-c model_reasoning_effort="<level>"`。 */
+  effort?: string | null;
   /** 新對話的第一句（使用者在新增 session 時填的）；用官方的 `codex [PROMPT]` 帶入，接續時不帶。 */
   firstPrompt?: string | null;
   /** 這個 session 的 hook 位址，寫進每個 hook 指令。 */
@@ -39,7 +43,12 @@ export function buildCodexArgs(input: CodexArgsInput): string[] {
   const args: string[] = [];
   if (input.resumeId) args.push('resume', input.resumeId);
   args.push(...codexPermissionArgs(input.permissionMode, input.readOnly ?? false));
-  if (input.model) args.push('-m', input.model);
+  const model = safeModel(input.model);
+  if (model) args.push('-m', model);
+  // 白名單裡的字只有英文小寫，放進 TOML 字串不必跳脫（同交叉審查的 codexReviewArgs）。
+  if (validEffort('codex', input.effort)) {
+    args.push('-c', `model_reasoning_effort="${input.effort!}"`);
+  }
   args.push('--dangerously-bypass-hook-trust');
   for (const override of codexHookOverrides(input.hookTarget)) args.push('-c', override);
   if (input.mcp) for (const override of codexMcpOverrides(input.mcp)) args.push('-c', override);

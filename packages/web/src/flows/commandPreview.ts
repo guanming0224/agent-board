@@ -11,6 +11,8 @@ function codexCommand(spec: Omit<SessionSpec, 'projectId' | 'firstPrompt'>): str
   if (spec.resumeClaudeSessionId) codex.push(`resume ${shellQuote(spec.resumeClaudeSessionId)}`);
   codex.push(...codexPermissionArgs(spec.permissionMode, spec.readOnly));
   if (spec.model) codex.push(`-m ${shellQuote(spec.model)}`);
+  // 推理強度（§26）：和 daemon 的 buildCodexArgs 一樣用設定覆寫。
+  if (spec.effort) codex.push(`-c ${shellQuote(`model_reasoning_effort="${spec.effort}"`)}`);
   codex.push('--dangerously-bypass-hook-trust', '-c <hooks>');
   return codex.join(' ');
 }
@@ -33,6 +35,8 @@ export function commandPreview(spec: Omit<SessionSpec, 'projectId' | 'firstPromp
     `--permission-mode ${spec.permissionMode === 'default' ? 'manual' : spec.permissionMode}`,
   );
   if (spec.model) claude.push(`--model ${shellQuote(spec.model)}`);
+  if (spec.effort) claude.push(`--effort ${spec.effort}`);
+  if (spec.fallbackModel) claude.push(`--fallback-model ${shellQuote(spec.fallbackModel)}`);
   if (spec.name) claude.push(`--name ${shellQuote(spec.name)}`);
 
   const env = spec.accountProfile ? `CLAUDE_CONFIG_DIR=${shellQuote(spec.accountProfile)} ` : '';

@@ -60,6 +60,8 @@ function Info({ session, machineName }: { session: Session; machineName: string 
     ],
     [t('flows.archive.mode'), <ModeChip mode={session.permissionMode} />],
     [t('flows.archive.model'), session.model ?? t('flows.archive.defaultModel')],
+    [t('flows.archive.effort'), session.effort ?? t('flows.archive.defaultModel')],
+    [t('flows.archive.fallback'), session.fallbackModel ?? t('flows.archive.defaultModel')],
     [t('flows.archive.created'), time(session.createdAt)],
     [t('flows.archive.ended'), time(session.endedAt)],
     [t('flows.archive.archived'), time(session.archivedAt)],

@@ -14,6 +14,8 @@ import {
   DEFAULT_STUCK_MINUTES,
   DispatchWork,
   MemberAdded,
+  MODEL_LISTS_DEFAULT,
+  SessionEffort,
   TEAM_ACTIVITY_KEEP,
   TeamActivity,
   StaffActivity,
@@ -77,6 +79,16 @@ const STAFF_LAST_DECISION_PREFIX = 'staffLastDecision:';
  */
 const SESSION_AGENT_PREFIX = 'sessionAgent:';
 /**
+ * session 建立時指定的推理強度與備援模型（GM 2026-11-17，CONTRACTS §26）：settings 表 `sessionModelOpts:<sessionId>`，
+ * 值 `{"effort"?: …, "fallbackModel"?: …}`，不升 schema。兩個都沒指定就不寫（舊資料都沒有＝跟 CLI 預設）。
+ */
+const SESSION_MODEL_OPTS_PREFIX = 'sessionModelOpts:';
+const SessionModelOpts = z.object({
+  effort: SessionEffort.optional(),
+  fallbackModel: z.string().min(1).max(100).optional(),
+});
+export type SessionModelOpts = z.infer<typeof SessionModelOpts>;
+/**
  * 派工成員的結果已送回隊長、在等隊長下一步（GM 2026-11-11，§11.4）：settings 表
  * `awaitingLead:<成員 id>`，值是隊長的 session id，不升 schema。成員離開 waiting_input（新回合、結束、封存）時清掉。
  */
@@ -112,6 +124,7 @@ const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   autoStaff: { ...AUTO_STAFF_DEFAULT },
   review: { ...REVIEW_SETTINGS_DEFAULT },
   canarySoakHours: CANARY_SOAK_HOURS_DEFAULT,
+  modelLists: { claude: [...MODEL_LISTS_DEFAULT.claude], codex: [...MODEL_LISTS_DEFAULT.codex] },
 });
 
 interface UserRow {
@@ -480,6 +493,8 @@ export class Store {
   private addedCache: Map<string, MemberAdded> | null = null;
   /** `sessionAgent:*` 的快取（session 清單在熱路徑上）。setSessionAgent、deleteSession 時清掉。 */
   private agentCache: Map<string, AgentKind> | null = null;
+  /** `sessionModelOpts:*` 的快取（同上，熱路徑）。setSessionModelOpts、deleteSession 時清掉。 */
+  private modelOptsCache: Map<string, SessionModelOpts> | null = null;
   /** `awaitingLead:*` 的快取（成員 id → 隊長 id）。setAwaitingLead、deleteSession 時清掉。 */
   private awaitingLeadCache: Map<string, string> | null = null;
   /** `dispatch_work` 的快取：成員 id → 工作。setDispatchWork、deleteSession 時清掉。 */
@@ -748,8 +763,48 @@ export class Store {
   private toSession = (row: SessionRow): Session => {
     const session = toSession(row);
     const agent = this.allAgents().get(row.id);
-    return this.withAwaiting(agent ? { ...session, agent } : session);
+    const opts = this.allModelOpts().get(row.id);
+    return this.withAwaiting({
+      ...session,
+      ...(agent ? { agent } : {}),
+      ...(opts?.effort ? { effort: opts.effort } : {}),
+      ...(opts?.fallbackModel ? { fallbackModel: opts.fallbackModel } : {}),
+    });
   };
+
+  private allModelOpts(): Map<string, SessionModelOpts> {
+    if (this.modelOptsCache) return this.modelOptsCache;
+    const out = new Map<string, SessionModelOpts>();
+    const rows = this.db
+      .prepare(`SELECT key, value FROM settings WHERE key LIKE '${SESSION_MODEL_OPTS_PREFIX}%'`)
+      .all() as { key: string; value: string }[];
+    for (const row of rows) {
+      // 讀不懂的（手改壞、未來版本多了欄位）：只丟那一筆，不影響 session 清單。
+      const parsed = SessionModelOpts.safeParse(safeJson(row.value));
+      if (parsed.success) out.set(row.key.slice(SESSION_MODEL_OPTS_PREFIX.length), parsed.data);
+    }
+    this.modelOptsCache = out;
+    return out;
+  }
+
+  /** 記下推理強度與備援模型；兩個都沒有就刪掉那一列。 */
+  setSessionModelOpts(
+    sessionId: string,
+    opts: { effort?: SessionEffort | null; fallbackModel?: string | null },
+  ): void {
+    const value: SessionModelOpts = {
+      ...(opts.effort ? { effort: opts.effort } : {}),
+      ...(opts.fallbackModel ? { fallbackModel: opts.fallbackModel } : {}),
+    };
+    if (Object.keys(value).length === 0) {
+      this.db
+        .prepare('DELETE FROM settings WHERE key = ?')
+        .run(`${SESSION_MODEL_OPTS_PREFIX}${sessionId}`);
+    } else {
+      this.setRaw(`${SESSION_MODEL_OPTS_PREFIX}${sessionId}`, value);
+    }
+    this.modelOptsCache = null;
+  }
 
   private allAgents(): Map<string, AgentKind> {
     if (this.agentCache) return this.agentCache;
@@ -807,6 +862,10 @@ export class Store {
       this.addedCache = null;
       this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${SESSION_AGENT_PREFIX}${id}`);
       this.agentCache = null;
+      this.db
+        .prepare('DELETE FROM settings WHERE key = ?')
+        .run(`${SESSION_MODEL_OPTS_PREFIX}${id}`);
+      this.modelOptsCache = null;
       this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${AWAITING_LEAD_PREFIX}${id}`);
       this.awaitingLeadCache = null;
       this.workCache = null;
@@ -1889,7 +1948,8 @@ export class Store {
            AND key NOT LIKE '${MEMBER_ADDED_PREFIX}%' AND key != '${TEAM_ACTIVITY_KEY}'
            AND key NOT LIKE '${SESSION_AGENT_PREFIX}%' AND key NOT LIKE '${AWAITING_LEAD_PREFIX}%'
            AND key NOT LIKE '${STAFF_REQUEST_PREFIX}%' AND key != '${STAFF_ACTIVITY_KEY}'
-           AND key NOT LIKE '${STAFF_LAST_DECISION_PREFIX}%'`,
+           AND key NOT LIKE '${STAFF_LAST_DECISION_PREFIX}%'
+           AND key NOT LIKE '${SESSION_MODEL_OPTS_PREFIX}%'`,
       )
       .all() as {
       key: string;

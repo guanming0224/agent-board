@@ -10,6 +10,7 @@ import { LanguageSection, PushDeviceSection, SignedInSection } from './AccountSe
 import { ArchivedSection } from './ArchivedSection';
 import { AuditSection } from './AuditSection';
 import { MachinesSection, UsersSection } from './MachinesUsersSettings';
+import { ModelListsSection } from './ModelListsSection';
 import { PasswordSection } from './PasswordSection';
 import {
   AutoContinueSection,
@@ -247,6 +248,7 @@ export function SettingsPage() {
                   owner &&
                   server((f) => (
                     <>
+                      <ModelListsSection form={f} />
                       <QuotaSection form={f} />
                       <AutoContinueSection form={f} />
                       <DispatchSection form={f} />

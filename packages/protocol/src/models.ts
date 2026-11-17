@@ -1,5 +1,6 @@
 // 資料模型（DISPATCH §3、§4）。API 與 WebSocket 一律 camelCase；hub 自行對應 SQLite 的 snake_case。
 import { z } from 'zod';
+import { MODEL_LISTS_DEFAULT, ModelLists, SessionEffort } from './modelOptions';
 
 export const Id = z.string().min(1);
 export const IsoTime = z.string().datetime({ offset: true });
@@ -106,6 +107,11 @@ export const MachineCapabilities = z.object({
    * 新增 session 只有這台回報了版本才能選 Codex（hub 也會擋）。
    */
   codexVersion: z.string().nullable().optional(),
+  /**
+   * daemon 認得 `SessionSpec.effort`／`fallbackModel`（CONTRACTS §26）。舊版 daemon 不送＝不認得：
+   * 新增 session 頁提示「這台 daemon 太舊，強度／備援不會生效」，hub 也不送。
+   */
+  modelOptions: z.boolean().optional(),
 });
 export type MachineCapabilities = z.infer<typeof MachineCapabilities>;
 
@@ -232,6 +238,12 @@ export const Session = z.object({
    * 不是 `waiting_input` 時不送；舊 hub 不送＝照舊（ASK）。
    */
   awaiting: z.enum(['lead', 'members']).optional(),
+  /**
+   * 建立時指定的推理強度與備援模型（CONTRACTS §26）。hub 存在 settings 表 `sessionModelOpts:<id>`（有指定才寫，
+   * 不升 schema）；接續時照舊帶。沒指定、舊 hub 不送＝跟 CLI 預設。
+   */
+  effort: SessionEffort.optional(),
+  fallbackModel: z.string().optional(),
 });
 export type Session = z.infer<typeof Session>;
 export type SessionAwaiting = NonNullable<Session['awaiting']>;
@@ -590,6 +602,8 @@ export const StaffRequest = z.object({
   permissionMode: PermissionMode.optional(),
   useWorktree: z.boolean().optional(),
   model: z.string().optional(),
+  /** 隊長指定的推理強度（CONTRACTS §26）。 */
+  effort: SessionEffort.optional(),
   /** 隊長給的理由（Claude 寫的一句，已清控制字元、截斷）。 */
   reason: z.string(),
   /** 隊長寫的 prompt 的開頭（一行、截斷到 STAFF_PROMPT_PREVIEW_MAX）。 */
@@ -959,6 +973,11 @@ export const Settings = z.object({
     .min(CANARY_SOAK_HOURS_MIN)
     .max(CANARY_SOAK_HOURS_MAX)
     .default(CANARY_SOAK_HOURS_DEFAULT),
+  /**
+   * 新增 session 的模型下拉清單（GM 2026-11-17，CONTRACTS §26）：Claude 與 Codex 各一份，設定頁增刪排序（owner）。
+   * 舊設定沒有這個鍵＝內建清單（`MODEL_LISTS_DEFAULT`）。一般使用者用 `GET /api/model-lists` 讀。
+   */
+  modelLists: ModelLists.default(MODEL_LISTS_DEFAULT),
 });
 export type Settings = z.infer<typeof Settings>;
 

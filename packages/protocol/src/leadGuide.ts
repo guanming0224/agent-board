@@ -54,12 +54,22 @@ export const DISPATCH_INSTRUCTIONS: readonly string[] = [
   `If you are not the lead: ${MEMBER_STAFFING_GUIDE}`,
 ];
 
+/**
+ * 推理強度的白名單（CONTRACTS §26）。放在這裡（不 import zod）是因為 hook 的 MCP server 要直接用它組 spawn_member 的
+ * inputSchema；modelOptions.ts 從這裡拿，兩邊同一份。
+ * Claude：`claude --effort <level>`（claude 2.1.326 `--help`）；Codex：`-c model_reasoning_effort="<level>"`。
+ */
+export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const;
+/** spawn_member 的 effort 說明。 */
+export const SPAWN_EFFORT_DESCRIPTION = `Optional reasoning effort. Claude members: ${CLAUDE_EFFORTS.join(', ')}; Codex members: ${CODEX_EFFORTS.join(', ')}. Defaults to yours (or to that CLI's default when agent differs from yours).`;
+
 /** 工具說明（MCP tools/list）。和 DispatchTool 的名稱一一對應；mcp.ts 只負責加上 inputSchema。 */
 export const DISPATCH_TOOL_DESCRIPTIONS = {
   list_members:
     'List the members of your Agent Board team(s): name, role, status, current task, last screen line, read-only, branch, who added them and why, and whether they still owe you a result. For a team you lead it also returns staffing: team size, the size limit, free slots, members per role (and how many are running), how many members you may still add in the next 10 minutes, and a reminder. Call it when you receive a task, to decide whether the team has the roles the work needs. Empty if you have no team.',
   spawn_member:
-    'Add a member to the team you lead: start a new Claude Code session in the same machine and project folder and give it a first prompt. Use it when you receive a task and a needed role is missing, or while working when you are stuck, the workload is too large, or a skill is missing. role worker edits files (gets its own git worktree by default); tester writes and runs tests (also its own worktree, asks before each step by default); researcher and reviewer are read-only and share the folder. reason is required: one short sentence on why the team needs this member (shown to the user). Its permission mode cannot exceed yours. The whole team (lead included) is capped by a size limit the user sets (list_members shows it), and at most 4 members can be added per team in 10 minutes. Past either limit the call does not start anyone: it becomes a request the user must approve (status "pending_approval", one per team at a time); end your turn, and the decision is typed back to you as "[Agent Board] …" (approved: the member has been started). Releasing a finished member first avoids the request. Refused while the board or this team is paused, while this account is rate-limited, or when the user turned auto-staffing off. Only the team lead can add members. The result comes back to you automatically when it finishes the turn.',
+    'Add a member to the team you lead: start a new Claude Code session in the same machine and project folder and give it a first prompt. Use it when you receive a task and a needed role is missing, or while working when you are stuck, the workload is too large, or a skill is missing. role worker edits files (gets its own git worktree by default); tester writes and runs tests (also its own worktree, asks before each step by default); researcher and reviewer are read-only and share the folder. reason is required: one short sentence on why the team needs this member (shown to the user). Its permission mode cannot exceed yours; model and effort (reasoning effort) default to yours. The whole team (lead included) is capped by a size limit the user sets (list_members shows it), and at most 4 members can be added per team in 10 minutes. Past either limit the call does not start anyone: it becomes a request the user must approve (status "pending_approval", one per team at a time); end your turn, and the decision is typed back to you as "[Agent Board] …" (approved: the member has been started). Releasing a finished member first avoids the request. Refused while the board or this team is paused, while this account is rate-limited, or when the user turned auto-staffing off. Only the team lead can add members. The result comes back to you automatically when it finishes the turn.',
   send_task:
     'Give one of your members (a member of a team you lead, or one you spawned) a new task. It is typed in when the member is waiting for input; if it is busy the task waits in a queue. The result comes back to you automatically after your current turn ends; end your turn instead of sleeping or polling.',
   get_result:

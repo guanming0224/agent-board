@@ -60,6 +60,7 @@ import { SearchQuery, SearchResults } from './search';
 import { TeamPreset, TeamPresetConfig, TeamPresetName, TeamPresetUsed } from './presets';
 import { DirEntry, FolderName, RepoInfo, SessionSpec } from './ws';
 import { GitInitResult } from './gitInit';
+import { ModelLists } from './modelOptions';
 import {
   ZoneBarMove,
   ZoneGroupCreate,
@@ -125,6 +126,7 @@ export const SettingsPatch = Settings.extend({
   autoStaff: AutoStaff,
   review: ReviewSettings,
   canarySoakHours: z.number().int().min(CANARY_SOAK_HOURS_MIN).max(CANARY_SOAK_HOURS_MAX),
+  modelLists: ModelLists,
 }).partial();
 
 /**
@@ -931,6 +933,13 @@ export const routes = {
     auth: 'owner',
     body: SettingsPatch,
     response: Settings,
+  }),
+  /** 新增 session 的模型下拉清單（CONTRACTS §26）：一般使用者也要讀，所以不走 owner 才能讀的 `/api/settings`。 */
+  modelListsGet: route({
+    method: 'GET',
+    path: '/api/model-lists',
+    auth: 'user',
+    response: ModelLists,
   }),
 
   // 推播

@@ -44,6 +44,9 @@ import {
   type Team,
   type TeamActivityKind,
   type TeamMember,
+  effortsFor,
+  type SessionEffort,
+  validEffort,
 } from '@agent-board/protocol';
 import { z } from 'zod';
 import { isGone, type DeliveryItem, type SafeDelivery } from './delivery';
@@ -177,6 +180,8 @@ export const SpawnArgs = z.object({
   permissionMode: PermissionMode.optional(),
   useWorktree: z.boolean().optional(),
   model: z.string().max(100).optional(),
+  /** 推理強度（§26）：沒給＝同一種 agent 就沿用呼叫者的，否則用那個 CLI 的預設。白名單依 agent 另外檢查。 */
+  effort: z.string().max(20).optional(),
   /** Codex 第二輪：開哪種 agent；沒給＝和呼叫者同一種。 */
   agent: AgentKind.optional(),
 });
@@ -779,6 +784,13 @@ export class DispatchEngine {
     const agent = args.agent ?? callerAgent;
     const accountProfile =
       agent === 'claude' && callerAgent === 'claude' ? caller.accountProfile : null;
+    const wantedEffort = args.effort?.trim() || null;
+    if (wantedEffort !== null && !validEffort(agent, wantedEffort)) {
+      return fail(
+        'invalid_effort',
+        `effort for a ${agent === 'codex' ? 'Codex' : 'Claude'} member must be one of: ${effortsFor(agent).join(', ')}. Omit it to use yours.`,
+      );
+    }
     if (this.deps.accountLimited({ ...caller, agent, accountProfile })) {
       this.blockedTool(caller, 'spawn_member', 'account_rate_limited');
       return fail(
@@ -874,6 +886,17 @@ export class DispatchEngine {
     const message = workMessage(caller.name, prompt);
     const created = existing === null;
     const team = existing ?? this.createTeam(caller);
+    // 模型名稱各家不同：換了 agent 就不沿用呼叫者的，用那個 CLI 自己的預設。
+    const model = args.model
+      ? cleanLine(args.model) || (agent === callerAgent ? caller.model : null)
+      : agent === callerAgent
+        ? caller.model
+        : null;
+    // 推理強度與備援模型（§26）照 model 的規則沿用；備援和成員的主模型相同就不帶（claude 不接受）。
+    const effort = wantedEffort ?? (agent === callerAgent ? (caller.effort ?? null) : null);
+    const inheritedFallback =
+      agent === 'claude' && callerAgent === 'claude' ? (caller.fallbackModel ?? null) : null;
+    const fallbackModel = inheritedFallback !== model ? inheritedFallback : null;
     let member: Session;
     try {
       member = this.deps.createSession(
@@ -884,12 +907,9 @@ export class DispatchEngine {
           cwd: caller.cwd,
           useWorktree,
           permissionMode: mode,
-          // 模型名稱各家不同：換了 agent 就不沿用呼叫者的，用那個 CLI 自己的預設。
-          model: args.model
-            ? cleanLine(args.model) || (agent === callerAgent ? caller.model : null)
-            : agent === callerAgent
-              ? caller.model
-              : null,
+          model,
+          ...(effort ? { effort: effort as SessionEffort } : {}),
+          ...(fallbackModel ? { fallbackModel } : {}),
           accountProfile,
           ...(agent === 'codex' ? { agent } : {}),
           resumeClaudeSessionId: null,

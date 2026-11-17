@@ -60,7 +60,7 @@ corepack pnpm check:no-llm    # scripts/check-no-llm.mjs
    `.pty.write(`、`type: 'terminal.input',`、`.sendPrompt(`），和腳本裡的 `CALL_SITES` 清單比對。
    多出沒審查過的位置就失敗。
 3. daemon 給 `claude` 的參數只能是 `--resume`、`--session-id`、`--permission-mode`、
-   `--disallowedTools`、`--model`、`--mcp-config`、`--allowedTools`、`--name`（以及探測版本用的 `--version`），daemon 原始碼不得出現 `-p`／`--print`（非互動模式會直接
+   `--disallowedTools`、`--model`、`--effort`、`--fallback-model`（2026-11-17 加，CONTRACTS §26）、`--mcp-config`、`--allowedTools`、`--name`（以及探測版本用的 `--version`），daemon 原始碼不得出現 `-p`／`--print`（非互動模式會直接
    耗用模型）。另外確認 `--allowedTools` 只會列 agent-board 自己的工具：protocol 的 `DispatchTool`＋`MemoryTool`
    必須正好是審查過的 7 個（`AGENT_BOARD_TOOLS`；2026-11-10 加 `release_member`），daemon 一律用 `mcp__agent-board__<tool>` 組全名（2026-11-08 加）。
    codex（2026-11-10 加，3c）：`packages/daemon/src/codex.ts` 與 `packages/protocol/src/codex.ts` 裡的參數只能是
@@ -147,6 +147,8 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
 - 參數：`buildClaudeArgs`（`packages/daemon/src/session.ts:60-77`）只會產生
   `--resume <id>` 或 `--session-id <uuid>`、`--permission-mode <mode>`、唯讀 session 才有的
   `--disallowedTools Edit Write NotebookEdit`（只減少能用的工具）、可選的 `--model <name>`、
+  可選的 `--effort <low|medium|high|xhigh|max>` 與 `--fallback-model <name>`（2026-11-17，CONTRACTS §26：強度只收白名單、
+  模型名稱只收安全字元 `MODEL_NAME_RE`，只改用哪個模型、想多深，不放寬工具或權限）、
   `--name <name>`，以及「允許 session 派工」或「讓 session 讀寫進度卡」開著時的 `--mcp-config <daemon 產生的設定檔>` 與
   `--allowedTools <開著的功能的工具全名>`（派工 5 個、進度卡 2 個，最多 7 個，全部是 `mcp__agent-board__*`；
   MCP server 是本機的 `agent-board-mcp`，只連 daemon 的 socket；兩個設定都關就完全不掛；
@@ -169,7 +171,7 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
   探測版本（`resources.ts` 的 `probeCodex`，不送 prompt），找不到就不回報、不能開 Codex session。
 - 參數：`buildCodexArgs`（`packages/daemon/src/codex.ts`）只會產生 `resume <thread id>`（接回使用者自己的對話）、
   權限換算的 `-s <sandbox> -a <approval>` 或 `--dangerously-bypass-approvals-and-sandbox`（使用者選了 bypass）、
-  可選的 `-m <model>`、`--dangerously-bypass-hook-trust`（只讓這次啟動跳過 hook 信任確認）、每個 hook 事件一個
+  可選的 `-m <model>`、可選的 `-c model_reasoning_effort="<minimal|low|medium|high>"`（2026-11-17，§26，白名單）、`--dangerously-bypass-hook-trust`（只讓這次啟動跳過 hook 信任確認）、每個 hook 事件一個
   `-c hooks.<Event>=[{hooks=[{type="command",command="agent-board-hook --agent codex --session <id> --socket <path> <Event>",…}]}]`，以及新對話時
   `--` 後面使用者填的第一個指令。沒有 `exec`，所以永遠是互動式 TUI，等使用者輸入。`codex.test.ts` 有測試。
 - hook：只有 `type = "command"`，不用 `prompt`／`agent`／`mcp_tool` 型別（`prompt`／`agent` 會讓 CLI 另外呼叫模型）。

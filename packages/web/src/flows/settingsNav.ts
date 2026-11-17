@@ -33,6 +33,7 @@ export const SECTION_CATEGORY: Readonly<Record<string, Category>> = {
   notify: 'notify',
   templates: 'sessions',
   quota: 'sessions',
+  modelLists: 'sessions',
   autocontinue: 'sessions',
   dispatch: 'sessions',
   codexMcp: 'sessions',
@@ -64,6 +65,7 @@ export const KEY_CATEGORY: Record<keyof Settings, Category> = {
   publicOrigin: 'security',
   dangerRules: 'security',
   canarySoakHours: 'machines',
+  modelLists: 'sessions',
 };
 
 /** 有伺服器設定欄位的分類：儲存列一直顯示。 */

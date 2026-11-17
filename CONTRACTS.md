@@ -1244,3 +1244,69 @@ GM 不要「工作區到第 7 個就收進『更多 ▾』」，要看得到自�
 - protocol `zoneGroups.test.ts`（整理、排列、移動、建立位置、取消群組、改名換色、舊快照相容、路由 body、rev 比較、長度上限與色票、壞群組只丟那一個、快照欄位不合格式）；hub `test/zoneGroups.test.ts`（真 hub：舊資料沒群組、CRUD 與移動、rev 遞增、WS 推送、audit 記移動後位置、重啟後還在、刪工作區同步拿掉、錯誤碼與長度上限、權限 401／member 可改、只壞一個群組時保留其他、整份壞資料）；web `zones/bar.test.ts`（排列、往左右移、拖曳放下、捲動到目前分頁、滾輪轉橫向含 deltaMode、選單位置、收合狀態讀寫與只留現有群組、暫時展開多個、色票一致）、`shared/hubBackend.test.ts`「分頁群組」（REST 回應晚於較新的推送不倒退、推送亂序、舊 hub 沒 rev）。
 - e2e `zone-groups.spec.ts`（`team.config.ts`）：建群組、加入／移出、收合／展開（含鍵盤）、改名換色、往左移、取消群組不刪畫布；選單鍵盤（↑↓、子畫面焦點、Tab 關）；矮視窗選單不超出螢幕；舊 hub 沒有群組項目；拖團隊經過兩個收合群組不來回跳；13 個分頁全部點得到＋滾輪＋自動捲進可見範圍；拖團隊經過收合群組自動展開並放進去、放下後收回；桌面拖曳分頁進出群組與群組排序；手機觸控（可橫向捲、點標籤展開、長按選單、44px）；截圖 `docs/screenshots/zone-groups-desktop.png`、`zone-groups-phone.png`（10 個分頁、2 個群組，一個展開、一個收合且目前畫布在裡面）。`workspaces.spec.ts` 改寫「超過 6 個」與手機兩則。
 - 未驗證：真 hub 兩台裝置同時開著時的畫面同步（WS 推送由 hub 單元測試驗；e2e 用假後端）；實機觸控（iOS Safari 長按、Android Chrome）只用 Playwright 觸控模擬；群組很多（數十個）時的效能；淺色主題（介面目前只有深色主題，STYLE §4）。
+
+## 26. 新增 session 的模型下拉、推理強度、備援模型（GM 2026-11-17）
+
+GM 要新增 session 的模型欄位改成下拉，並能細調推理強度與備援模型；常用清單在設定頁增刪。**不升 schema（仍是 v11）**。
+
+### 26.1 CLI 參數（本機 `--help` 確認，沒有實際開對話）
+
+- Claude（claude 2.1.326）：`--model <model>`（別名 `fable`／`opus`／`sonnet`／`haiku` 永遠指最新版，或完整名稱）、`--effort <low|medium|high|xhigh|max>`、`--fallback-model <model>`（CLI 接受逗號分隔多個；這裡只收一個，模型名稱字元不含逗號）。
+- Codex（codex-cli 0.167.0）：`-m <model>`、推理強度用設定覆寫 `-c model_reasoning_effort="<minimal|low|medium|high>"`（和交叉審查 `codexReviewArgs` 同一組白名單）。Codex 沒有備援模型參數。
+- 指令一律陣列、不經 shell（`buildClaudeArgs`、`buildCodexArgs`）。順序：Claude `… --permission-mode … [--disallowedTools …] [--model m] [--effort e] [--fallback-model f] [--mcp-config …] --name n`；Codex `[resume id] <權限> [-m m] [-c model_reasoning_effort="e"] --dangerously-bypass-hook-trust -c <hooks> …`。
+- **未驗證**：`--effort` 是哪一版 claude 開始有的（舊版 claude 會因為不認得參數而開不起來）；真 CLI 帶這些參數實際開對話的行為（沒跑真 claude／codex）。
+
+### 26.2 白名單與安全字元（`protocol/src/modelOptions.ts`；強度白名單本身在 `leadGuide.ts`，因為 hook 的 MCP server 不能 import zod）
+
+- `CLAUDE_EFFORTS = low, medium, high, xhigh, max`；`CODEX_EFFORTS = minimal, low, medium, high`。`SessionEffort` 是聯集；哪個 agent 能用哪些看 `validEffort(agent, effort)`。
+- 模型名稱 `MODEL_NAME_RE = /^(?!-)[A-Za-z0-9._:/[\]-]{1,100}$/`：英數與 `. _ : / - [ ]`（`[ ]` 給 `opus[1m]` 這類寫法），不能以 `-` 開頭。主模型、備援模型、設定頁清單都用這條。
+- 備援模型只有 Claude（`supportsFallbackModel`），而且不能和主模型相同（claude 不接受）。
+
+### 26.3 協定與相容
+
+- `SessionSpec` 加選填 `effort: SessionEffort | null`、`fallbackModel: ModelName | null`。不送／null＝跟 CLI 預設（不帶參數）。
+- daemon hello `features` 加 `session.modelOptions`（`DAEMON_FEATURES.modelOptions`），`MachineCapabilities` 加選填 `modelOptions: true`（網頁看這個）。
+- **舊 daemon**：`SessionSpec` 是 zod `z.object`（預設丟掉多的欄位），送了也不會壞、只是不生效；但為了畫面不誤導，hub 對沒有這個旗標的 daemon **不送、不記**（`checkModelOptions` 建立時拿掉；排隊或接續時 daemon 換成舊版，`dispatchCreate` 也拿掉並清掉記錄）。網頁看到機器沒有 `capabilities.modelOptions` 時在欄位下寫「<機器> 的 daemon 太舊，推理強度與備援模型不會生效（不會送出）」，預覽與送出都不帶。
+- **舊 hub＋新網頁**：`GET /api/model-lists` 不存在 → 下拉用內建清單；session 沒有 `effort`／`fallbackModel` → 卡片不顯示；設定頁回應裡沒有 `modelLists` → 模型清單區塊寫「hub 太舊」。
+- **新 daemon 的 sessions.json 退回舊版 daemon**：舊版讀 spec 時丟掉這兩個欄位，照常接回（只是不帶參數）。
+
+### 26.4 hub
+
+- 驗證（`hub.ts checkModelOptions`，網頁建立與派工共用）：模型名稱不合 400 `invalid_model`；強度不屬於那個 agent 400 `invalid_effort`；Codex 帶備援 400 `fallback_unsupported`；備援和主模型相同 400 `fallback_same_as_model`；聯集外的強度、不合格的備援名稱在 REST body 驗證就 400 `invalid_request`。**主模型名稱的檢查是新加的**：以前任何字串都收，現在含空白、引號等的名稱會被拒（daemon 端也會略過並記 log，見 26.5）。
+- **存法**：settings 表 `sessionModelOpts:<sessionId>` = `{"effort"?: …, "fallbackModel"?: …}`（和 `sessionAgent:<id>` 同一種做法），兩個都沒指定就不寫；`getSettings` 不讀、刪除 session 時一起刪；讀不懂的那一筆略過。`Session` 多兩個選填欄位 `effort`、`fallbackModel`（hub 讀時補上）。
+- **接續**（`resumeSession`）：照 session 記著的值帶。**daemon 重啟接回**：spec 原樣存在 daemon 本機 `sessions.json`，`--resume` 時沿用同一組。
+- audit `session.create` 多記 `effort`、`fallbackModel`（有指定才記）。
+- **模型清單**：`Settings.modelLists = { claude: string[], codex: string[] }`（每份最多 30 個，`ModelName`）；舊設定沒有這個鍵＝內建 `MODEL_LISTS_DEFAULT`：Claude `fable, opus, sonnet, haiku`；Codex 只放 repo 裡用真 codex-cli 實測過的 `gpt-6-luna`（§19.6、§22），其他不猜。改走既有 `PATCH /api/settings`（owner；`SettingsPatch` 沒有預設值，存別的設定不會蓋掉清單），hub 存前去空白、去重。一般使用者讀 `GET /api/model-lists`（auth user，只回清單）。
+
+### 26.5 daemon
+
+- `buildClaudeArgs`：`effort` 只收 `CLAUDE_EFFORTS`；`model`、`fallbackModel` 只收 `MODEL_NAME_RE`（不合的不帶並記 warn）；備援和主模型相同不帶。`buildCodexArgs`：`effort` 只收 `CODEX_EFFORTS`，`-c model_reasoning_effort="<level>"`；模型同上。這是第二層，hub 已經擋過。
+- `check:no-llm`：`CLAUDE_FLAGS` 加 `--effort`、`--fallback-model`（只改用哪個模型、想多深，不放寬工具或權限，仍是互動模式）；Codex 的 `-c` 本來就在允許清單。審查清單 `docs/no-llm-review.md` 同步。沒有新增對外連線或終端機輸入點。
+
+### 26.6 隊長 `spawn_member`
+
+- 新增選填 `effort`（MCP inputSchema 的 `enum` 是兩邊的聯集，說明 `SPAWN_EFFORT_DESCRIPTION`）。hub 依成員的 agent 檢查，不合回 `invalid_effort: effort for a Codex member must be one of: minimal, low, medium, high. …`。
+- 沒指定＝照 `model` 的沿用規則：同一種 agent 沿用隊長的強度，換 agent 用那個 CLI 的預設。備援模型（沒有工具參數）：Claude 隊長開 Claude 成員時沿用隊長的備援，但和成員的主模型相同就不帶。
+- 加開申請（§23）存完整參數，同意時照申請的 `effort` 開；`StaffRequest` 多一個選填 `effort` 給 GM 看。
+
+### 26.7 網頁
+
+- `flows/ModelFields.tsx`（NewSessionPage、QuickCreate 共用）、`flows/modelChoice.ts`（純函式）：
+  - 模型：下拉「預設（不指定）」＋清單＋「自訂…」；選「自訂…」切出輸入框（帶著原本的名稱方便改）；清單沒有的名稱（例如範本帶來的）也顯示成自訂。不安全的字元、自訂沒填即時顯示錯誤並擋送出。
+  - 推理強度：下拉「跟 CLI 預設」＋那個 agent 的白名單。換 agent 時不合的值顯示成預設、不送。
+  - 備援模型：Claude 才顯示（Codex 隱藏），清單同 Claude 模型清單＋「自訂…」；和主模型相同顯示錯誤。
+  - 換 agent：模型是另一家清單裡的項目就清回「預設」，自己打的自訂名稱留著。
+  - 指令預覽（`commandPreview`）同步顯示 `--effort`／`--fallback-model`／`-c 'model_reasoning_effort="…"'`。
+  - 草稿（`shared/draftStore.ts`，STYLE §5.2）：新增 session 的 `model`（`{ value, custom }`）、`effort`、`fallback` 都在草稿裡。QuickCreate 本來就不用草稿。
+- 卡片與全尺寸頁（`CardHead` 的 `ModelOptsChip`）：三個都沒指定不顯示；否則小字晶片「opus · high · ↪ sonnet」（沒指定模型寫「預設」），提示框寫完整說明。封存詳情多兩列。
+- 設定 → Session 與額度 → **模型清單**（`flows/ModelListsSection.tsx`，owner）：Claude、Codex 兩份，新增（Enter 也可）、↑ ↓ 排序、移除、恢復內建清單；擋不合的名稱、重複、超過 30 個。存檔走共用儲存列，只送 `modelLists`。手機上按鈕、輸入框照 controls.css 至少 44px。
+
+### 26.8 不呼叫模型
+
+只多了 CLI 參數與設定資料；不送字進 PTY、不新增呼叫點。
+
+### 26.9 測試與未驗證
+
+- protocol `modelOptions.test.ts`（白名單依 agent、安全字元、SessionSpec 選填與舊 daemon 丟掉多的欄位、Session／capabilities 選填、預設清單、SettingsPatch 不補預設、上限 30）；daemon `misc.test.ts`（Claude 參數組成、白名單外與不安全名稱略過、備援同主模型不帶、`opus[1m]`）、`codex.test.ts`（Codex 強度 `-c`、接回也帶、Claude 才有的 max 與注入字串略過）、`daemon.test.ts`（真 daemon＋假 claude：開的時候帶、存進 sessions.json、hello 宣告旗標、重啟 `--resume` 沿用）；hub `test/modelOptions.test.ts`（送出與存法、settings API 看不到內部鍵、接續沿用、刪除清掉、Codex 白名單、各種 400、舊 daemon 不送不記、模型清單權限與去重、spawn_member 沿用／指定／換 agent／invalid_effort）；hook `mcp.test.ts`（inputSchema 的 effort）；web `modelChoice.test.ts`、`commandPreview.test.ts`。
+- e2e：`flows.spec.ts`（下拉選項、自訂、強度、備援、預覽、錯誤擋送出、送出內容；換 Codex 清單與強度換掉、備援隱藏；舊 daemon 提示且不送；設定頁清單增刪排序與存檔、新增頁跟著換；手機 44px 與截圖；320／375／1280 不水平捲動）、`flows-float.spec.ts`（草稿保留與 ✕ 清掉）、`canvas.spec.ts`（快速建立選三個值、備援同主模型擋下、卡片小字）、`codex-integration.spec.ts`（真 hub＋真 daemon＋假 codex：預覽、session 記著強度、實際參數帶 `model_reasoning_effort="low"`、daemon 被殺重啟接回仍帶）。
+- 未驗證：真 claude／codex 帶這些參數開對話；舊版 claude 不認得 `--effort` 時的表現；Windows 上經 `claude.cmd` 啟動時帶 `--effort`（值只有安全字元，理論上不受 cmd 拆字影響）。

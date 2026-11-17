@@ -8,6 +8,8 @@ import { useBoard } from '../shared/store';
 import { CloseButton } from '../views/Overlays';
 import { currentZoneId } from '../zones';
 import { createErrorText, ModeChip, Msg, useProjects, type Note } from './common';
+import { modelFieldErrors, ModelFields, useModelLists } from './ModelFields';
+import { modelOptionsSupported, modelSpec, NO_MODEL, type ModelPick } from './modelChoice';
 import {
   Field,
   FolderBrowser,
@@ -42,7 +44,11 @@ export function QuickCreate({
   const [more, setMore] = useState(false);
   const [chosenMachine, setChosenMachine] = useState<string | null>(null);
   const [mode, setMode] = useState<PermissionMode>('default');
-  const [model, setModel] = useState('');
+  // 模型、推理強度、備援（§26）：快速建立只開 Claude Code。
+  const [model, setModel] = useState<ModelPick>(NO_MODEL);
+  const [effort, setEffort] = useState('');
+  const [fallback, setFallback] = useState<ModelPick>(NO_MODEL);
+  const modelLists = useModelLists();
   const [worktreeChoice, setWorktreeChoice] = useState<boolean | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [tried, setTried] = useState(false);
@@ -77,6 +83,7 @@ export function QuickCreate({
         ? t('flows.new.err.machineOffline', { machine: machine.name })
         : null,
     cwd: cwd.trim() ? null : t('flows.new.err.cwd'),
+    ...modelFieldErrors(t, 'claude', model, fallback),
   };
   const firstError = Object.values(errors).find(Boolean) ?? null;
 
@@ -96,7 +103,13 @@ export function QuickCreate({
         cwd: cwd.trim(),
         useWorktree,
         permissionMode: mode,
-        model: model.trim() || null,
+        ...modelSpec({
+          agent: 'claude',
+          model,
+          effort,
+          fallback,
+          supported: modelOptionsSupported(machine),
+        }),
         accountProfile: null,
         resumeClaudeSessionId: null,
         firstPrompt: firstPrompt.trim() || null,
@@ -242,13 +255,19 @@ export function QuickCreate({
                     ))}
                   </select>
                 </Field>
-                <Field
-                  label={t('flows.new.model')}
-                  htmlFor="qc-model"
-                  hint={t('flows.new.modelHint')}
-                >
-                  <input id="qc-model" value={model} onChange={(e) => setModel(e.target.value)} />
-                </Field>
+                <ModelFields
+                  idPrefix="qc"
+                  agent="claude"
+                  lists={modelLists}
+                  machine={machine}
+                  model={model}
+                  setModel={setModel}
+                  effort={effort}
+                  setEffort={setEffort}
+                  fallback={fallback}
+                  setFallback={setFallback}
+                  t={t}
+                />
                 <label className="check">
                   <input
                     type="checkbox"

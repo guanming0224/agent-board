@@ -28,6 +28,17 @@ describe('commandPreview', () => {
     ]);
   });
 
+  it('推理強度與備援模型（§26）：和 daemon 的參數一樣的順序', () => {
+    expect(
+      commandPreview({ ...base, model: 'opus', effort: 'xhigh', fallbackModel: 'sonnet' })[1],
+    ).toBe(
+      'claude --session-id <uuid> --permission-mode manual --model opus --effort xhigh --fallback-model sonnet --name n',
+    );
+    expect(commandPreview({ ...base, agent: 'codex', model: 'gpt-x', effort: 'minimal' })[1]).toBe(
+      `codex -s read-only -a on-request -m gpt-x -c 'model_reasoning_effort="minimal"' --dangerously-bypass-hook-trust -c <hooks>`,
+    );
+  });
+
   it('Codex：acceptEdits、auto 用可寫工作區（GM 2026-11-10）', () => {
     for (const permissionMode of ['acceptEdits', 'auto'] as const) {
       expect(commandPreview({ ...base, agent: 'codex', permissionMode })[1]).toBe(
