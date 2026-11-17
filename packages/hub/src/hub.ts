@@ -11,6 +11,7 @@ import {
   UPDATE_IN_PROGRESS,
   UPDATE_STALE_MS,
   type UpdateState,
+  type SessionHostState,
   ClientToHub,
   DAEMON_FEATURES,
   type GitInitResult,
@@ -187,6 +188,8 @@ interface DaemonConn {
   helloTimer: NodeJS.Timeout | null;
   /** hello 宣告的協定功能（DAEMON_FEATURES）。hello 前是空的。 */
   features: Set<string>;
+  /** daemon 回報的 session host 狀態（hello、sessionHost.status；CONTRACTS §20.8）。舊 daemon 為 null。 */
+  sessionHost: SessionHostState | null;
 }
 
 export interface ClientConn extends RelayClient {
@@ -441,6 +444,13 @@ export class Hub {
       onTargetsChanged: () => this.sendReleaseTargets(),
       notifyUpdateFailed: (machineId, name, state) =>
         this.notifyUpdateFailed(machineId, name, state),
+      sessionHost: (machineId) => {
+        const conn = this.daemonFor(machineId);
+        return {
+          state: conn?.sessionHost ?? null,
+          restartSupported: conn?.features.has(DAEMON_FEATURES.sessionHostRestart) ?? false,
+        };
+      },
     });
     // 暫停狀態要在任何引擎還原（可能排進送字）之前讀出來。
     this.pause = this.loadPause();
@@ -694,6 +704,7 @@ export class Hub {
       retired: false,
       helloTimer: null,
       features: new Set(),
+      sessionHost: null,
     };
     conn.helloTimer = setTimeout(() => {
       this.log.warn({ machineId: machine.id }, 'daemon did not send hello in time');
@@ -804,6 +815,9 @@ export class Hub {
       case 'daemon.alert':
         this.onDaemonAlert(conn.machineId, msg.code, msg.message);
         return;
+      case 'sessionHost.status':
+        conn.sessionHost = msg.state;
+        return;
       case 'terminal.output':
         if (this.ownsSession(conn, msg.sessionId)) {
           this.prompts.onOutput(msg.sessionId, msg.data);
@@ -909,6 +923,7 @@ export class Hub {
     }
     conn.helloed = true;
     conn.features = new Set(msg.features);
+    conn.sessionHost = msg.sessionHost ?? null;
     this.store.machineHello(conn.machineId, msg.os, msg.capabilities, this.nowIso());
     // 機器上線：它的 QUE 變成繼續後會開的（排隊統計）。
     this.pauseCountsChanged();
@@ -1061,6 +1076,50 @@ export class Hub {
     const current = this.release.record(machineId).version;
     if (current) this.release.holdVersion(machineId, current);
     this.send(conn.ws, { type: 'release.rollback' });
+  }
+
+  /**
+   * 面板「重啟 session host」（owner，CONTRACTS §20.8）：該機所有 agent 結束一次、之後 --resume 接回。
+   * 要 confirm；舊 daemon（沒有 `sessionHost.restart` 功能）回 409 daemon_too_old；daemon 不能自己重啟回 409 restart_unsupported。
+   */
+  restartSessionHost(machineId: string, user: User, confirm: boolean): void {
+    const machine = this.store.getMachine(machineId);
+    if (!machine) throw notFound('Machine');
+    if (!confirm) {
+      throw new HttpError(
+        400,
+        'confirm_required',
+        'Restarting the session host ends every agent on this machine once. Send confirm: true.',
+      );
+    }
+    const conn = this.daemonFor(machineId);
+    if (!conn) throw new HttpError(409, 'machine_offline', 'Machine is offline');
+    if (!conn.features.has(DAEMON_FEATURES.sessionHostRestart)) {
+      throw new HttpError(409, 'daemon_too_old', 'This daemon cannot restart its session host');
+    }
+    if (conn.sessionHost && !conn.sessionHost.canRestart) {
+      throw new HttpError(
+        409,
+        'restart_unsupported',
+        'This machine cannot restart its session host by itself; restart the service manually',
+      );
+    }
+    this.audit(
+      user.id,
+      null,
+      'machine.sessionHostRestart',
+      JSON.stringify({ machineId, machine: machine.name, mode: conn.sessionHost?.mode ?? null }),
+    );
+    this.send(conn.ws, { type: 'sessionHost.restart' });
+  }
+
+  /** session host 輸入可能失效的推播（固定文字，只有機器名稱；不帶使用者輸入或 Claude 寫的內容）。 */
+  private notifyHostInputStuck(machineId: string, name: string): void {
+    const settings = this.store.getSettings();
+    if (!this.pushAllowed(settings)) return;
+    this.sendPush(
+      JSON.stringify({ kind: 'host_input_stuck', machineId, machine: name, at: this.nowIso() }),
+    );
   }
 
   /** 更新失敗的推播：只有機器名稱、版本、原因代碼（不帶 Claude 寫的內容）。 */
@@ -3618,6 +3677,10 @@ export class Hub {
       'machine.alert',
       JSON.stringify({ machineId, machine: machine?.name ?? null, code, message }),
     );
+    // session host 輸入可能失效（事故 9）：推播提醒（同一台一小時一次，同上）。
+    if (code === 'session_host_input_stuck') {
+      this.notifyHostInputStuck(machineId, machine?.name ?? machineId);
+    }
   }
 
   private daemonFor(machineId: string): DaemonConn | null {

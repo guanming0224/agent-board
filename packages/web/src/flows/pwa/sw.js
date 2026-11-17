@@ -154,6 +154,21 @@ const UPDATE_TEXT = {
 };
 
 /**
+ * session host 輸入可能失效（事故 9，hub 送 { kind: 'host_input_stuck', machineId, machine, at }）。
+ * 固定文字，只帶機器名稱；點了開機器面板（那裡有「重啟 session host」）。
+ */
+const HOST_STUCK_TEXT = {
+  'zh-TW': {
+    title: 'session host 可能卡住',
+    body: '{machine}：送出的輸入一直沒有回應。打字沒反應時，到機器頁重啟 session host。',
+  },
+  en: {
+    title: 'Session host may be stuck',
+    body: '{machine}: input keeps getting no response. If typing does nothing, restart the session host from the machines page.',
+  },
+};
+
+/**
  * 交叉審查（Codex 第二輪，hub 送 { kind: 'review', event: 'done'|'requested', reviewId, lead?, at }）。
  * 不帶審查內容、不帶理由：只說「審查完成」或「<隊長> 要求交叉審查」，點了開那份審查。
  */
@@ -315,6 +330,8 @@ const SUMMARY_TAG = 'agent-board-summary';
 const OVERLOAD_TAG = 'agent-board-overload';
 /** 更新失敗：新的一則取代舊的（多台一起失敗只留最新一則，點了在機器面板看全部）。 */
 const UPDATE_TAG = 'agent-board-update';
+/** session host 可能卡住：每台一個 tag（同一台新的取代舊的）。 */
+const hostStuckTag = (machineId) => `agent-board-host-${textOf(machineId)}`;
 
 function show(title, body, tag, url, at) {
   return self.registration.showNotification(title, {
@@ -339,6 +356,12 @@ self.addEventListener('push', (event) => {
   if (data && data.kind === 'update_failed') {
     const n = updateFailedNotification(data, lang);
     event.waitUntil(show(n.title, n.body, UPDATE_TAG, machinesUrl(), data.at));
+    return;
+  }
+  if (data && data.kind === 'host_input_stuck') {
+    const text = HOST_STUCK_TEXT[lang];
+    const body = fill(text.body, { machine: textOf(data.machine) });
+    event.waitUntil(show(text.title, body, hostStuckTag(data.machineId), machinesUrl(), data.at));
     return;
   }
   if (data && data.kind === 'review') {

@@ -35,7 +35,7 @@ import {
 } from './models';
 import { AgentBoardTool, ProgressCard } from './progress';
 import { CodexUsage, UsageDetail } from './usage';
-import { ReleaseTarget, UpdateState } from './release';
+import { ReleaseTarget, SessionHostState, UpdateState } from './release';
 import {
   Review,
   REVIEW_FEATURE,
@@ -78,6 +78,11 @@ export const DAEMON_FEATURES = {
    * 舊版 daemon 不認得 agent 欄位、會照 Claude 開，所以 hub 只把 Codex 的 spec 送給有這個旗標的 daemon。
    */
   codex: 'agent.codex',
+  /**
+   * 認得 `sessionHost.restart`（機器面板「重啟 session host」，事故 9，CONTRACTS §20.8），並回報 `sessionHost.status`。
+   * 舊版 daemon 沒有：面板不顯示按鈕，提示更新 daemon 或手動重啟。
+   */
+  sessionHostRestart: 'sessionHost.restart',
   /** 會做交叉審查（`review.prepare`／`review.run`，Codex 第二輪）。舊 daemon 沒有：hub 回 review_unsupported。 */
   review: REVIEW_FEATURE,
   /** 認得 `fs.gitInit`（不是 git 的資料夾一鍵 git init，CONTRACTS §24）。舊 daemon 沒有：hub 回 409 daemon_too_old。 */
@@ -199,6 +204,8 @@ export const DaemonAlertCode = z.enum([
   'session_host_unauthorized',
   'hook_pipe_squatted',
   'codex_mcp_failed',
+  // 事故 9（CONTRACTS §20.8）：送了輸入卻完全沒有輸出、連續發生，session host 的輸入可能失效。
+  'session_host_input_stuck',
 ]);
 export type DaemonAlertCode = z.infer<typeof DaemonAlertCode>;
 
@@ -233,7 +240,11 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     nodeVersion: z.string().optional(),
     /** `<dataDir>/update-state.json` 的內容（上次更新的結果）。壞掉當沒送。 */
     update: UpdateState.nullable().optional().catch(undefined),
+    /** session host 狀態（CONTRACTS §20.8）。舊 daemon 不送；壞掉當沒送。 */
+    sessionHost: SessionHostState.optional().catch(undefined),
   }),
+  /** session host 狀態變了（退回舊模式、切回 host、輸入可能失效／恢復）。舊 hub 不認得，回 error 不斷線。 */
+  z.object({ type: z.literal('sessionHost.status'), state: SessionHostState }),
   z.object({ type: z.literal('session.created'), requestId: Id, session: SessionRuntime }),
   z.object({ type: z.literal('session.createFailed'), requestId: Id, error: z.string() }),
   z.object({ type: z.literal('session.runtime'), session: SessionRuntime }),
@@ -373,6 +384,11 @@ export const HubToDaemon = z.discriminatedUnion('type', [
   }),
   /** 面板按「回滾到上一版」。 */
   z.object({ type: z.literal('release.rollback') }),
+  /**
+   * 面板按「重啟 session host」（owner，CONTRACTS §20.8）：daemon 用服務管理程式重啟 host（該機所有 agent 結束一次，
+   * 之後 --resume 接回）。只送給 hello `features` 有 `sessionHost.restart` 的 daemon。
+   */
+  z.object({ type: z.literal('sessionHost.restart') }),
   /**
    * 協定版本差太多，hub 不接受這個 daemon（送完就斷線）。needs_update：daemon 太舊，`release` 是可以更新到的版本
    * （下載走 HTTP，不用 WebSocket）；hub_too_old：hub 太舊。daemon 改成每 5 分鐘重試一次。

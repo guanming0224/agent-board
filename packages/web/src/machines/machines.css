@@ -32,6 +32,12 @@
 .rel-confirm p {
   margin: 0 0 var(--space-2);
 }
+/* session host 狀態（事故 9）：橫跨整列，按鈕在警示下面。 */
+.rel-host {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: var(--space-2);
+}
 
 .rel-card {
   display: grid;

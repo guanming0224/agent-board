@@ -715,6 +715,10 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       hub.rollbackMachine(param(ctx), ctx.user);
       return hub.release.overview();
     },
+    machineRestartSessionHost: (ctx) => {
+      hub.restartSessionHost(param(ctx), ctx.user, ctx.body.confirm === true);
+      return hub.release.overview();
+    },
   };
 
   // 所有請求先認證（放在 onRequest，比 body 解析早），路由再依 auth 等級判斷。

@@ -14,6 +14,7 @@ import {
   type MachineRelease,
   type ReleaseChannel,
   type ReleaseOverview,
+  type SessionHostState,
   type UpdateState,
 } from '@agent-board/protocol';
 
@@ -35,6 +36,8 @@ interface DemoRelease {
   update: UpdateState | null;
   /** 未驗證平台（win-x64）的「允許自動更新」（hub 的 settings `machineAllowUnverified:<id>`）。 */
   allowUnverified?: boolean;
+  /** session host 狀態（CONTRACTS §20.8）；不給＝正常的 host 模式。 */
+  sessionHost?: SessionHostState;
 }
 
 /** 更新動畫（下載 → 安裝 → 檢查 → 成功）每一步的時間；e2e 不想等可以改小。 */
@@ -89,6 +92,8 @@ export function createFakeReleases(
         previousVersion: '0.0.8',
         channel: 'stable',
         hasHub: true,
+        // 事故 9 的 demo：送了輸入卻沒有任何輸出，session host 的輸入可能失效。
+        sessionHost: { mode: 'host', inputSuspect: true, canRestart: true },
         update: {
           phase: 'deferred',
           fromVersion: '0.0.9',
@@ -150,6 +155,9 @@ export function createFakeReleases(
   const targetNote = (r: DemoRelease) =>
     unverified(r) && !r.allowUnverified ? ('platform_unverified' as const) : null;
 
+  const hostState = (r: DemoRelease): SessionHostState =>
+    r.sessionHost ?? { mode: 'host', inputSuspect: false, canRestart: r.os !== 'win32' };
+
   const overview = (): ReleaseOverview => ({
     hub: {
       version: '0.0.9',
@@ -188,6 +196,8 @@ export function createFakeReleases(
         update: r.update,
         unverifiedPlatform: unverified(r),
         allowUnverified: r.allowUnverified === true,
+        sessionHost: machine.online ? hostState(r) : null,
+        sessionHostRestartSupported: machine.online,
       };
     }),
   });
@@ -287,6 +297,16 @@ export function createFakeReleases(
         r.version = to;
         r.update = state(r, 'succeeded', { fromVersion: r.previousVersion, toVersion: to });
       });
+      return overview();
+    },
+    async restartSessionHost(machineId: string, confirm: boolean) {
+      const r = online(machineId);
+      if (!confirm)
+        throw apiError(400, 'confirm_required', 'restarting the session host needs confirm');
+      if (!hostState(r).canRestart) {
+        throw apiError(409, 'restart_unsupported', 'this machine cannot restart its session host');
+      }
+      r.sessionHost = { mode: 'host', inputSuspect: false, canRestart: true };
       return overview();
     },
     async rollbackMachine(machineId: string) {
