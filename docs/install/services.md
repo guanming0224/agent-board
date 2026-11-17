@@ -51,6 +51,8 @@ daemon 開 session 前會確認找得到 `agent-board-hook`，找不到就拒絕
 
 背景執行靠 `conhost.exe --headless`，不會多出終端機視窗（Windows 10 1809 以上）。
 
+停服務（更新、回滾、解除安裝）時，`schtasks /End` 只結束工作排程器自己啟動的 conhost，cmd 底下的 node 會留著。所以安裝程式在 `/End` 之後會照指令列找出還活著的 Agent Board node 程序並結束它，確定停了才換版；`/Run` 之後也會確認服務的程序真的起來了。手動處理時同理：工作管理員裡要結束的是指令列含 `agent-board\current\daemon` 的 `node.exe`，只在工作排程器按「結束」不夠。
+
 ## 發布（維護者）
 
 ```sh

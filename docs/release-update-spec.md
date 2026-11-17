@@ -52,7 +52,7 @@
    - 從 hub `GET /api/releases/<version>/<platform>`（機器權杖驗證）下載 → 驗 SHA-256 → 解壓到 `releases/<version>`。
    - 這台有 hub（Mac mini）：先 `sqlite3 .backup` 備份 hub.db（600）。
    - 執行新版的安裝程式（等同現在的 `install.sh hub/daemon --from releases/<version>`，但只換 `current` 與服務定義）。
-4. 健康檢查（60 秒內）：新 daemon 連上 hub 並回報新版本；有 hub 的機器另外要 `/api/health` 回 200。更新程式輪詢本機狀態檔與 health。
+4. 健康檢查（60 秒內，從安裝程式重啟完服務起算）：新 daemon 連上 hub 並回報新版本；有 hub 的機器另外要 `/api/health` 回 200。更新程式輪詢本機狀態檔與 health。Windows 停服務時安裝程式要確認舊的 node 程序真的結束（`schtasks /End` 不收 cmd 底下的 node，CONTRACTS §20.7）。
 5. 失敗 → 自動回滾：`current` 指回舊版、重啟服務；若這次升級改了 hub.db schema，用第 3 步的備份還原（回滾窗口只有 60 秒，損失極小）。結果寫到 `~/.agent-board/update-state.json`，daemon 下次連上 hub 時回報，hub 面板標「更新失敗：原因」，推播通知 GM（不帶 Claude 寫的內容）。
 6. 保留最近 3 版，舊的刪掉（不刪 `current` 與上一版）。
 

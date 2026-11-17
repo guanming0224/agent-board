@@ -803,7 +803,8 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 - **install.ps1**：建議 `pwsh -NoProfile -ExecutionPolicy Bypass -File <解開的資料夾>\agent-board\scripts\install.ps1 daemon --hub … --code … --name …`；找不到 git 只提醒不中止（worktree、repo 狀態、Claude Code 的 Bash 工具要它）。README 有完整步驟（下載、驗 SHA256、tar 解壓、配對、schtasks 確認、實測、最後在面板允許自動更新）。
 - **CI**：`ci.yml` 的 `windows` job（push 到 main、PR、手動）與 `release.yml` 的 Windows 建置跑同一組：protocol、web、session-host、hook 全部，daemon 的 processCheck／hookServer／codex，安裝的 `windows-paths`（junction、檔案鎖住時的清理、cmd.exe 跑 hook 包裝，只在 Windows 跑）、`process-start`（真的 PowerShell）、`service-templates`。跑不了的測試 `skipIf(win32)` 並寫原因（daemon 整套的假 claude／hook 是 sh 腳本；Unix 檔案權限；ConPTY 沒有 SIGWINCH）；測試用的假 daemon／假 host 在 Windows 改用 pipe。
 - **自動更新**：win-x64 照舊預設不發，owner 對單一機器打開（§21.3）。
-- **未驗證**：以上全部沒在 Windows 實機跑過；Windows CI 也還沒實際跑過（只在 Mac 跑過其中不限 Windows 的部分）。
+- **停服務（2026-11-17，修 Windows 筆電 0.1.7→0.1.12 五次自動更新都 `health_timeout`）**：工作的動作是 `conhost.exe --headless cmd.exe /c run-<角色>.cmd`，`schtasks /End` 只結束工作排程器自己啟動的程序，cmd 底下的 node 還活著（推論見 §21.7）。舊版安裝程式停服務只下 `/End`：舊 daemon 繼續跑、拿著 `daemon.lock`，`/Run` 開的新 daemon 一啟動就「已有 daemon 在使用」結束；回滾的舊版也一樣，所以是 `rollback_failed`（「舊版也沒通過健康檢查」），而一直沒停的舊 daemon 照常在線。修法（`scripts/installer.mjs` 的 `stopWindowsService`／`startWindowsTask`、`scripts/lib/service-processes.mjs`）：`/End` 之後用 PowerShell `Get-CimInstance Win32_Process` 找指令列含服務入口檔（`…\current\daemon\dist\index.mjs`、`…\current\hub\dist\main.mjs`、`…\session-host\dist\main.mjs`）的程序，2 秒內沒自己結束就直接結束（hub、daemon 只結束那一個程序——daemon 的子孫裡有正在跑安裝程式的更新程式；session host 用 `taskkill /T /F` 連 agent 一起，同 Mac 停 host），10 秒內還在就算停不了（換 host 前是中止安裝、什麼都沒改；重啟時回報服務沒起來）。`/Run` 之後 15 秒內要看得到服務程序（沒配對的 daemon 不檢查），看不到就 `/End`＋`/Run` 再一次（IgnoreNew 會默默略過 `/Run`），還是沒有就回報沒起來（更新程式記 `install_failed` 並回滾）。不重啟時服務已經在跑就不 `/Run`（工作排程器以為工作已結束時會開第二個）。強制結束的 daemon 來不及存快照，等同崩潰後重啟（§20.3 的接回照常）。
+- **未驗證**：以上全部沒在 Windows 實機跑過。Windows CI（`ci.yml` 的 windows job）加了 `service-processes`（真的 Get-CimInstance）、`windows-update`（真的工作排程器跑安裝、自動更新、回滾、換 host、解除安裝；只在設了 `AGENT_BOARD_TEST_REAL_SCHTASKS=1` 時跑，會動到目前使用者的 `AgentBoard-*` 排程工作）與診斷 `scripts/windows-schtasks-probe.mjs`（印出 `/End` 之後 node 還在不在），**還沒在 CI 上實際跑過**（分支要 push 才能跑）。
 
 ## 21. 發版與自動更新（GM 2026-11-11）
 
@@ -859,7 +860,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 
 1. `update.lock`（原子取得，見 §21.8 W1；拿不到 → `failed/busy`）。有 hub 的機器用舊版的 better-sqlite3 先讀 schema 版本，並帶 `--backup-db` 給安裝程式：安裝程式在**停 hub 前一刻**線上備份 `hub.db` 到 `hub.db.pre-update-<舊版>-<時間>`（600，只留最近 5 份）；備份失敗 → 中止（hub 沒重啟、資料庫沒變）。
 2. 跑新版的 `installer.mjs install <hub 或 daemon> --source …`（`AGENT_BOARD_UPDATER=1`）：裝到 `releases/<版本>`、換 current（隨即寫 install.json）、重啟 hub／daemon；session host 只在協定變了才換（§20.5，有工作中的 session 就中止、什麼都不改）。安裝程式失敗而 current 沒換 → `failed/install_failed`。
-3. `checking`：時限（預設 60 秒，`--health-timeout-ms`；daemon 帶的是 `AGENT_BOARD_UPDATE_HEALTH_MS`，只給測試）內每秒看：`daemon-status.json` 的版本是新版、連上時間在更新開始之後、pid 活著；有 hub 的機器另外 `/api/health`（install.json 的 host／port）回 200 而且是新版。過了 → `succeeded`，刪 `.incoming`。
+3. `checking`：時限（預設 60 秒，`--health-timeout-ms`；daemon 帶的是 `AGENT_BOARD_UPDATE_HEALTH_MS`，只給測試；**從安裝程式結束、服務重啟完才起算**，2026-11-17 起——以前從更新開始算，複製新版與停／啟服務的時間也吃掉這 60 秒，Windows 上複製數千個檔案加上防毒掃描可能就超過）內每秒看：`daemon-status.json` 的版本是新版、連上時間在更新開始之後、pid 活著；有 hub 的機器另外 `/api/health`（install.json 的 host／port）回 200 而且是新版。過了 → `succeeded`，刪 `.incoming`。
 4. 沒過（或安裝程式換了 current 才失敗）→ `rolling_back`：`hub.db` 的 schema 和備份時不同就帶 `--restore-db <備份>`，用新版的 `installer.mjs switch --to <舊版>`（新版的安裝程式壞了就用舊版裡的）；再用同樣的時限檢查舊版 → `rolled_back`（reason `health_timeout` 或 `install_failed`），回不去 → `rollback_failed`。回滾窗口只有健康檢查的時間，還原備份損失極小。
 5. `rollback`（面板「回滾到上一版」，從 current 裡的更新程式跑）：current 指回 `previousRelease`；上一版 hub 的 `schema-version` 比現在的資料庫舊 → `failed/schema_changed`（還原備份會丟掉之後的資料，交給人處理）；上一版沒通過健康檢查就切回原本的版本、回 `failed`。成功是 `succeeded`＋`reason: rollback_requested`（不推播）。
 
@@ -885,7 +886,9 @@ hub 自己的更新也走這條（Mac mini 的 daemon 啟動更新程式，roles
 
 - 單元：`protocol/src/release.test.ts`（版本比較、通道、延後條件、協定相容、SHA256SUMS）、`hub/src/test/release.test.ts`（假 gh：沒 repo、gh 不存在／沒登入、下載驗證、SHA 不符、權杖環境變數不給 gh、通道與目標、下載端點驗證、升 stable 的門檻（預設 0 直接升、設 24 未滿 409、帶 confirm 照升、只有 owner 能改設定）、協定拒絕、失敗推播只推一次、回滾）、`daemon/src/selfUpdate.test.ts`、`scripts/updater.test.mjs`（`test:install`：遷移、保留 3 版、同版不同內容、更新成功、壞版回滾＋schema 還原、安裝程式失敗、鎖、手動回滾與 schema_changed、detached 存活）。
 - e2e：`corepack pnpm e2e:update`（先 `build:release`；只在 Apple Silicon Mac）：真的成品改版本號當假 Release、假 gh、假 launchctl（照 plist 真的跑），hub 從原始碼跑。canary 自動更新成功；壞版（新 daemon 起不來）在健康檢查時限後自動回滾、面板標失敗。
-- **未驗證**：真的 GitHub Actions（workflow 只做過 YAML 解析）、Windows 成品的建置與安裝（junction、zip、工作排程器停服務時 detached 更新程式會不會被收掉；實機驗證前 hub 不發 win-x64 目標）、真的 gh（只測假的）。
+- Windows（§20.7「停服務」）：`scripts/windows-update.test.mjs`（`test:install`）在 Mac／Linux 上用假 schtasks（`scripts/test-support/fake-schtasks.mjs`：照 `task-*.xml`／`run-*.cmd` 真的跑；`/End` 只結束根程序、cmd 底下的 node 還活著，另跑「連子程序一起結束」；IgnoreNew）與照真的 `daemon.lock` 規則的假 daemon（由 daemon 以 detached 啟動更新程式）：更新成功、壞版回滾、手動回滾、換 session host、解除安裝。**修前**（main `e3b5d79`）6 則 5 則失敗，第一則就是 `rollback_failed`「新版 4 秒內沒有通過健康檢查；回滾：舊版也沒通過健康檢查」，和實機的訊息一致；修後全過。在 Windows CI 上同一個檔案改用真的工作排程器。
+- **推論（未在實機確認）**：`/End` 不收 cmd 底下的 node。根據：實機的更新程式寫出了完整的 `rollback_failed`——更新程式是 daemon 的子孫、而且 libuv 的 detached 不脫離 job object，如果 `/End` 會收掉整個工作的程序（job 或程序樹），更新程式也會一起被收掉、寫不出最後的狀態。實機的 `daemon.log` 在每次更新的時間應該有「已有 daemon（pid …）在使用」。
+- **未驗證**：真的 GitHub Actions（workflow 只做過 YAML 解析）、Windows 成品的建置與安裝（junction、zip；實機驗證前 hub 不發 win-x64 目標）、真的 gh（只測假的）。
 - **已驗證**：macOS 真的 launchd 停服務（`launchctl bootout`）時，detached（setsid）＋stdio 導到檔案的子程序會活下來（2026-11-11，Lead 用拋棄式 label 在真機實測）；`scripts/updater.test.mjs` 另用「停服務時殺整個 process group」的假 launchctl 驗證同一件事。
 - **Linux／systemd 的限制**：沒有 Linux 成品（daemon 回報 `linux-x64` 不會有目標，只能 `install.sh --from` 手動更新）。systemd 的 user unit 預設 `KillMode=control-group`：停 daemon 時會殺掉整個 cgroup，**detached（setsid）擋不住**，所以就算之後有 Linux 成品，自動更新程式也要改用 `systemd-run --user --scope` 之類的方式啟動才能活過 daemon 重啟（未實作）。
 

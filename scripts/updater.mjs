@@ -264,14 +264,18 @@ function pruneDbBackups(data) {
  * 健康檢查（S3b）：新 daemon 起來而且連上 hub（daemon-status.json 的版本對、啟動與連上時間在這次之後、程序活著），
  * 有 hub 的機器另外要 /api/health 回 200 而且是同一版。
  * 新 daemon 程序活著（本機 hub 也正常）只是還連不到 hub：等到 connectTimeoutMs；否則 timeoutMs 一到就失敗。
+ * 兩個時限都從呼叫這裡（服務重啟完）起算。
  */
 export async function healthy({ data, root, version, since, timeoutMs, connectTimeoutMs }) {
   const state = installState(root);
   const roles = state.roles ?? [];
   const host = state.host && state.host !== 'localhost' ? state.host : '127.0.0.1';
   const hubUrl = `http://${host.includes(':') ? `[${host}]` : host}:${state.port ?? 8787}/api/health`;
-  const deadline = since + timeoutMs;
-  const connectDeadline = since + Math.max(timeoutMs, connectTimeoutMs ?? CONNECT_TIMEOUT_MS);
+  // 時限從開始檢查（安裝程式結束、服務已重啟）算起，不從 since：安裝程式複製新版（Windows 上數千個檔案、
+  // 防毒會逐一掃描）與停／啟服務的時間不算在新 daemon 的啟動時限裡。since 只用來判斷狀態檔是不是這次之後寫的。
+  const begin = Math.max(since, Date.now());
+  const deadline = begin + timeoutMs;
+  const connectDeadline = begin + Math.max(timeoutMs, connectTimeoutMs ?? CONNECT_TIMEOUT_MS);
   let waitingForHub = false;
   for (;;) {
     let started = true;

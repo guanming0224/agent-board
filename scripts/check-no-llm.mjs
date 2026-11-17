@@ -129,6 +129,9 @@ const CALL_SITES = new Set([
   'packages/session-host/src/endpoint.ts child-process',
   // 安裝程式判斷 agent 還在不在（N2，2026-11-12）：只讀程序啟動時間（`ps -o lstart=`／Windows 的 PowerShell Get-Process）
   'scripts/lib/process-start.mjs child-process',
+  // Windows 停服務時找出還活著的服務程序並結束它（CONTRACTS §20.7「停服務」）：只讀程序清單（`ps -axww -o pid=,args=`、
+  // 絕對路徑的 PowerShell `Get-CimInstance Win32_Process`），結束用 `taskkill /PID <pid> /T /F`。只在本機、不連網路。
+  'scripts/lib/service-processes.mjs child-process',
   // 獨立更新程式（隨發布檔散布）：跑新版的 installer.mjs、`agent-board-hub schema-version`，
   // 健康檢查只連本機 hub 的 /api/health。
   'scripts/updater.mjs child-process',

@@ -49,6 +49,8 @@ Some managed environments forbid regular users from creating logon-triggered tas
 
 It runs in the background through `conhost.exe --headless`, so no terminal window appears (Windows 10 1809 or later).
 
+When a service is stopped (update, rollback, uninstall), `schtasks /End` only ends the conhost that Task Scheduler started; the node under cmd keeps running. So after `/End` the installer looks up the Agent Board node processes that are still running (by command line) and terminates them, and only switches versions once they are gone. After `/Run` it also checks that the service process really started. The same applies by hand: in Task Manager, end the `node.exe` whose command line contains `agent-board\current\daemon`; ending the task in Task Scheduler is not enough.
+
 ## Publishing a release (maintainers)
 
 ```sh
