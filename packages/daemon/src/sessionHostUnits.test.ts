@@ -15,7 +15,8 @@ import { gapNotice } from './hostPty';
 import { downMarkerPath } from './hookServer';
 import { clearMcpDir, readMcpSecret, repointMcpConfig, writeMcpFiles } from './mcpFiles';
 import { screenCorrection } from './session';
-import { launchCommand } from './sessionHostLauncher';
+import { launchCommand, restartCommand } from './sessionHostLauncher';
+import { sessionHostService } from './config';
 import {
   pruneSnapshots,
   readSnapshot,
@@ -296,6 +297,23 @@ describe('其他', () => {
       args: ['/Run', '/TN', 'AgentBoard-session-host'],
     });
     expect(launchCommand('x', 'darwin', null)).toBeNull();
+  });
+
+  it('重啟 session host 的指令（事故 9）；服務名稱格式不對不給指令、設定當成沒有', () => {
+    expect(restartCommand('com.agent-board.session-host', 'darwin', 501)).toEqual({
+      command: 'launchctl',
+      args: ['kickstart', '-k', 'gui/501/com.agent-board.session-host'],
+    });
+    expect(restartCommand('agent-board-session-host.service', 'linux', 1000)).toEqual({
+      command: 'systemctl',
+      args: ['--user', 'restart', 'agent-board-session-host.service'],
+    });
+    expect(restartCommand('AgentBoard-session-host', 'win32', null)).toBeNull();
+    expect(restartCommand('a b; rm -rf ~', 'darwin', 501)).toBeNull();
+    expect(restartCommand('../x', 'linux', 1000)).toBeNull();
+    expect(sessionHostService('com.agent-board.session-host')).toBe('com.agent-board.session-host');
+    expect(sessionHostService(undefined)).toBeNull();
+    expect(sessionHostService('x/../y')).toBeNull();
   });
 
   it('停止記號在 socket 旁邊；Windows named pipe 沒有', () => {

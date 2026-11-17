@@ -101,7 +101,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     mcpServer: env.AGENT_BOARD_MCP_SERVER || null,
     nodeBin: env.AGENT_BOARD_NODE || process.execPath,
     sessionHost: env.AGENT_BOARD_SESSION_HOST === 'off' ? 'off' : 'auto',
-    sessionHostService: env.AGENT_BOARD_SESSION_HOST_SERVICE || null,
+    sessionHostService: sessionHostService(env.AGENT_BOARD_SESSION_HOST_SERVICE),
     installRoot: env.AGENT_BOARD_INSTALL_ROOT || null,
     ...(Number(env.AGENT_BOARD_UPDATE_HEALTH_MS) > 0
       ? { updateHealthMs: Number(env.AGENT_BOARD_UPDATE_HEALTH_MS) }
@@ -119,4 +119,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
       ? { sessionHostTestProtocol: Number(env.AGENT_BOARD_SESSION_HOST_TEST_PROTOCOL) }
       : {}),
   };
+}
+
+/** 服務名稱只收 `[\w.-]+`（會拼進 launchctl／systemctl 的參數，審查 N7）；不合格式當成沒設定。 */
+export function sessionHostService(value: string | undefined): string | null {
+  if (!value) return null;
+  if (/^[\w.-]+$/.test(value)) return value;
+  console.error(
+    '[agent-board-daemon] AGENT_BOARD_SESSION_HOST_SERVICE 格式不對（只能有英數字、底線、點、減號），當成沒設定',
+  );
+  return null;
 }

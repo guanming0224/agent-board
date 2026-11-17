@@ -1097,6 +1097,13 @@ export class Hub {
     if (!conn.features.has(DAEMON_FEATURES.sessionHostRestart)) {
       throw new HttpError(409, 'daemon_too_old', 'This daemon cannot restart its session host');
     }
+    if (conn.sessionHost?.mode === 'off') {
+      throw new HttpError(
+        409,
+        'session_host_off',
+        'This machine is set not to use a session host (AGENT_BOARD_SESSION_HOST=off)',
+      );
+    }
     if (conn.sessionHost && !conn.sessionHost.canRestart) {
       throw new HttpError(
         409,

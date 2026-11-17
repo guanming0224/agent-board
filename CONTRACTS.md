@@ -816,20 +816,26 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 
 - Mac／Linux 的輸入不用 node-pty 的 `write`：`PtyWriter` 在主執行緒對 non-blocking 的 master `writeSync`，`EAGAIN` 退避重試（2→100ms，不空轉），每次寫之前用 `fstat`（dev／ino／rdev）確認 fd 還是原本的 PTY，不是就停（記一筆、不含內容）。agent 10 秒沒讀輸入記一筆；積著的上限 4 MB。Windows 照用 node-pty。
 - macOS：spawn 前記下現有 fd，spawn 後把新出現的「另一個 `/dev/ptmx`」與「這個 session 的 slave」關掉（kqueue 分不出是誰的，不動）。
+- **fd 重用（審查 W1）**：macOS 關掉一個 ptmx 再開，fd 編號與 dev／ino／rdev 可能完全相同，所以 fstat 檢查擋不住「被下一個 session 的 master 重用」。真正擋住的是：node-pty 讀 master 的 socket 一 destroy（master 已關、exit 還沒到）就關掉寫入器，`write` 前也先看 socket 是否 destroy；讀不到 node-pty 內部欄位時退回 exit 時才關。fstat 比對用 bigint。
+- spawn 失敗時把新出現的 ptmx／ttys fd 全關；每次 spawn 記「關了幾個 fd」（正常 2）。輸入積超過 4 MB 被丟時 host 記一筆並送 `error`（代碼 `input_dropped`，不含內容），daemon 記一筆。
 - 測試：threadpool 被 4 個卡住的 FIFO open 占滿時，新 session 打字照樣有回顯；開關 5 次 ptmx／tty fd 不增加（修前兩個都失敗）。
 
 **偵測（daemon，`daemon/src/inputHealth.ts`）**
 
 - 對 host 模式、Claude、狀態 `waiting_input` 而且輸入框看得到的 session 送出**可見的字**（去掉控制鍵、方向鍵、Esc、X10／SGR 滑鼠、焦點事件、終端機回覆、OSC），5 秒內那個 PTY 完全沒有輸出＝一次。
 - 跨 2 個 session 各一次，或同一個 session 3 次（10 分鐘內），而且中間沒有任何輸入得到回顯 → 可疑：`daemon.alert` `session_host_input_stuck`（固定文字，不帶輸入內容）＋ `sessionHost.status`（`inputSuspect: true`）。之後任何輸入得到回顯就解除。host 換了（斷線、重啟、退回舊模式）從頭算。
+- **已知誤判／漏判**（N5）：
+  - 誤判：輸入框之外的模式也可能被當成「在等輸入」——例如 Claude Code 的 vim 模式在 NORMAL 狀態，打 `j`、`k` 只移游標、可能沒有輸出；要跨 2 個 session 或同一個 3 次才算，誤報機會低，但不是零。
+  - 漏判：Claude Code 的 statusLine 等定期刷新的畫面會讓「有輸出」成立，那個 session 永遠不會被記一次（host 真的壞了時要靠其他 session）；Codex 不偵測；舊模式（daemon 自己開 PTY）不偵測。
+- **host 恢復中的 session**（N6）：host 斷線後恢復的 30 秒內新開的 session，若恢復最後退回舊模式就由 daemon 自己開（daemon 重啟時會結束、改用 --resume）；之後切回 host 也不會搬過去，只有新開的才由 host 養。
 - **未驗證**：「Claude Code 在等輸入時打可見的字一定有輸出」沒有用真 claude 實測（第二次實測被權限擋下）；依據是 Claude Code 每個按鍵都會重畫輸入框。
 
 **回報與面板（protocol `SessionHostState`）**
 
 - daemon hello 帶 `sessionHost: { mode, inputSuspect, canRestart }`，變了送 `sessionHost.status`。mode：`host`／`legacy`（連不上 host，daemon 自己開 PTY）／`unusable`（協定不相容、token 不符）／`off`。`canRestart`：有服務名稱而且是 macOS／Linux。新功能旗標 `sessionHost.restart`。
 - hub：`MachineRelease.sessionHost`（離線為 null）、`sessionHostRestartSupported`；收到 `session_host_input_stuck` 推播 `{ kind: 'host_input_stuck', machineId, machine, at }`（同一台一小時一次，和 audit `machine.alert` 同一個節流）。
-- `POST /api/machines/:id/session-host/restart`（owner，body `{ confirm: true }`）：沒 confirm 400 `confirm_required`；離線 409 `machine_offline`；舊 daemon 409 `daemon_too_old`；`canRestart` false 409 `restart_unsupported`。audit `machine.sessionHostRestart`，送 `sessionHost.restart`。
-- daemon 收到：macOS `launchctl kickstart -k gui/<uid>/<服務>`、Linux `systemctl --user restart <服務>`。host 先結束所有 agent（送 shutdown），daemon 重連後用 --resume 接回。Windows 不做（`schtasks /End` 收不到 cmd 底下的 node，見事故 6）。
+- `POST /api/machines/:id/session-host/restart`（owner，body `{ confirm: true }`）：沒 confirm 400 `confirm_required`；離線 409 `machine_offline`；舊 daemon 409 `daemon_too_old`；mode off 409 `session_host_off`；`canRestart` false 409 `restart_unsupported`。服務名稱（`AGENT_BOARD_SESSION_HOST_SERVICE`）只收 `[\w.-]+`，不合格式當成沒設定。audit `machine.sessionHostRestart`，送 `sessionHost.restart`。
+- daemon 收到：macOS `launchctl kickstart -k gui/<uid>/<服務>`、Linux `systemctl --user restart <服務>`。host 先結束所有 agent（送 shutdown），daemon 重連後用 --resume 接回。Windows 不做（`schtasks /End` 收不到 cmd 底下的 node，見事故 6）。舊模式下重啟：daemon 自己開的 agent 不受影響；指令跑完就以指數退避（最多 30 秒）試著切回 host，不等下一輪 30 秒。
 - 機器頁：可疑（紅）／舊模式、不能用（琥珀）時顯示說明與「重啟 session host」；確認文字講明該機所有 agent 會結束一次、之後 --resume 接回；這台有 RUN／PERM／PLAN 的 session 時加一行提醒。舊 daemon 或不能重啟時改成說明文字。
 
 **重連（daemon `connectSessionHost`）**

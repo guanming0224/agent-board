@@ -154,6 +154,8 @@ export const zhTW: Record<string, string> = {
     '重啟 {name} 的 session host？這台的所有 agent 會結束一次，之後自動用 --resume 接回（對話紀錄還在；正在進行的工作會中斷）。',
   'machines.host.busy':
     '這台有 {count} 個 session 正在執行、等你允許或等你看計畫，重啟會中斷它們。',
+  'machines.host.confirmLegacy':
+    '重啟 {name} 的 session host？這台目前是舊模式：daemon 自己開的 agent 不受影響；host 起來後，之後新開的 session 由 host 養。',
   'machines.host.yes': '確定重啟',
   'machines.host.started': '已送出重啟；agent 接回需要幾十秒',
   'machines.host.oldDaemon':
@@ -162,6 +164,7 @@ export const zhTW: Record<string, string> = {
     '這台不能從這裡重啟 session host（Windows 或沒有設定服務），請在那台機器上手動重啟。',
   'machines.err.daemon_too_old': '這台的 daemon 版本太舊，不支援這個操作',
   'machines.err.restart_unsupported': '這台不能從這裡重啟 session host',
+  'machines.err.session_host_off': '這台設定成不用 session host',
   'machines.updateStarted': '已送出更新',
   'machines.rollbackStarted': '已送出回滾',
   'machines.block.offline': '機器離線',
@@ -339,6 +342,8 @@ export const en: Record<string, string> = {
     'Restart the session host on {name}? Every agent on this machine ends once and resumes automatically with --resume (conversations are kept; work in progress is interrupted).',
   'machines.host.busy':
     '{count} session(s) on this machine are running, waiting for approval or waiting on a plan; restarting interrupts them.',
+  'machines.host.confirmLegacy':
+    'Restart the session host on {name}? This machine is in fallback mode: agents the daemon started itself are not affected; once the host is up, new sessions run under it.',
   'machines.host.yes': 'Restart',
   'machines.host.started': 'Restart sent; agents take a few seconds to come back',
   'machines.host.oldDaemon':
@@ -347,6 +352,7 @@ export const en: Record<string, string> = {
     'This machine cannot restart its session host from here (Windows or no service configured); restart it on that machine.',
   'machines.err.daemon_too_old': 'This daemon is too old for this action',
   'machines.err.restart_unsupported': 'This machine cannot restart its session host from here',
+  'machines.err.session_host_off': 'This machine is set not to use a session host',
   'machines.updateStarted': 'Update requested',
   'machines.rollbackStarted': 'Rollback requested',
   'machines.block.offline': 'Machine is offline',

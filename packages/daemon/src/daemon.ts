@@ -502,7 +502,7 @@ export class Daemon {
     return {
       mode: this.hostMode,
       inputSuspect: this.inputHealth.suspect,
-      canRestart: !!service && restartCommand(service) !== null,
+      canRestart: this.hostMode !== 'off' && !!service && restartCommand(service) !== null,
     };
   }
 
@@ -561,6 +561,24 @@ export class Daemon {
       log.warn(`切回 host 時接回 session 失敗：${errorMessage(error)}`);
     } finally {
       this.recoveringHost = false;
+      // 切回途中 host 又斷了：handleHostLost 只記了 recoverAgain（審查 W2），這裡補跑恢復流程。
+      if (this.recoverAgain && !this.stopping) void this.recoverFromHostLoss();
+    }
+  }
+
+  /** 重啟 host 之後：指數退避試著切回 host，最多 SESSION_HOST_RECOVER_WAIT_MS。 */
+  private async returnToHostSoon(): Promise<void> {
+    const deadline =
+      Date.now() +
+      (this.deps.sessionHostRecoverWaitMs ??
+        this.deps.sessionHostLaunchWaitMs ??
+        SESSION_HOST_RECOVER_WAIT_MS);
+    let delay = SESSION_HOST_RETRY_MS;
+    while (!this.host && !this.stopping && this.hostMode === 'legacy' && Date.now() < deadline) {
+      await this.tryReturnToHost();
+      if (this.host) return;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(delay * 2, SESSION_HOST_RETRY_MAX_MS);
     }
   }
 
@@ -585,8 +603,8 @@ export class Daemon {
     try {
       const ok = await (this.deps.restartSessionHost ?? restartSessionHost)(service);
       if (!ok) log.warn('重啟 session host 的指令失敗');
-      // 舊模式下（host 原本就沒連著）：馬上試著切回。
-      if (!this.host) void this.tryReturnToHost();
+      // 舊模式下（host 原本就沒連著）：等 host 準備好（token／socket）就切回，不等下一輪 30 秒（審查 N7）。
+      if (!this.host) await this.returnToHostSoon();
     } finally {
       this.restartingHost = false;
     }

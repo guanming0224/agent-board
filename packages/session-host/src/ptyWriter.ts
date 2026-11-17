@@ -6,7 +6,10 @@
 // session 都正常（它們不走 threadpool）——和事故的症狀完全一樣，重啟 daemon 沒用、重啟 host 才好。
 //
 // 這裡改成在主執行緒同步寫：PTY master 是 non-blocking（node-pty 開的時候就設好），寫不進去會立刻回 EAGAIN，
-// 不會卡住；稍後再試。每次寫之前確認 fd 還是當初那個 PTY（fd 編號可能已經被關掉又分給別的檔案），不對就停。
+// 不會卡住；稍後再試。每次寫之前確認 PTY 還開著（isOpen：node-pty 的讀取 socket 還沒被 destroy），而且 fd 還是
+// 當初那個 PTY（fd 編號可能已經被關掉又分給別的檔案），不對就停。
+// 注意（審查 W1）：macOS 關掉一個 ptmx 再開新的，fd 編號與 dev／ino／rdev 可能**完全相同**（重用最小號與最小 minor），
+// 所以 fstat 擋不住「被下一個 session 的 master 重用」；真正擋住的是 isOpen（socket 一 destroy 就不再寫）。
 import { fstatSync, writeSync } from 'node:fs';
 
 /** EAGAIN 後多久再試：從 RETRY_MIN_MS 開始加倍到 RETRY_MAX_MS（agent 一直不讀時不空轉吃 CPU）。 */
@@ -21,15 +24,24 @@ export interface PtyWriterLog {
   warn: (message: string) => void;
 }
 
+export interface PtyWriterOptions {
+  /** PTY 還開著嗎（每次寫之前問）。回 false 就關掉寫入器。 */
+  isOpen?: () => boolean;
+  /** 輸入積太多被丟掉（第一次）時呼叫，讓 daemon 知道（不含內容）。 */
+  onOverflow?: () => void;
+  now?: () => number;
+}
+
 interface FdIdentity {
-  dev: number;
-  ino: number;
-  rdev: number;
+  dev: bigint;
+  ino: bigint;
+  rdev: bigint;
 }
 
 function identityOf(fd: number): FdIdentity | null {
   try {
-    const st = fstatSync(fd);
+    // bigint：dev 可能超過 2^53（審查 N3）。
+    const st = fstatSync(fd, { bigint: true });
     return { dev: st.dev, ino: st.ino, rdev: st.rdev };
   } catch {
     return null;
@@ -51,12 +63,15 @@ export class PtyWriter {
   private overflowWarned = false;
   private closed = false;
 
+  private readonly now: () => number;
+
   constructor(
     private readonly fd: number,
     private readonly label: string,
     private readonly log: PtyWriterLog,
-    private readonly now: () => number = Date.now,
+    private readonly options: PtyWriterOptions = {},
   ) {
+    this.now = options.now ?? Date.now;
     this.identity = identityOf(fd);
   }
 
@@ -74,6 +89,7 @@ export class PtyWriter {
         this.log.warn(
           `${this.label}：agent 沒有在讀輸入，積了 ${this.pending} bytes，之後的輸入先丟掉`,
         );
+        this.options.onOverflow?.();
       }
       return;
     }
@@ -106,6 +122,11 @@ export class PtyWriter {
   private flush(): void {
     this.timer = null;
     while (!this.closed && this.queue.length > 0) {
+      if (this.options.isOpen && !this.options.isOpen()) {
+        // PTY 已關（agent 結束中，exit 還沒到）：fd 編號隨時可能被下一個 session 重用，不再寫。
+        this.close();
+        return;
+      }
       if (!this.sameFd()) {
         this.log.warn(`${this.label}：PTY 已經關閉（fd ${this.fd} 不是原本的 PTY），不再寫入`);
         this.close();

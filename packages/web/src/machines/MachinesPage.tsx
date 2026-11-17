@@ -673,7 +673,11 @@ function SessionHostPanel({
         >
           <span aria-hidden="true">⚠</span>
           <div>
-            <p>{t('machines.host.confirm', { name: machine.name })}</p>
+            <p>
+              {t(view.kind === 'legacy' ? 'machines.host.confirmLegacy' : 'machines.host.confirm', {
+                name: machine.name,
+              })}
+            </p>
             {busy > 0 && (
               <p data-testid={`machine-host-busy-${id}`}>
                 <strong>{t('machines.host.busy', { count: busy })}</strong>

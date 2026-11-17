@@ -41,6 +41,8 @@ export function restartCommand(
   platform: NodeJS.Platform = process.platform,
   uid: number | null = typeof process.getuid === 'function' ? process.getuid() : null,
 ): { command: string; args: string[] } | null {
+  // 服務名稱會拼進參數：只收 [\w.-]+（審查 N7）。
+  if (!/^[\w.-]+$/.test(service)) return null;
   if (platform === 'darwin' && uid !== null) {
     return { command: 'launchctl', args: ['kickstart', '-k', `gui/${uid}/${service}`] };
   }
