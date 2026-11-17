@@ -163,7 +163,14 @@ On a machine that is already paired, running the installer again is the update: 
 
 1. Get the new `agent-board-<version>-win-x64.zip` and `SHA256SUMS` (for a private repo, copy them from `~/.agent-board/release-cache/<version>/` on the hub machine; the hub has already verified them).
 2. Check and extract the file (install steps 2 and 3).
-3. In `pwsh` as a **normal user** (no `--hub`, no `--code`):
+3. First make sure the old daemon is really stopped, then install from `pwsh` as a **normal user** (no `--hub`, no `--code`). Installers before 0.1.13 only run `schtasks /End`, which does not stop the node process under cmd; the old daemon keeps `daemon.lock` and the new one cannot start:
+
+   ```powershell
+   schtasks /End /TN AgentBoard-daemon
+   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'daemon\\dist\\index\.mjs' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+   ```
+
+   This stops only the daemon, not the session host, so sessions keep running. Then:
 
    ```powershell
    pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\agent-board-<version>\agent-board\scripts\install.ps1" daemon --from "<full path to the zip>"

@@ -163,7 +163,14 @@ sh install.sh hub --host 100.64.0.1   # 換成這台機器自己的私有 IP
 
 1. 取得新版的 `agent-board-<版本>-win-x64.zip` 與 `SHA256SUMS`（私人 repo 時可從 hub 那台的 `~/.agent-board/release-cache/<版本>/` 複製，那裡的檔案 hub 已驗過）。
 2. 驗檔、用 tar 解壓（同安裝第 2、3 步）。
-3. 用**一般身分**的 `pwsh` 執行（不用 `--hub`、`--code`）：
+3. 先把舊的 daemon 關乾淨，再用**一般身分**的 `pwsh` 執行安裝（不用 `--hub`、`--code`）。0.1.13 以前的安裝程式停服務只下 `schtasks /End`，關不到 cmd 底下的 node，舊 daemon 會佔著 `daemon.lock` 讓新版起不來：
+
+   ```powershell
+   schtasks /End /TN AgentBoard-daemon
+   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'daemon\\dist\\index\.mjs' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+   ```
+
+   只關 daemon，不關 session host，session 不中斷。接著：
 
    ```powershell
    pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\agent-board-<版本>\agent-board\scripts\install.ps1" daemon --from "<zip 的完整路徑>"
