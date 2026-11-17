@@ -324,9 +324,14 @@ test('停放（縮回摘要條）期間不送 resize；回到畫面只送卡片�
     expect(m.cols, JSON.stringify(m)).toBeGreaterThanOrEqual(20);
     expect(m.rows, JSON.stringify(m)).toBeGreaterThanOrEqual(5);
   }
-  const first = new Map(shown.map((m) => [m.sessionId, `${m.cols}x${m.rows}`]));
+  // 第二次放大的縮放比例和第一次差一點點，WebKit 次像素取整可能差 1 行／1 欄（CI 與本機都看過 79x28 vs 79x29）。
+  // 這裡要抓的是「停放處的 0 或很小的值」，所以允許 ±1。
+  const first = new Map(shown.map((m) => [m.sessionId, m]));
   for (const m of all.slice(shown.length)) {
-    if (first.has(m.sessionId)) expect(`${m.cols}x${m.rows}`).toBe(first.get(m.sessionId));
+    const f = first.get(m.sessionId);
+    if (!f) continue;
+    expect(Math.abs(m.cols - f.cols), JSON.stringify({ first: f, again: m })).toBeLessThanOrEqual(1);
+    expect(Math.abs(m.rows - f.rows), JSON.stringify({ first: f, again: m })).toBeLessThanOrEqual(1);
   }
 });
 
