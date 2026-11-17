@@ -1,5 +1,6 @@
 // session host 模式的 PTY 後端（CONTRACTS §20）：agent 是 session host 的子程序，daemon 重啟時不會跟著結束。
 import { HostRequestTimeoutError, type SessionHostClient } from '@agent-board/session-host';
+import { log } from './log';
 import type { PtyAttachInfo, PtyBackend, PtyProcess, PtySignal, PtySpawnOptions } from './pty';
 
 /** 重播 2 MB 進 headless 用不了多久；超過就當接不回來（daemon 改用 --resume）。 */
@@ -86,7 +87,14 @@ class HostPtyProcess implements PtyProcess {
         for (const listener of this.exitListeners)
           listener({ exitCode: code, signal: signal ?? 0 });
       },
-      onError: (error) => rejectReady(new Error(`session host：${error}`)),
+      onError: (error) => {
+        if (error === 'input_dropped') {
+          // host 那邊積了太多 agent 沒讀走的輸入，丟掉了新的（固定代碼，不含內容；審查 N4）。
+          log.warn(`session ${id}：agent 沒有在讀輸入，session host 丟掉了部分輸入`);
+          return;
+        }
+        rejectReady(new Error(`session host：${error}`));
+      },
     });
     if ('spawn' in mode) {
       client.spawn(mode.spawn).then(

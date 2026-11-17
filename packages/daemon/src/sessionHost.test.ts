@@ -439,4 +439,40 @@ describe('session host 重啟與輸入健康', () => {
     expect(h.daemons[0]!['backend'].kind).toBe('host');
     expect(runtimes('s1').every((r) => r.endedAt === null)).toBe(true);
   }, 40_000);
+
+  it('切回 host 途中 host 又斷了：補跑恢復流程，退回舊模式並繼續試著切回（審查 W2）', async () => {
+    await host!.close();
+    host = null;
+    mkdirSync(h.workDir, { recursive: true });
+    await h.hub.start();
+    const daemon = await h.startDaemon({
+      sessionHostReturnIntervalMs: 200,
+      sessionHostRecoverWaitMs: 300,
+    });
+    expect(daemon['hostMode']).toBe('legacy');
+    const realReattach = daemon['reattachHostSessions'].bind(daemon);
+    let broke = false;
+    daemon['reattachHostSessions'] = async (list: never) => {
+      if (!broke) {
+        broke = true;
+        // 接回途中 host 斷線。
+        await host!.close();
+        host = null;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return;
+      }
+      return realReattach(list);
+    };
+    host = new SessionHostServer({ dataDir: h.dataDir, log: quiet });
+    await host.start();
+    await waitUntil(() => broke, '切回途中斷線');
+    await waitUntil(
+      () => daemon['hostMode'] === 'legacy' && daemon['backend'].kind === 'local',
+      '退回舊模式（不是卡在顯示 host、實際沒有 host）',
+    );
+    host = new SessionHostServer({ dataDir: h.dataDir, log: quiet });
+    await host.start();
+    await waitUntil(() => daemon['backend'].kind === 'host', '再次切回 host');
+    expect(daemon['hostMode']).toBe('host');
+  });
 });

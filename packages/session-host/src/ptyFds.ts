@@ -79,3 +79,34 @@ export function closeLeakedPtyFds(
   }
   return closed;
 }
+
+/** macOS 的 ptmx（master）與 ttys（slave）裝置的 major（rdev 高 8 位）。 */
+const PTMX_MAJOR = 15;
+const TTYS_MAJOR = 16;
+
+/**
+ * spawn 失敗（例如 posix_spawnp failed）時：node-pty 已經開了 ptmx／slave 但沒交回 master，
+ * 把 spawn 前沒有、現在新出現的 ptmx 與 ttys 字元裝置全部關掉（審查 N1）。只在 macOS 用。回傳關掉幾個。
+ */
+export function closeNewPtyFds(before: ReadonlySet<number>): number {
+  let closed = 0;
+  for (const fd of openFds()) {
+    if (before.has(fd)) continue;
+    let st;
+    try {
+      st = fstatSync(fd);
+    } catch {
+      continue;
+    }
+    if (!st.isCharacterDevice()) continue;
+    const major = Math.floor(st.rdev / 2 ** 24);
+    if (major !== PTMX_MAJOR && major !== TTYS_MAJOR) continue;
+    try {
+      closeSync(fd);
+      closed += 1;
+    } catch {
+      // 已經被關了
+    }
+  }
+  return closed;
+}

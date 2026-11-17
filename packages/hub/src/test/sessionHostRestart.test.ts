@@ -99,6 +99,18 @@ describe('session host 狀態與重啟', () => {
       '狀態更新',
     );
     expect((await restart(machineId, { confirm: true })).body.code).toBe('restart_unsupported');
+    daemon.send({
+      type: 'sessionHost.status',
+      state: { ...healthy, mode: 'off', canRestart: false },
+    });
+    await untilAsync(
+      async () =>
+        (await hub!.api<ReleaseOverview>('GET', '/api/releases', { cookie })).body.machines.find(
+          (m) => m.machineId === machineId,
+        )?.sessionHost?.mode === 'off',
+      '狀態 off',
+    );
+    expect((await restart(machineId, { confirm: true })).body.code).toBe('session_host_off');
 
     daemon.close();
     await until(() => !hub!.running.store.getMachine(machineId)!.online, 'offline');

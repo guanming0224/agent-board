@@ -24,7 +24,7 @@ import { spawn as spawnPty, type IPty } from 'node-pty';
 import { ensurePrivateDir, hostEndpoint, writeToken, type HostEndpoint } from './endpoint';
 import { proveHost } from './client';
 import { onLines, sendLine, UNAUTHED_MAX_LINE_BYTES } from './lines';
-import { closeLeakedPtyFds, openFds } from './ptyFds';
+import { closeLeakedPtyFds, closeNewPtyFds, openFds } from './ptyFds';
 import { PtyWriter } from './ptyWriter';
 import { RingBuffer } from './ringBuffer';
 
@@ -92,6 +92,20 @@ interface HostSession {
   cols: number;
   rows: number;
 }
+
+/** node-pty（Unix）內部讀 master 的 socket；讀不到（Windows、版本變了）回 null。 */
+function ptySocket(
+  pty: IPty,
+): { destroyed?: boolean; once: (e: string, f: () => void) => void } | null {
+  const socket = (pty as unknown as { _socket?: unknown })._socket as
+    { destroyed?: boolean; once?: unknown } | undefined;
+  return socket && typeof socket.once === 'function'
+    ? (socket as { destroyed?: boolean; once: (e: string, f: () => void) => void })
+    : null;
+}
+
+/** PTY 的 master 已經關了（讀取 socket destroy 了）。讀不到內部欄位時當成還開著（退路是 handleExit 關寫入器）。 */
+const ptyClosed = (pty: IPty): boolean => ptySocket(pty)?.destroyed === true;
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -373,7 +387,8 @@ export class SessionHostServer {
     }
     switch (command.type) {
       case 'write':
-        if (!session.alive) return;
+        // PTY 的讀取 socket 已 destroy（agent 結束中、exit 還沒到）：fd 可能已被下一個 session 重用（審查 W1）。
+        if (!session.alive || ptyClosed(session.pty)) return;
         if (session.writer) session.writer.write(command.data);
         else session.pty.write(command.data);
         return;
@@ -414,6 +429,11 @@ export class SessionHostServer {
         env: command.env,
       });
     } catch (error) {
+      if (fdsBefore) {
+        const closed = closeNewPtyFds(fdsBefore);
+        if (closed > 0)
+          this.log.warn(`session ${command.id} 開不起來，關掉 node-pty 留下的 ${closed} 個 fd`);
+      }
       this.send(connection, {
         type: 'result',
         reqId: command.reqId,
@@ -425,7 +445,13 @@ export class SessionHostServer {
     const master = (pty as unknown as { fd?: unknown }).fd;
     const masterFd = typeof master === 'number' ? master : null;
     if (fdsBefore && masterFd !== null) {
-      closeLeakedPtyFds(fdsBefore, masterFd, (pty as unknown as { ptsName?: string }).ptsName);
+      const closed = closeLeakedPtyFds(
+        fdsBefore,
+        masterFd,
+        (pty as unknown as { ptsName?: string }).ptsName,
+      );
+      // 正常是 2（另一個 ptmx＋slave）；不是 2 代表 node-pty 的行為變了（審查 N2）。
+      this.log.info(`session ${command.id}：關掉 node-pty 漏的 fd ${closed} 個`);
     }
     // 同一個 id 已結束的舊紀錄（接續 session）換成新的。
     this.sessions.delete(command.id);
@@ -434,7 +460,15 @@ export class SessionHostServer {
       pty,
       writer:
         process.platform !== 'win32' && masterFd !== null
-          ? new PtyWriter(masterFd, `session ${command.id}`, this.log)
+          ? new PtyWriter(masterFd, `session ${command.id}`, this.log, {
+              isOpen: () => !ptyClosed(pty),
+              onOverflow: () => {
+                const owner = this.sessions.get(command.id)?.owner;
+                // 固定代碼，不含輸入內容（審查 N4）。
+                if (owner)
+                  this.send(owner, { type: 'error', id: command.id, error: 'input_dropped' });
+              },
+            })
           : null,
       pid: pty.pid,
       alive: true,
@@ -447,6 +481,8 @@ export class SessionHostServer {
       rows: command.rows,
     };
     this.sessions.set(command.id, session);
+    // node-pty 的讀取 socket 一關，master fd 就關了（exit 要等之後才發）：馬上停寫，fd 編號可能被重用（審查 W1）。
+    ptySocket(pty)?.once('close', () => session.writer?.close());
     pty.onData((data) => this.handleData(session, data));
     pty.onExit(({ exitCode, signal }) => this.handleExit(session, exitCode, signal ?? 0));
     this.send(connection, {
