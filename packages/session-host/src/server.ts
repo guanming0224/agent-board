@@ -24,6 +24,8 @@ import { spawn as spawnPty, type IPty } from 'node-pty';
 import { ensurePrivateDir, hostEndpoint, writeToken, type HostEndpoint } from './endpoint';
 import { proveHost } from './client';
 import { onLines, sendLine, UNAUTHED_MAX_LINE_BYTES } from './lines';
+import { closeLeakedPtyFds, openFds } from './ptyFds';
+import { PtyWriter } from './ptyWriter';
 import { RingBuffer } from './ringBuffer';
 
 /** 第一則一定要是 hello，等太久就斷。 */
@@ -77,6 +79,8 @@ interface Connection {
 interface HostSession {
   id: string;
   pty: IPty;
+  /** Mac／Linux 的輸入寫入（不走 threadpool，事故 9）；Windows 是 null，照用 node-pty 的 write。 */
+  writer: PtyWriter | null;
   pid: number;
   alive: boolean;
   exitCode: number | null;
@@ -369,7 +373,9 @@ export class SessionHostServer {
     }
     switch (command.type) {
       case 'write':
-        if (session.alive) session.pty.write(command.data);
+        if (!session.alive) return;
+        if (session.writer) session.writer.write(command.data);
+        else session.pty.write(command.data);
         return;
       case 'resize':
         if (!session.alive) return;
@@ -397,6 +403,8 @@ export class SessionHostServer {
       return;
     }
     let pty: IPty;
+    // macOS：記下 spawn 前的 fd，spawn 後關掉 node-pty 漏掉的 ptmx 與 slave（ptyFds.ts）。
+    const fdsBefore = process.platform === 'darwin' ? openFds() : null;
     try {
       pty = spawnPty(command.bin, command.args, {
         name: 'xterm-256color',
@@ -414,11 +422,20 @@ export class SessionHostServer {
       });
       return;
     }
+    const master = (pty as unknown as { fd?: unknown }).fd;
+    const masterFd = typeof master === 'number' ? master : null;
+    if (fdsBefore && masterFd !== null) {
+      closeLeakedPtyFds(fdsBefore, masterFd, (pty as unknown as { ptsName?: string }).ptsName);
+    }
     // 同一個 id 已結束的舊紀錄（接續 session）換成新的。
     this.sessions.delete(command.id);
     const session: HostSession = {
       id: command.id,
       pty,
+      writer:
+        process.platform !== 'win32' && masterFd !== null
+          ? new PtyWriter(masterFd, `session ${command.id}`, this.log)
+          : null,
       pid: pty.pid,
       alive: true,
       exitCode: null,
@@ -465,6 +482,7 @@ export class SessionHostServer {
 
   private handleExit(session: HostSession, exitCode: number, signal: number): void {
     session.alive = false;
+    session.writer?.close();
     session.exitCode = exitCode;
     session.signal = signal || null;
     session.exitedAt = Date.now();
