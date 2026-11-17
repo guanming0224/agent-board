@@ -330,8 +330,12 @@ test('停放（縮回摘要條）期間不送 resize；回到畫面只送卡片�
   for (const m of all.slice(shown.length)) {
     const f = first.get(m.sessionId);
     if (!f) continue;
-    expect(Math.abs(m.cols - f.cols), JSON.stringify({ first: f, again: m })).toBeLessThanOrEqual(1);
-    expect(Math.abs(m.rows - f.rows), JSON.stringify({ first: f, again: m })).toBeLessThanOrEqual(1);
+    expect(Math.abs(m.cols - f.cols), JSON.stringify({ first: f, again: m })).toBeLessThanOrEqual(
+      1,
+    );
+    expect(Math.abs(m.rows - f.rows), JSON.stringify({ first: f, again: m })).toBeLessThanOrEqual(
+      1,
+    );
   }
 });
 
