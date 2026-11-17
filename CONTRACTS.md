@@ -806,6 +806,42 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 - **停服務（2026-11-17，修 Windows 筆電 0.1.7→0.1.12 五次自動更新都 `health_timeout`）**：工作的動作是 `conhost.exe --headless cmd.exe /c run-<角色>.cmd`，`schtasks /End` 只結束工作排程器自己啟動的程序，cmd 底下的 node 還活著（推論見 §21.7）。舊版安裝程式停服務只下 `/End`：舊 daemon 繼續跑、拿著 `daemon.lock`，`/Run` 開的新 daemon 一啟動就「已有 daemon 在使用」結束；回滾的舊版也一樣，所以是 `rollback_failed`（「舊版也沒通過健康檢查」），而一直沒停的舊 daemon 照常在線。修法（`scripts/installer.mjs` 的 `stopWindowsService`／`startWindowsTask`、`scripts/lib/service-processes.mjs`）：`/End` 之後用 PowerShell `Get-CimInstance Win32_Process` 找指令列含服務入口檔（`…\current\daemon\dist\index.mjs`、`…\current\hub\dist\main.mjs`、`…\session-host\dist\main.mjs`）的程序，2 秒內沒自己結束就直接結束（hub、daemon 只結束那一個程序——daemon 的子孫裡有正在跑安裝程式的更新程式；session host 用 `taskkill /T /F` 連 agent 一起，同 Mac 停 host），10 秒內還在就算停不了（換 host 前是中止安裝、什麼都沒改；重啟時回報服務沒起來）。`/Run` 之後 15 秒內要看得到服務程序（沒配對的 daemon 不檢查），看不到就 `/End`＋`/Run` 再一次（IgnoreNew 會默默略過 `/Run`），還是沒有就回報沒起來（更新程式記 `install_failed` 並回滾）。不重啟時服務已經在跑就不 `/Run`（工作排程器以為工作已結束時會開第二個）。強制結束的 daemon 來不及存快照，等同崩潰後重啟（§20.3 的接回照常）。
 - **未驗證**：以上全部沒在 Windows 實機跑過。Windows CI（`ci.yml` 的 windows job）加了 `service-processes`（真的 Get-CimInstance）、`windows-update`（真的工作排程器跑安裝、自動更新、回滾、換 host、解除安裝；只在設了 `AGENT_BOARD_TEST_REAL_SCHTASKS=1` 時跑，會動到目前使用者的 `AgentBoard-*` 排程工作）與診斷 `scripts/windows-schtasks-probe.mjs`（印出 `/End` 之後 node 還在不在），**還沒在 CI 上實際跑過**（分支要 push 才能跑）。
 
+### 20.8 輸入失效的防護、偵測與重啟（事故 9，2026-11-17）
+
+事故：一台 Mac 的 session host 跑了 5 天後，**所有** session（含新開的）打字都沒反應；輸出、開新 session、結束 session 正常；重啟 daemon 無效，重啟 host 才好。該 host 有 35 個 ptmx、19 個 `(revoked)`、30 個 KQUEUE fd。
+
+**機制（已在測試重現症狀）**：node-pty 1.1.0 的 `write` 用 `fs.write`（非同步，走 libuv threadpool，預設 4 條）。threadpool 被 4 個卡在核心裡的寫入占滿後，整個程序之後的 PTY 寫入都排在後面永遠送不出去，其他不走 threadpool 的（輸出、spawn、kill）照常——和事故完全一樣。node-pty 在 macOS 每次 spawn 會在 host 漏一個**阻塞模式、沒有 slave 的 `/dev/ptmx`**（`pty_posix_spawn` 的 `low_fds` off-by-one）、一個 slave（agent 結束後變 `(revoked)`）與一個 kqueue；寫到那種 ptmx 會永遠卡住。事故那台的 fd 數對得上每次 spawn 漏一組。**未證實**：哪個寫入拿著舊的 fd 編號寫到了漏掉的 ptmx（壓力測試數千次開關沒重現這一步）。
+
+**防護（session host，`session-host/src/ptyWriter.ts`、`ptyFds.ts`）**
+
+- Mac／Linux 的輸入不用 node-pty 的 `write`：`PtyWriter` 在主執行緒對 non-blocking 的 master `writeSync`，`EAGAIN` 退避重試（2→100ms，不空轉），每次寫之前用 `fstat`（dev／ino／rdev）確認 fd 還是原本的 PTY，不是就停（記一筆、不含內容）。agent 10 秒沒讀輸入記一筆；積著的上限 4 MB。Windows 照用 node-pty。
+- macOS：spawn 前記下現有 fd，spawn 後把新出現的「另一個 `/dev/ptmx`」與「這個 session 的 slave」關掉（kqueue 分不出是誰的，不動）。
+- 測試：threadpool 被 4 個卡住的 FIFO open 占滿時，新 session 打字照樣有回顯；開關 5 次 ptmx／tty fd 不增加（修前兩個都失敗）。
+
+**偵測（daemon，`daemon/src/inputHealth.ts`）**
+
+- 對 host 模式、Claude、狀態 `waiting_input` 而且輸入框看得到的 session 送出**可見的字**（去掉控制鍵、方向鍵、Esc、X10／SGR 滑鼠、焦點事件、終端機回覆、OSC），5 秒內那個 PTY 完全沒有輸出＝一次。
+- 跨 2 個 session 各一次，或同一個 session 3 次（10 分鐘內），而且中間沒有任何輸入得到回顯 → 可疑：`daemon.alert` `session_host_input_stuck`（固定文字，不帶輸入內容）＋ `sessionHost.status`（`inputSuspect: true`）。之後任何輸入得到回顯就解除。host 換了（斷線、重啟、退回舊模式）從頭算。
+- **未驗證**：「Claude Code 在等輸入時打可見的字一定有輸出」沒有用真 claude 實測（第二次實測被權限擋下）；依據是 Claude Code 每個按鍵都會重畫輸入框。
+
+**回報與面板（protocol `SessionHostState`）**
+
+- daemon hello 帶 `sessionHost: { mode, inputSuspect, canRestart }`，變了送 `sessionHost.status`。mode：`host`／`legacy`（連不上 host，daemon 自己開 PTY）／`unusable`（協定不相容、token 不符）／`off`。`canRestart`：有服務名稱而且是 macOS／Linux。新功能旗標 `sessionHost.restart`。
+- hub：`MachineRelease.sessionHost`（離線為 null）、`sessionHostRestartSupported`；收到 `session_host_input_stuck` 推播 `{ kind: 'host_input_stuck', machineId, machine, at }`（同一台一小時一次，和 audit `machine.alert` 同一個節流）。
+- `POST /api/machines/:id/session-host/restart`（owner，body `{ confirm: true }`）：沒 confirm 400 `confirm_required`；離線 409 `machine_offline`；舊 daemon 409 `daemon_too_old`；`canRestart` false 409 `restart_unsupported`。audit `machine.sessionHostRestart`，送 `sessionHost.restart`。
+- daemon 收到：macOS `launchctl kickstart -k gui/<uid>/<服務>`、Linux `systemctl --user restart <服務>`。host 先結束所有 agent（送 shutdown），daemon 重連後用 --resume 接回。Windows 不做（`schtasks /End` 收不到 cmd 底下的 node，見事故 6）。
+- 機器頁：可疑（紅）／舊模式、不能用（琥珀）時顯示說明與「重啟 session host」；確認文字講明該機所有 agent 會結束一次、之後 --resume 接回；這台有 RUN／PERM／PLAN 的 session 時加一行提醒。舊 daemon 或不能重啟時改成說明文字。
+
+**重連（daemon `connectSessionHost`）**
+
+- host 連線斷掉後（例如被重啟）等最多 30 秒（250ms 起指數退避，最多 4 秒一次）才退回舊模式，沒有服務名稱也等。啟動時照舊（拉起後等 5 秒）。
+- 退回舊模式後每 30 秒試著連 host，連上就切回：之後新開的 session 由 host 養，舊模式開的照常跑到結束（daemon 重啟時 --resume 接回 host）。
+
+**其他**
+
+- 新 session 的 `terminal.subscribe` 比 daemon 登記早到（建立中）：daemon 先記著，開好再訂（期間取消訂閱就不訂），不再記「找不到 session」。
+- 終端機快照補上滑鼠編碼（`?1006h`／`?1016h`；@xterm/addon-serialize 不輸出），網頁 reset 後不再退回 X10 滑鼠碼（`daemon/src/terminalModes.ts`；依賴 xterm 內部欄位，讀不到時退回舊行為）。
+
 ## 21. 發版與自動更新（GM 2026-11-11）
 
 規格與 GM 決定見 `docs/release-update-spec.md`。型別在 `protocol/src/release.ts`。**只從 tag 的 Release 更新正式版**；`install.sh --from` 留給第一次安裝與緊急修復；不從畫布裡的 session 部署自己。
