@@ -372,6 +372,17 @@ export const routes = {
     auth: 'user',
     response: Session,
   }),
+  /**
+   * 補救（CONTRACTS §26.10）：已結束的 session 拿掉推理強度與備援（options）、或把模型清回 CLI 預設（model），
+   * 下次接續就不帶。執行中 409 session_active；兩個都沒選 400 nothing_to_reset。只有 owner。
+   */
+  sessionsResetModel: route({
+    method: 'POST',
+    path: '/api/sessions/:id/model-reset',
+    auth: 'owner',
+    body: z.object({ options: z.boolean().optional(), model: z.boolean().optional() }),
+    response: Session,
+  }),
   /** 刪除前的檢查（對話大小、git 狀況、hook 是否共用）。機器離線回 409 machine_offline。 */
   sessionInspect: route({
     method: 'GET',

@@ -334,6 +334,8 @@ export const zhTW: Record<string, string> = {
   'flows.new.err.fallbackSame': '備援模型和主模型一樣，claude 不接受。換一個，或選「不指定」。',
   'flows.new.modelOptionsOld':
     '{machine} 的 daemon 太舊，推理強度與備援模型不會生效（不會送出）。更新那台的 daemon 後再設。',
+  'flows.new.modelOptionsOldClaude':
+    '{machine} 上的 claude 不認得部分模型參數（某些推理強度或互動模式的 --fallback-model），這裡只列出那台能用的。更新那台的 claude 後，daemon 重新連上就會更新。',
   'flows.new.account': '帳號',
   'flows.new.accountHint': '留空用預設帳號；要分帳號就填該機器上 CLAUDE_CONFIG_DIR 的絕對路徑。',
   'flows.new.resume': '接續舊對話',
@@ -767,6 +769,15 @@ export const zhTW: Record<string, string> = {
   'flows.archive.model': '模型',
   'flows.archive.defaultModel': '預設',
   'flows.archive.effort': '推理強度',
+  'flows.modelReset.title': '模型設定',
+  'flows.modelReset.why':
+    '接續時照這裡記著的模型、推理強度、備援模型開。那台的 claude 不接受（例如開不起來）時，拿掉再接續。',
+  'flows.modelReset.badModel':
+    '記著的模型名稱含有現在不允許的字元，接續不了。把模型清回預設（CLI 自己的模型）再接續。',
+  'flows.modelReset.options': '拿掉推理強度與備援',
+  'flows.modelReset.model': '模型清回預設',
+  'flows.modelReset.done': '已更新，下次接續照新的設定開。',
+  'flows.modelReset.failed': '沒有改成：{error}',
   'flows.archive.fallback': '備援模型',
   'flows.archive.created': '建立',
   'flows.archive.ended': '結束',
@@ -1228,6 +1239,8 @@ export const en: Record<string, string> = {
     'The fallback model is the same as the main model, which claude refuses. Pick another, or Not set.',
   'flows.new.modelOptionsOld':
     'The daemon on {machine} is too old: reasoning effort and fallback model will not apply (they are not sent). Update that daemon first.',
+  'flows.new.modelOptionsOldClaude':
+    'claude on {machine} does not know some model options (some effort levels, or --fallback-model in interactive mode), so only the ones it supports are listed. Update claude there; the list refreshes when the daemon reconnects.',
   'flows.new.account': 'Account',
   'flows.new.accountHint':
     'Leave empty for the default account. For another, enter the absolute CLAUDE_CONFIG_DIR path on that machine.',
@@ -1695,6 +1708,15 @@ export const en: Record<string, string> = {
   'flows.archive.model': 'Model',
   'flows.archive.defaultModel': 'Default',
   'flows.archive.effort': 'Reasoning effort',
+  'flows.modelReset.title': 'Model settings',
+  'flows.modelReset.why':
+    'Resume uses the model, reasoning effort and fallback model saved here. If claude on that machine rejects them (for example the session will not start), remove them and resume.',
+  'flows.modelReset.badModel':
+    'The saved model name has characters that are no longer allowed, so it cannot resume. Clear the model (use the CLI default) and resume.',
+  'flows.modelReset.options': 'Remove effort and fallback',
+  'flows.modelReset.model': 'Clear the model',
+  'flows.modelReset.done': 'Updated. The next resume uses these settings.',
+  'flows.modelReset.failed': 'Not changed: {error}',
   'flows.archive.fallback': 'Fallback model',
   'flows.archive.created': 'Created',
   'flows.archive.ended': 'Ended',

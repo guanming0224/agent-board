@@ -23,6 +23,8 @@ const machine = (over: Partial<Machine> & Pick<Machine, 'id' | 'name'>): Machine
     claudeVersion: '0.0.0-test',
     // 認得推理強度與備援模型（§26）；舊 daemon 的測試另外拿掉。
     modelOptions: true,
+    // claude --help 偵測到 --effort（全部級別）與互動模式的 --fallback-model（§26.10）。
+    claudeFlags: { effort: true, efforts: null, fallbackModel: true },
   },
   ...over,
 });
@@ -1084,6 +1086,7 @@ test.describe('新增 session', () => {
     await page.getByLabel('工作目錄').fill('/w');
     await page.getByLabel('模型', { exact: true }).selectOption('opus');
     await page.getByLabel('推理強度', { exact: true }).selectOption('xhigh');
+    await page.getByLabel('備援模型', { exact: true }).selectOption('sonnet');
     const picker = page.getByTestId('agent-picker');
     await picker.getByText('Codex', { exact: true }).click();
     await expect(picker.getByRole('radio', { name: 'Codex' })).toBeChecked();
@@ -1101,8 +1104,11 @@ test.describe('新增 session', () => {
       `codex -s read-only -a on-request -c 'model_reasoning_effort="minimal"' --dangerously-bypass-hook-trust`,
     );
     // 換回 Claude：備援欄位回來。
+    await page.getByLabel('推理強度', { exact: true }).selectOption('high');
     await picker.getByText('Claude Code', { exact: true }).click();
-    await expect(page.getByLabel('備援模型', { exact: true })).toBeVisible();
+    // 換 agent 時清掉的（草稿也清）：備援回到「不指定」；high 兩邊都有，留著。
+    await expect(page.getByLabel('備援模型', { exact: true })).toHaveValue('');
+    await expect(page.getByLabel('推理強度', { exact: true })).toHaveValue('high');
   });
 
   test('模型下拉（§26）：舊 daemon 提示強度與備援不會生效，預覽與送出都不帶', async ({ page }) => {
@@ -1112,8 +1118,9 @@ test.describe('新增 session', () => {
     await open(page, 'new', { ...newSeed(), machines: [rigOld] });
     await page.getByLabel('名稱').fill('old');
     await page.getByLabel('工作目錄').fill('/w');
-    await page.getByLabel('推理強度', { exact: true }).selectOption('high');
-    await page.getByLabel('備援模型', { exact: true }).selectOption('haiku');
+    // 帶不了：強度停用、備援不顯示。
+    await expect(page.getByLabel('推理強度', { exact: true })).toBeDisabled();
+    await expect(page.getByLabel('備援模型', { exact: true })).toHaveCount(0);
     await expect(page.getByTestId('model-options-old')).toContainText('rig-old 的 daemon 太舊');
     await expect(preview(page)).not.toContainText('--effort');
     await expect(preview(page)).not.toContainText('--fallback-model');
@@ -1122,6 +1129,100 @@ test.describe('新增 session', () => {
     const [created] = (await calls(page)) as { input: Record<string, unknown> }[];
     expect(created?.input).not.toHaveProperty('effort');
     expect(created?.input).not.toHaveProperty('fallbackModel');
+  });
+
+  test('模型下拉（§26.10）：那台 claude 只認得到 high、備援只能配 --print：只列能用的並提示', async ({
+    page,
+  }) => {
+    const rigOldClaude = machine({
+      id: 'm-oc',
+      name: 'rig-oc',
+      capabilities: {
+        ...rigA.capabilities,
+        claudeFlags: { effort: true, efforts: ['low', 'medium', 'high'], fallbackModel: false },
+      },
+    });
+    await open(page, 'new', { ...newSeed(), machines: [rigOldClaude] });
+    await page.getByLabel('名稱').fill('oc');
+    await page.getByLabel('工作目錄').fill('/w');
+    await expect(page.getByLabel('推理強度', { exact: true }).locator('option')).toHaveText([
+      '跟 CLI 預設',
+      'low',
+      'medium',
+      'high',
+    ]);
+    await expect(page.getByLabel('備援模型', { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId('model-options-old-claude')).toContainText('rig-oc 上的 claude');
+    await page.getByLabel('推理強度', { exact: true }).selectOption('high');
+    await expect(preview(page)).toContainText('--effort high');
+    await expect(preview(page)).not.toContainText('--fallback-model');
+  });
+
+  test('補救（§26.10）：已結束的 session 在全尺寸頁拿掉強度與備援、模型清回預設', async ({
+    page,
+  }) => {
+    await open(page, 'terminal/s-bad', {
+      ...newSeed(),
+      sessions: [
+        session({
+          id: 's-bad',
+          name: '舊模型',
+          machineId: 'm-a',
+          status: 'error',
+          endedAt: minutesAgo(1),
+          claudeSessionId: OLD_CONV,
+          model: 'old model',
+          effort: 'max',
+          fallbackModel: 'sonnet',
+        }),
+      ],
+      // 注入的 session 不在假後端自己的清單：照 hub 的行為改看板資料。
+      patch: patchBackend(
+        'resetSessionModel',
+        `async (id, reset) => {
+          const board = window.__board;
+          let next;
+          board.setState((state) => ({
+            sessions: state.sessions.map((x) => {
+              if (x.id !== id) return x;
+              next = { ...x };
+              if (reset.options) { delete next.effort; delete next.fallbackModel; }
+              if (reset.model) next.model = null;
+              return next;
+            }),
+          }));
+          return next;
+        }`,
+      ),
+    });
+    const panel = page.getByTestId('session-model-panel');
+    await expect(panel).toContainText('記著的模型名稱含有現在不允許的字元');
+    const now = () =>
+      page.evaluate(() => {
+        const board = (
+          window as unknown as {
+            __board: {
+              getState(): {
+                sessions: {
+                  id: string;
+                  model: string | null;
+                  effort?: string;
+                  fallbackModel?: string;
+                }[];
+              };
+            };
+          }
+        ).__board;
+        const s = board.getState().sessions.find((x) => x.id === 's-bad')!;
+        return { model: s.model, effort: s.effort ?? null, fallbackModel: s.fallbackModel ?? null };
+      });
+    await panel.getByRole('button', { name: '拿掉推理強度與備援' }).click();
+    await expect(panel).toContainText('已更新');
+    await expect.poll(now).toEqual({ model: 'old model', effort: null, fallbackModel: null });
+    await expect(panel.getByRole('button', { name: '拿掉推理強度與備援' })).toHaveCount(0);
+    await panel.getByRole('button', { name: '模型清回預設' }).click();
+    await expect.poll(now).toEqual({ model: null, effort: null, fallbackModel: null });
+    await expect(page.getByTestId('session-model-panel')).toHaveCount(0);
   });
 
   test('任務類型建議機器：GPU 任務選有 GPU 的；沒有就照實說', async ({ page }) => {

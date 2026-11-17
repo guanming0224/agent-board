@@ -1,6 +1,6 @@
 // 資料模型（DISPATCH §3、§4）。API 與 WebSocket 一律 camelCase；hub 自行對應 SQLite 的 snake_case。
 import { z } from 'zod';
-import { MODEL_LISTS_DEFAULT, ModelLists, SessionEffort } from './modelOptions';
+import { ClaudeFlags, MODEL_LISTS_DEFAULT, ModelLists, SessionEffort } from './modelOptions';
 
 export const Id = z.string().min(1);
 export const IsoTime = z.string().datetime({ offset: true });
@@ -112,6 +112,11 @@ export const MachineCapabilities = z.object({
    * 新增 session 頁提示「這台 daemon 太舊，強度／備援不會生效」，hub 也不送。
    */
   modelOptions: z.boolean().optional(),
+  /**
+   * 這台 claude 認得的模型參數（`claude --help` 解析，§26.10）。null＝偵測失敗（都不帶）；舊 daemon 不送。
+   * 格式不合只丟這個欄位（catch），不讓整份 hello 失敗。
+   */
+  claudeFlags: ClaudeFlags.nullable().optional().catch(null),
 });
 export type MachineCapabilities = z.infer<typeof MachineCapabilities>;
 

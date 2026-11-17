@@ -1254,13 +1254,14 @@ GM 要新增 session 的模型欄位改成下拉，並能細調推理強度與�
 - Claude（claude 2.1.326）：`--model <model>`（別名 `fable`／`opus`／`sonnet`／`haiku` 永遠指最新版，或完整名稱）、`--effort <low|medium|high|xhigh|max>`、`--fallback-model <model>`（CLI 接受逗號分隔多個；這裡只收一個，模型名稱字元不含逗號）。
 - Codex（codex-cli 0.167.0）：`-m <model>`、推理強度用設定覆寫 `-c model_reasoning_effort="<minimal|low|medium|high>"`（和交叉審查 `codexReviewArgs` 同一組白名單）。Codex 沒有備援模型參數。
 - 指令一律陣列、不經 shell（`buildClaudeArgs`、`buildCodexArgs`）。順序：Claude `… --permission-mode … [--disallowedTools …] [--model m] [--effort e] [--fallback-model f] [--mcp-config …] --name n`；Codex `[resume id] <權限> [-m m] [-c model_reasoning_effort="e"] --dangerously-bypass-hook-trust -c <hooks> …`。
-- **未驗證**：`--effort` 是哪一版 claude 開始有的（舊版 claude 會因為不認得參數而開不起來）；真 CLI 帶這些參數實際開對話的行為（沒跑真 claude／codex）。
+- 舊版 claude 不認得這兩個參數時會開不起來：daemon 先跑 `claude --help` 偵測（§26.10），不認得的不帶。
+- **未驗證**：`--effort` 是哪一版 claude 開始有的；真 CLI 帶這些參數實際開對話的行為（沒跑真 claude／codex）。
 
 ### 26.2 白名單與安全字元（`protocol/src/modelOptions.ts`；強度白名單本身在 `leadGuide.ts`，因為 hook 的 MCP server 不能 import zod）
 
 - `CLAUDE_EFFORTS = low, medium, high, xhigh, max`；`CODEX_EFFORTS = minimal, low, medium, high`。`SessionEffort` 是聯集；哪個 agent 能用哪些看 `validEffort(agent, effort)`。
-- 模型名稱 `MODEL_NAME_RE = /^(?!-)[A-Za-z0-9._:/[\]-]{1,100}$/`：英數與 `. _ : / - [ ]`（`[ ]` 給 `opus[1m]` 這類寫法），不能以 `-` 開頭。主模型、備援模型、設定頁清單都用這條。
-- 備援模型只有 Claude（`supportsFallbackModel`），而且不能和主模型相同（claude 不接受）。
+- 模型名稱 `MODEL_NAME_RE = /^(?!-)[A-Za-z0-9._:/@[\]-]{1,100}$/`：英數與 `. _ : / @ - [ ]`（`[ ]` 給 `opus[1m]`、`@` 給 Vertex 的 `claude-opus-4-1@20250805` 這類寫法），不能以 `-` 開頭。主模型、備援模型、設定頁清單都用這條。
+- 備援模型只有 Claude（`supportsFallbackModel`），而且不能和主模型相同（claude 不接受）。比對不分大小寫（`sameModel`，hub、daemon、網頁同一個）；別名對完整名稱（`opus` 對 `claude-opus-5-5`）不比，claude 不接受時靠 §26.10 的補救。
 
 ### 26.3 協定與相容
 
@@ -1276,7 +1277,7 @@ GM 要新增 session 的模型欄位改成下拉，並能細調推理強度與�
 - **存法**：settings 表 `sessionModelOpts:<sessionId>` = `{"effort"?: …, "fallbackModel"?: …}`（和 `sessionAgent:<id>` 同一種做法），兩個都沒指定就不寫；`getSettings` 不讀、刪除 session 時一起刪；讀不懂的那一筆略過。`Session` 多兩個選填欄位 `effort`、`fallbackModel`（hub 讀時補上）。
 - **接續**（`resumeSession`）：照 session 記著的值帶。**daemon 重啟接回**：spec 原樣存在 daemon 本機 `sessions.json`，`--resume` 時沿用同一組。
 - audit `session.create` 多記 `effort`、`fallbackModel`（有指定才記）。
-- **模型清單**：`Settings.modelLists = { claude: string[], codex: string[] }`（每份最多 30 個，`ModelName`）；舊設定沒有這個鍵＝內建 `MODEL_LISTS_DEFAULT`：Claude `fable, opus, sonnet, haiku`；Codex 只放 repo 裡用真 codex-cli 實測過的 `gpt-6-luna`（§19.6、§22），其他不猜。改走既有 `PATCH /api/settings`（owner；`SettingsPatch` 沒有預設值，存別的設定不會蓋掉清單），hub 存前去空白、去重。一般使用者讀 `GET /api/model-lists`（auth user，只回清單）。
+- **模型清單**：`Settings.modelLists = { claude: string[], codex: string[] }`（每份最多 30 個，`ModelName`）；舊設定沒有這個鍵＝內建 `MODEL_LISTS_DEFAULT`：Claude `fable, opus, sonnet, haiku`；Codex 只放 repo 裡用真 codex-cli 實測過的 `gpt-6-luna`（§19.6、§22），其他不猜。改走既有 `PATCH /api/settings`（owner；`SettingsPatch` 沒有預設值，存別的設定不會蓋掉清單），hub 存前去空白、不分大小寫去重（留第一次出現的寫法）。一般使用者讀 `GET /api/model-lists`（auth user，只回清單）。
 
 ### 26.5 daemon
 
@@ -1297,7 +1298,8 @@ GM 要新增 session 的模型欄位改成下拉，並能細調推理強度與�
   - 備援模型：Claude 才顯示（Codex 隱藏），清單同 Claude 模型清單＋「自訂…」；和主模型相同顯示錯誤。
   - 換 agent：模型是另一家清單裡的項目就清回「預設」，自己打的自訂名稱留著。
   - 指令預覽（`commandPreview`）同步顯示 `--effort`／`--fallback-model`／`-c 'model_reasoning_effort="…"'`。
-  - 草稿（`shared/draftStore.ts`，STYLE §5.2）：新增 session 的 `model`（`{ value, custom }`）、`effort`、`fallback` 都在草稿裡。QuickCreate 本來就不用草稿。
+  - 草稿（`shared/draftStore.ts`，STYLE §5.2）：新增 session 的 `model`（`{ value, custom }`）、`effort`、`fallback` 都在草稿裡。QuickCreate 本來就不用草稿。換 agent 時新 agent 沒有的強度、不支援的備援一起清掉（草稿也清）。
+  - **範本（session templates）與團隊 Preset 只存 `model`，刻意不存強度與備援**（GM 這次只要求新增 session；範本套用後強度、備援維持表單上目前的選擇）。
 - 卡片與全尺寸頁（`CardHead` 的 `ModelOptsChip`）：三個都沒指定不顯示；否則小字晶片「opus · high · ↪ sonnet」（沒指定模型寫「預設」），提示框寫完整說明。封存詳情多兩列。
 - 設定 → Session 與額度 → **模型清單**（`flows/ModelListsSection.tsx`，owner）：Claude、Codex 兩份，新增（Enter 也可）、↑ ↓ 排序、移除、恢復內建清單；擋不合的名稱、重複、超過 30 個。存檔走共用儲存列，只送 `modelLists`。手機上按鈕、輸入框照 controls.css 至少 44px。
 
@@ -1309,4 +1311,21 @@ GM 要新增 session 的模型欄位改成下拉，並能細調推理強度與�
 
 - protocol `modelOptions.test.ts`（白名單依 agent、安全字元、SessionSpec 選填與舊 daemon 丟掉多的欄位、Session／capabilities 選填、預設清單、SettingsPatch 不補預設、上限 30）；daemon `misc.test.ts`（Claude 參數組成、白名單外與不安全名稱略過、備援同主模型不帶、`opus[1m]`）、`codex.test.ts`（Codex 強度 `-c`、接回也帶、Claude 才有的 max 與注入字串略過）、`daemon.test.ts`（真 daemon＋假 claude：開的時候帶、存進 sessions.json、hello 宣告旗標、重啟 `--resume` 沿用）；hub `test/modelOptions.test.ts`（送出與存法、settings API 看不到內部鍵、接續沿用、刪除清掉、Codex 白名單、各種 400、舊 daemon 不送不記、模型清單權限與去重、spawn_member 沿用／指定／換 agent／invalid_effort）；hook `mcp.test.ts`（inputSchema 的 effort）；web `modelChoice.test.ts`、`commandPreview.test.ts`。
 - e2e：`flows.spec.ts`（下拉選項、自訂、強度、備援、預覽、錯誤擋送出、送出內容；換 Codex 清單與強度換掉、備援隱藏；舊 daemon 提示且不送；設定頁清單增刪排序與存檔、新增頁跟著換；手機 44px 與截圖；320／375／1280 不水平捲動）、`flows-float.spec.ts`（草稿保留與 ✕ 清掉）、`canvas.spec.ts`（快速建立選三個值、備援同主模型擋下、卡片小字）、`codex-integration.spec.ts`（真 hub＋真 daemon＋假 codex：預覽、session 記著強度、實際參數帶 `model_reasoning_effort="low"`、daemon 被殺重啟接回仍帶）。
-- 未驗證：真 claude／codex 帶這些參數開對話；舊版 claude 不認得 `--effort` 時的表現；Windows 上經 `claude.cmd` 啟動時帶 `--effort`（值只有安全字元，理論上不受 cmd 拆字影響）。
+- 未驗證：真 claude／codex 帶這些參數開對話；真的舊版 claude 的 `--help` 文字（測試用的是推測的舊版寫法）；Windows 上經 `claude.cmd` 啟動時帶 `--effort`（值只有安全字元，理論上不受 cmd 拆字影響）。
+
+### 26.10 這台 claude 認不認得、補救（審查 S1、S2、W1–W4，2026-11-17）
+
+- **偵測**：daemon 開機時跑 `claude --version` 後再跑 `claude --help`（`resources.ts probeClaudeFlags`；只印說明就結束，不開對話、不呼叫模型；`check:no-llm` 的 `CLAUDE_FLAGS` 加了 `--help`），用 `parseClaudeHelp` 解析成 `MachineCapabilities.claudeFlags = { effort, efforts, fallbackModel }`：
+  - `effort`：說明裡有 `--effort` 這個選項（`--effort-xxx` 不算）；`efforts`：那個選項說明括號裡列的級別（只留 `CLAUDE_EFFORTS` 裡的），讀不到括號＝null（照白名單）。
+  - `fallbackModel`：有 `--fallback-model` 而且說明沒寫「only … --print」（舊版寫 only works with --print，互動模式不能用）。
+  - 跑不起來或逾時＝`claudeFlags: null`（都不帶）。格式不合只丟這個欄位（zod `catch`）。
+  - **claude 自動更新**：daemon 每 10 分鐘跑一次 `claude --version`，版本變了才重跑 `--help`，新開、接續、daemon 接回的 claude 立刻用新結果；hub 與網頁看到的要等 daemon 下次 hello（重新連上 hub）才更新——這段期間 hub 可能照舊結果送出參數，由 daemon 的 `buildClaudeArgs` 擋掉。
+- **hello `session.modelOptions` 的意思沒變**（daemon 認得這兩個欄位），仍然一律宣告——和審查建議「偵測到才宣告」不同，因為 Codex 的推理強度不受 claude 版本影響；Claude 這邊另外看 `claudeFlags`，效果相同。
+- **三層都擋**（`allowedModelOptions(agent, claudeFlags)`，hub、daemon、網頁共用）：
+  - hub `supportedSpec`：建立、排隊後開始（`dispatchCreate`）、接續、`spawn_member`（隊長沿用的強度與備援）都經過，那台帶不了的拿掉、不記；`dispatchCreate` 拿掉時清掉記錄並推 `session.updated`（W4）。
+  - daemon `buildClaudeArgs` 必須傳 `claudeFlags`（null＝都不帶），不認得的不帶並記 warn——所以本機 `sessions.json` 裡記著的參數在 claude 降版後也不會讓 `--resume`／daemon 接回失敗。
+  - 網頁 `optionSupport(machine, agent)`：推理強度只列那台能用的級別（都不能用時停用）、備援不支援就不顯示，提示「<機器> 上的 claude 不認得部分模型參數…」（`model-options-old-claude`）。
+- **補救**：`POST /api/sessions/:id/model-reset`（owner，body `{ options?: boolean, model?: boolean }`）：已結束的 session 拿掉推理強度與備援（`options`）、或把模型清回 CLI 預設（`model`）。執行中 409 `session_active`；都沒選 400 `nothing_to_reset`。只改 hub 的記錄，daemon 本機 spec 在下次接續的 `session.create` 整份換掉。audit `session.model_reset`（含改前的值）。網頁：全尺寸頁側欄「模型設定」（`flows/SessionModelPanel.tsx`，只有 owner、已結束的才出現）。
+- **舊資料的模型名稱**（W1）：§26 以前存的模型名稱不合 `MODEL_NAME_RE` 時，接續回 409 `invalid_model`（不會讓 daemon 默默改用預設），畫面寫「到全尺寸頁側欄『模型設定』把模型清回預設再接續」。新建的 session 照舊 400 `invalid_model`。
+- daemon 存檔與 hub 的 `sessionModelOpts` 存檔 schema 的 `fallbackModel` 都是 `ModelName`，讀不懂的整筆略過（W2）。
+- **測試**：protocol（2.1.326 實際說明、沒有 `--effort`、只列到 high、括號讀不到、`--effort-xxx`、備援只能配 --print、`allowedModelOptions`、capabilities 欄位壞掉只丟這個、不分大小寫）；daemon（`claudeFlags` null／沒 effort／級別不在／備援只能配 --print 都不帶、`@` 名稱、大小寫；假 claude 的 `--help` 偵測結果進 capabilities）；hub（偵測不到時不送不記但 Codex 照送、只到 high、接續時 claude 已不認得→不送並清記錄並推 `session.updated`、大小寫、`@`、舊資料 409 與 model-reset 的權限／執行中／空 body／清掉後可接續）；web（`optionSupport`、`modelSpec`）；e2e flows（只到 high 的機器只列能用的並提示、舊 daemon 強度停用備援隱藏、換 agent 清掉備援、全尺寸頁補救）。

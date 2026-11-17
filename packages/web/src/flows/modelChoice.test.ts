@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { Machine } from '@agent-board/protocol';
 import {
   CUSTOM,
-  modelOptionsSupported,
   modelSpec,
+  optionSupport,
   NO_MODEL,
   onSelect,
   pickError,
@@ -53,44 +53,85 @@ describe('模型下拉', () => {
   });
 });
 
+const caps = (extra: object) =>
+  ({ capabilities: { modelOptions: true, ...extra } }) as unknown as Machine;
+const FULL = { effort: true, efforts: null, fallbackModel: true };
+
+describe('optionSupport：那台機器能帶什麼（§26.10）', () => {
+  it('沒選機器照白名單；daemon 太舊都不行；claude 偵測不到也不行', () => {
+    expect(optionSupport(undefined, 'claude')).toMatchObject({ fallback: true, reason: null });
+    expect(optionSupport({ capabilities: {} } as Machine, 'claude')).toEqual({
+      efforts: [],
+      fallback: false,
+      reason: 'old_daemon',
+    });
+    expect(optionSupport(caps({ claudeFlags: null }), 'claude')).toEqual({
+      efforts: [],
+      fallback: false,
+      reason: 'old_claude',
+    });
+    expect(optionSupport(caps({ claudeFlags: FULL }), 'claude').reason).toBeNull();
+    // Codex 不看 claude。
+    expect(optionSupport(caps({ claudeFlags: null }), 'codex')).toEqual({
+      efforts: ['minimal', 'low', 'medium', 'high'],
+      fallback: false,
+      reason: null,
+    });
+  });
+
+  it('只認得到 high、備援只能配 --print：只列能用的，提示 old_claude', () => {
+    expect(
+      optionSupport(
+        caps({
+          claudeFlags: { effort: true, efforts: ['low', 'medium', 'high'], fallbackModel: false },
+        }),
+        'claude',
+      ),
+    ).toEqual({ efforts: ['low', 'medium', 'high'], fallback: false, reason: 'old_claude' });
+  });
+});
+
 describe('modelSpec：送出的欄位', () => {
   const opus = { value: 'opus', custom: false };
   const sonnet = { value: 'sonnet', custom: false };
-  const claude = (effort: string, fallback = NO_MODEL, model = opus, supported = true) =>
-    modelSpec({ agent: 'claude', model, effort, fallback, supported });
+  const full = optionSupport(caps({ claudeFlags: FULL }), 'claude');
+  const claude = (effort: string, fallback = NO_MODEL, model = opus, support = full) =>
+    modelSpec({ model, effort, fallback, support });
 
-  it('Claude：三個都帶；強度不在白名單不帶；備援和主模型相同不帶', () => {
+  it('Claude：三個都帶；強度不在白名單不帶；備援和主模型相同（不分大小寫）不帶', () => {
     expect(claude('max', sonnet)).toEqual({
       model: 'opus',
       effort: 'max',
       fallbackModel: 'sonnet',
     });
     expect(claude('minimal', opus)).toEqual({ model: 'opus' });
+    expect(claude('', { value: 'OPUS', custom: true })).toEqual({ model: 'opus' });
     expect(claude('', NO_MODEL, NO_MODEL)).toEqual({ model: null });
   });
 
   it('Codex：沒有備援；強度用 Codex 的白名單', () => {
+    const support = optionSupport(caps({}), 'codex');
     const codex = (effort: string) =>
       modelSpec({
-        agent: 'codex',
         model: { value: 'gpt-6-luna', custom: false },
         effort,
         fallback: sonnet,
-        supported: true,
+        support,
       });
     expect(codex('minimal')).toEqual({ model: 'gpt-6-luna', effort: 'minimal' });
     expect(codex('xhigh')).toEqual({ model: 'gpt-6-luna' });
   });
 
-  it('daemon 太舊：只送模型', () => {
-    expect(claude('high', sonnet, opus, false)).toEqual({ model: 'opus' });
-  });
-
-  it('看機器的 capabilities.modelOptions；沒選機器不提示', () => {
-    const machine = (modelOptions?: boolean) =>
-      ({ capabilities: modelOptions === undefined ? {} : { modelOptions } }) as Machine;
-    expect(modelOptionsSupported(undefined)).toBe(true);
-    expect(modelOptionsSupported(machine(true))).toBe(true);
-    expect(modelOptionsSupported(machine())).toBe(false);
+  it('daemon 太舊或 claude 不認得：只送模型', () => {
+    expect(
+      claude('high', sonnet, opus, optionSupport({ capabilities: {} } as Machine, 'claude')),
+    ).toEqual({
+      model: 'opus',
+    });
+    expect(
+      claude('high', sonnet, opus, optionSupport(caps({ claudeFlags: null }), 'claude')),
+    ).toEqual({
+      model: 'opus',
+    });
   });
 });

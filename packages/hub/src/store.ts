@@ -15,6 +15,7 @@ import {
   DispatchWork,
   MemberAdded,
   MODEL_LISTS_DEFAULT,
+  ModelName,
   SessionEffort,
   TEAM_ACTIVITY_KEEP,
   TeamActivity,
@@ -85,7 +86,7 @@ const SESSION_AGENT_PREFIX = 'sessionAgent:';
 const SESSION_MODEL_OPTS_PREFIX = 'sessionModelOpts:';
 const SessionModelOpts = z.object({
   effort: SessionEffort.optional(),
-  fallbackModel: z.string().min(1).max(100).optional(),
+  fallbackModel: ModelName.optional(),
 });
 export type SessionModelOpts = z.infer<typeof SessionModelOpts>;
 /**
@@ -785,6 +786,11 @@ export class Store {
     }
     this.modelOptsCache = out;
     return out;
+  }
+
+  /** 改 session 的模型（§26.10 補救：清回 CLI 預設）。 */
+  setSessionModel(id: string, model: string | null): void {
+    this.db.prepare('UPDATE sessions SET model = ? WHERE id = ?').run(model, id);
   }
 
   /** 記下推理強度與備援模型；兩個都沒有就刪掉那一列。 */

@@ -122,6 +122,12 @@ describe('agent-board-daemon pair', () => {
       os: process.platform,
     });
     expect((hub.seen[0]?.capabilities as { claudeVersion: string }).claudeVersion).toBe('9.9.9');
+    // claude --help 偵測（§26.10）：只印說明，不開對話。
+    expect((hub.seen[0]?.capabilities as { claudeFlags: unknown }).claudeFlags).toEqual({
+      effort: true,
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      fallbackModel: true,
+    });
 
     const file = credentialsPath(h.dataDir);
     expect(statSync(file).mode & 0o777).toBe(0o600);

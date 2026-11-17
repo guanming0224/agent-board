@@ -13,7 +13,9 @@ import {
   type UpdateState,
   ClientToHub,
   DAEMON_FEATURES,
+  allowedModelOptions,
   isSafeModelName,
+  sameModel,
   supportsFallbackModel,
   validEffort,
   type GitInitResult,
@@ -1679,7 +1681,7 @@ export class Hub {
       throw new HttpError(
         400,
         'invalid_model',
-        'Model names may only use letters, digits and . _ : / - [ ] (up to 100, not starting with -)',
+        'Model names may only use letters, digits and . _ : / @ - [ ] (up to 100, not starting with -)',
       );
     }
     if (spec.effort && !validEffort(agent, spec.effort)) {
@@ -1693,7 +1695,7 @@ export class Hub {
       if (!supportsFallbackModel(agent)) {
         throw new HttpError(400, 'fallback_unsupported', 'Codex has no fallback model');
       }
-      if (spec.fallbackModel === spec.model) {
+      if (sameModel(spec.fallbackModel, spec.model)) {
         throw new HttpError(
           400,
           'fallback_same_as_model',
@@ -1701,13 +1703,26 @@ export class Hub {
         );
       }
     }
+    return this.supportedSpec(machineId, spec);
+  }
+
+  /**
+   * 拿掉那台機器實際帶不了的強度與備援（§26.3、§26.10）：daemon 太舊（hello 沒有 `session.modelOptions`）全拿掉；
+   * Claude 還要看那台 claude 認得的參數（`capabilities.claudeFlags`，`claude --help` 偵測；沒有＝都不帶）。
+   * 建立、排隊後開始、接續、派工都經過這裡，所以舊版 claude 的機器不會收到它不認得的參數而開不起來。
+   */
+  private supportedSpec(machineId: string, spec: SessionSpec): SessionSpec {
     const { effort, fallbackModel, ...rest } = spec;
     if (!effort && !fallbackModel) return rest;
     if (!this.daemonFor(machineId)?.features.has(DAEMON_FEATURES.modelOptions)) return rest;
+    const allowed = allowedModelOptions(
+      agentOf(spec),
+      this.store.getMachine(machineId)?.capabilities.claudeFlags ?? null,
+    );
     return {
       ...rest,
-      ...(effort ? { effort } : {}),
-      ...(fallbackModel ? { fallbackModel } : {}),
+      ...(effort && allowed.efforts.includes(effort) ? { effort } : {}),
+      ...(fallbackModel && allowed.fallback ? { fallbackModel } : {}),
     };
   }
 
@@ -1809,12 +1824,15 @@ export class Hub {
       this.guarded('codex unavailable', () => this.failStart(session.id, 'codex_unavailable'));
       return;
     }
-    // 排隊或接續期間 daemon 換成不認得強度／備援的舊版（§26）：不送（送了也會被丟掉），也不再記著，畫面才不會誤顯示。
-    if ((spec.effort || spec.fallbackModel) && !conn.features.has(DAEMON_FEATURES.modelOptions)) {
-      spec = { ...spec };
-      delete spec.effort;
-      delete spec.fallbackModel;
-      this.store.setSessionModelOpts(session.id, {});
+    // 排隊或接續期間 daemon 換成舊版、或那台 claude 不認得（§26.10）：不送，也不再記著，並推給畫面（畫面才不會誤顯示）。
+    if (spec.effort || spec.fallbackModel) {
+      const supported = this.supportedSpec(session.machineId, spec);
+      if (supported.effort !== spec.effort || supported.fallbackModel !== spec.fallbackModel) {
+        spec = supported;
+        this.store.setSessionModelOpts(session.id, supported);
+        const fresh = this.store.getSession(session.id);
+        if (fresh) this.broadcast({ type: 'session.updated', session: fresh });
+      }
     }
     const requestId = randomUUID();
     const timer = setTimeout(() => {
@@ -1915,6 +1933,13 @@ export class Hub {
     if (accountProfile === undefined) {
       throw conflict('invalid_account_profile', 'The account folder is not an absolute path');
     }
+    // 模型名稱規則是 §26 才加的：舊資料不合就說清楚（daemon 不會默默改用預設），讓使用者清掉模型再接續。
+    if (session.model && !isSafeModelName(session.model)) {
+      throw conflict(
+        'invalid_model',
+        'The saved model name has characters Agent Board no longer passes to the CLI. Clear the model (Settings for this session) and resume again.',
+      );
+    }
     if (!this.daemonFor(session.machineId)) throw conflict('machine_offline', 'Machine is offline');
     if (agentOf(session) === 'codex') this.assertCodexReady(session.machineId, { accountProfile });
     // 接續已封存的：先還原，不然它會在跑卻不出現在畫布上（§9.1）。
@@ -1950,6 +1975,36 @@ export class Hub {
     );
     if (available) this.dispatchCreate(next, spec);
     else this.scheduleResetDrain();
+    return next;
+  }
+
+  /**
+   * 補救（§26.10）：已結束的 session 拿掉推理強度與備援（options），或把模型改回 CLI 預設（model），下次接續就不帶。
+   * 只改 hub 的記錄；daemon 本機的 spec 在接續時由 session.create 整份換掉，所以不用另外同步。只有 owner。
+   */
+  resetSessionModel(id: string, body: { options?: boolean; model?: boolean }, user: User): Session {
+    const session = this.requireSession(id);
+    this.assertNotDeleting(id);
+    if (session.endedAt === null) {
+      throw conflict(
+        'session_active',
+        'Stop the session first; the CLI already runs with these settings',
+      );
+    }
+    if (!body.options && !body.model)
+      throw new HttpError(400, 'nothing_to_reset', 'Nothing to reset');
+    const before = {
+      model: session.model,
+      effort: session.effort ?? null,
+      fallbackModel: session.fallbackModel ?? null,
+    };
+    this.store.db.transaction(() => {
+      if (body.options) this.store.setSessionModelOpts(id, {});
+      if (body.model) this.store.setSessionModel(id, null);
+      this.audit(user.id, id, 'session.model_reset', JSON.stringify({ ...body, before }));
+    })();
+    const next = this.requireSession(id);
+    this.broadcast({ type: 'session.updated', session: next });
     return next;
   }
 

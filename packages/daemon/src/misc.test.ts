@@ -159,13 +159,23 @@ describe('screenFingerprint', () => {
   });
 });
 
+/** 認得 --effort（全部級別）與互動模式的 --fallback-model 的 claude（§26.10）。 */
+const FULL_FLAGS = { effort: true, efforts: null, fallbackModel: true };
+
 describe('buildClaudeArgs', () => {
   it('default 也明確帶 manual，否則 claude 會用使用者設定的預設模式；--resume 優先', () => {
     expect(
-      buildClaudeArgs({ newSessionId: 'u', permissionMode: 'default', model: null, name: 'n' }),
+      buildClaudeArgs({
+        claudeFlags: FULL_FLAGS,
+        newSessionId: 'u',
+        permissionMode: 'default',
+        model: null,
+        name: 'n',
+      }),
     ).toEqual(['--session-id', 'u', '--permission-mode', 'manual', '--name', 'n']);
     expect(
       buildClaudeArgs({
+        claudeFlags: FULL_FLAGS,
         newSessionId: 'u',
         resumeId: 'r',
         permissionMode: 'plan',
@@ -178,7 +188,13 @@ describe('buildClaudeArgs', () => {
   it('推理強度與備援模型（§26）：白名單／安全字元才帶，備援和主模型相同不帶', () => {
     const base = { newSessionId: 'u', permissionMode: 'plan' as const, name: 'n' };
     expect(
-      buildClaudeArgs({ ...base, model: 'opus', effort: 'max', fallbackModel: 'claude-sonnet-5' }),
+      buildClaudeArgs({
+        claudeFlags: FULL_FLAGS,
+        ...base,
+        model: 'opus',
+        effort: 'max',
+        fallbackModel: 'claude-sonnet-5',
+      }),
     ).toEqual([
       '--session-id',
       'u',
@@ -195,12 +211,59 @@ describe('buildClaudeArgs', () => {
     ]);
     // minimal 是 Codex 才有的；不在白名單的、含空白或以 - 開頭的名稱都不帶。
     expect(
-      buildClaudeArgs({ ...base, model: null, effort: 'minimal', fallbackModel: '--dangerous' }),
+      buildClaudeArgs({
+        claudeFlags: FULL_FLAGS,
+        ...base,
+        model: null,
+        effort: 'minimal',
+        fallbackModel: '--dangerous',
+      }),
     ).toEqual(['--session-id', 'u', '--permission-mode', 'plan', '--name', 'n']);
     expect(
-      buildClaudeArgs({ ...base, model: 'opus; rm -rf', effort: 'turbo', fallbackModel: 'a b' }),
+      buildClaudeArgs({
+        claudeFlags: FULL_FLAGS,
+        ...base,
+        model: 'opus; rm -rf',
+        effort: 'turbo',
+        fallbackModel: 'a b',
+      }),
     ).toEqual(['--session-id', 'u', '--permission-mode', 'plan', '--name', 'n']);
-    expect(buildClaudeArgs({ ...base, model: 'opus', fallbackModel: 'opus' })).toEqual([
+    expect(
+      buildClaudeArgs({
+        claudeFlags: FULL_FLAGS,
+        ...base,
+        model: 'opus',
+        fallbackModel: 'opus',
+      }),
+    ).toEqual(['--session-id', 'u', '--permission-mode', 'plan', '--model', 'opus', '--name', 'n']);
+    // 備援和主模型比對不分大小寫。
+    expect(
+      buildClaudeArgs({ ...base, claudeFlags: FULL_FLAGS, model: 'opus', fallbackModel: 'OPUS' }),
+    ).not.toContain('--fallback-model');
+    // Vertex 的 @ 寫法。
+    expect(
+      buildClaudeArgs({ ...base, claudeFlags: FULL_FLAGS, model: 'claude-opus-4-1@20250805' }),
+    ).toContain('claude-opus-4-1@20250805');
+    // [1m] 這類寫法照樣能用。
+    expect(
+      buildClaudeArgs({
+        claudeFlags: FULL_FLAGS,
+        ...base,
+        model: 'opus[1m]',
+      }),
+    ).toContain('opus[1m]');
+  });
+
+  it('這台 claude 不認得的參數不帶（§26.10）：偵測不到、沒有 --effort、級別不在說明裡、備援只能配 --print', () => {
+    const base = {
+      newSessionId: 'u',
+      permissionMode: 'plan' as const,
+      name: 'n',
+      model: 'opus',
+      effort: 'max',
+      fallbackModel: 'sonnet',
+    };
+    const plain = [
       '--session-id',
       'u',
       '--permission-mode',
@@ -209,13 +272,31 @@ describe('buildClaudeArgs', () => {
       'opus',
       '--name',
       'n',
-    ]);
-    // [1m] 這類寫法照樣能用。
-    expect(buildClaudeArgs({ ...base, model: 'opus[1m]' })).toContain('opus[1m]');
+    ];
+    expect(buildClaudeArgs({ ...base, claudeFlags: null })).toEqual(plain);
+    expect(
+      buildClaudeArgs({
+        ...base,
+        claudeFlags: { effort: false, efforts: null, fallbackModel: false },
+      }),
+    ).toEqual(plain);
+    // 說明只列到 high：max 不帶，high 照帶。
+    const upToHigh = { effort: true, efforts: ['low', 'medium', 'high'], fallbackModel: false };
+    expect(buildClaudeArgs({ ...base, claudeFlags: upToHigh })).toEqual(plain);
+    expect(buildClaudeArgs({ ...base, effort: 'high', claudeFlags: upToHigh })).toContain(
+      '--effort',
+    );
+    expect(
+      buildClaudeArgs({
+        ...base,
+        claudeFlags: { effort: false, efforts: null, fallbackModel: true },
+      }),
+    ).toContain('--fallback-model');
   });
 
   it('唯讀：每個工具一個 argv，後面接著別的選項，可變長度參數才不會吞掉 --name', () => {
     const args = buildClaudeArgs({
+      claudeFlags: FULL_FLAGS,
       newSessionId: 'u',
       permissionMode: 'plan',
       model: null,
@@ -236,12 +317,19 @@ describe('buildClaudeArgs', () => {
     ]);
     expect(args[args.indexOf('NotebookEdit') + 1]?.startsWith('--')).toBe(true);
     expect(
-      buildClaudeArgs({ permissionMode: 'default', model: null, name: 'n', readOnly: false }),
+      buildClaudeArgs({
+        claudeFlags: FULL_FLAGS,
+        permissionMode: 'default',
+        model: null,
+        name: 'n',
+        readOnly: false,
+      }),
     ).not.toContain('--disallowedTools');
   });
 
   it('派工工具：--mcp-config 與 --allowedTools 只在給了 mcp 時才帶，後面一定接 --name', () => {
     const args = buildClaudeArgs({
+      claudeFlags: FULL_FLAGS,
       newSessionId: 'u',
       permissionMode: 'acceptEdits',
       model: null,
@@ -264,7 +352,13 @@ describe('buildClaudeArgs', () => {
     // 沒有 --strict-mcp-config：使用者自己的 MCP server 照常載入。
     expect(args).not.toContain('--strict-mcp-config');
     for (const mcp of [undefined, null]) {
-      const plain = buildClaudeArgs({ permissionMode: 'default', model: null, name: 'n', mcp });
+      const plain = buildClaudeArgs({
+        claudeFlags: FULL_FLAGS,
+        permissionMode: 'default',
+        model: null,
+        name: 'n',
+        mcp,
+      });
       expect(plain).not.toContain('--mcp-config');
       expect(plain).not.toContain('--allowedTools');
     }

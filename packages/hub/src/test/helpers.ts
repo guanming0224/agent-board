@@ -21,6 +21,8 @@ export const capabilities = {
   cpuCores: 4,
   memoryBytes: 1024,
   claudeVersion: null,
+  // 新版 daemon 偵測到的 claude 參數（§26.10）：認得 --effort 全部級別與互動模式的 --fallback-model。
+  claudeFlags: { effort: true, efforts: null, fallbackModel: true },
 };
 
 export const spec = (over: Partial<SessionSpec> = {}): SessionSpec => ({
@@ -173,7 +175,12 @@ export interface TestHub {
   /** 配對並完成 hello／welcome。 */
   onlineDaemon(
     ownerCookie: string,
-    hello?: { sessions?: SessionRuntime[]; pendingApprovals?: Approval[]; features?: string[] },
+    hello?: {
+      sessions?: SessionRuntime[];
+      pendingApprovals?: Approval[];
+      features?: string[];
+      capabilities?: object;
+    },
   ): Promise<{ daemon: Peer; machineId: string; token: string }>;
   client(cookie: string): Promise<Peer>;
   stop(): Promise<void>;

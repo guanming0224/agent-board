@@ -356,6 +356,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     sessionsUpdate: (ctx) => hub.updateSession(param(ctx), ctx.body, ctx.user),
     sessionsStop: (ctx) => hub.stopSession(param(ctx), ctx.user),
     sessionsResume: (ctx) => hub.resumeSession(param(ctx), ctx.user),
+    sessionsResetModel: (ctx) => hub.resetSessionModel(param(ctx), ctx.body, ctx.user),
     sessionInspect: (ctx) => hub.inspectSession(param(ctx)),
     sessionTranscript: (ctx) => hub.sessionTranscript(param(ctx), ctx.query),
     sessionsDelete: async (ctx) => ({

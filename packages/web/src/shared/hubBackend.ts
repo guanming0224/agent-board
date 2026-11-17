@@ -561,6 +561,7 @@ export function createHubBackend() {
     updateSession: (id, patch) => call('sessionsUpdate', { params: { id }, body: patch }),
     stopSession: (id) => call('sessionsStop', { params: { id } }),
     resumeSession: (id) => call('sessionsResume', { params: { id } }),
+    resetSessionModel: (id, reset) => call('sessionsResetModel', { params: { id }, body: reset }),
     listArchivedSessions: () => call('sessionsList', { query: { archived: 'true' } }),
     inspectSession: (id) => call('sessionInspect', { params: { id } }),
     search: ({ archived, mask, zoneId, ...rest }) =>

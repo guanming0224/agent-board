@@ -1,9 +1,11 @@
 // 新增 session 的模型下拉（GM 2026-11-17，CONTRACTS §26）：表單狀態 → SessionSpec 的 model／effort／fallbackModel。
 // 不碰 React，NewSessionPage 與 QuickCreate 共用，單元測試直接測。
 import {
+  allowedModelOptions,
+  effortsFor,
   isSafeModelName,
+  sameModel,
   supportsFallbackModel,
-  validEffort,
   type AgentKind,
   type Machine,
   type SessionEffort,
@@ -47,30 +49,53 @@ export function pickForAgent(pick: ModelPick, list: readonly string[]): ModelPic
   return NO_MODEL;
 }
 
-/** 機器的 daemon 認不認得推理強度與備援（舊 daemon 不回報 capabilities.modelOptions）。沒選機器時不提示。 */
-export const modelOptionsSupported = (machine: Machine | undefined): boolean =>
-  machine === undefined || machine.capabilities.modelOptions === true;
+/** 那台機器實際能帶的強度與備援，以及帶不了的原因（畫面提示用）。 */
+export interface OptionSupport {
+  efforts: readonly SessionEffort[];
+  fallback: boolean;
+  /** old_daemon：daemon 不認得這兩個欄位；old_claude：那台 claude 不認得（部分）參數（§26.10）。 */
+  reason: 'old_daemon' | 'old_claude' | null;
+}
 
 /**
- * 實際要送的三個欄位。強度只留這個 agent 能用的；備援只有 Claude、和主模型相同不送（表單另外顯示錯誤）；
- * daemon 太舊就都不送（hub 也會拿掉，畫面與預覽才一致）。
+ * 看機器的 capabilities：daemon 太舊（沒有 modelOptions）都不行；Claude 再看 `claudeFlags`（`claude --help` 偵測）。
+ * 沒選機器時照白名單、不提示。hub 用同一個 `allowedModelOptions` 拿掉，畫面、預覽、實際送出才一致。
+ */
+export function optionSupport(machine: Machine | undefined, agent: AgentKind): OptionSupport {
+  if (machine === undefined) {
+    return {
+      efforts: effortsFor(agent),
+      fallback: supportsFallbackModel(agent),
+      reason: null,
+    };
+  }
+  if (machine.capabilities.modelOptions !== true) {
+    return { efforts: [], fallback: false, reason: 'old_daemon' };
+  }
+  const allowed = allowedModelOptions(agent, machine.capabilities.claudeFlags);
+  const full =
+    agent === 'codex' ||
+    (allowed.fallback && allowed.efforts.length === effortsFor('claude').length);
+  return { ...allowed, reason: full ? null : 'old_claude' };
+}
+
+/**
+ * 實際要送的三個欄位。強度只留這台能用的；備援只有支援時、和主模型相同（不分大小寫）不送（表單另外顯示錯誤）。
  */
 export function modelSpec(input: {
-  agent: AgentKind;
   model: ModelPick;
   effort: string;
   fallback: ModelPick;
-  supported: boolean;
+  support: OptionSupport;
 }): { model: string | null; effort?: SessionEffort; fallbackModel?: string } {
   const model = pickedName(input.model);
-  if (!input.supported) return { model };
-  const effort = validEffort(input.agent, input.effort)
+  const effort = (input.support.efforts as readonly string[]).includes(input.effort)
     ? (input.effort as SessionEffort)
     : undefined;
-  const fallback = supportsFallbackModel(input.agent) ? pickedName(input.fallback) : null;
+  const fallback = input.support.fallback ? pickedName(input.fallback) : null;
   return {
     model,
     ...(effort ? { effort } : {}),
-    ...(fallback && fallback !== model ? { fallbackModel: fallback } : {}),
+    ...(fallback && !sameModel(fallback, model) ? { fallbackModel: fallback } : {}),
   };
 }

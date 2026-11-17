@@ -2,7 +2,13 @@
 import { execFile } from 'node:child_process';
 import { availableParallelism, totalmem } from 'node:os';
 import { promisify } from 'node:util';
-import type { DaemonToHub, MachineCapabilities, ResourceSample } from '@agent-board/protocol';
+import {
+  parseClaudeHelp,
+  type ClaudeFlags,
+  type DaemonToHub,
+  type MachineCapabilities,
+  type ResourceSample,
+} from '@agent-board/protocol';
 import si from 'systeminformation';
 import { errorMessage, log } from './log';
 
@@ -76,6 +82,44 @@ async function probeCodex(codexBin: string, env: NodeJS.ProcessEnv): Promise<str
   }
 }
 
+/** `claude --version` 的版本號；跑不起來回 null。 */
+export async function probeClaudeVersion(
+  claudeBin: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(claudeBin, ['--version'], {
+      timeout: PROBE_TIMEOUT_MS,
+      env,
+    });
+    return stdout.trim().split(/\s+/)[0] || null;
+  } catch {
+    log.warn(`無法取得 claude 版本（${claudeBin}）`);
+    return null;
+  }
+}
+
+/**
+ * 這台 claude 認得哪些模型參數（§26.10）：跑 `claude --help`（只印說明，不呼叫模型、不開對話），
+ * 解析 `--effort`、`--fallback-model`。跑不起來回 null（＝都不帶）。
+ */
+export async function probeClaudeFlags(
+  claudeBin: string,
+  env: NodeJS.ProcessEnv,
+): Promise<ClaudeFlags | null> {
+  try {
+    const { stdout } = await execFileAsync(claudeBin, ['--help'], {
+      timeout: PROBE_TIMEOUT_MS,
+      env,
+      maxBuffer: 1024 * 1024,
+    });
+    return parseClaudeHelp(stdout);
+  } catch (error) {
+    log.warn(`無法讀取 claude --help（${claudeBin}）：${errorMessage(error)}`);
+    return null;
+  }
+}
+
 export async function probeCapabilities(
   claudeBin: string,
   env: NodeJS.ProcessEnv,
@@ -84,16 +128,8 @@ export async function probeCapabilities(
   const gpu = await queryNvidiaGpu();
   // 找不到 codex 就不回報（hub 與新增 session 頁據此不讓選 Codex）。
   const codexVersion = codexBin ? await probeCodex(codexBin, env) : null;
-  let claudeVersion: string | null = null;
-  try {
-    const { stdout } = await execFileAsync(claudeBin, ['--version'], {
-      timeout: PROBE_TIMEOUT_MS,
-      env,
-    });
-    claudeVersion = stdout.trim().split(/\s+/)[0] || null;
-  } catch {
-    log.warn(`無法取得 claude 版本（${claudeBin}）`);
-  }
+  const claudeVersion = await probeClaudeVersion(claudeBin, env);
+  const claudeFlags = claudeVersion === null ? null : await probeClaudeFlags(claudeBin, env);
   return {
     hasGpu: gpu !== null,
     gpuName: gpu?.name ?? null,
@@ -103,6 +139,7 @@ export async function probeCapabilities(
     ...(codexVersion ? { codexVersion } : {}),
     // 認得 SessionSpec.effort／fallbackModel（§26）：網頁據此決定要不要提示「daemon 太舊」。
     modelOptions: true,
+    claudeFlags,
   };
 }
 

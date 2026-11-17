@@ -45,6 +45,7 @@ import {
   type TeamActivityKind,
   type TeamMember,
   effortsFor,
+  sameModel,
   type SessionEffort,
   validEffort,
 } from '@agent-board/protocol';
@@ -892,11 +893,12 @@ export class DispatchEngine {
       : agent === callerAgent
         ? caller.model
         : null;
-    // 推理強度與備援模型（§26）照 model 的規則沿用；備援和成員的主模型相同就不帶（claude 不接受）。
+    // 推理強度與備援模型（§26）照 model 的規則沿用；備援和成員的主模型相同（不分大小寫）就不帶（claude 不接受）。
+    // 那台 claude 不認得的參數由 hub 的 supportedSpec 拿掉（§26.10），整隊沿用也不會讓成員開不起來。
     const effort = wantedEffort ?? (agent === callerAgent ? (caller.effort ?? null) : null);
     const inheritedFallback =
       agent === 'claude' && callerAgent === 'claude' ? (caller.fallbackModel ?? null) : null;
-    const fallbackModel = inheritedFallback !== model ? inheritedFallback : null;
+    const fallbackModel = sameModel(inheritedFallback, model) ? null : inheritedFallback;
     let member: Session;
     try {
       member = this.deps.createSession(

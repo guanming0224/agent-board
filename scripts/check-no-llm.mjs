@@ -159,6 +159,8 @@ const CLAUDE_FLAGS = new Set([
   '--mcp-config',
   '--allowedTools',
   '--version',
+  // 偵測這台 claude 認得哪些參數（§26.10，resources.ts 的 probeClaudeFlags）：只印說明就結束，不開對話、不呼叫模型。
+  '--help',
 ]);
 
 /**
@@ -251,7 +253,7 @@ for (const key of CALL_SITES) {
 for (const file of ['packages/daemon/src/session.ts', 'packages/daemon/src/resources.ts']) {
   const text = readFileSync(join(root, file), 'utf8');
   for (const [, flag] of text.matchAll(/'(--?[a-z][\w-]*)'/g)) {
-    if (file.endsWith('session.ts') || flag === '--version') {
+    if (file.endsWith('session.ts') || flag === '--version' || flag === '--help') {
       if (!CLAUDE_FLAGS.has(flag)) problems.push(`${file}：claude 參數 ${flag} 不在允許清單`);
     }
   }

@@ -2,7 +2,10 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
+  allowedModelOptions,
   effortsFor,
+  parseClaudeHelp,
+  sameModel,
   isSafeModelName,
   MODEL_LISTS_DEFAULT,
   normalizeModelList,
@@ -44,10 +47,15 @@ describe('推理強度白名單', () => {
 });
 
 describe('模型名稱的安全字元', () => {
-  it.each(['opus', 'claude-opus-5-5', 'opus[1m]', 'gpt-6-luna', 'us.anthropic/x:1', 'a_b.c'])(
-    '收 %s',
-    (name) => expect(isSafeModelName(name)).toBe(true),
-  );
+  it.each([
+    'opus',
+    'claude-opus-5-5',
+    'opus[1m]',
+    'gpt-6-luna',
+    'us.anthropic/x:1',
+    'a_b.c',
+    'claude-opus-4-1@20250805',
+  ])('收 %s', (name) => expect(isSafeModelName(name)).toBe(true));
   it.each([
     '',
     '-m',
@@ -131,5 +139,94 @@ describe('模型清單（Settings.modelLists）', () => {
       'opus',
       'haiku',
     ]);
+  });
+});
+
+// claude 2.1.326 `--help` 的實際寫法（節錄）。
+const HELP_2_1_326 = `Usage: claude [options] [command] [prompt]
+
+Options:
+  --effort <level>                      Effort level for the current session
+                                        (low, medium, high, xhigh, max)
+  --environment <environment_id>        Create a new cloud session that runs on
+                                        the given self-hosted environment
+                                        (ccpool_...).
+  --fallback-model <model>              Models to fall back to when the main
+                                        model is busy or unavailable
+                                        (comma-separated, in order). The main
+                                        model is tried again at the start of
+                                        each turn.
+  --file <specs...>                     Files to download at startup.
+  --model <model>                       Model for the current session.
+`;
+
+describe('claude --help 解析（§26.10）', () => {
+  it('2.1.326：五個級別、互動模式的備援', () => {
+    expect(parseClaudeHelp(HELP_2_1_326)).toEqual({
+      effort: true,
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      fallbackModel: true,
+    });
+  });
+
+  it('舊版沒有 --effort、備援標「只能配 --print」：都不支援', () => {
+    const old = `Options:
+  --fallback-model <model>     Enable automatic fallback to specified model when default
+                               model is overloaded (only works with --print)
+  --model <model>              Model for the current session.
+`;
+    expect(parseClaudeHelp(old)).toEqual({ effort: false, efforts: null, fallbackModel: false });
+    expect(parseClaudeHelp('')).toEqual({ effort: false, efforts: null, fallbackModel: false });
+  });
+
+  it('只列到 high（沒有 xhigh、max）；括號讀不到＝null；--effort-xxx 不算 --effort', () => {
+    const upToHigh = `Options:
+  --effort <level>   Effort level (low, medium, high)
+  --model <model>    Model.
+`;
+    expect(parseClaudeHelp(upToHigh)).toMatchObject({
+      effort: true,
+      efforts: ['low', 'medium', 'high'],
+    });
+    const noList = `Options:
+  --effort <level>   Effort level for the current session
+  --model <model>    Model.
+`;
+    expect(parseClaudeHelp(noList)).toMatchObject({ effort: true, efforts: null });
+    expect(parseClaudeHelp('  --effort-budget <n>  Something (low, high)\n').effort).toBe(false);
+  });
+
+  it('allowedModelOptions：Codex 看白名單；Claude 看偵測結果，沒有就都不帶', () => {
+    expect(allowedModelOptions('codex', null)).toEqual({
+      efforts: ['minimal', 'low', 'medium', 'high'],
+      fallback: false,
+    });
+    expect(allowedModelOptions('claude', null)).toEqual({ efforts: [], fallback: false });
+    expect(allowedModelOptions('claude', undefined)).toEqual({ efforts: [], fallback: false });
+    expect(
+      allowedModelOptions('claude', { effort: true, efforts: null, fallbackModel: true }),
+    ).toEqual({ efforts: ['low', 'medium', 'high', 'xhigh', 'max'], fallback: true });
+    expect(
+      allowedModelOptions('claude', {
+        effort: true,
+        efforts: ['high', 'low'],
+        fallbackModel: false,
+      }),
+    ).toEqual({ efforts: ['low', 'high'], fallback: false });
+  });
+
+  it('MachineCapabilities.claudeFlags 格式不合只丟這個欄位', () => {
+    const caps = { hasGpu: false, gpuName: null, cpuCores: 1, memoryBytes: 0, claudeVersion: null };
+    expect(MachineCapabilities.parse({ ...caps, claudeFlags: 'bad' }).claudeFlags).toBeNull();
+    expect(MachineCapabilities.parse(caps).claudeFlags).toBeUndefined();
+  });
+});
+
+describe('名稱比對不分大小寫', () => {
+  it('sameModel 與清單去重', () => {
+    expect(sameModel('Opus', 'opus')).toBe(true);
+    expect(sameModel('opus', 'claude-opus-5-5')).toBe(false);
+    expect(sameModel(null, 'opus')).toBe(false);
+    expect(normalizeModelList(['opus', 'Opus', 'OPUS ', 'haiku'])).toEqual(['opus', 'haiku']);
   });
 });

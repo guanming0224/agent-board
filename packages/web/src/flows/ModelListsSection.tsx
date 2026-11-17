@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import {
   isSafeModelName,
+  sameModel,
   MODEL_LIST_MAX,
   MODEL_LISTS_DEFAULT,
   type ModelLists,
@@ -35,7 +36,7 @@ function ListEditor({
       ? 'flows.modelLists.errEmpty'
       : !isSafeModelName(name)
         ? 'flows.new.err.modelName'
-        : list.includes(name)
+        : list.some((existing) => sameModel(existing, name))
           ? 'flows.modelLists.errDup'
           : list.length >= MODEL_LIST_MAX
             ? 'flows.modelLists.errMax'

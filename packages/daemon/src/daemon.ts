@@ -68,7 +68,13 @@ import {
   writeMcpFiles,
   type McpLaunch,
 } from './mcpFiles';
-import { probeCapabilities, ResourceMonitor, type ResourceMonitorOptions } from './resources';
+import {
+  probeCapabilities,
+  probeClaudeFlags,
+  probeClaudeVersion,
+  ResourceMonitor,
+  type ResourceMonitorOptions,
+} from './resources';
 import { localPtyBackend, type PtyBackend } from './pty';
 import { buildClaudeArgs, ManagedSession } from './session';
 import { launchSessionHost } from './sessionHostLauncher';
@@ -99,6 +105,8 @@ import {
 const GIT_INIT_RESCAN_MS = 2_000;
 
 const USAGE_INTERVAL_MS = 15 * 60_000;
+/** 多久看一次 claude 版本有沒有變（自動更新）；變了才重跑 `claude --help`（§26.10）。 */
+const CLAUDE_FLAGS_REFRESH_MS = 10 * 60_000;
 /**
  * 審查 S4：e2e 測試（`AGENT_BOARD_E2E=1`）一律要給暫存的 `CODEX_HOME`，不能讀、寫使用者真的 `~/.codex`
  * （用量掃描、resume 檢查、假 codex 留的對話紀錄）。指到真的就拒絕啟動。
@@ -305,6 +313,7 @@ export class Daemon {
   private stuckMinutes: number;
   private capabilities: MachineCapabilities | null = null;
   private usageTimer: NodeJS.Timeout | null = null;
+  private claudeFlagsTimer: NodeJS.Timeout | null = null;
   private usageRunning = false;
   private usageReportedOnConnect = false;
   private stopping = false;
@@ -490,6 +499,14 @@ export class Daemon {
     this.hub.start();
     this.usageTimer = setInterval(() => void this.reportUsage(), USAGE_INTERVAL_MS);
     this.usageTimer.unref();
+    // 測試注入的 capabilities 不重新偵測。
+    if (!this.deps.capabilities) {
+      this.claudeFlagsTimer = setInterval(
+        () => void this.refreshClaudeFlags(),
+        CLAUDE_FLAGS_REFRESH_MS,
+      );
+      this.claudeFlagsTimer.unref();
+    }
   }
 
   /**
@@ -500,6 +517,8 @@ export class Daemon {
     this.stopping = true;
     if (this.usageTimer) clearInterval(this.usageTimer);
     this.usageTimer = null;
+    if (this.claudeFlagsTimer) clearInterval(this.claudeFlagsTimer);
+    this.claudeFlagsTimer = null;
     this.clearRevokedTimer();
     this.updater.dispose();
     this.resources.stop();
@@ -1010,6 +1029,21 @@ export class Daemon {
     status: Extract<DaemonToHub, { type: 'terminal.signalResult' }>['status'],
   ): void {
     this.send({ type: 'terminal.signalResult', sessionId, signal, sent, status });
+  }
+
+  /**
+   * claude 自動更新後重新偵測認得的參數（§26.10）：版本變了才重跑 `claude --help`。新開、接續、daemon 接回的 claude
+   * 立刻用新結果；hub 與網頁看到的要等下一次 hello（daemon 重新連上 hub）才更新——在那之前 hub 可能照舊結果
+   * 送出這台其實不支援的參數，由這裡（buildClaudeArgs）擋掉，不會讓 session 開不起來。
+   */
+  private async refreshClaudeFlags(): Promise<void> {
+    if (!this.capabilities) return;
+    const env = this.childEnv();
+    const version = await probeClaudeVersion(this.deps.config.claudeBin, env);
+    if (version === null || version === this.capabilities.claudeVersion) return;
+    const claudeFlags = await probeClaudeFlags(this.deps.config.claudeBin, env);
+    log.info(`claude 版本 ${this.capabilities.claudeVersion ?? '?'} → ${version}，重新偵測參數`);
+    this.capabilities = { ...this.capabilities, claudeVersion: version, claudeFlags };
   }
 
   private buildHello(): Extract<DaemonToHub, { type: 'daemon.hello' }> {
@@ -1667,6 +1701,8 @@ export class Daemon {
         // 推理強度與備援模型（§26）存在本機 sessions.json 的 spec 裡：--resume、daemon 重啟接回都沿用同一組。
         effort: spec.effort ?? null,
         fallbackModel: spec.fallbackModel ?? null,
+        // 用最近一次偵測的結果（claude 自動更新後由 refreshClaudeFlags 更新）。
+        claudeFlags: this.capabilities?.claudeFlags ?? null,
         name: spec.name,
         readOnly: spec.readOnly,
         mcp: this.prepareMcp(sessionId),

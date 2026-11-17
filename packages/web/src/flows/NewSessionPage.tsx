@@ -8,6 +8,8 @@ import {
   CODEX_PERMISSION_WAIT_MS,
   codexPermissionArgs,
   PermissionMode,
+  supportsFallbackModel,
+  validEffort,
 } from '@agent-board/protocol';
 import type { Machine, Session, Settings } from '@agent-board/protocol';
 import { useT } from '../shared/i18n';
@@ -46,8 +48,8 @@ import {
 import { PairMachineNext } from './settingsParts';
 import { modelFieldErrors, ModelFields, useModelLists } from './ModelFields';
 import {
-  modelOptionsSupported,
   modelSpec,
+  optionSupport,
   NO_MODEL,
   pickedName,
   pickForAgent,
@@ -185,15 +187,13 @@ export function NewSessionPage() {
     setAgent(next);
     // 別家的別名（opus 之於 Codex）清回「預設」；自己打的自訂名稱留著。
     setModel(pickForAgent(model, next === 'codex' ? modelLists.codex : modelLists.claude));
+    // 新 agent 沒有的強度、不支援的備援一起清掉（草稿也清），換回來不會又冒出來。
+    if (effort && !validEffort(next, effort)) setEffort('');
+    if (!supportsFallbackModel(next)) setFallback(NO_MODEL);
   };
-  const modelErrors = modelFieldErrors(t, agent, model, fallback);
-  const models = modelSpec({
-    agent,
-    model,
-    effort,
-    fallback,
-    supported: modelOptionsSupported(machine),
-  });
+  const support = optionSupport(machine, agent);
+  const modelErrors = modelFieldErrors(t, support, model, fallback);
+  const models = modelSpec({ model, effort, fallback, support });
   // 舊資料可能有不合格的 id（hub 會拒絕），不放進建議清單。接續只列同一種 CLI 的對話。
   const resumable = sessions.filter(
     (s) =>

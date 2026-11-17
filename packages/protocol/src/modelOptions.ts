@@ -9,13 +9,18 @@ export const SessionEffort = z.enum(['minimal', 'low', 'medium', 'high', 'xhigh'
 export type SessionEffort = z.infer<typeof SessionEffort>;
 
 /**
- * 模型名稱的安全字元：英數與 `. _ : / - [ ]`（`[ ]` 是 Claude 的 `opus[1m]` 這類寫法），1–100 字，
- * 不能以 `-` 開頭（才不會被 CLI 當成參數）。空白、引號、逗號、`=`、`$` 都不收。
+ * 模型名稱的安全字元：英數與 `. _ : / @ - [ ]`（`[ ]` 是 Claude 的 `opus[1m]`、`@` 是 Vertex 的
+ * `claude-opus-4-1@20250805` 這類寫法），1–100 字，不能以 `-` 開頭（才不會被 CLI 當成參數）。
+ * 空白、引號、逗號、`=`、`$` 都不收。
  */
-export const MODEL_NAME_RE = /^(?!-)[A-Za-z0-9._:/[\]-]{1,100}$/;
+export const MODEL_NAME_RE = /^(?!-)[A-Za-z0-9._:/@[\]-]{1,100}$/;
 export const ModelName = z.string().regex(MODEL_NAME_RE);
 
 export const isSafeModelName = (value: string): boolean => MODEL_NAME_RE.test(value);
+
+/** 備援和主模型是不是同一個（不分大小寫；別名對完整名稱不比，claude 不接受時靠 §26.10 的補救）。 */
+export const sameModel = (a: string | null | undefined, b: string | null | undefined): boolean =>
+  !!a && !!b && a.toLowerCase() === b.toLowerCase();
 
 type Agent = 'claude' | 'codex';
 
@@ -30,6 +35,70 @@ export function validEffort(agent: Agent, effort: string | null | undefined): bo
 
 /** 備援模型只有 Claude Code 有（`--fallback-model`）；Codex 沒有對應參數。 */
 export const supportsFallbackModel = (agent: Agent): boolean => agent === 'claude';
+
+/**
+ * 這台機器上的 claude 認得哪些參數（daemon 開機與 claude 版本變了時跑 `claude --help` 解析，§26.10）。
+ * `efforts`：說明括號裡列的級別（只留 CLAUDE_EFFORTS 裡的）；括號讀不到＝null（照白名單）。
+ * `fallbackModel`：說明寫「只能配 --print」的舊版當作互動模式不支援。
+ */
+export const ClaudeFlags = z.object({
+  effort: z.boolean(),
+  efforts: z.array(z.string().max(20)).max(20).nullable(),
+  fallbackModel: z.boolean(),
+});
+export type ClaudeFlags = z.infer<typeof ClaudeFlags>;
+
+/** `claude --help` 裡某個選項的說明（選項那一行加上縮排的續行）；沒有這個選項回 null。 */
+function optionBlock(help: string, flag: string): string | null {
+  const lines = help.split(/\r?\n/);
+  const head = new RegExp(`^\\s*(?:-\\w,\\s*)?${flag}(?=[\\s=<,]|$)`);
+  const start = lines.findIndex((line) => head.test(line));
+  if (start === -1) return null;
+  const block = [lines[start]!];
+  for (const line of lines.slice(start + 1)) {
+    // 下一個選項（縮排後是 -）或不縮排的段落標題：這個選項的說明結束。
+    if (/^\s*-/.test(line) || /^\S/.test(line) || line.trim() === '') break;
+    block.push(line);
+  }
+  return block.join(' ').replace(/\s+/g, ' ');
+}
+
+export function parseClaudeHelp(help: string): ClaudeFlags {
+  const effortBlock = optionBlock(help, '--effort');
+  let efforts: string[] | null = null;
+  if (effortBlock) {
+    for (const [, inside] of effortBlock.matchAll(/\(([^)]*)\)/g)) {
+      const levels = inside!
+        .split(/[\s,|/]+/)
+        .filter((word) => (CLAUDE_EFFORTS as readonly string[]).includes(word));
+      if (levels.length > 0) efforts = levels;
+    }
+  }
+  const fallbackBlock = optionBlock(help, '--fallback-model');
+  return {
+    effort: effortBlock !== null,
+    efforts,
+    fallbackModel: fallbackBlock !== null && !/only[^.]*--print/i.test(fallbackBlock),
+  };
+}
+
+/**
+ * 實際能帶的推理強度與備援（hub、daemon、網頁共用）。Codex 看白名單；Claude 還要看這台 claude 認不認得：
+ * claudeFlags 沒有（偵測失敗、舊 daemon）＝都不帶。
+ */
+export function allowedModelOptions(
+  agent: Agent,
+  claudeFlags: ClaudeFlags | null | undefined,
+): { efforts: readonly SessionEffort[]; fallback: boolean } {
+  if (agent === 'codex') return { efforts: CODEX_EFFORTS, fallback: false };
+  if (!claudeFlags) return { efforts: [], fallback: false };
+  const efforts = !claudeFlags.effort
+    ? []
+    : claudeFlags.efforts === null
+      ? CLAUDE_EFFORTS
+      : CLAUDE_EFFORTS.filter((level) => claudeFlags.efforts!.includes(level));
+  return { efforts, fallback: claudeFlags.fallbackModel };
+}
 
 /**
  * daemon 在 hello `features` 宣告：認得 `SessionSpec.effort`／`fallbackModel`。舊 daemon 不認得（zod 會丟掉多的欄位，
@@ -51,12 +120,13 @@ export const MODEL_LISTS_DEFAULT: ModelLists = {
   codex: ['gpt-6-luna'],
 };
 
-/** 存之前整理：去前後空白、去重、去空字串（順序照使用者排的）。 */
+/** 存之前整理：去前後空白、不分大小寫去重、去空字串（順序照使用者排的）。 */
 export function normalizeModelList(list: readonly string[]): string[] {
   const out: string[] = [];
   for (const raw of list) {
     const value = raw.trim();
-    if (value && !out.includes(value)) out.push(value);
+    // 不分大小寫去重（Opus 和 opus 是同一個別名），留第一次出現的寫法。
+    if (value && !out.some((name) => sameModel(name, value))) out.push(value);
   }
   return out;
 }

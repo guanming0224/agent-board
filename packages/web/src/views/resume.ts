@@ -26,6 +26,8 @@ export function resumeErrorText(t: T, e: unknown, machineName: string): string {
       return t('views.resume.err.account');
     case 'session_deleting':
       return t('views.resume.err.deleting');
+    case 'invalid_model':
+      return t('views.resume.err.invalidModel');
     default:
       return t('views.resume.err.other', { error: errorText(e) });
   }

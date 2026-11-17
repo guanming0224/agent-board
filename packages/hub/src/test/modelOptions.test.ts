@@ -8,7 +8,7 @@ import {
   type Session,
   type SessionSpec,
 } from '@agent-board/protocol';
-import { type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
+import { capabilities, type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
 
 let hub: TestHub;
 afterEach(async () => {
@@ -24,10 +24,13 @@ const NEW_FEATURES = [
 ];
 const get = (id: string) => hub.running.store.getSession(id);
 
-async function setup(features: string[] = NEW_FEATURES) {
+async function setup(features: string[] = NEW_FEATURES, claudeFlags?: unknown) {
   hub = await startHub({ timing: { handoffEnterDelayMs: 20 } });
   const cookie = await hub.setupOwner();
-  const { daemon, machineId } = await hub.onlineDaemon(cookie, { features });
+  const { daemon, machineId } = await hub.onlineDaemon(cookie, {
+    features,
+    ...(claudeFlags === undefined ? {} : { capabilities: { ...capabilities, claudeFlags } }),
+  });
   const create = (over: Partial<SessionSpec> = {}) =>
     hub.api<Session & { code?: string }>('POST', '/api/sessions', {
       cookie,
@@ -129,6 +132,129 @@ describe('建立 session 的推理強度與備援模型', () => {
     expect(sent.spec).not.toHaveProperty('effort');
     expect(sent.spec).not.toHaveProperty('fallbackModel');
     expect(optsRows()).toBe(0);
+  });
+});
+
+describe('這台 claude 認不認得（§26.10）與補救', () => {
+  const end = async (daemon: Peer, id: string) => {
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(id, {
+        status: 'error',
+        endedAt: new Date().toISOString(),
+        claudeSessionId: CLAUDE_ID,
+      }),
+    });
+    await until(() => get(id)?.endedAt !== null, 'ended');
+  };
+
+  it('偵測不到 claude 參數（claudeFlags null）：強度與備援都不送、不記，Codex 的強度照送', async () => {
+    const { daemon, create } = await setup(NEW_FEATURES, null);
+    const res = await create({ model: 'opus', effort: 'high', fallbackModel: 'sonnet' });
+    expect(res.status).toBe(200);
+    expect(res.body.effort).toBeUndefined();
+    const sent = await daemon.next('session.create', (m) => m.sessionId === res.body.id);
+    expect(sent.spec).not.toHaveProperty('effort');
+    expect(sent.spec).not.toHaveProperty('fallbackModel');
+    expect(optsRows()).toBe(0);
+    const codex = await create({ agent: 'codex', effort: 'minimal' });
+    const sentCodex = await daemon.next('session.create', (m) => m.sessionId === codex.body.id);
+    expect(sentCodex.spec).toMatchObject({ effort: 'minimal' });
+  });
+
+  it('說明只列到 high、備援只能配 --print：max 與備援拿掉，high 照送', async () => {
+    const { daemon, create } = await setup(NEW_FEATURES, {
+      effort: true,
+      efforts: ['low', 'medium', 'high'],
+      fallbackModel: false,
+    });
+    const max = await create({ effort: 'max', fallbackModel: 'sonnet' });
+    const sentMax = await daemon.next('session.create', (m) => m.sessionId === max.body.id);
+    expect(sentMax.spec).not.toHaveProperty('effort');
+    expect(sentMax.spec).not.toHaveProperty('fallbackModel');
+    const high = await create({ name: 'high', effort: 'high' });
+    const sentHigh = await daemon.next('session.create', (m) => m.sessionId === high.body.id);
+    expect(sentHigh.spec).toMatchObject({ effort: 'high' });
+    expect(get(high.body.id)?.effort).toBe('high');
+  });
+
+  it('接續時那台 claude 已經不認得：不送、清掉記錄並推給畫面', async () => {
+    const { cookie, daemon, machineId, create } = await setup();
+    const res = await create({ effort: 'xhigh', fallbackModel: 'sonnet' });
+    await daemon.next('session.create', (m) => m.sessionId === res.body.id);
+    await end(daemon, res.body.id);
+    // daemon 重新連上：claude 換成舊版（偵測不到 --effort 與 --fallback-model）。
+    hub.running.store.machineHello(
+      machineId,
+      'linux',
+      { ...capabilities, claudeFlags: { effort: false, efforts: null, fallbackModel: false } },
+      new Date().toISOString(),
+    );
+    const client = await hub.client(cookie);
+    const resumed = await hub.api('POST', `/api/sessions/${res.body.id}/resume`, { cookie });
+    expect(resumed.status).toBe(200);
+    const again = await daemon.next('session.create', (m) => m.sessionId === res.body.id);
+    expect(again.spec).not.toHaveProperty('effort');
+    expect(again.spec).not.toHaveProperty('fallbackModel');
+    expect(get(res.body.id)?.effort).toBeUndefined();
+    await client.next(
+      'session.updated',
+      (m) =>
+        (m.session as Session).id === res.body.id &&
+        (m.session as Session).effort === undefined &&
+        (m.session as Session).fallbackModel === undefined,
+    );
+  });
+
+  it('備援比對不分大小寫；Vertex 的 @ 名稱可以用', async () => {
+    const { create } = await setup();
+    const same = await create({ model: 'opus', fallbackModel: 'OPUS' });
+    expect(same.status).toBe(400);
+    expect(same.body.code).toBe('fallback_same_as_model');
+    const vertex = await create({ model: 'claude-opus-4-1@20250805' });
+    expect(vertex.status).toBe(200);
+  });
+
+  it('補救：舊資料的模型名稱不合，接續回 409 invalid_model；owner 清掉模型或強度與備援後可以接續', async () => {
+    const { cookie, daemon, create } = await setup();
+    const res = await create({ model: 'opus', effort: 'high', fallbackModel: 'sonnet' });
+    await daemon.next('session.create', (m) => m.sessionId === res.body.id);
+    const id = res.body.id;
+    // 執行中不能改。
+    const active = await hub.api('POST', `/api/sessions/${id}/model-reset`, {
+      cookie,
+      body: { options: true },
+    });
+    expect(active.status).toBe(409);
+    await end(daemon, id);
+    hub.running.store.setSessionModel(id, 'old model with spaces');
+    const blocked = await hub.api('POST', `/api/sessions/${id}/resume`, { cookie });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.code).toBe('invalid_model');
+
+    const member = await hub.createMember(cookie);
+    const denied = await hub.api('POST', `/api/sessions/${id}/model-reset`, {
+      cookie: member.cookie,
+      body: { model: true },
+    });
+    expect(denied.status).toBe(403);
+    expect(
+      (await hub.api('POST', `/api/sessions/${id}/model-reset`, { cookie, body: {} })).status,
+    ).toBe(400);
+
+    const reset = await hub.api<Session>('POST', `/api/sessions/${id}/model-reset`, {
+      cookie,
+      body: { model: true, options: true },
+    });
+    expect(reset.status).toBe(200);
+    expect(reset.body.model).toBeNull();
+    expect(reset.body.effort).toBeUndefined();
+    expect(optsRows()).toBe(0);
+    const resumed = await hub.api('POST', `/api/sessions/${id}/resume`, { cookie });
+    expect(resumed.status).toBe(200);
+    const again = await daemon.next('session.create', (m) => m.sessionId === id);
+    expect(again.spec).toMatchObject({ model: null });
+    expect(again.spec).not.toHaveProperty('effort');
   });
 });
 

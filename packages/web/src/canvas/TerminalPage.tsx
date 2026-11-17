@@ -5,6 +5,7 @@ import { HandoffTrigger } from '@agent-board/protocol';
 import type { HandoffRule, Session } from '@agent-board/protocol';
 import { SessionReviewCards } from '../flows';
 import { SessionGitInitPanel } from '../flows/SessionGitInit';
+import { SessionModelPanel } from '../flows/SessionModelPanel';
 import { useNotGitEvents } from '../flows/gitInitState';
 import { useMaskText } from '../security';
 import { useT } from '../shared/i18n';
@@ -258,6 +259,8 @@ function Expanded({ session }: { session: Session }) {
           <SessionReviewCards sessionId={session.id} />
           {/* 資料夾不是 git 時的 git init（§24.5，只有 owner）。 */}
           <SessionGitInitPanel key={session.id} session={session} />
+          {/* 補救：拿掉推理強度與備援、模型清回預設（§26.10，只有 owner、已結束的）。 */}
+          <SessionModelPanel key={`model-${session.id}`} session={session} />
           <HandoffBox session={session} />
         </aside>
       </div>

@@ -2,10 +2,8 @@
 // 模型下拉：預設（不指定）＋設定頁的清單＋「自訂…」（切成輸入框）。清單從 GET /api/model-lists 讀，讀不到用內建清單。
 import { useCallback } from 'react';
 import {
-  effortsFor,
   MODEL_LISTS_DEFAULT,
-  supportsFallbackModel,
-  validEffort,
+  sameModel,
   type AgentKind,
   type Machine,
   type ModelLists,
@@ -14,12 +12,13 @@ import { useBoard } from '../shared/store';
 import { useLoad, type T } from './common';
 import {
   CUSTOM,
-  modelOptionsSupported,
   onSelect,
+  optionSupport,
   pickedName,
   pickError,
   selectValue,
   type ModelPick,
+  type OptionSupport,
 } from './modelChoice';
 import { Field } from './sessionForm';
 
@@ -30,10 +29,10 @@ export function useModelLists(): ModelLists {
   return lists.data ?? MODEL_LISTS_DEFAULT;
 }
 
-/** 欄位錯誤（擋送出）：模型、備援的名稱，備援和主模型相同。 */
+/** 欄位錯誤（擋送出）：模型、備援的名稱，備援和主模型相同（不分大小寫）。備援帶不了（隱藏）時不檢查。 */
 export function modelFieldErrors(
   t: T,
-  agent: AgentKind,
+  support: OptionSupport,
   model: ModelPick,
   fallback: ModelPick,
 ): { model: string | null; fallback: string | null } {
@@ -45,13 +44,12 @@ export function modelFieldErrors(
         ? t('flows.new.err.modelName')
         : null;
   };
-  const fallbackName = supportsFallbackModel(agent) ? pickedName(fallback) : null;
   return {
     model: nameError(model),
-    fallback: !supportsFallbackModel(agent)
+    fallback: !support.fallback
       ? null
       : (nameError(fallback) ??
-        (fallbackName !== null && fallbackName === pickedName(model)
+        (sameModel(pickedName(fallback), pickedName(model))
           ? t('flows.new.err.fallbackSame')
           : null)),
   };
@@ -129,8 +127,9 @@ export function ModelFields({
 }) {
   const codex = agent === 'codex';
   const list = codex ? lists.codex : lists.claude;
-  const errors = modelFieldErrors(t, agent, model, fallback);
-  const supported = modelOptionsSupported(machine);
+  const support = optionSupport(machine, agent);
+  const errors = modelFieldErrors(t, support, model, fallback);
+  const efforts = support.efforts as readonly string[];
   return (
     <>
       <Field
@@ -158,20 +157,21 @@ export function ModelFields({
       >
         <select
           id={`${idPrefix}-effort`}
-          // 換了 agent、原本的強度這邊沒有：顯示成「跟 CLI 預設」（送出時也不帶）。
-          value={validEffort(agent, effort) ? effort : ''}
+          // 這台用不了的強度（換了 agent、claude 太舊）：顯示成「跟 CLI 預設」（送出時也不帶）。
+          value={efforts.includes(effort) ? effort : ''}
+          disabled={efforts.length === 0}
           onChange={(e) => setEffort(e.target.value)}
         >
           <option value="">{t('flows.new.effortDefault')}</option>
-          {effortsFor(agent).map((level) => (
+          {efforts.map((level) => (
             <option key={level} value={level}>
               {level}
             </option>
           ))}
         </select>
       </Field>
-      {/* 備援模型只有 Claude Code 有（--fallback-model）；Codex 不顯示。 */}
-      {!codex && (
+      {/* 備援模型只有 Claude Code 有（--fallback-model），而且那台 claude 要認得；不然不顯示。 */}
+      {!codex && support.fallback && (
         <Field
           label={t('flows.new.fallback')}
           htmlFor={`${idPrefix}-fallback`}
@@ -189,9 +189,14 @@ export function ModelFields({
           />
         </Field>
       )}
-      {!supported && machine && (
+      {support.reason === 'old_daemon' && machine && (
         <p className="field-error" role="status" data-testid="model-options-old">
           {t('flows.new.modelOptionsOld', { machine: machine.name })}
+        </p>
+      )}
+      {support.reason === 'old_claude' && machine && (
+        <p className="field-error" role="status" data-testid="model-options-old-claude">
+          {t('flows.new.modelOptionsOldClaude', { machine: machine.name })}
         </p>
       )}
     </>

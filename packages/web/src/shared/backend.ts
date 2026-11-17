@@ -198,6 +198,8 @@ export interface BoardBackend {
    * 錯誤碼：session_active、no_claude_session、machine_offline、invalid_account_profile、session_deleting。
    */
   resumeSession(id: string): Promise<Session>;
+  /** 補救（§26.10）：已結束的 session 拿掉推理強度與備援、或把模型清回預設（只有 owner）。 */
+  resetSessionModel(id: string, reset: { options?: boolean; model?: boolean }): Promise<Session>;
 
   /** 已封存的 session（CONTRACTS §9）。board 快照不含它們，要另外讀。 */
   listArchivedSessions(): Promise<Session[]>;

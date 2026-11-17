@@ -9,7 +9,7 @@ import { CloseButton } from '../views/Overlays';
 import { currentZoneId } from '../zones';
 import { createErrorText, ModeChip, Msg, useProjects, type Note } from './common';
 import { modelFieldErrors, ModelFields, useModelLists } from './ModelFields';
-import { modelOptionsSupported, modelSpec, NO_MODEL, type ModelPick } from './modelChoice';
+import { modelSpec, NO_MODEL, optionSupport, type ModelPick } from './modelChoice';
 import {
   Field,
   FolderBrowser,
@@ -83,7 +83,7 @@ export function QuickCreate({
         ? t('flows.new.err.machineOffline', { machine: machine.name })
         : null,
     cwd: cwd.trim() ? null : t('flows.new.err.cwd'),
-    ...modelFieldErrors(t, 'claude', model, fallback),
+    ...modelFieldErrors(t, optionSupport(machine, 'claude'), model, fallback),
   };
   const firstError = Object.values(errors).find(Boolean) ?? null;
 
@@ -103,13 +103,7 @@ export function QuickCreate({
         cwd: cwd.trim(),
         useWorktree,
         permissionMode: mode,
-        ...modelSpec({
-          agent: 'claude',
-          model,
-          effort,
-          fallback,
-          supported: modelOptionsSupported(machine),
-        }),
+        ...modelSpec({ model, effort, fallback, support: optionSupport(machine, 'claude') }),
         accountProfile: null,
         resumeClaudeSessionId: null,
         firstPrompt: firstPrompt.trim() || null,

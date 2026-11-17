@@ -68,6 +68,8 @@ registerMessages('zh-TW', {
   'views.resume.hint': '用 claude --resume 接回原本的對話，從上次停下的地方繼續。',
   'views.resume.err.active': '這個 session 還在執行，不用接續。',
   'views.resume.err.noConversation': '沒有可以接續的 Claude 對話（從沒開始過，或對話 id 不完整）。',
+  'views.resume.err.invalidModel':
+    '記著的模型名稱含有現在不允許的字元，接續不了。到全尺寸頁側欄「模型設定」把模型清回預設再接續（只有擁有者能改）。',
   'views.resume.err.offline': '{machine} 離線，上線後才能接續。',
   'views.resume.err.account': '這個 session 的帳號資料夾不是絕對路徑，無法接續。',
   'views.resume.err.deleting': '這個 session 正在刪除，不能接續。',
@@ -227,6 +229,8 @@ registerMessages('en', {
   'views.resume.err.active': 'This session is still running; nothing to resume.',
   'views.resume.err.noConversation':
     'There is no Claude conversation to resume (it never started, or the id is incomplete).',
+  'views.resume.err.invalidModel':
+    'The saved model name has characters that are no longer allowed, so it cannot resume. Clear the model under Model settings in the full-screen side panel, then resume (owners only).',
   'views.resume.err.offline': '{machine} is offline. Resume once it is back.',
   'views.resume.err.account':
     "This session's account folder is not an absolute path, so it can't be resumed.",

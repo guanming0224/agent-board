@@ -37,6 +37,8 @@ export const FAKE_CAPABILITIES: MachineCapabilities = {
   cpuCores: 4,
   memoryBytes: 1024,
   claudeVersion: '9.9.9',
+  // 假 claude 當作認得 --effort 與互動模式的 --fallback-model（§26.10）。
+  claudeFlags: { effort: true, efforts: null, fallbackModel: true },
 };
 
 export function makeTempDir(): string {

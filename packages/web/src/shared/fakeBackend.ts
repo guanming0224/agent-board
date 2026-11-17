@@ -32,6 +32,7 @@ import {
   ZoneGroupError,
   type ZoneGroups,
   MODEL_LISTS_DEFAULT,
+  isSafeModelName,
 } from '@agent-board/protocol';
 import type {
   TeamActivity,
@@ -101,7 +102,9 @@ const machine = (id: string, name: string, online: boolean, hasGpu: boolean): Ma
     // 示範：有 GPU 的那台也裝了 Codex CLI（新增 session 頁可以選 Codex，CONTRACTS §19）。
     ...(hasGpu ? { codexVersion: '0.0.0-demo' } : {}),
     // 示範：離線的那台是舊版 daemon（不認得推理強度與備援模型，§26），上線後新增 session 會提示。
-    ...(online ? { modelOptions: true } : {}),
+    ...(online
+      ? { modelOptions: true, claudeFlags: { effort: true, efforts: null, fallbackModel: true } }
+      : {}),
   },
 });
 
@@ -1287,9 +1290,23 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       publish();
       return s;
     },
+    async resetSessionModel(id, reset) {
+      const s = find(id);
+      if (s.endedAt === null) throw apiError(409, 'session_active', 'Session is still active');
+      if (reset.options) {
+        delete s.effort;
+        delete s.fallbackModel;
+      }
+      if (reset.model) s.model = null;
+      publish();
+      return { ...s };
+    },
     async resumeSession(id) {
       const s = find(id);
       if (s.endedAt === null) throw apiError(409, 'session_active', 'Session is still active');
+      if (s.model && !isSafeModelName(s.model)) {
+        throw apiError(409, 'invalid_model', 'The saved model name is no longer allowed');
+      }
       if (!s.claudeSessionId) {
         throw apiError(409, 'no_claude_session', 'Session has no Claude conversation to resume');
       }

@@ -12,9 +12,11 @@ import type {
 } from '@agent-board/protocol';
 import {
   ClaudeSessionId,
+  allowedModelOptions,
   isSafeModelName,
+  sameModel,
+  type ClaudeFlags,
   READ_ONLY_DISALLOWED_TOOLS,
-  validEffort,
 } from '@agent-board/protocol';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import type { Terminal as TerminalType } from '@xterm/headless';
@@ -65,8 +67,13 @@ export interface ClaudeArgsInput {
   model: string | null;
   /** 推理強度（§26）：只收 CLAUDE_EFFORTS 裡的值，其他（含 Codex 才有的 minimal）不帶。 */
   effort?: string | null;
-  /** 備援模型（§26）：只收安全字元的模型名稱，和主模型相同就不帶（claude 不接受）。 */
+  /** 備援模型（§26）：只收安全字元的模型名稱，和主模型相同（不分大小寫）就不帶（claude 不接受）。 */
   fallbackModel?: string | null;
+  /**
+   * 這台 claude 認得哪些參數（`claude --help` 解析，§26.10）。null＝偵測不到：強度與備援都不帶，
+   * 舊版 claude 才不會因為不認得參數而開不起來（resume、daemon 接回也一樣）。
+   */
+  claudeFlags: ClaudeFlags | null;
   name: string;
   /** 唯讀 session：拿掉改檔工具（SessionSpec.readOnly）。 */
   readOnly?: boolean;
@@ -94,9 +101,21 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
   // 值直接進 argv（不經 shell）；仍只收安全字元，Windows 經 .cmd 啟動時也不會被拆壞（§26）。
   const model = safeModel(input.model);
   if (model) args.push('--model', model);
-  if (validEffort('claude', input.effort)) args.push('--effort', input.effort!);
+  const allowed = allowedModelOptions('claude', input.claudeFlags);
+  if (input.effort) {
+    if ((allowed.efforts as readonly string[]).includes(input.effort)) {
+      args.push('--effort', input.effort);
+    } else {
+      log.warn(
+        `這台 claude 不支援 --effort ${JSON.stringify(input.effort.slice(0, 20))}，這次不帶`,
+      );
+    }
+  }
   const fallback = safeModel(input.fallbackModel);
-  if (fallback && fallback !== model) args.push('--fallback-model', fallback);
+  if (fallback && !sameModel(fallback, model)) {
+    if (allowed.fallback) args.push('--fallback-model', fallback);
+    else log.warn('這台 claude 不支援互動模式的 --fallback-model，這次不帶');
+  }
   // 兩個都是可變長度參數：一個值一個 argv，最後一定接 --name，才不會吞到別的參數。
   // `--allowedTools` 只列設定開著的 agent-board 工具（派工 4 個、進度卡 2 個），不放寬任何其他工具
   // （docs/claude-code-notes.md、docs/no-llm-review.md）。

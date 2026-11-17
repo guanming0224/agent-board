@@ -7,6 +7,23 @@ if (argv[0] === '--version') {
   console.log('9.9.9 (Fake Claude)');
   process.exit(0);
 }
+// `--help`（daemon 偵測認得哪些參數，§26.10）：照真 claude 2.1.326 的寫法列 --effort 與 --fallback-model。
+if (argv[0] === '--help') {
+  console.log(
+    [
+      'Usage: claude [options] [command] [prompt]',
+      '',
+      'Options:',
+      '  --effort <level>                      Effort level for the current session',
+      '                                        (low, medium, high, xhigh, max)',
+      '  --fallback-model <model>              Models to fall back to when the main',
+      '                                        model is busy or unavailable',
+      '                                        (comma-separated, in order).',
+      '  --model <model>                       Model for the current session.',
+    ].join('\n'),
+  );
+  process.exit(0);
+}
 
 if (process.env.FAKE_CLAUDE_LOG) {
   appendFileSync(
