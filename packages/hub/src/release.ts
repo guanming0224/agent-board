@@ -32,6 +32,7 @@ import {
   type TargetNote,
   UPDATE_IN_PROGRESS,
   UpdateState,
+  type SessionHostState,
   versionFromTag,
   type CanaryStats,
   type GhState,
@@ -209,6 +210,8 @@ export interface ReleaseDeps {
   onTargetsChanged(): void;
   /** 更新失敗（第一次看到這次失敗）：推播。 */
   notifyUpdateFailed(machineId: string, machineName: string, state: UpdateState): void;
+  /** 連著的 daemon 回報的 session host 狀態（CONTRACTS §20.8）；不給＝都沒有。 */
+  sessionHost?(machineId: string): { state: SessionHostState | null; restartSupported: boolean };
 }
 
 export class ReleaseManager {
@@ -848,6 +851,9 @@ export class ReleaseManager {
             : protocolCompat(PROTOCOL_VERSION, record.protocolVersion),
         hasHub: record.hostsHub,
         update: record.update,
+        sessionHost: machine.online ? (this.deps.sessionHost?.(machine.id).state ?? null) : null,
+        sessionHostRestartSupported:
+          machine.online && (this.deps.sessionHost?.(machine.id).restartSupported ?? false),
       };
     });
     return {

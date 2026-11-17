@@ -264,6 +264,20 @@ export function updateDeferReason(
   return null;
 }
 
+/**
+ * daemon 回報的 session host 狀態（事故 9，CONTRACTS §20.8）。
+ * mode：host＝agent 由 session host 養著；legacy＝連不上 host，daemon 自己開 PTY（daemon 重啟時 agent 會結束）；
+ * unusable＝host 還在但不能用（協定不相容、token 不符）；off＝設定成不用 host。
+ * inputSuspect：送了輸入卻完全沒有輸出、連續發生（host 輸入可能失效）。
+ * canRestart：這台 daemon 能自己重啟 session host（有服務名稱、Mac／Linux）。
+ */
+export const SessionHostState = z.object({
+  mode: z.enum(['host', 'legacy', 'unusable', 'off']),
+  inputSuspect: z.boolean(),
+  canRestart: z.boolean(),
+});
+export type SessionHostState = z.infer<typeof SessionHostState>;
+
 /** 面板上一台機器的版本與更新狀態。 */
 export const MachineRelease = z.object({
   machineId: Id,
@@ -298,6 +312,10 @@ export const MachineRelease = z.object({
   unverifiedPlatform: z.boolean().default(false),
   /** owner 對這台打開了「允許自動更新」（settings `machineAllowUnverified:<id>`）。舊 hub 不送＝false。 */
   allowUnverified: z.boolean().default(false),
+  /** session host 狀態（daemon 在線而且有回報才有；舊 daemon／舊 hub 為 null）。 */
+  sessionHost: SessionHostState.nullable().default(null),
+  /** daemon 認得「重啟 session host」指令（hello features 有 `sessionHost.restart`）。舊 hub 不送＝false。 */
+  sessionHostRestartSupported: z.boolean().default(false),
 });
 export type MachineRelease = z.infer<typeof MachineRelease>;
 

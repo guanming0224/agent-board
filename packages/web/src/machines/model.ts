@@ -212,3 +212,35 @@ export function statusText(status: ReleaseStatus, t: Translate): string {
       return t(`machines.status.${status.kind}`);
   }
 }
+
+/**
+ * session host 那一段要顯示什麼（事故 9，CONTRACTS §20.8）。hidden＝不顯示（離線、舊 daemon 沒回報、一切正常）。
+ * restart：按鈕狀態——ok 能按；old_daemon 舊 daemon 不認得指令；unsupported 這台不能自己重啟（Windows、沒有服務名稱）。
+ */
+export type SessionHostView =
+  | { kind: 'hidden' }
+  | {
+      kind: 'suspect' | 'legacy' | 'unusable';
+      restart: 'ok' | 'old_daemon' | 'unsupported';
+    };
+
+export function sessionHostView(m: MachineRelease): SessionHostView {
+  const state = m.sessionHost;
+  if (!m.online || !state) return { kind: 'hidden' };
+  const restart = !m.sessionHostRestartSupported
+    ? 'old_daemon'
+    : state.canRestart
+      ? 'ok'
+      : 'unsupported';
+  if (state.inputSuspect) return { kind: 'suspect', restart };
+  if (state.mode === 'legacy') return { kind: 'legacy', restart };
+  if (state.mode === 'unusable') return { kind: 'unusable', restart };
+  return { kind: 'hidden' };
+}
+
+/** 重啟 session host 前要特別提醒的 session 狀態（正在跑、等你允許、等你看計畫：重啟會中斷它們）。 */
+export const BUSY_FOR_HOST_RESTART: readonly string[] = [
+  'running',
+  'waiting_permission',
+  'plan_review',
+];

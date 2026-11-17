@@ -200,7 +200,10 @@ describe('session host 模式', () => {
   });
 
   it('host 關閉（換版、停服務，agent 跟著結束）：session 不算結束，daemon 改用 --resume 重開', async () => {
-    await h.start();
+    mkdirSync(h.workDir, { recursive: true });
+    await h.hub.start();
+    // 等不到 host 回來（這裡不會回來）才退回舊模式；測試把等待縮短。
+    await h.startDaemon({ sessionHostRecoverWaitMs: 300 });
     await h.createAndSubscribe('s1');
     const resumeId = h.runs()[0]!.argv[h.runs()[0]!.argv.indexOf('--session-id') + 1]!;
     // 假裝有對話紀錄，重開時才會用 --resume。
@@ -307,4 +310,133 @@ describe('host 沒在跑：daemon 自己拉起來', () => {
     expect(h.daemons[0]!['backend'].kind).toBe('local');
     await h.createAndSubscribe('s1');
   });
+});
+
+// 事故 9（CONTRACTS §20.8）：host 被重啟、host 輸入失效的偵測、機器面板的重啟指令。
+describe('session host 重啟與輸入健康', () => {
+  const statuses = () =>
+    h.hub.received.filter(
+      (m): m is Extract<DaemonToHub, { type: 'sessionHost.status' }> =>
+        m.type === 'sessionHost.status',
+    );
+
+  it('host 被重啟（socket 暫時不在）：daemon 等它回來、接回 host 模式，不退回舊模式', async () => {
+    await h.start();
+    await h.createAndSubscribe('s1');
+    expect(h.hellos().at(-1)!.sessionHost).toEqual({
+      mode: 'host',
+      inputSuspect: false,
+      canRestart: false,
+    });
+    await host!.close();
+    host = null;
+    // 像 launchd：host 結束 agent、過一陣子才重開（比舊的 5 秒等待久）。
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    host = new SessionHostServer({ dataDir: h.dataDir, log: quiet, version: 'test-host-2' });
+    await host.start();
+    await waitUntil(() => h.runs().length === 2, '重開', 20_000);
+    expect(h.daemons[0]!['backend'].kind).toBe('host');
+    await waitUntil(() => host!.sessionCount === 1, '新的 agent 由 host 養');
+    expect(statuses().map((m) => m.state.mode)).not.toContain('legacy');
+  }, 40_000);
+
+  it('舊模式下 host 回來：自動切回 host，之後新開的 session 由 host 養', async () => {
+    await host!.close();
+    host = null;
+    mkdirSync(h.workDir, { recursive: true });
+    await h.hub.start();
+    await h.startDaemon({ sessionHostReturnIntervalMs: 200 });
+    expect(h.daemons[0]!['backend'].kind).toBe('local');
+    expect(h.hellos().at(-1)!.sessionHost?.mode).toBe('legacy');
+    await h.createAndSubscribe('s1');
+    host = new SessionHostServer({ dataDir: h.dataDir, log: quiet });
+    await host.start();
+    await waitUntil(() => h.daemons[0]!['backend'].kind === 'host', '切回 host');
+    await waitUntil(() => statuses().some((m) => m.state.mode === 'host'), '回報 host 模式');
+    // 舊模式開的 session 照常能用；新開的由 host 養。
+    input('s1', 'still-local');
+    await h.waitForOutput('s1', 'INPUT:still-local');
+    await h.createAndSubscribe('s2');
+    expect(host.sessionCount).toBe(1);
+  });
+
+  it('送了輸入完全沒輸出、跨兩個 session：daemon.alert＋inputSuspect；之後有回顯就解除', async () => {
+    mkdirSync(h.workDir, { recursive: true });
+    await h.hub.start();
+    await h.startDaemon({ inputEchoWindowMs: 300 });
+    await h.createAndSubscribe('s1');
+    await h.createAndSubscribe('s2');
+    const daemon = h.daemons[0]!;
+    for (const id of ['s1', 's2']) {
+      // 假 claude 沒有輸入框：直接當成在等輸入。
+      Object.defineProperty(daemon['sessions'].get(id), 'awaitingTyping', { get: () => true });
+    }
+    // 模擬 host 的輸入失效：寫入被吞掉（輸出、spawn 照常）。
+    const hostSessions = host!['sessions'] as Map<
+      string,
+      { writer: { write: (d: string) => void } }
+    >;
+    const originals = new Map<string, (d: string) => void>();
+    for (const id of ['s1', 's2']) {
+      const writer = hostSessions.get(id)!.writer;
+      originals.set(id, writer.write.bind(writer));
+      writer.write = () => {};
+    }
+    input('s1', 'hello');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    input('s2', 'hello');
+    const alert = await h.hub.waitFor('daemon.alert', (m) => m.code === 'session_host_input_stuck');
+    expect(alert.message).not.toContain('hello');
+    await waitUntil(() => statuses().some((m) => m.state.inputSuspect), 'inputSuspect');
+    // 恢復：有回顯就解除。
+    for (const id of ['s1', 's2']) hostSessions.get(id)!.writer.write = originals.get(id)!;
+    input('s1', 'again');
+    await h.waitForOutput('s1', 'INPUT:again');
+    await waitUntil(() => statuses().at(-1)?.state.inputSuspect === false, '解除');
+  });
+
+  it('面板「重啟 session host」：daemon 叫服務管理程式重啟，host 回來後 --resume 接回', async () => {
+    const restarted: string[] = [];
+    mkdirSync(h.workDir, { recursive: true });
+    await h.hub.start();
+    await h.startDaemon({
+      config: {
+        hubUrl: h.hub.url,
+        token: 'test-machine-token',
+        dataDir: h.dataDir,
+        claudeBin: h.bin,
+        hookBin: h.hookBin,
+        machineName: 'test-machine',
+        claudeConfigDir: h.claudeDir,
+        sessionHostService: 'com.agent-board.session-host',
+      },
+      sessionHostRecoverWaitMs: 10_000,
+      restartSessionHost: async (service) => {
+        restarted.push(service);
+        await host!.close();
+        setTimeout(() => {
+          host = new SessionHostServer({ dataDir: h.dataDir, log: quiet });
+          void host.start();
+        }, 1_000);
+        return true;
+      },
+    });
+    const hello = h.hellos().at(-1)!;
+    expect(hello.features).toContain('sessionHost.restart');
+    expect(hello.sessionHost?.canRestart).toBe(
+      process.platform === 'darwin' || process.platform === 'linux',
+    );
+    if (!hello.sessionHost?.canRestart) return;
+    await h.createAndSubscribe('s1');
+    const resumeId = h.runs()[0]!.argv[h.runs()[0]!.argv.indexOf('--session-id') + 1]!;
+    const projects = join(h.claudeDir, 'projects', 'p');
+    mkdirSync(projects, { recursive: true });
+    writeFileSync(join(projects, `${resumeId}.jsonl`), '{}\n');
+    h.hub.send({ type: 'sessionHost.restart' });
+    await waitUntil(() => h.runs().length === 2, '--resume 重開', 20_000);
+    expect(restarted).toEqual(['com.agent-board.session-host']);
+    expect(h.runs()[1]!.argv.slice(0, 2)).toEqual(['--resume', resumeId]);
+    expect(h.daemons[0]!['backend'].kind).toBe('host');
+    expect(runtimes('s1').every((r) => r.endedAt === null)).toBe(true);
+  }, 40_000);
 });

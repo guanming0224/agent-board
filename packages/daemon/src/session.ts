@@ -25,6 +25,7 @@ import { errorMessage, log } from './log';
 import { localPtyBackend, type PtyAttachInfo, type PtyBackend, type PtyProcess } from './pty';
 import type { SessionSnapshot, SessionSnapshotInput } from './sessionState';
 import type { CreateStatusTracker, StatusChange, StatusTracker } from './status/types';
+import { serializeSnapshot } from './terminalModes';
 
 // 這兩個套件是 CJS，在 ESM 下沒有具名匯出。
 const require = createRequire(import.meta.url);
@@ -470,6 +471,17 @@ export class ManagedSession {
     return this.alive;
   }
 
+  /** 在等輸入、輸入框看得到：這時打可見的字一定會有回顯（輸入健康偵測用，inputHealth.ts）。 */
+  get awaitingTyping(): boolean {
+    return (
+      this.alive &&
+      !this.replaying &&
+      !this.detached &&
+      this.status === 'waiting_input' &&
+      this.inputReady
+    );
+  }
+
   get currentClaudeSessionId(): string | null {
     return this.claudeSessionId;
   }
@@ -556,7 +568,8 @@ export class ManagedSession {
         seq,
         cols: this.term.cols,
         rows: this.term.rows,
-        data: this.serializer.serialize({ scrollback: SCROLLBACK_LINES }),
+        // serialize 不帶滑鼠編碼（?1006h）：補上，網頁 reset 後才不會退回 X10 滑鼠碼（terminalModes.ts）。
+        data: serializeSnapshot(this.term, this.serializer, SCROLLBACK_LINES),
       });
       this.pendingSnapshots -= 1;
       if (this.pendingSnapshots > 0) return;

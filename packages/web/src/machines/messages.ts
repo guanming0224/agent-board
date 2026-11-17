@@ -143,6 +143,25 @@ export const zhTW: Record<string, string> = {
 
   'machines.update': '立即更新',
   'machines.rollback': '回滾到上一版',
+  'machines.host.suspect':
+    'session host 可能卡住：送給 session 的輸入連續沒有任何回應（連回顯都沒有）。打字沒反應時請重啟 session host。',
+  'machines.host.legacy':
+    '目前是舊模式：連不上 session host，daemon 自己開 agent（daemon 重啟時 agent 會結束、改用 --resume 接回）。host 回來後會自動切回。',
+  'machines.host.unusable':
+    'session host 還在跑但不能用（版本不相容或證明不了身分），新的 session 由 daemon 自己開。',
+  'machines.host.restart': '重啟 session host',
+  'machines.host.confirm':
+    '重啟 {name} 的 session host？這台的所有 agent 會結束一次，之後自動用 --resume 接回（對話紀錄還在；正在進行的工作會中斷）。',
+  'machines.host.busy':
+    '這台有 {count} 個 session 正在執行、等你允許或等你看計畫，重啟會中斷它們。',
+  'machines.host.yes': '確定重啟',
+  'machines.host.started': '已送出重啟；agent 接回需要幾十秒',
+  'machines.host.oldDaemon':
+    '這台的 daemon 版本太舊，不支援從這裡重啟；請更新 daemon，或在那台機器上手動重啟 session host 服務。',
+  'machines.host.unsupported':
+    '這台不能從這裡重啟 session host（Windows 或沒有設定服務），請在那台機器上手動重啟。',
+  'machines.err.daemon_too_old': '這台的 daemon 版本太舊，不支援這個操作',
+  'machines.err.restart_unsupported': '這台不能從這裡重啟 session host',
   'machines.updateStarted': '已送出更新',
   'machines.rollbackStarted': '已送出回滾',
   'machines.block.offline': '機器離線',
@@ -309,6 +328,25 @@ export const en: Record<string, string> = {
 
   'machines.update': 'Update now',
   'machines.rollback': 'Roll back',
+  'machines.host.suspect':
+    'The session host may be stuck: input sent to sessions keeps getting no response at all (not even an echo). If typing does nothing, restart the session host.',
+  'machines.host.legacy':
+    'Fallback mode: the session host is unreachable, so the daemon runs agents itself (they end when the daemon restarts and resume with --resume). It switches back automatically when the host returns.',
+  'machines.host.unusable':
+    'The session host is running but unusable (incompatible version or failed to prove its identity); new sessions run under the daemon.',
+  'machines.host.restart': 'Restart session host',
+  'machines.host.confirm':
+    'Restart the session host on {name}? Every agent on this machine ends once and resumes automatically with --resume (conversations are kept; work in progress is interrupted).',
+  'machines.host.busy':
+    '{count} session(s) on this machine are running, waiting for approval or waiting on a plan; restarting interrupts them.',
+  'machines.host.yes': 'Restart',
+  'machines.host.started': 'Restart sent; agents take a few seconds to come back',
+  'machines.host.oldDaemon':
+    'This daemon is too old to restart its session host from here; update the daemon or restart the session host service on that machine.',
+  'machines.host.unsupported':
+    'This machine cannot restart its session host from here (Windows or no service configured); restart it on that machine.',
+  'machines.err.daemon_too_old': 'This daemon is too old for this action',
+  'machines.err.restart_unsupported': 'This machine cannot restart its session host from here',
   'machines.updateStarted': 'Update requested',
   'machines.rollbackStarted': 'Rollback requested',
   'machines.block.offline': 'Machine is offline',

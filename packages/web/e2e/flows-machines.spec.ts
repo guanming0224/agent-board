@@ -219,6 +219,25 @@ test.describe('機器面板（桌面）', () => {
     await expect(page.getByTestId('machine-unverified-off-m-gpu')).toBeEnabled();
   });
 
+  test('session host 可能卡住（事故 9）：警示、確認時提醒有工作中的 session、重啟後警示消失', async ({
+    page,
+  }) => {
+    await open(page, '#/machines');
+    const alert = page.getByTestId('machine-host-alert-m-studio');
+    await expect(alert).toContainText('session host 可能卡住');
+    // 正常的機器不顯示。
+    await expect(page.getByTestId('machine-host-m-gpu')).toHaveCount(0);
+    await page.getByTestId('machine-host-restart-m-studio').click();
+    const confirm = page.getByTestId('machine-host-confirm-m-studio');
+    await expect(confirm).toContainText('所有 agent 會結束一次');
+    await expect(page.getByTestId('machine-host-busy-m-studio')).toBeVisible();
+    await page.getByTestId('machine-host-no-m-studio').click();
+    await expect(confirm).toHaveCount(0);
+    await page.getByTestId('machine-host-restart-m-studio').click();
+    await page.getByTestId('machine-host-yes-m-studio').click();
+    await expect(page.getByTestId('machine-host-m-studio')).toHaveCount(0);
+  });
+
   test('gh 沒登入時說明怎麼處理；成員只能看', async ({ page }) => {
     await open(
       page,
@@ -237,6 +256,7 @@ test.describe('機器面板（桌面）', () => {
     await expect(page.getByTestId('machine-channel-m-gpu-stable')).toBeDisabled();
     await expect(page.getByTestId('machine-unverified-off-m-gpu')).toBeDisabled();
     await expect(page.getByTestId('machines-repo-input')).toHaveCount(0);
+    await expect(page.getByTestId('machine-host-restart-m-studio')).toBeDisabled();
   });
 });
 

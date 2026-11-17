@@ -277,6 +277,11 @@ export interface BoardBackend {
   /** 「回滾到上一版」。 */
   rollbackMachine(machineId: string): Promise<ReleaseOverview>;
   /**
+   * 「重啟 session host」（CONTRACTS §20.8）：該機所有 agent 結束一次、之後接回。confirm 沒帶回 400
+   * confirm_required；舊 daemon 409 daemon_too_old；不能自己重啟 409 restart_unsupported。
+   */
+  restartSessionHost(machineId: string, confirm: boolean): Promise<ReleaseOverview>;
+  /**
    * 未驗證平台（win-x64）的這台也自動更新（CONTRACTS §21.3）。打開要 confirm=true（400 confirm_required），
    * 不是未驗證平台 409 platform_verified；關掉不用 confirm。
    */

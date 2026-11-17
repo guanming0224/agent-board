@@ -18,6 +18,7 @@ import {
   promoteBlock,
   releaseStatus,
   rollbackBlock,
+  sessionHostView,
   shortBuild,
   spanParts,
   statusText,
@@ -55,6 +56,8 @@ const machine = (over: Partial<MachineRelease> = {}): MachineRelease => ({
   canRollback: true,
   unverifiedPlatform: false,
   allowUnverified: false,
+  sessionHost: null,
+  sessionHostRestartSupported: false,
   ...over,
 });
 
@@ -339,5 +342,51 @@ describe('回滾到不支援的上一版（W6）', () => {
       'previous_unsupported',
     );
     expect(rollbackBlock(machine({ previousVersion: '0.1.0', canRollback: true }))).toBeNull();
+  });
+});
+
+describe('sessionHostView（事故 9）', () => {
+  const host = (over: Partial<NonNullable<MachineRelease['sessionHost']>> = {}) => ({
+    mode: 'host' as const,
+    inputSuspect: false,
+    canRestart: true,
+    ...over,
+  });
+  it('一切正常、離線、舊 daemon 沒回報：不顯示', () => {
+    expect(
+      sessionHostView(machine({ sessionHost: host(), sessionHostRestartSupported: true })),
+    ).toEqual({ kind: 'hidden' });
+    expect(
+      sessionHostView(machine({ online: false, sessionHost: host({ inputSuspect: true }) })),
+    ).toEqual({ kind: 'hidden' });
+    expect(sessionHostView(machine({ sessionHost: null }))).toEqual({ kind: 'hidden' });
+  });
+  it('輸入可能失效優先；舊模式；按鈕狀態', () => {
+    expect(
+      sessionHostView(
+        machine({
+          sessionHost: host({ inputSuspect: true, mode: 'legacy' }),
+          sessionHostRestartSupported: true,
+        }),
+      ),
+    ).toEqual({ kind: 'suspect', restart: 'ok' });
+    expect(
+      sessionHostView(
+        machine({ sessionHost: host({ mode: 'legacy' }), sessionHostRestartSupported: true }),
+      ),
+    ).toEqual({ kind: 'legacy', restart: 'ok' });
+    expect(
+      sessionHostView(
+        machine({
+          sessionHost: host({ mode: 'legacy', canRestart: false }),
+          sessionHostRestartSupported: true,
+        }),
+      ),
+    ).toEqual({ kind: 'legacy', restart: 'unsupported' });
+    expect(
+      sessionHostView(
+        machine({ sessionHost: host({ inputSuspect: true }), sessionHostRestartSupported: false }),
+      ),
+    ).toEqual({ kind: 'suspect', restart: 'old_daemon' });
   });
 });

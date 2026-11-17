@@ -627,6 +627,8 @@ export function createHubBackend() {
       call('machineChannel', { params: { id }, body: { channel } }),
     updateMachine: (id) => call('machineUpdate', { params: { id } }),
     rollbackMachine: (id) => call('machineRollback', { params: { id } }),
+    restartSessionHost: (id, confirm) =>
+      call('machineRestartSessionHost', { params: { id }, body: { confirm } }),
     setMachineAllowUnverified: (id, allow, confirm) =>
       call('machineAllowUnverified', { params: { id }, body: { allow, confirm } }),
 

@@ -17,6 +17,8 @@ import {
   promoteBlock,
   releaseStatus,
   rollbackBlock,
+  BUSY_FOR_HOST_RESTART,
+  sessionHostView,
   shortBuild,
   statusText,
   statusTone,
@@ -600,6 +602,109 @@ function UnverifiedSwitch({
   );
 }
 
+/** session host 狀態與「重啟 session host」（事故 9，CONTRACTS §20.8）。owner 才能按，要再確認一次。 */
+function SessionHostPanel({
+  machine,
+  owner,
+  apply,
+}: {
+  machine: MachineRelease;
+  owner: boolean;
+  apply: (o: ReleaseOverview) => void;
+}) {
+  const t = useT();
+  const backend = useBoard((s) => s.backend);
+  const busy = useBoard(
+    (s) =>
+      s.sessions.filter(
+        (session) =>
+          session.machineId === machine.machineId &&
+          session.archivedAt === null &&
+          BUSY_FOR_HOST_RESTART.includes(session.status),
+      ).length,
+  );
+  const action = useAction(apply);
+  const [confirming, setConfirming] = useState(false);
+  const view = sessionHostView(machine);
+  if (view.kind === 'hidden') return null;
+  const id = machine.machineId;
+  const restart = () =>
+    void action
+      .run(() => backend.restartSessionHost(id, true), t('machines.host.started'))
+      .then(() => setConfirming(false));
+  return (
+    <div className="rel-host" data-testid={`machine-host-${id}`} data-kind={view.kind}>
+      <div
+        className={`alert${view.kind === 'suspect' ? '' : ' rel-warn'}`}
+        role="alert"
+        data-testid={`machine-host-alert-${id}`}
+      >
+        <span aria-hidden="true">⚠</span>
+        <span>{t(`machines.host.${view.kind}`)}</span>
+      </div>
+      <div className="row">
+        {view.restart === 'ok' ? (
+          <button
+            type="button"
+            className="sm"
+            disabled={!owner || action.pending}
+            title={owner ? undefined : t('machines.memberNote')}
+            onClick={() => setConfirming(true)}
+            data-testid={`machine-host-restart-${id}`}
+          >
+            {t('machines.host.restart')}
+          </button>
+        ) : (
+          <p className="hint" data-testid={`machine-host-note-${id}`}>
+            {t(
+              view.restart === 'old_daemon'
+                ? 'machines.host.oldDaemon'
+                : 'machines.host.unsupported',
+            )}
+          </p>
+        )}
+        <NoteText note={action.note} testId={`machine-host-result-${id}`} />
+      </div>
+      {confirming && owner && (
+        <div
+          className="alert rel-warn rel-confirm"
+          role="alert"
+          data-testid={`machine-host-confirm-${id}`}
+        >
+          <span aria-hidden="true">⚠</span>
+          <div>
+            <p>{t('machines.host.confirm', { name: machine.name })}</p>
+            {busy > 0 && (
+              <p data-testid={`machine-host-busy-${id}`}>
+                <strong>{t('machines.host.busy', { count: busy })}</strong>
+              </p>
+            )}
+            <div className="row">
+              <button
+                type="button"
+                className="sm danger"
+                disabled={action.pending}
+                onClick={restart}
+                data-testid={`machine-host-yes-${id}`}
+              >
+                {t('machines.host.yes')}
+              </button>
+              <button
+                type="button"
+                className="sm"
+                onClick={() => setConfirming(false)}
+                data-testid={`machine-host-no-${id}`}
+              >
+                {t('machines.promoteCancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MachineRow({
   machine,
   owner,
@@ -665,6 +770,7 @@ function MachineRow({
       {machine.unverifiedPlatform && (
         <UnverifiedSwitch machine={machine} owner={owner} apply={apply} />
       )}
+      <SessionHostPanel machine={machine} owner={owner} apply={apply} />
       {!machine.online && machine.lastSeenAt && (
         <p className="sub">
           {t('machines.lastSeen', { time: '' })}

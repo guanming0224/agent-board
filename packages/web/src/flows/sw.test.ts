@@ -421,6 +421,37 @@ describe('sw.js update failed (release auto-update)', () => {
   });
 });
 
+describe('sw.js session host may be stuck (incident 9)', () => {
+  it('fixed text with only the machine name; opens the machines panel; one tag per machine', async () => {
+    const zh = loadWorker('zh-TW');
+    await zh.dispatch(
+      'push',
+      pushEvent({
+        kind: 'host_input_stuck',
+        machineId: 'm-mini',
+        machine: 'Studio',
+        message: 'should never be shown',
+        at: '2026-11-17T12:00:00.000Z',
+      }),
+    );
+    expect(zh.shown[0]).toMatchObject({
+      title: 'session host 可能卡住',
+      options: {
+        body: 'Studio：送出的輸入一直沒有回應。打字沒反應時，到機器頁重啟 session host。',
+        tag: 'agent-board-host-m-mini',
+        data: { url: `${ORIGIN}/#/machines` },
+      },
+    });
+    expect(JSON.stringify(zh.shown[0])).not.toContain('should never');
+    const en = loadWorker('en');
+    await en.dispatch(
+      'push',
+      pushEvent({ kind: 'host_input_stuck', machineId: 'm-mini', machine: 'Studio' }),
+    );
+    expect(en.shown[0]!.title).toBe('Session host may be stuck');
+  });
+});
+
 describe('sw.js cross review (Codex round 2)', () => {
   const review = (over: Record<string, unknown> = {}) => ({
     kind: 'review',

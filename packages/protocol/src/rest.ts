@@ -1052,6 +1052,18 @@ export const routes = {
     auth: 'owner',
     response: ReleaseOverview,
   }),
+  /**
+   * 「重啟 session host」（CONTRACTS §20.8）：該機所有 agent 會結束一次、之後用 --resume 接回。要帶 `confirm: true`
+   * （沒帶回 400 `confirm_required`）；機器離線回 409 `machine_offline`；daemon 太舊回 409 `daemon_too_old`；
+   * daemon 不能自己重啟（沒有服務名稱、Windows）回 409 `restart_unsupported`。
+   */
+  machineRestartSessionHost: route({
+    method: 'POST',
+    path: '/api/machines/:id/session-host/restart',
+    auth: 'owner',
+    body: z.object({ confirm: z.boolean().optional() }),
+    response: ReleaseOverview,
+  }),
 } as const;
 
 export type Routes = typeof routes;

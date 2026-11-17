@@ -1,7 +1,20 @@
 // session host 伺服器＋客戶端：真的 node-pty、真的 Unix socket，agent 是假的（echoAgent.mjs）。
 import { connect, createServer } from 'node:net';
 import { localProof, newNonce, verifyLocalProof } from '@agent-board/protocol/local-auth';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  mkdtempSync,
+  open,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +26,7 @@ import {
 } from '@agent-board/protocol/session-host';
 import { HostConnectError, proveHost, SessionHostClient } from './client';
 import { hostEndpoint } from './endpoint';
+import { openFds } from './ptyFds';
 import {
   HostAlreadyRunningError,
   HostImpostorError,
@@ -493,7 +507,7 @@ describe('session host', () => {
     await waitUntil(() => rec.text.includes('FLOOD DONE'), 'flood');
     // ConPTY 在 FLOOD DONE 之後還會補幾個游標控制碼（Windows CI 2026-11-13 差 1–2 bytes）：
     // 等輸出 300ms 不再變才量總數，不然 total 會比 host 緩衝裡的少。
-    for (let last = -1; Buffer.byteLength(rec.text) !== last; ) {
+    for (let last = -1; Buffer.byteLength(rec.text) !== last;) {
       last = Buffer.byteLength(rec.text);
       await new Promise((resolve) => setTimeout(resolve, 300));
     }
@@ -582,6 +596,68 @@ describe('session host', () => {
     await waitUntil(() => after.replayDone !== null, 'replay');
     expect(after.text).toContain('FLOOD DONE');
   });
+
+  // 事故 9（CONTRACTS §20.8）：libuv threadpool 被卡死的寫入占滿時，host 的輸入不能跟著全部失效。
+  // 用 4 個（＝預設 threadpool 大小）開不完的 FIFO 寫入占住 threadpool，等同於事故裡卡在 ptmx 的寫入。
+  it.skipIf(process.platform === 'win32')(
+    'threadpool 被卡住的寫入占滿：新 session 打字照樣送得到 agent（事故 9）',
+    async () => {
+      const client = await connectClient();
+      const rec = recorder();
+      client.register('jam', rec.handlers);
+      await spawnEcho(client, 'jam');
+      await waitUntil(() => rec.text.includes('READY'), 'READY');
+      const fifo = join(dataDir, 'jam.fifo');
+      execFileSync('mkfifo', [fifo]);
+      const size = Number(process.env.UV_THREADPOOL_SIZE) || 4;
+      const opened: number[] = [];
+      for (let i = 0; i < size; i += 1) {
+        // 沒有讀的一端：open(O_WRONLY) 卡在核心裡，占住一條 threadpool。
+        open(fifo, 'w', (error, fd) => {
+          if (!error) opened.push(fd);
+        });
+      }
+      let reader: number | null = null;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        client.write('jam', 'hello\r');
+        await waitUntil(() => rec.text.includes('ECHO:hello'), '卡住時的輸入回顯');
+      } finally {
+        // 放開：有人開讀的一端，卡住的 open 就回來了。
+        reader = openSync(fifo, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+        await waitUntil(() => opened.length === size, '放開 threadpool');
+        for (const fd of opened) closeSync(fd);
+        closeSync(reader);
+      }
+    },
+  );
+
+  // node-pty 1.1.0 在 macOS 每開一個 session 漏一個阻塞的 /dev/ptmx 與 slave（CONTRACTS §20.8）。
+  it.skipIf(process.platform !== 'darwin')(
+    '開關 session 多次：host 不會越積越多 ptmx／tty fd（事故 9）',
+    async () => {
+      const ttyFds = () =>
+        [...openFds()].filter((fd) => {
+          try {
+            return fstatSync(fd).isCharacterDevice();
+          } catch {
+            return false;
+          }
+        }).length;
+      const client = await connectClient();
+      const before = ttyFds();
+      for (let i = 0; i < 5; i += 1) {
+        const rec = recorder();
+        client.register(`leak-${i}`, rec.handlers);
+        await spawnEcho(client, `leak-${i}`);
+        await waitUntil(() => rec.text.includes('READY'), 'READY');
+        client.write(`leak-${i}`, 'exit 0\r');
+        await waitUntil(() => rec.exit !== null, 'exit');
+        client.release(`leak-${i}`);
+      }
+      expect(ttyFds() - before).toBe(0);
+    },
+  );
 
   it('host 關閉：客戶端收到 onClose，之後的請求立刻失敗', async () => {
     const client = await connectClient();

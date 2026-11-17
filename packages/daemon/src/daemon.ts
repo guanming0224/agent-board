@@ -26,6 +26,7 @@ import {
   type HubToDaemon,
   type McpRequest,
   type MachineCapabilities,
+  type SessionHostState,
   type SessionRuntime,
   type SessionSpec,
 } from '@agent-board/protocol';
@@ -77,7 +78,8 @@ import {
 } from './resources';
 import { localPtyBackend, type PtyBackend } from './pty';
 import { buildClaudeArgs, ManagedSession } from './session';
-import { launchSessionHost } from './sessionHostLauncher';
+import { InputHealthMonitor } from './inputHealth';
+import { launchSessionHost, restartCommand, restartSessionHost } from './sessionHostLauncher';
 import {
   pruneSnapshots,
   readSnapshot,
@@ -185,11 +187,34 @@ export interface DaemonDeps {
   launchSessionHost?: (service: string) => Promise<boolean>;
   /** 重播逾時（覆寫依緩衝大小算的值；測試用）。 */
   sessionHostAttachTimeoutMs?: number;
+  /**
+   * host 連線斷掉後（例如 host 被重啟），重新連上的等待上限（毫秒）。不給：有給 sessionHostLaunchWaitMs 就用它
+   * （測試），否則 SESSION_HOST_RECOVER_WAIT_MS。
+   */
+  sessionHostRecoverWaitMs?: number;
+  /** 舊模式下多久試一次切回 host（毫秒；測試縮短）。 */
+  sessionHostReturnIntervalMs?: number;
+  /** 重啟 session host 的方法；不給＝服務管理程式（launchctl kickstart -k 等）。測試用。 */
+  restartSessionHost?: (service: string) => Promise<boolean>;
+  /** 輸入健康偵測的回顯時限（毫秒；測試縮短）。 */
+  inputEchoWindowMs?: number;
 }
 
 /** 拉起 session host 之後等它能連的時間。 */
 const SESSION_HOST_LAUNCH_WAIT_MS = 5_000;
 const SESSION_HOST_RETRY_MS = 250;
+/** 重試間隔的上限（指數退避）。 */
+const SESSION_HOST_RETRY_MAX_MS = 4_000;
+/**
+ * host 連線斷掉後重新連上的等待上限（事故 9）：host 被重啟時要先收掉所有 agent（最多約 4 秒），launchd 再重開它
+ * （可能被節流到 10 秒）。等不到才退回舊模式。
+ */
+const SESSION_HOST_RECOVER_WAIT_MS = 30_000;
+/** 舊模式下多久試一次切回 host。 */
+const SESSION_HOST_RETURN_INTERVAL_MS = 30_000;
+/** 輸入健康警示的固定文字（不帶使用者輸入內容）。 */
+const INPUT_STUCK_ALERT =
+  '送給 session 的輸入連續沒有任何回應（連回顯都沒有），session host 的輸入可能失效。請到機器頁按「重啟 session host」（該機所有 agent 會結束一次，之後自動接回）。';
 /** 接不回的 session：等 host 收掉舊 agent 的上限。 */
 const ORPHAN_KILL_WAIT_MS = 3_000;
 
@@ -297,6 +322,8 @@ export class Daemon {
   private readonly resources: ResourceMonitor;
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly creating = new Map<string, Promise<void>>();
+  /** 還在開的 session 先收到的終端機訂閱：開好再訂（避免「找不到 session」）。 */
+  private readonly pendingSubscribes = new Set<string>();
   /** 正在清理檔案的 session（§9.6）：期間不能建立；同一個 id 的 purge 依序執行。 */
   private readonly purging = new Set<string>();
   private readonly purgeChains = new Map<string, Promise<void>>();
@@ -347,6 +374,15 @@ export class Daemon {
    */
   private backend: PtyBackend = localPtyBackend;
   private host: SessionHostClient | null = null;
+  /** 目前的 session host 模式（回報給 hub，機器面板顯示）。 */
+  private hostMode: SessionHostState['mode'] = 'legacy';
+  /** 上次回報給 hub 的 session host 狀態（JSON）；一樣就不重送。 */
+  private reportedHostState = '';
+  /** 舊模式（確定沒有 host）時定期試著切回 host。 */
+  private hostReturnTimer: NodeJS.Timeout | null = null;
+  private restartingHost = false;
+  /** 送了輸入卻完全沒輸出的偵測（事故 9，inputHealth.ts）。 */
+  private readonly inputHealth: InputHealthMonitor;
   private recoveringHost = false;
   /** 正在接回時又斷了一次：接回完再跑一輪（W2）。 */
   private recoverAgain = false;
@@ -443,6 +479,19 @@ export class Daemon {
       timeoutMs: deps.reviewTimeoutMs,
       log,
     });
+    this.inputHealth = new InputHealthMonitor({
+      windowMs: deps.inputEchoWindowMs,
+      onSuspect: () => {
+        log.warn('送給 session 的輸入連續沒有任何輸出：session host 的輸入可能失效');
+        this.raiseAlert('session_host_input_stuck', INPUT_STUCK_ALERT);
+        this.reportHostState();
+      },
+      onRecover: () => {
+        log.info('輸入恢復有回應，解除 session host 輸入失效的警示');
+        this.alerts.delete('session_host_input_stuck');
+        this.reportHostState();
+      },
+    });
     this.hookServer = new HookServer(
       config.dataDir,
       (request, signal) => this.handleHook(request, signal),
@@ -454,6 +503,102 @@ export class Daemon {
 
   get hookSocketPath(): string {
     return this.hookServer.path;
+  }
+
+  /** session host 狀態（hello 與 `sessionHost.status`，機器面板顯示，CONTRACTS §20.8）。 */
+  get sessionHostState(): SessionHostState {
+    const service = this.deps.config.sessionHostService;
+    return {
+      mode: this.hostMode,
+      inputSuspect: this.inputHealth.suspect,
+      canRestart: !!service && restartCommand(service) !== null,
+    };
+  }
+
+  /** 狀態變了就回報 hub（連著才送；重連時 hello 會帶）。 */
+  private reportHostState(): void {
+    const state = this.sessionHostState;
+    const json = JSON.stringify(state);
+    if (json === this.reportedHostState) return;
+    this.reportedHostState = json;
+    if (this.hub.connected) this.send({ type: 'sessionHost.status', state });
+  }
+
+  private setHostMode(mode: SessionHostState['mode']): void {
+    if (this.hostMode !== mode) {
+      // host 換了：輸入偵測從頭算。
+      this.inputHealth.reset();
+      this.alerts.delete('session_host_input_stuck');
+    }
+    this.hostMode = mode;
+    if (mode === 'legacy') this.scheduleHostReturn();
+    else this.cancelHostReturn();
+    this.reportHostState();
+  }
+
+  /** 舊模式（確定沒有 host）：定期試著連 host，連上就切回（之後新開的 session 由 host 養）。 */
+  private scheduleHostReturn(): void {
+    if (this.hostReturnTimer || this.stopping) return;
+    if (this.deps.config.sessionHost === 'off') return;
+    const interval = this.deps.sessionHostReturnIntervalMs ?? SESSION_HOST_RETURN_INTERVAL_MS;
+    this.hostReturnTimer = setInterval(() => void this.tryReturnToHost(), interval);
+    this.hostReturnTimer.unref();
+  }
+
+  private cancelHostReturn(): void {
+    if (this.hostReturnTimer) clearInterval(this.hostReturnTimer);
+    this.hostReturnTimer = null;
+  }
+
+  private async tryReturnToHost(): Promise<void> {
+    if (this.stopping || this.host || this.recoveringHost || this.hostMode !== 'legacy') return;
+    const result = await this.tryConnectHost();
+    if (result instanceof Error) return;
+    if (this.stopping || this.host || this.recoveringHost || this.hostMode !== 'legacy') {
+      result.close();
+      return;
+    }
+    const legacy = [...this.sessions.values()].filter((s) => s.isAlive && !s.detachable).length;
+    log.info(
+      `session host 回來了，切回 host 模式（之後新開的 session 由 host 養；目前 ${legacy} 個舊模式 session 照常跑到結束）`,
+    );
+    this.adoptHost(result);
+    this.recoveringHost = true;
+    try {
+      await this.reattachHostSessions(result.sessions);
+    } catch (error) {
+      log.warn(`切回 host 時接回 session 失敗：${errorMessage(error)}`);
+    } finally {
+      this.recoveringHost = false;
+    }
+  }
+
+  /** 換成這個 host 連線。 */
+  private adoptHost(client: SessionHostClient): void {
+    this.host = client;
+    this.backend = new HostPtyBackend(client);
+    client.onClose(() => this.handleHostLost(client));
+    this.setHostMode('host');
+  }
+
+  /** 面板「重啟 session host」（CONTRACTS §20.8）：host 先收掉所有 agent，daemon 重新連上後用 --resume 接回。 */
+  private async restartHostService(): Promise<void> {
+    const service = this.deps.config.sessionHostService;
+    if (!service || restartCommand(service) === null) {
+      log.warn('收到重啟 session host 的要求，但這台不能自己重啟（沒有服務名稱或不支援的平台）');
+      return;
+    }
+    if (this.restartingHost) return;
+    this.restartingHost = true;
+    log.warn('使用者要求重啟 session host：該機所有 agent 會結束一次，之後接回');
+    try {
+      const ok = await (this.deps.restartSessionHost ?? restartSessionHost)(service);
+      if (!ok) log.warn('重啟 session host 的指令失敗');
+      // 舊模式下（host 原本就沒連著）：馬上試著切回。
+      if (!this.host) void this.tryReturnToHost();
+    } finally {
+      this.restartingHost = false;
+    }
   }
 
   async start(): Promise<void> {
@@ -515,6 +660,8 @@ export class Daemon {
    */
   async stop(): Promise<void> {
     this.stopping = true;
+    this.cancelHostReturn();
+    this.inputHealth.reset();
     if (this.usageTimer) clearInterval(this.usageTimer);
     this.usageTimer = null;
     if (this.claudeFlagsTimer) clearInterval(this.claudeFlagsTimer);
@@ -616,7 +763,9 @@ export class Daemon {
    * - `unusable`：host 可能還活著但不能用（協定不相容、token 不符、逾時、設定成 off）→ 新的 session 用舊模式開，
    *   但上一輪的 session 不自動重開（liveIds＝確定還在 host 裡的；null＝不知道，全部不開）。
    */
-  private async connectSessionHost(): Promise<
+  private async connectSessionHost(
+    waitOverrideMs?: number,
+  ): Promise<
     | { kind: 'host'; sessions: HostSessionInfo[] }
     | { kind: 'absent' }
     | { kind: 'unusable'; reason: string; liveIds: ReadonlySet<string> | null }
@@ -624,7 +773,11 @@ export class Daemon {
     const { config } = this.deps;
     const endpoint = hostEndpoint(config.dataDir);
     if (config.sessionHost === 'off') {
-      if ((await probeHost(endpoint)) === 'absent') return { kind: 'absent' };
+      if ((await probeHost(endpoint)) === 'absent') {
+        this.setHostMode('off');
+        return { kind: 'absent' };
+      }
+      this.setHostMode('off');
       // 設定成不用，但 host 還在跑：看得到清單就只擋還在 host 裡的，看不到就全部擋。
       const peek = await this.tryConnectHost();
       let liveIds: Set<string> | null = null;
@@ -640,10 +793,16 @@ export class Daemon {
       };
     }
     let result = await this.tryConnectHost();
-    const waitMs = this.deps.sessionHostLaunchWaitMs ?? SESSION_HOST_LAUNCH_WAIT_MS;
+    const waitMs =
+      waitOverrideMs ?? this.deps.sessionHostLaunchWaitMs ?? SESSION_HOST_LAUNCH_WAIT_MS;
     const retryUntil = async (deadline: number) => {
-      while (result instanceof Error && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, SESSION_HOST_RETRY_MS));
+      // 指數退避（250ms 起，最多 4 秒一次），最後一次不超過期限。
+      let delay = SESSION_HOST_RETRY_MS;
+      while (result instanceof Error && Date.now() < deadline && !this.stopping) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(0, Math.min(delay, deadline - Date.now()))),
+        );
+        delay = Math.min(delay * 2, SESSION_HOST_RETRY_MAX_MS);
         result = await this.tryConnectHost();
       }
     };
@@ -654,6 +813,9 @@ export class Daemon {
         // host 沒在跑：叫服務管理程式拉起來（macOS launchctl kickstart），等它能連。kickstart 失敗也等：
         // 安裝程式換版時 host 正在 bootout／bootstrap，過一下就會回來。
         await (this.deps.launchSessionHost ?? launchSessionHost)(config.sessionHostService);
+        await retryUntil(Date.now() + waitMs);
+      } else if (probe === 'absent' && waitOverrideMs !== undefined) {
+        // host 斷線後的重連（例如 host 被重啟）：沒有服務名稱也等一下，服務管理程式可能正在重開它。
         await retryUntil(Date.now() + waitMs);
       } else if (probe !== 'absent' && !mismatch) {
         // host 在，但這次沒連上（剛啟動 token 還沒寫好、忙）：再試一下。
@@ -667,9 +829,11 @@ export class Daemon {
           `沒有 session host（${failure.message}），退回舊模式：daemon 自己開 PTY，daemon 重啟時 agent 會結束、改用 --resume 接回。`,
         );
         this.backend = localPtyBackend;
+        this.setHostMode('legacy');
         return { kind: 'absent' };
       }
       this.backend = localPtyBackend;
+      this.setHostMode('unusable');
       const mismatch =
         failure instanceof HostConnectError && failure.reason === 'protocol_mismatch';
       if (failure instanceof HostConnectError && failure.reason === 'unauthorized') {
@@ -688,9 +852,7 @@ export class Daemon {
       };
     }
     const client = result;
-    this.host = client;
-    this.backend = new HostPtyBackend(client);
-    client.onClose(() => this.handleHostLost(client));
+    this.adoptHost(client);
     log.info(
       `已連上 session host ${client.hostVersion}（養著 ${client.sessions.length} 個 session）`,
     );
@@ -932,6 +1094,8 @@ export class Daemon {
     log.error('session host 連線中斷，重新連線並接回 session');
     this.host = null;
     this.backend = localPtyBackend;
+    this.inputHealth.reset();
+    this.alerts.delete('session_host_input_stuck');
     for (const session of [...this.sessions.values()]) {
       if (!session.detachable || !session.isAlive) continue;
       session.detach();
@@ -951,7 +1115,11 @@ export class Daemon {
     try {
       do {
         this.recoverAgain = false;
-        const outcome = await this.connectSessionHost();
+        const outcome = await this.connectSessionHost(
+          this.deps.sessionHostRecoverWaitMs ??
+            this.deps.sessionHostLaunchWaitMs ??
+            SESSION_HOST_RECOVER_WAIT_MS,
+        );
         if (this.stopping) return;
         if (outcome.kind === 'host') await this.reattachHostSessions(outcome.sessions);
         else if (outcome.kind === 'unusable') {
@@ -1048,6 +1216,9 @@ export class Daemon {
 
   private buildHello(): Extract<DaemonToHub, { type: 'daemon.hello' }> {
     if (!this.capabilities) throw new Error('capabilities 尚未就緒');
+    const hostState = this.sessionHostState;
+    // hello 已經帶了：之後狀態有變才送 sessionHost.status。
+    this.reportedHostState = JSON.stringify(hostState);
     return {
       type: 'daemon.hello',
       name: this.deps.config.machineName,
@@ -1073,7 +1244,10 @@ export class Daemon {
         DAEMON_FEATURES.gitInit,
         // 新增 session 的推理強度與備援模型（CONTRACTS §26）。
         DAEMON_FEATURES.modelOptions,
+        // 機器面板「重啟 session host」與 sessionHost.status（CONTRACTS §20.8）。
+        DAEMON_FEATURES.sessionHostRestart,
       ],
+      sessionHost: hostState,
       // 發版與自動更新（CONTRACTS §21）
       protocolVersion: this.deps.config.protocolVersionOverride ?? PROTOCOL_VERSION,
       buildId: APP_VERSION.buildId,
@@ -1109,6 +1283,7 @@ export class Daemon {
     this.resources.stop();
     this.deepSearch.cancelAll();
     for (const session of this.sessions.values()) session.unsubscribe();
+    this.pendingSubscribes.clear();
     this.settleDispatchRequests(
       'hub_unreachable: Agent Board lost its connection to the hub. Try again in a minute.',
     );
@@ -1151,6 +1326,9 @@ export class Daemon {
       case 'release.rollback':
         void this.updater.rollback();
         return;
+      case 'sessionHost.restart':
+        void this.restartHostService();
+        return;
       case 'daemon.rejected':
         // 協定不相容（§21.4）：HubClient 已改成每 5 分鐘重試；太舊的話照 hub 給的版本自己更新（下載走 HTTP）。
         if (message.reason === 'needs_update') this.updater.onTarget(message.release, false);
@@ -1165,14 +1343,36 @@ export class Daemon {
         }
         this.withSession(message.sessionId, message.type, (s) => s.terminate());
         return;
-      case 'terminal.subscribe':
-        this.withSession(message.sessionId, message.type, (s) => s.subscribe());
+      case 'terminal.subscribe': {
+        const id = message.sessionId;
+        const creating = this.creating.get(id);
+        if (!this.sessions.has(id) && creating) {
+          // 新 session：網頁比 daemon 登記早一步訂閱。等開好再訂（期間取消訂閱就不訂）。
+          this.pendingSubscribes.add(id);
+          void creating
+            .finally(() => {
+              if (this.pendingSubscribes.delete(id)) this.sessions.get(id)?.subscribe();
+            })
+            .catch(() => {});
+          return;
+        }
+        this.withSession(id, message.type, (s) => s.subscribe());
         return;
+      }
       case 'terminal.unsubscribe':
+        if (this.pendingSubscribes.delete(message.sessionId)) return;
         this.withSession(message.sessionId, message.type, (s) => s.unsubscribe());
         return;
       case 'terminal.input':
-        this.withSession(message.sessionId, message.type, (s) => s.write(message.data));
+        this.withSession(message.sessionId, message.type, (s) => {
+          s.write(message.data);
+          // 輸入健康偵測（事故 9）：只看 host 模式的 Claude、在等輸入的 session。
+          this.inputHealth.onInput(
+            s.id,
+            message.data,
+            s.detachable && s.agent === 'claude' && s.awaitingTyping,
+          );
+        });
         return;
       case 'terminal.resize':
         this.withSession(message.sessionId, message.type, (s) =>
@@ -1833,6 +2033,7 @@ export class Daemon {
       },
       onTerminal: (message) => this.send(message),
       onOutput: (data) => {
+        this.inputHealth.onOutput(sessionId);
         if (!this.codexMcpLaunches.has(sessionId)) return;
         tail = (tail + data).slice(-8_192);
       },
@@ -1886,6 +2087,7 @@ export class Daemon {
   }
 
   private handleSessionExit(sessionId: string, exitCode: number): void {
+    this.inputHealth.forget(sessionId);
     this.codexMcpLaunches.delete(sessionId);
     this.approvals.cancelSession(sessionId);
     // 結束的 session 的派工密鑰立刻作廢（CONTRACTS §11）。
