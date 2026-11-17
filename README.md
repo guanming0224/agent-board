@@ -17,11 +17,11 @@ A self-hosted web console for all your Claude Code sessions, across all your com
 
 ## Platform status
 
-| OS      | Status                                                                                                                                                    |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS   | Tested                                                                                                                                                    |
-| Linux   | **Untested.** Install scripts and systemd units exist, never run on real Linux                                                                            |
-| Windows | **Not yet tried on a real machine.** Unit tests run on Windows in CI; automatic updates are off until you allow them per machine. See [Windows](#windows) |
+| OS      | Status                                                                                                                                                                                                                                           |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| macOS   | Tested                                                                                                                                                                                                                                           |
+| Linux   | **Untested.** Install scripts and systemd units exist, never run on real Linux                                                                                                                                                                   |
+| Windows | **Installed and running on one real machine; full checks not finished.** Unit tests run on Windows in CI. **Automatic updates currently have a known problem (health check timeout): keep them off and update by hand.** See [Windows](#windows) |
 
 ## Before you start
 
@@ -122,7 +122,9 @@ Traffic is plain HTTP, so only do this on a network that already encrypts it, su
 
 ## Windows
 
-Native Windows (not WSL), PowerShell 7, services as Task Scheduler tasks that start when you log in. This has not been tried on a real machine yet, so the hub does not send automatic updates to Windows machines until you allow it for that machine (last step).
+Native Windows (not WSL), PowerShell 7, services as Task Scheduler tasks that start when you log in. The hub does not send automatic updates to Windows machines until you allow it per machine.
+
+> **Known problem: automatic updates fail on Windows right now.** The new version does not pass the health check within 60 seconds and the rollback times out too (`health_timeout`, `rollback_failed`); the old version comes back on its own afterwards. Until this is fixed, do **not** press **Allow automatic updates** or **Update now** for a Windows machine. Use the [manual update](#updating-windows-by-hand) below.
 
 **Before you start**, on the Windows machine:
 
@@ -153,9 +155,36 @@ Native Windows (not WSL), PowerShell 7, services as Task Scheduler tasks that st
 3. Restart the daemon with `schtasks /End /TN AgentBoard-daemon` then `schtasks /Run /TN AgentBoard-daemon`: the session keeps running and reconnects.
 4. Sign out of Windows and back in: all tasks start again by themselves.
 5. Install the next version by hand the same way (steps 1–5 with the new zip): running sessions keep going.
-6. If everything worked, open **Machines** in the console and press **Allow automatic updates** for this machine, then confirm. From then on it updates like the Macs. If anything goes wrong, press **Stop automatic updates** and install by hand.
+6. If everything worked, open **Machines** in the console and press **Allow automatic updates** for this machine, then confirm. From then on it updates like the Macs. If anything goes wrong, press **Stop automatic updates** and install by hand. (**Skip this step for now**; see the known problem above.)
+
+### Updating Windows by hand
+
+On a machine that is already paired, running the installer again is the update: it skips pairing, so **no new pairing code is needed**. Only the daemon restarts; the session host restarts only if its version changed, so running sessions keep going.
+
+1. Get the new `agent-board-<version>-win-x64.zip` and `SHA256SUMS` (for a private repo, copy them from `~/.agent-board/release-cache/<version>/` on the hub machine; the hub has already verified them).
+2. Check and extract the file (install steps 2 and 3).
+3. In `pwsh` as a **normal user** (no `--hub`, no `--code`):
+
+   ```powershell
+   pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\agent-board-<version>\agent-board\scripts\install.ps1" daemon --from "<full path to the zip>"
+   ```
+
+4. Wait 2–3 minutes, then check: `Get-Content $env:USERPROFILE\.agent-board\logs\daemon.log -Tail 15` shows the connected line and the Machines page shows the new version. If the installer says a service did not start, wait another 2 minutes and look again; on Windows the daemon sometimes takes over a minute to come up.
+5. Still not working: keep updater.log, daemon.log and session-host.log from `%USERPROFILE%\.agent-board\logs\` for the report. The old version stays in `%LOCALAPPDATA%\agent-board\releases\<old version>`; reinstall it the same way from its zip.
 
 Logs are in `%USERPROFILE%\.agent-board\logs\`. Programs are in `%LOCALAPPDATA%\agent-board\`.
+
+## Features and settings (0.1.8 and later)
+
+| Feature                                                          | Where to set or use it                                                                                                                                                                                                |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex dispatch (Codex sessions get the agent-board MCP tools)    | **Settings → Agent Board tools for Codex** (off by default). Only Codex sessions started after turning it on get the tools; restart running ones.                                                                     |
+| Cross review (Claude and Codex review the same change read-only) | Start it from the web, or a team lead calls `request_review` (3 per team per hour).                                                                                                                                   |
+| Staffing requests                                                | When a lead hits the team size limit or the 10-minute add limit, it asks you instead; approve or reject in **Inbox → Member requests**. Unanswered requests expire after 30 minutes.                                  |
+| Folders that are not git repositories                            | "git init here" appears in New team, Add members, New session and the card **⋯** menu (owners only). Or tick "let BD and LD share this folder" so members that edit files share it (only applies to non-git folders). |
+| Floating dialogs                                                 | New session, New team, Add members and Apply preset can be dragged on desktop while the canvas behind stays usable; double-click the title bar to recenter.                                                           |
+| Canvas tab groups                                                | Right-click a tab (long-press on touch) → Add to group; groups collapse, rename and change color. No tab limit; the bar scrolls sideways when full.                                                                   |
+| Canary time before promoting to stable                           | **Settings → Machines and users → Releases and updates**, 0–168 hours, default 0 (no reminder).                                                                                                                       |
 
 ## Everyday commands
 
@@ -204,6 +233,14 @@ More about auto-start, including why Windows uses a scheduled task: [docs/instal
 | Services stopped after removing a Node version (nvm etc.)                                                        | Run the install command again with the new Node version.                                                                                                                                                                                                                                                                      |
 | After upgrading or reinstalling Node (for example `brew upgrade node`), sessions stay in starting with no output | macOS privacy permissions are tied to the node executable, so a new node may need permission again: in System Settings → Privacy & Security → Files and Folders or Full Disk Access, allow that node, then run `launchctl kickstart -k gui/$UID/com.agent-board.session-host` (this ends the agents; they resume afterwards). |
 | Log files are large                                                                                              | Logs aren't rotated yet. Deleting them is safe; restart the service afterwards.                                                                                                                                                                                                                                               |
+| Windows: automatic update fails, Machines page shows `health_timeout` / `rollback_failed`                        | Known problem. Turn off **Allow automatic updates** for that machine and [update by hand](#updating-windows-by-hand). The old version usually comes back by itself within a few minutes.                                                                                                                                      |
+| Windows: the installer says a service did not start                                                              | Wait 2 minutes, then check `daemon.log` and `schtasks /Query /TN AgentBoard-daemon`. If it is still down, report the three logs.                                                                                                                                                                                              |
+| Windows: files extracted with Explorer are blocked                                                               | Extract with `tar -xf` instead (Explorer marks files as downloaded from the internet).                                                                                                                                                                                                                                        |
+| **Promote to stable** warns "less than 24 hours"                                                                 | It is a reminder, not a block: confirm to continue. Set the threshold to 0 in **Settings → Releases and updates** (default 0 since 0.1.12).                                                                                                                                                                                   |
+| Canvas cards show no reply and you can't type in them (0.1.11–0.1.12)                                            | With more than 8 terminal cards on screen, the extra ones only showed static text. Fixed in 0.1.13; on older versions open the card full size.                                                                                                                                                                                |
+| A session stops with `authentication_failed` / `Login expired`                                                   | `claude` on that machine is logged out. Run `claude` there and `/login`, then send again.                                                                                                                                                                                                                                     |
+| A lead can't add a member that edits files: "not a git repository"                                               | Use "git init here" from the card **⋯** menu or Add members, or tick "let BD and LD share this folder".                                                                                                                                                                                                                       |
+| A Codex session waits at "Trust this folder?"                                                                    | Codex asks once per folder; answering writes to your own `~/.codex/config.toml`.                                                                                                                                                                                                                                              |
 | Forgot your password                                                                                             | See [Forgot your password](#forgot-your-password) below.                                                                                                                                                                                                                                                                      |
 
 ### Forgot your password

@@ -17,11 +17,11 @@
 
 ## 各平台狀態
 
-| 作業系統 | 狀態                                                                                                      |
-| -------- | --------------------------------------------------------------------------------------------------------- |
-| macOS    | 已測試                                                                                                    |
-| Linux    | **未測試。** 安裝腳本與 systemd 設定已備妥，沒在真 Linux 上跑過                                           |
-| Windows  | **還沒在實機上試過。** CI 會在 Windows 上跑單元測試；自動更新預設關閉，要逐台允許。見 [Windows](#windows) |
+| 作業系統 | 狀態                                                                                                                                                                |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS    | 已測試                                                                                                                                                              |
+| Linux    | **未測試。** 安裝腳本與 systemd 設定已備妥，沒在真 Linux 上跑過                                                                                                     |
+| Windows  | **已在一台實機安裝執行，完整實測未完成。** CI 會在 Windows 上跑單元測試。**自動更新目前有已知問題（健康檢查逾時），請保持關閉、用手動更新**。見 [Windows](#windows) |
 
 ## 開始之前
 
@@ -122,7 +122,9 @@ sh install.sh hub --host 100.64.0.1   # 換成這台機器自己的私有 IP
 
 ## Windows
 
-原生 Windows（不是 WSL）、PowerShell 7，服務是工作排程器裡「登入時」啟動的工作。還沒在實機上試過，所以 hub 預設不發自動更新給 Windows 機器，要在最後一步逐台允許。
+原生 Windows（不是 WSL）、PowerShell 7，服務是工作排程器裡「登入時」啟動的工作。hub 預設不發自動更新給 Windows 機器，要逐台允許。
+
+> **已知問題：Windows 自動更新目前會失敗。** 新版裝好後 60 秒內沒通過健康檢查，回滾也逾時（`health_timeout`、`rollback_failed`），之後舊版會自己起來。修好之前請**不要**在機器頁對 Windows 按「允許自動更新」或「立即更新」，改用下面的[手動更新](#windows-手動更新)。
 
 **開始之前**（在 Windows 那台）：
 
@@ -153,9 +155,36 @@ sh install.sh hub --host 100.64.0.1   # 換成這台機器自己的私有 IP
 3. 重啟 daemon：`schtasks /End /TN AgentBoard-daemon` 再 `schtasks /Run /TN AgentBoard-daemon`：session 不中斷、重新接上。
 4. 登出 Windows 再登入：所有工作自己起來。
 5. 下一版用同樣的方式手動安裝（新的 zip 照第 1–5 步）：正在跑的 session 不中斷。
-6. 都沒問題，在網頁的 **機器** 頁對這台按 **允許自動更新** 並確認。之後就和 Mac 一樣自動更新；有問題按 **停止自動更新**，改回手動安裝。
+6. 都沒問題，在網頁的 **機器** 頁對這台按 **允許自動更新** 並確認。之後就和 Mac 一樣自動更新；有問題按 **停止自動更新**，改回手動安裝。（**目前先不要做這一步**，見上面的已知問題。）
+
+### Windows 手動更新
+
+已經配對過的機器重跑安裝程式就是更新：會跳過配對，**不需要新的配對碼**；只重啟 daemon，session host 沒換版就不重啟，正在跑的 session 不中斷。
+
+1. 取得新版的 `agent-board-<版本>-win-x64.zip` 與 `SHA256SUMS`（私人 repo 時可從 hub 那台的 `~/.agent-board/release-cache/<版本>/` 複製，那裡的檔案 hub 已驗過）。
+2. 驗檔、用 tar 解壓（同安裝第 2、3 步）。
+3. 用**一般身分**的 `pwsh` 執行（不用 `--hub`、`--code`）：
+
+   ```powershell
+   pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\agent-board-<版本>\agent-board\scripts\install.ps1" daemon --from "<zip 的完整路徑>"
+   ```
+
+4. 等 2–3 分鐘再確認：`Get-Content $env:USERPROFILE\.agent-board\logs\daemon.log -Tail 15` 有「已連上」，機器頁顯示新版本。安裝程式若說服務沒起來，先再等 2 分鐘重看；daemon 在 Windows 上有時超過 1 分鐘才起來。
+5. 還是不行：保留 `%USERPROFILE%\.agent-board\logs\` 的 updater.log、daemon.log、session-host.log 回報。舊版還在 `%LOCALAPPDATA%\agent-board\releases\<舊版本>`，可用舊版 zip 以同樣方式裝回。
 
 紀錄在 `%USERPROFILE%\.agent-board\logs\`，程式在 `%LOCALAPPDATA%\agent-board\`。
+
+## 功能與設定（0.1.8 起）
+
+| 功能                                                   | 在哪裡設定或使用                                                                                                                                                    |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex 派工（Codex session 用 agent-board 的 MCP 工具） | **設定 → Codex 掛派工工具**（預設關）。打開後新開的 Codex session 才有；已在跑的要重開。                                                                            |
+| 交叉審查（Claude 與 Codex 唯讀審同一份變更）           | 網頁手動發起，或隊長用 `request_review`（每隊每小時 3 次）。                                                                                                        |
+| 隊長加開申請                                           | 隊長超過團隊人數上限或 10 分鐘新增上限時，改成向你申請；在**收件匣 → 加開申請**同意或拒絕，30 分鐘沒處理自動失效。                                                  |
+| 不是 git 的資料夾                                      | 新增團隊、補成員、新增 session、卡片 **⋯** 選單都有「在這裡 git init」（只有擁有者能用）；或勾「我知道風險：讓 BD 和 LD 共用這個資料夾」（只在非 git 資料夾生效）。 |
+| 浮動對話框                                             | 新增 session／新增團隊／補成員／套用 Preset 在桌面可拖動，背後畫布可操作；雙擊標題列回到中間。                                                                      |
+| 畫布分頁群組                                           | 分頁右鍵（觸控長按）→ 加入群組；群組名稱可收合、改名、換色。分頁沒有數量上限，放不下可橫向捲動。                                                                    |
+| 升 stable 前 canary 要跑多久                           | **設定 → 機器與使用者 → 發版與自動更新**，0–168 小時，預設 0（不提醒）。                                                                                            |
 
 ## 日常指令
 
@@ -204,6 +233,14 @@ hub 就把 `daemon` 換成 `hub`。
 | 移除某個 Node 版本（nvm 等）後服務停了                                         | 用新版 Node 重跑一次安裝指令。                                                                                                                                                                                                                    |
 | 升級或重裝 Node（例如 `brew upgrade node`）後，session 卡在 starting、沒有畫面 | macOS 隱私權限照 node 執行檔認，換了 node 可能要重新允許：系統設定 →「隱私權與安全性」→「檔案和資料夾」或「完整磁碟取用權限」允許那支 node，再執行 `launchctl kickstart -k gui/$UID/com.agent-board.session-host`（會結束 agent，之後自動接回）。 |
 | 紀錄檔太大                                                                     | 目前還沒有自動輪替。可以直接刪，刪完重新啟動服務。                                                                                                                                                                                                |
+| Windows：自動更新失敗，機器頁顯示 `health_timeout`／`rollback_failed`          | 已知問題。關掉這台的「允許自動更新」，用[手動更新](#windows-手動更新)。舊版通常幾分鐘後會自己起來。                                                                                                                                               |
+| Windows：安裝程式說服務沒起來                                                  | 先等 2 分鐘再看 `daemon.log` 與 `schtasks /Query /TN AgentBoard-daemon`；仍沒起來就回報三份 log。                                                                                                                                                 |
+| Windows：用檔案總管解壓後執行被擋                                              | 改用 `tar -xf` 解壓（檔案總管會加「從網路下載」標記）。                                                                                                                                                                                           |
+| 按「升為 stable」跳出「還不到 24 小時」                                        | 是提醒不是限制，按確認即可。之後可在**設定 → 發版與自動更新**把門檻設成 0（0.1.12 起預設 0）。                                                                                                                                                    |
+| 畫布卡片看不到回覆、點進去打不了字（0.1.11–0.1.12）                            | 畫面內超過 8 張終端機卡時多的卡只有靜態文字。0.1.13 修正；舊版先用「開全尺寸」。                                                                                                                                                                  |
+| session 卡住、紀錄有 `authentication_failed`／`Login expired`                  | 那台機器的 `claude` 登入過期。在那台執行 `claude` 再 `/login`，回網頁重送。                                                                                                                                                                       |
+| 隊長開會改檔的成員被擋：「不是 git」                                           | 在卡片 **⋯** 或補成員時按「在這裡 git init」，或勾「讓 BD 和 LD 共用這個資料夾」。                                                                                                                                                                |
+| Codex session 停在「Trust this folder?」                                       | Codex 第一次開這個資料夾要信任；選了會寫進你自己的 `~/.codex/config.toml`。                                                                                                                                                                       |
 | 忘記密碼                                                                       | 見下方[忘記密碼](#忘記密碼)。                                                                                                                                                                                                                     |
 
 ### 忘記密碼
