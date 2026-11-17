@@ -68,7 +68,7 @@ jobs:
       - if: runner.os == 'Windows'
         run: pnpm --filter @agent-board/daemon exec vitest run src/processCheck.test.ts src/hookServer.test.ts src/codex.test.ts --retry=2 --testTimeout=20000
       - if: runner.os == 'Windows'
-        run: node --test scripts/windows-paths.test.mjs scripts/process-start.test.mjs scripts/service-templates.test.mjs
+        run: node --test scripts/windows-paths.test.mjs scripts/process-start.test.mjs scripts/service-processes.test.mjs scripts/service-templates.test.mjs
       - run: pnpm build:release
       - name: 檢查成品
         shell: bash

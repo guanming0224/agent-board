@@ -434,6 +434,41 @@ setTimeout(() => process.exit(0), 500);`,
     assert.ok(Date.now() - started < 2000);
   });
 
+  test('健康檢查的時限從開始檢查算起：安裝程式花的時間（複製新版、停／啟服務）不算進新 daemon 的啟動時限', async () => {
+    freshHome();
+    mkdirSync(root, { recursive: true });
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(root, 'install.json'), JSON.stringify({ roles: ['daemon'] }));
+    const { healthy } = await import(lockScript);
+    // 安裝程式花了 10 秒（比 1 秒的時限長）；服務重啟後 300ms 新 daemon 才寫狀態檔。
+    const since = Date.now() - 10_000;
+    setTimeout(
+      () =>
+        writeFileSync(
+          join(data, 'daemon-status.json'),
+          JSON.stringify({
+            pid: process.pid,
+            version: '0.2.0',
+            buildId: 'x',
+            startedAt: new Date().toISOString(),
+            connectedAt: new Date().toISOString(),
+          }),
+        ),
+      300,
+    );
+    assert.equal(
+      await healthy({
+        data,
+        root,
+        version: '0.2.0',
+        since,
+        timeoutMs: 1000,
+        connectTimeoutMs: 1000,
+      }),
+      true,
+    );
+  });
+
   test('app 連結不見了：下次安裝補回 app → current（W7）', () => {
     freshHome();
     mustInstall([

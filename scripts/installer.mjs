@@ -43,6 +43,7 @@ import {
   versionAtLeast,
 } from './lib/node-runtime.mjs';
 import { agentsStillRunning } from './lib/process-start.mjs';
+import { listProcesses, serviceProcessIds, stopProcesses } from './lib/service-processes.mjs';
 import {
   cleanTrash,
   isLink,
@@ -1095,14 +1096,84 @@ function startService(role, ctx, { restart, mustBootstrap = false, checkRunning 
     }
     return true;
   }
-  return startWindowsTask(role, ctx, { restart });
+  return startWindowsTask(role, ctx, { restart, checkRunning });
 }
 
-function startWindowsTask(role, ctx, { restart }) {
+/** 服務的入口檔（Windows 用它在指令列裡找服務的 node 程序）。 */
+const serviceEntry = (role, paths) =>
+  role === SESSION_HOST ? runningHostFiles(paths).main : join(paths.current, ...ENTRY[role]);
+
+/** Windows：這個服務現在活著的 node 程序（指令列含入口檔）；查不了回 null。 */
+function windowsServicePids(role, paths) {
+  const list = listProcesses();
+  return list === null ? null : serviceProcessIds(list, serviceEntry(role, paths));
+}
+
+/** /End 之後等服務的程序自己結束多久（/End 真的收得掉時不必動手）。 */
+const WINDOWS_END_GRACE_MS = 2_000;
+/** /Run 之後等服務的程序出現多久。 */
+const WINDOWS_START_TIMEOUT_MS = 15_000;
+
+/**
+ * 停 Windows 的服務（CONTRACTS §21.7）：`schtasks /End` 只結束工作排程器自己啟動的程序（conhost），
+ * cmd 底下的 node 還活著（2026-11-15／16 Windows 筆電五次自動更新都因為舊 daemon 停不掉而 health_timeout）。
+ * /End 之後照指令列找出還活著的服務程序並結束它，等到真的不在才回 true。session host 連子程序（agent）一起結束
+ * （同 Mac 停 host）；hub、daemon 只結束那一個程序（daemon 的子孫裡有正在跑這支安裝程式的更新程式）。
+ * 程序清單查不了：只能相信 /End，回 true 並提醒。
+ */
+function stopWindowsService(role, paths) {
+  run('schtasks', ['/End', '/TN', taskName(role)]);
+  let pids = windowsServicePids(role, paths);
+  if (pids === null) {
+    say(
+      t(
+        `查不到程序清單，沒辦法確認 ${taskName(role)} 真的停了。`,
+        `Could not list processes, so ${taskName(role)} may still be running.`,
+      ),
+    );
+    return true;
+  }
+  if (pids.length > 0)
+    pids = stopProcesses(pids, { timeoutMs: WINDOWS_END_GRACE_MS, kill: () => {} });
+  if (pids.length === 0) return true;
+  say(
+    t(
+      `${taskName(role)} 結束工作後程序還在（pid ${pids.join('、')}），直接結束它。`,
+      `${taskName(role)} was still running after the task ended (pid ${pids.join(', ')}); terminating it.`,
+    ),
+  );
+  const left = stopProcesses(pids, { tree: role === SESSION_HOST });
+  if (left.length === 0) return true;
+  say(
+    t(
+      `${taskName(role)} 的程序（pid ${left.join('、')}）結束不了。`,
+      `Could not terminate ${taskName(role)} (pid ${left.join(', ')}).`,
+    ),
+  );
+  return false;
+}
+
+/** /Run 之後等服務的程序出現；回傳有沒有看到（查不了程序清單當成有）。 */
+function waitWindowsServiceStarted(role, paths, timeoutMs = WINDOWS_START_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const pids = windowsServicePids(role, paths);
+    if (pids === null || pids.length > 0) return true;
+    if (Date.now() > deadline) return false;
+    sleepMs(300);
+  }
+}
+
+function startWindowsTask(role, ctx, { restart, checkRunning = true }) {
   const { paths } = ctx;
   const name = taskName(role);
+  if (restart) {
+    if (!stopWindowsService(role, paths)) return false;
+  } else if (run('schtasks', ['/Query', '/TN', name]).status === 0) {
+    // 已經在跑就不要再 /Run：工作排程器以為工作已經結束（例如之前只收掉了 conhost）時會再開一個。
+    if (windowsServicePids(role, paths)?.length) return true;
+  }
   if (restart || run('schtasks', ['/Query', '/TN', name]).status !== 0) {
-    run('schtasks', ['/End', '/TN', name]);
     const created = run('schtasks', [
       '/Create',
       '/TN',
@@ -1138,7 +1209,19 @@ function startWindowsTask(role, ctx, { restart }) {
     }
   }
   run('schtasks', ['/Run', '/TN', name]);
-  return true;
+  if (!checkRunning || waitWindowsServiceStarted(role, paths)) return true;
+  // 沒起來：工作排程器可能還以為上一次的工作在跑（MultipleInstancesPolicy=IgnoreNew 會默默略過 /Run）。
+  // 結束工作再開一次。
+  run('schtasks', ['/End', '/TN', name]);
+  run('schtasks', ['/Run', '/TN', name]);
+  if (waitWindowsServiceStarted(role, paths)) return true;
+  say(
+    t(
+      `${name} 啟動後 ${WINDOWS_START_TIMEOUT_MS / 1000} 秒內沒有在跑（看紀錄：${logPath(paths, role)}）。`,
+      `${name} was not running within ${WINDOWS_START_TIMEOUT_MS / 1000} seconds after start (see the log: ${logPath(paths, role)}).`,
+    ),
+  );
+  return false;
 }
 
 /**
@@ -1159,8 +1242,13 @@ function stopService(role, { mustUnload = true } = {}) {
     }
   } else if (platform === 'linux') {
     run('systemctl', ['--user', 'disable', '--now', systemdName(role)]);
-  } else {
-    run('schtasks', ['/End', '/TN', taskName(role)]);
+  } else if (!stopWindowsService(role, layout()) && mustUnload) {
+    fail(
+      t(
+        `${taskName(role)} 停不下來，中止安裝（還沒換掉任何檔案）。請在工作管理員結束它的 node 程序後再執行一次。`,
+        `${taskName(role)} could not be stopped; the install is aborted (no files were replaced). End its node process in Task Manager and run it again.`,
+      ),
+    );
   }
 }
 
