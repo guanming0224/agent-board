@@ -330,7 +330,10 @@ describe('Windows 自動更新（假 schtasks）', { skip }, () => {
     );
     assert.equal(state?.phase, 'rolled_back', `${JSON.stringify(state)}\n${log}`);
     assert.ok(['install_failed', 'health_timeout'].includes(state.reason), state.reason);
-    assert.ok(Date.now() - started < 30_000);
+    // 時限：新 daemon 起不來時，安裝程式 /Run 後等 15 秒、/End＋/Run 重試再等 15 秒，然後回滾。
+    // 真的 Windows（CI 2026-11-17 實測 41.9 秒）會超過 30 秒；這裡驗的是「有在合理時間內回滾」，不是速度。
+    const limit = process.platform === 'win32' ? 120_000 : 30_000;
+    assert.ok(Date.now() - started < limit, `回滾花了 ${Date.now() - started}ms（上限 ${limit}ms）`);
     assert.equal(currentTarget(), '0.1.7');
     await poll(
       '舊版 daemon 回來',
