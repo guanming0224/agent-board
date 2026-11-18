@@ -22,6 +22,51 @@ if (args[0] === '--version') {
 }
 
 /**
+ * 模型目錄（§26.11）：`codex debug models` 印 `{"models":[…]}`（真 codex 會向 OpenAI 更新目錄，這裡不連網）。
+ * 故意多帶 daemon 應該丟掉的欄位（提示、帳號），整合測試確認 hub 拿到的只有五個欄位。
+ */
+if (args[0] === 'debug' && args[1] === 'models' && args[2] === '--help') {
+  // daemon 先看說明確認有這個子指令（舊版 codex 會把 debug 當成 prompt）。
+  console.log('Render the raw model catalog as JSON');
+  process.exit(0);
+}
+if (args[0] === 'debug' && args[1] === 'models') {
+  const level = (effort) => ({ effort, description: `${effort} reasoning` });
+  const extra = { base_instructions: 'FAKE SYSTEM PROMPT', account_hint: 'fake-account-secret' };
+  console.log(
+    JSON.stringify({
+      models: [
+        {
+          slug: 'gpt-fake-ultra',
+          display_name: 'GPT-Fake-Ultra',
+          default_reasoning_level: 'low',
+          supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(level),
+          visibility: 'list',
+          ...extra,
+        },
+        {
+          slug: 'gpt-fake-mini',
+          display_name: 'GPT-Fake-Mini',
+          default_reasoning_level: 'medium',
+          supported_reasoning_levels: ['low', 'medium', 'high'],
+          visibility: 'list',
+          ...extra,
+        },
+        {
+          slug: 'fake-hidden-review',
+          display_name: 'Fake Hidden Review',
+          default_reasoning_level: 'medium',
+          supported_reasoning_levels: [level('low'), level('medium')],
+          visibility: 'hide',
+          ...extra,
+        },
+      ],
+    }),
+  );
+  process.exit(0);
+}
+
+/**
  * 交叉審查（Codex 第二輪）：`codex exec --json -s read-only -c approval_policy="never" … -`，prompt 從 stdin。
  * 不呼叫 LLM，照 `codex exec --json` 的事件格式印固定的意見（thread.started → turn.started → item.completed
  * agent_message → turn.completed usage）。`-m fake-review-fail` → turn.failed、exit 1；`fake-review-slow` → 不結束。

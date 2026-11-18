@@ -64,7 +64,7 @@ describe('buildCodexArgs', () => {
     expect(args).not.toContain('不該出現');
   });
 
-  it('推理強度（§26）：白名單內用 -c model_reasoning_effort，接回時也帶；Claude 才有的 max／不安全的模型名稱不帶', () => {
+  it('推理強度（§26）：白名單內用 -c model_reasoning_effort，接回時也帶；白名單外／不安全的模型名稱不帶', () => {
     const args = build({
       resumeId: THREAD,
       permissionMode: 'plan',
@@ -77,11 +77,46 @@ describe('buildCodexArgs', () => {
       '-c',
       'model_reasoning_effort="minimal"',
     ]);
-    const bad = build({ permissionMode: 'plan', model: 'gpt x;rm', effort: 'max' });
+    const bad = build({ permissionMode: 'plan', model: 'gpt x;rm', effort: 'turbo' });
     expect(bad).not.toContain('-m');
     expect(bad.some((a) => a.includes('model_reasoning_effort'))).toBe(false);
     const injected = build({ permissionMode: 'plan', model: null, effort: 'high"\nsandbox="x' });
     expect(injected.some((a) => a.includes('model_reasoning_effort'))).toBe(false);
+  });
+
+  it('推理強度依模型目錄（§26.11）：目錄有列只收它支援的；不在目錄、沒有目錄收整份安全集合', () => {
+    const codexModels = {
+      codexVersion: '0.167.0',
+      models: [
+        {
+          slug: 'gpt-6-luna',
+          displayName: 'GPT-6-Luna',
+          defaultEffort: 'medium' as const,
+          efforts: ['low', 'medium', 'high', 'xhigh', 'max'] as (
+            'low' | 'medium' | 'high' | 'xhigh' | 'max'
+          )[],
+          visibility: 'list' as const,
+        },
+      ],
+    };
+    const effortOf = (
+      model: string | null,
+      effort: string,
+      catalog = codexModels as typeof codexModels | null,
+    ) =>
+      build({ permissionMode: 'plan', model, effort, codexModels: catalog }).find((a) =>
+        a.startsWith('model_reasoning_effort='),
+      ) ?? null;
+    expect(effortOf('gpt-6-luna', 'max')).toBe('model_reasoning_effort="max"');
+    // 目錄說 gpt-6-luna 沒有 ultra／minimal：不帶（hub 已經擋過，這是第二層）。
+    expect(effortOf('gpt-6-luna', 'ultra')).toBeNull();
+    expect(effortOf('GPT-6-LUNA', 'minimal')).toBeNull();
+    // 不在目錄、沒指定模型、沒有目錄：整份白名單。
+    expect(effortOf('gpt-6.2-sol', 'ultra')).toBe('model_reasoning_effort="ultra"');
+    expect(effortOf(null, 'xhigh')).toBe('model_reasoning_effort="xhigh"');
+    expect(effortOf('gpt-6-luna', 'ultra', null)).toBe('model_reasoning_effort="ultra"');
+    // 白名單外（含注入字串）一律不帶。
+    expect(effortOf('gpt-6.2-sol', 'ultra"\nsandbox="x')).toBeNull();
   });
 
   it('第一句放在 -- 之後（以 - 開頭也不會被當成參數）', () => {
@@ -301,6 +336,8 @@ describe.skipIf(process.platform === 'win32')('daemon 開 Codex', () => {
     await h.restartDaemon({ capabilities: codexCaps });
     expect(h.hellos().at(-1)?.features).toContain(DAEMON_FEATURES.codex);
     expect(h.hellos().at(-1)?.capabilities.codexVersion).toBe('0.167.0');
+    // §26.11：依模型的 Codex 強度一律宣告。
+    expect(h.hellos().at(-1)?.features).toContain(DAEMON_FEATURES.codexEffortsByModel);
   });
 
   it('開 Codex：參數照對應表、不寫 hook 設定檔、不設 CLAUDE_CONFIG_DIR、thread id 等 SessionStart', async () => {

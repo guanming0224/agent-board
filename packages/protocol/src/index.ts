@@ -18,3 +18,4 @@ export * from './release';
 export * from './gitInit';
 export * from './zoneGroups';
 export * from './modelOptions';
+export * from './modelCatalog';

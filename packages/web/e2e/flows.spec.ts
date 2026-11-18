@@ -2,7 +2,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, test, type Page, type TestInfo } from './flows-fixture';
+import { expect, test, type Locator, type Page, type TestInfo } from './flows-fixture';
 import type { Approval, Machine, Session } from '@agent-board/protocol';
 import { en, zhTW } from '../src/flows/messages';
 
@@ -70,6 +70,46 @@ const approval = (over: Partial<Approval> & Pick<Approval, 'id' | 'sessionId'>):
 });
 
 const rigA = machine({ id: 'm-a', name: 'rig-a' });
+/** `codex debug models` 的目錄（§26.11）：名稱與級別取自 codex-cli 0.167.0 的實際輸出。 */
+const CODEX_CATALOG = {
+  codexVersion: '0.167.0',
+  models: [
+    {
+      slug: 'gpt-6.2-sol',
+      displayName: 'GPT-6.2-Sol',
+      defaultEffort: 'low' as const,
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const,
+      visibility: 'list' as const,
+    },
+    {
+      slug: 'gpt-6-luna',
+      displayName: 'GPT-6-Luna',
+      defaultEffort: 'medium' as const,
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max'] as const,
+      visibility: 'list' as const,
+    },
+    {
+      slug: 'codex-auto-review',
+      displayName: 'Codex Auto Review',
+      defaultEffort: 'medium' as const,
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max'] as const,
+      visibility: 'hide' as const,
+    },
+  ],
+} as unknown as NonNullable<Machine['capabilities']['codexModels']>;
+const CLAUDE_OPTIONS = [
+  'Fable · fable — Fable 系列',
+  'Opus · opus — 能力最強，較慢、較耗額度',
+  'Sonnet · sonnet — 速度與能力平衡',
+  'Haiku · haiku — 最快、最省額度',
+  'Fable 5.1 · claude-fable-5-1 — Fable 系列',
+  'Opus 5.5 · claude-opus-5-5 — 能力最強，較慢、較耗額度',
+  'Sonnet 5.5 · claude-sonnet-5-5 — 速度與能力平衡',
+  'Haiku 5.5 · claude-haiku-5-5 — 最快、最省額度',
+];
+/** 下拉的分組標題（optgroup label）。 */
+const groupLabels = (select: Locator) =>
+  select.locator('optgroup').evaluateAll((els) => els.map((el) => el.getAttribute('label')));
 const rigGpu = machine({
   id: 'm-g',
   name: 'rig-gpu',
@@ -1026,15 +1066,14 @@ test.describe('新增 session', () => {
     const model = page.getByLabel('模型', { exact: true });
     const fallback = page.getByLabel('備援模型', { exact: true });
     const effort = page.getByLabel('推理強度', { exact: true });
-    // 選項：預設＋內建清單（CLI 別名）＋自訂…；強度是 Claude 的白名單。
+    // 選項（§26.11）：CLI 預設＋別名（最新）＋完整版本＋自訂…，每項一句說明；強度是 Claude 的白名單。
     await expect(model.locator('option')).toHaveText([
-      '預設（不指定）',
-      'fable',
-      'opus',
-      'sonnet',
-      'haiku',
+      'CLI 預設（不指定）',
+      ...CLAUDE_OPTIONS,
       '自訂…',
     ]);
+    expect(await groupLabels(model)).toEqual(['別名（最新）', '完整版本', '自訂']);
+    await expect(page.getByTestId('ns-model-note')).toHaveCount(0);
     await expect(effort.locator('option')).toHaveText([
       '跟 CLI 預設',
       'low',
@@ -1047,9 +1086,15 @@ test.describe('新增 session', () => {
     await model.selectOption('opus');
     await effort.selectOption('xhigh');
     await fallback.selectOption('sonnet');
+    // 選了的模型在下面寫說明。
+    await expect(page.getByTestId('ns-model-note')).toHaveText('Opus：能力最強，較慢、較耗額度');
     await expect(preview(page)).toHaveText(
       'cd /w\nclaude --session-id <uuid> --permission-mode manual --model opus --effort xhigh --fallback-model sonnet --name m',
     );
+    // 完整版本可以直接選。
+    await model.selectOption('claude-sonnet-5-5');
+    await expect(preview(page)).toContainText('--model claude-sonnet-5-5 --effort xhigh');
+    await model.selectOption('opus');
     // 自訂…：切成輸入框，帶著原本的名稱方便改。
     await model.selectOption({ label: '自訂…' });
     const custom = page.locator('#ns-model-custom');
@@ -1092,10 +1137,23 @@ test.describe('新增 session', () => {
     await expect(picker.getByRole('radio', { name: 'Codex' })).toBeChecked();
     // Claude 的別名不帶到 Codex；xhigh 不是 Codex 的強度，回到「跟 CLI 預設」。
     await expect(page.getByLabel('模型', { exact: true })).toHaveValue('');
-    await expect(page.getByLabel('模型', { exact: true }).locator('option')).toHaveText([
-      '預設（不指定）',
-      'gpt-6-luna',
-      '自訂…',
+    // 這台的 daemon 沒回報 Codex 目錄（舊 daemon）：列內建清單並提示；強度只有舊白名單。
+    const codexModel = page.getByLabel('模型', { exact: true });
+    await expect(codexModel.locator('option').first()).toHaveText('Codex 預設（不指定）');
+    await expect(codexModel.locator('option[value="gpt-6-luna"]')).toHaveText(
+      'GPT-6-Luna · gpt-6-luna',
+    );
+    await expect(codexModel.locator('option').last()).toHaveText('自訂…');
+    await expect(codexModel.locator('option[value="opus"]')).toHaveCount(0);
+    await expect(page.getByTestId('codex-catalog-builtin')).toContainText(
+      'rig-codex 沒有回報 Codex 模型目錄',
+    );
+    await expect(page.getByLabel('推理強度', { exact: true }).locator('option')).toHaveText([
+      '跟 CLI 預設',
+      'minimal',
+      'low',
+      'medium',
+      'high',
     ]);
     await expect(page.getByLabel('推理強度', { exact: true })).toHaveValue('');
     await expect(page.getByLabel('備援模型', { exact: true })).toHaveCount(0);
@@ -1109,6 +1167,78 @@ test.describe('新增 session', () => {
     // 換 agent 時清掉的（草稿也清）：備援回到「不指定」；high 兩邊都有，留著。
     await expect(page.getByLabel('備援模型', { exact: true })).toHaveValue('');
     await expect(page.getByLabel('推理強度', { exact: true })).toHaveValue('high');
+  });
+
+  test('模型下拉（§26.11）：Codex 列這台抓到的目錄（依系列分組）、強度隨模型變並標預設、換模型清掉不支援的', async ({
+    page,
+  }) => {
+    const rigCodex = machine({
+      id: 'm-c',
+      name: 'rig-codex',
+      capabilities: { ...rigA.capabilities, codexVersion: '0.167.0', codexModels: CODEX_CATALOG },
+    });
+    await open(page, 'new', { ...newSeed(), machines: [rigCodex, rigA] });
+    await page.getByLabel('機器', { exact: true }).selectOption('m-c');
+    await page.getByLabel('名稱').fill('cat');
+    await page.getByLabel('工作目錄').fill('/w');
+    await page.getByTestId('agent-picker').getByText('Codex', { exact: true }).click();
+    const model = page.getByLabel('模型', { exact: true });
+    const effort = page.getByLabel('推理強度', { exact: true });
+    await expect(model.locator('option')).toHaveText([
+      'Codex 預設（不指定）',
+      'GPT-6.2-Sol · gpt-6.2-sol',
+      'GPT-6-Luna · gpt-6-luna',
+      'Codex Auto Review · codex-auto-review',
+      '自訂…',
+    ]);
+    // 內建清單的 gpt-6-luna（§26 預設）和目錄的同一個，不重複。
+    expect(await groupLabels(model)).toEqual(['GPT-6.2', 'GPT-6', 'Codex 選單不列的', '自訂']);
+    await expect(page.getByTestId('codex-catalog-builtin')).toHaveCount(0);
+    // 不指定模型：整份安全白名單。
+    await expect(effort.locator('option')).toHaveText([
+      '跟 CLI 預設',
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra',
+    ]);
+    await model.selectOption('gpt-6.2-sol');
+    await expect(effort.locator('option')).toHaveText([
+      '跟 CLI 預設',
+      'low（此模型預設）',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra',
+    ]);
+    await effort.selectOption('ultra');
+    await expect(preview(page)).toContainText(
+      `codex -s read-only -a on-request -m gpt-6.2-sol -c 'model_reasoning_effort="ultra"'`,
+    );
+    // gpt-6-luna 沒有 ultra：換過去清掉（回到跟 CLI 預設），預設標在 medium。
+    await model.selectOption('gpt-6-luna');
+    await expect(effort).toHaveValue('');
+    await expect(effort.locator('option')).toHaveText([
+      '跟 CLI 預設',
+      'low',
+      'medium（此模型預設）',
+      'high',
+      'xhigh',
+      'max',
+    ]);
+    await expect(preview(page)).not.toContainText('model_reasoning_effort');
+    // 兩個都支援的級別換模型時留著。
+    await effort.selectOption('xhigh');
+    await model.selectOption('gpt-6.2-sol');
+    await expect(effort).toHaveValue('xhigh');
+    await page.getByRole('button', { name: '建立 session' }).click();
+    await expect(page.locator('form .acts .msg')).toContainText('已建立 cat');
+    const [created] = (await calls(page)) as { input: Record<string, unknown> }[];
+    expect(created?.input).toMatchObject({ agent: 'codex', model: 'gpt-6.2-sol', effort: 'xhigh' });
   });
 
   test('模型下拉（§26）：舊 daemon 提示強度與備援不會生效，預覽與送出都不帶', async ({ page }) => {
@@ -1929,16 +2059,30 @@ test.describe('設定', () => {
     expect(await calls(page)).toEqual([{ type: 'settings', patch: { dangerRules: [] } }]);
   });
 
-  test('模型清單（§26）：新增、擋不合的名稱與重複、上下移、移除；存檔只送 modelLists，新增 session 的下拉跟著換', async ({
+  test('模型清單（§26、§26.11）：釘選、隱藏、自己加的（新增、擋不合與重複、上下移、移除）；存檔只送 modelLists，新增 session 的下拉跟著換', async ({
     page,
   }) => {
+    // 示範資料的 demo-gpu 回報了 Codex 目錄（fakeBackend 的 DEMO_CODEX_MODELS）。
     await open(page, 'settings/sessions');
     const section = page.locator('#s-modelLists');
     await expect(section).toContainText('模型清單');
     const claude = section.getByTestId('model-list-claude');
     const codex = section.getByTestId('model-list-codex');
-    await expect(claude.locator('li code')).toHaveText(['fable', 'opus', 'sonnet', 'haiku']);
-    await expect(codex.locator('li code')).toHaveText(['gpt-6-luna']);
+    // 內建清單：別名與完整版本都在，有說明；§26 舊預設的別名不另列在「自己加的」。
+    await expect(claude.getByTestId('model-catalog-claude').locator('li')).toHaveCount(8);
+    await expect(claude.getByTestId('model-catalog-claude')).toContainText(
+      'Opus 5.5 · claude-opus-5-5 — 能力最強，較慢、較耗額度',
+    );
+    await expect(claude).toContainText('還沒有釘選');
+    await expect(claude).toContainText('還沒有自己加的名稱');
+    // Codex：各機器自動抓的目錄。
+    await expect(codex.getByTestId('model-catalog-codex').locator('li')).toHaveText([
+      /^GPT-6\.2GPT-6\.2-Sol · gpt-6\.2-sol/,
+      /^GPT-6\.2-Astra · gpt-6\.2-astra/,
+      /^GPT-6GPT-6-Luna · gpt-6-luna/,
+      /^GPT-5\.6GPT-5\.6-Terra · gpt-5\.6-terra/,
+      /^Codex 選單不列的Codex Auto Review · codex-auto-review/,
+    ]);
 
     const input = claude.getByLabel('新增到 Claude Code 的模型名稱');
     await input.fill('bad name');
@@ -1947,29 +2091,38 @@ test.describe('設定', () => {
     await input.fill('opus');
     await claude.getByRole('button', { name: '新增' }).click();
     await expect(claude.locator('.msg.err')).toHaveText('清單裡已經有這個名稱。');
-    await input.fill('claude-opus-5-5');
+    await input.fill('my-model');
     await input.press('Enter');
-    await expect(claude.locator('li code')).toHaveText([
-      'fable',
-      'opus',
-      'sonnet',
-      'haiku',
-      'claude-opus-5-5',
+    await input.fill('my-other');
+    await input.press('Enter');
+    const mine = claude.getByTestId('model-mine-claude');
+    await expect(mine.locator('li code')).toHaveText(['my-model', 'my-other']);
+    await claude.getByRole('button', { name: 'my-other 往上移' }).click();
+    await expect(mine.locator('li code')).toHaveText(['my-other', 'my-model']);
+    await claude.getByRole('button', { name: '從清單移除 my-other' }).click();
+
+    // 釘選（照釘的順序，可以排序）、隱藏（劃掉、再按顯示回來）。
+    await claude.getByRole('button', { name: '釘選 claude-opus-5-5' }).click();
+    await claude.getByRole('button', { name: '釘選 my-model' }).click();
+    const pinned = claude.getByTestId('model-pinned-claude');
+    await expect(pinned.locator('li')).toHaveCount(2);
+    await claude.getByRole('button', { name: 'my-model 往上移' }).first().click();
+    await expect(pinned.locator('li .model-row-name')).toHaveText([
+      'my-model',
+      'Opus 5.5 · claude-opus-5-5 — 能力最強，較慢、較耗額度',
     ]);
-    await claude.getByRole('button', { name: 'claude-opus-5-5 往上移' }).click();
-    await claude.getByRole('button', { name: 'fable 往下移' }).click();
-    await claude.getByRole('button', { name: '從清單移除 haiku' }).click();
-    await expect(claude.locator('li code')).toHaveText([
-      'opus',
-      'fable',
-      'sonnet',
-      'claude-opus-5-5',
-    ]);
-    // 第一個不能再往上、最後一個不能再往下。
-    await expect(claude.getByRole('button', { name: 'opus 往上移' })).toBeDisabled();
-    await expect(claude.getByRole('button', { name: 'claude-opus-5-5 往下移' })).toBeDisabled();
-    await codex.getByRole('button', { name: '從清單移除 gpt-6-luna' }).click();
-    await expect(codex).toContainText('清單是空的');
+    await expect(
+      claude
+        .getByTestId('model-catalog-claude')
+        .getByRole('button', { name: '取消釘選 claude-opus-5-5' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    await claude.getByRole('button', { name: '從下拉隱藏 haiku' }).click();
+    await claude.getByRole('button', { name: '從下拉隱藏 sonnet' }).click();
+    await claude.getByRole('button', { name: '在下拉顯示 sonnet' }).click();
+    await expect(claude.locator('li[data-model="haiku"]')).toHaveClass(/model-hidden/);
+    await codex.getByRole('button', { name: '釘選 gpt-6-luna' }).click();
+    await codex.getByRole('button', { name: '從下拉隱藏 codex-auto-review' }).click();
+
     await expect(section.locator('.chip.unsaved')).toHaveText('未存檔');
     await page.getByRole('button', { name: '儲存設定' }).click();
     await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
@@ -1977,24 +2130,47 @@ test.describe('設定', () => {
       {
         type: 'settings',
         patch: {
-          modelLists: { claude: ['opus', 'fable', 'sonnet', 'claude-opus-5-5'], codex: [] },
+          modelLists: {
+            claude: ['my-model'],
+            codex: [],
+            pinned: { claude: ['my-model', 'claude-opus-5-5'], codex: ['gpt-6-luna'] },
+            hidden: { claude: ['haiku'], codex: ['codex-auto-review'] },
+          },
         },
       },
     ]);
-    // 同一頁換到新增 session：下拉是剛存的清單。
+    // 同一頁換到新增 session：釘選的在最上面，隱藏的不見了。
     await page.evaluate(() => (location.hash = '#/new'));
-    await expect(page.getByLabel('模型', { exact: true }).locator('option')).toHaveText([
-      '預設（不指定）',
-      'opus',
-      'fable',
-      'sonnet',
-      'claude-opus-5-5',
+    const model = page.getByLabel('模型', { exact: true });
+    await expect(model.locator('option')).toHaveText([
+      'CLI 預設（不指定）',
+      'my-model',
+      'Opus 5.5 · claude-opus-5-5 — 能力最強，較慢、較耗額度',
+      'Fable · fable — Fable 系列',
+      'Opus · opus — 能力最強，較慢、較耗額度',
+      'Sonnet · sonnet — 速度與能力平衡',
+      'Fable 5.1 · claude-fable-5-1 — Fable 系列',
+      'Sonnet 5.5 · claude-sonnet-5-5 — 速度與能力平衡',
+      'Haiku 5.5 · claude-haiku-5-5 — 最快、最省額度',
       '自訂…',
     ]);
-    // 恢復內建清單。
+    expect(await groupLabels(model)).toEqual(['釘選', '別名（最新）', '完整版本', '自訂']);
+    await page.getByLabel('機器', { exact: true }).selectOption('m-gpu');
+    await page.getByTestId('agent-picker').getByText('Codex', { exact: true }).click();
+    await expect(model.locator('option')).toHaveText([
+      'Codex 預設（不指定）',
+      'GPT-6-Luna · gpt-6-luna',
+      'GPT-6.2-Sol · gpt-6.2-sol',
+      'GPT-6.2-Astra · gpt-6.2-astra',
+      'GPT-5.6-Terra · gpt-5.6-terra',
+      '自訂…',
+    ]);
+    expect(await groupLabels(model)).toEqual(['釘選', 'GPT-6.2', 'GPT-5.6', '自訂']);
+    // 恢復內建清單：釘選與隱藏一起清掉。
     await page.evaluate(() => (location.hash = '#/settings/sessions'));
     await page.getByTestId('model-lists-reset').click();
-    await expect(claude.locator('li code')).toHaveText(['fable', 'opus', 'sonnet', 'haiku']);
+    await expect(claude).toContainText('還沒有釘選');
+    await expect(claude.locator('li.model-hidden')).toHaveCount(0);
   });
 
   test('機器：配對碼，移除要按兩次', async ({ page }) => {
@@ -2898,6 +3074,69 @@ test.describe('語系與版面', () => {
         document.querySelector('#s-modelLists')?.scrollIntoView({ block: 'start' }),
       );
       await page.screenshot({ path: shot(info, 'model-lists-1280') });
+    });
+  });
+
+  test.describe('模型目錄（繁中，§26.11）', () => {
+    test.use({ locale: 'zh-TW' });
+    test('截圖：新增 session 的 Claude 與 Codex 下拉（展開）、設定頁清單；手機 44px、不水平捲動', async ({
+      page,
+    }, info) => {
+      const rigCodex = machine({
+        id: 'm-c',
+        name: 'rig-codex',
+        capabilities: { ...rigA.capabilities, codexVersion: '0.167.0', codexModels: CODEX_CATALOG },
+      });
+      // 原生下拉打開時截不到：截圖時暫時加 size，讓選項（含分組標題）直接攤開。
+      const expand = (id: string) =>
+        page.evaluate((sel) => {
+          const el = document.querySelector<HTMLSelectElement>(sel);
+          el?.setAttribute('size', String(Math.min(14, el.options.length + 4)));
+          el?.scrollIntoView({ block: 'center' });
+        }, id);
+      for (const width of [390, 1280]) {
+        await page.setViewportSize({ width, height: 900 });
+        await open(page, 'new', { machines: [rigCodex, rigA], sessions: [] });
+        await page.getByLabel('機器', { exact: true }).selectOption('m-c');
+        await page.getByLabel('模型', { exact: true }).selectOption('claude-opus-5-5');
+        await expect(page.getByTestId('ns-model-note')).toHaveText(
+          'Opus 5.5：能力最強，較慢、較耗額度',
+        );
+        if (width === 390) {
+          for (const id of ['#ns-model', '#ns-effort']) {
+            const box = await page.locator(id).boundingBox();
+            expect(box?.height ?? 0, id).toBeGreaterThanOrEqual(44);
+          }
+          await expectNoPageOverflow(page);
+        }
+        await expand('#ns-model');
+        await page.screenshot({ path: shot(info, `model-catalog-claude-${width}`) });
+        await page.getByTestId('agent-picker').getByText('Codex', { exact: true }).click();
+        await page.getByLabel('模型', { exact: true }).selectOption('gpt-6-luna');
+        await expand('#ns-model');
+        await expand('#ns-effort');
+        await page.locator('#ns-model').scrollIntoViewIfNeeded();
+        await page.screenshot({ path: shot(info, `model-catalog-codex-${width}`) });
+        await open(page, 'settings/modelLists', { machines: [rigCodex, rigA] });
+        const section = page.locator('#s-modelLists');
+        await section.getByRole('button', { name: '釘選 claude-opus-5-5' }).click();
+        await section.getByRole('button', { name: '從下拉隱藏 haiku' }).click();
+        await section.getByRole('button', { name: '釘選 gpt-6-luna' }).click();
+        if (width === 390) {
+          for (const button of await section.getByRole('button').all()) {
+            const box = await button.boundingBox();
+            expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+          }
+          await expectNoPageOverflow(page);
+        }
+        await page.evaluate(() =>
+          document.querySelector('#s-modelLists')?.scrollIntoView({ block: 'start' }),
+        );
+        await page.screenshot({
+          path: shot(info, `model-catalog-settings-${width}`),
+          fullPage: width === 1280,
+        });
+      }
     });
   });
 

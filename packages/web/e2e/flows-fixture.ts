@@ -25,4 +25,4 @@ export const test = base.extend<{ consoleErrors: ConsoleGuard }>({
 });
 
 export { expect };
-export type { Page, TestInfo } from '@playwright/test';
+export type { Locator, Page, TestInfo } from '@playwright/test';

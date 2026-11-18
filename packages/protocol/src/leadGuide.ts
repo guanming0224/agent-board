@@ -60,9 +60,15 @@ export const DISPATCH_INSTRUCTIONS: readonly string[] = [
  * Claude：`claude --effort <level>`（claude 2.1.326 `--help`）；Codex：`-c model_reasoning_effort="<level>"`。
  */
 export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const;
+/**
+ * Codex 的安全字元白名單（GM 2026-11-18，CONTRACTS §26.11）：實際能用哪些看那台 `codex debug models` 目錄裡
+ * 該模型的 `supported_reasoning_levels`（取交集）；模型不在目錄（或抓不到目錄）時收整份。
+ */
+export const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+/** 0.1.14 以前的 Codex 白名單：daemon 沒宣告 `session.codexEffortsByModel` 時只能送這幾個（舊 daemon 會略過其他）。 */
+export const CODEX_LEGACY_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const;
 /** spawn_member 的 effort 說明。 */
-export const SPAWN_EFFORT_DESCRIPTION = `Optional reasoning effort. Claude members: ${CLAUDE_EFFORTS.join(', ')}; Codex members: ${CODEX_EFFORTS.join(', ')}. Defaults to yours (or to that CLI's default when agent differs from yours).`;
+export const SPAWN_EFFORT_DESCRIPTION = `Optional reasoning effort. Claude members: ${CLAUDE_EFFORTS.join(', ')}; Codex members: ${CODEX_EFFORTS.join(', ')} (only the levels the member's model supports). Defaults to yours (or to that CLI's default when agent differs from yours).`;
 
 /** 工具說明（MCP tools/list）。和 DispatchTool 的名稱一一對應；mcp.ts 只負責加上 inputSchema。 */
 export const DISPATCH_TOOL_DESCRIPTIONS = {

@@ -32,6 +32,7 @@ import {
   ZoneGroupError,
   type ZoneGroups,
   MODEL_LISTS_DEFAULT,
+  type CodexModels,
   isSafeModelName,
 } from '@agent-board/protocol';
 import type {
@@ -87,6 +88,47 @@ import { createFakeReviews } from './fakeReviews';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
+const DEMO_CODEX_MODELS: CodexModels = {
+  codexVersion: '0.0.0-demo',
+  models: [
+    {
+      slug: 'gpt-6.2-sol',
+      displayName: 'GPT-6.2-Sol',
+      defaultEffort: 'low',
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      visibility: 'list',
+    },
+    {
+      slug: 'gpt-6.2-astra',
+      displayName: 'GPT-6.2-Astra',
+      defaultEffort: 'low',
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      visibility: 'list',
+    },
+    {
+      slug: 'gpt-6-luna',
+      displayName: 'GPT-6-Luna',
+      defaultEffort: 'medium',
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      visibility: 'list',
+    },
+    {
+      slug: 'gpt-5.6-terra',
+      displayName: 'GPT-5.6-Terra',
+      defaultEffort: 'medium',
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      visibility: 'list',
+    },
+    {
+      slug: 'codex-auto-review',
+      displayName: 'Codex Auto Review',
+      defaultEffort: 'medium',
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      visibility: 'hide',
+    },
+  ],
+};
+
 const machine = (id: string, name: string, online: boolean, hasGpu: boolean): Machine => ({
   id,
   name,
@@ -105,6 +147,8 @@ const machine = (id: string, name: string, online: boolean, hasGpu: boolean): Ma
     ...(online
       ? { modelOptions: true, claudeFlags: { effort: true, efforts: null, fallbackModel: true } }
       : {}),
+    // 示範：裝了 Codex 的那台回報 `codex debug models` 的目錄（§26.11）；名稱與級別取自 codex-cli 0.167.0 的實際輸出。
+    ...(online && hasGpu ? { codexModels: DEMO_CODEX_MODELS } : {}),
   },
 });
 

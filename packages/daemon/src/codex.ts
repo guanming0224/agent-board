@@ -6,16 +6,18 @@ import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import {
-  validEffort,
+  codexEffortsFor,
   codexHookOverrides,
   codexMcpOverrides,
   type CodexMcpServer,
+  type CodexModels,
   codexPermissionArgs,
   type CodexHookTarget,
   type HookEventName,
   type PermissionMode,
 } from '@agent-board/protocol';
 import type { HookOutput } from './hookServer';
+import { log } from './log';
 import { safeModel } from './session';
 
 export interface CodexArgsInput {
@@ -24,8 +26,13 @@ export interface CodexArgsInput {
   permissionMode: PermissionMode;
   readOnly?: boolean;
   model: string | null;
-  /** 推理強度（§26）：只收 CODEX_EFFORTS 裡的值，`-c model_reasoning_effort="<level>"`。 */
+  /**
+   * 推理強度（§26、§26.11）：只收 CODEX_EFFORTS（安全字元白名單）裡、而且那個模型在目錄裡支援的值，
+   * `-c model_reasoning_effort="<level>"`。模型不在目錄或沒有目錄＝整份白名單。
+   */
   effort?: string | null;
+  /** 這台 `codex debug models` 的目錄（daemon 的 capabilities）；null＝抓不到。 */
+  codexModels?: CodexModels | null;
   /** 新對話的第一句（使用者在新增 session 時填的）；用官方的 `codex [PROMPT]` 帶入，接續時不帶。 */
   firstPrompt?: string | null;
   /** 這個 session 的 hook 位址，寫進每個 hook 指令。 */
@@ -46,8 +53,15 @@ export function buildCodexArgs(input: CodexArgsInput): string[] {
   const model = safeModel(input.model);
   if (model) args.push('-m', model);
   // 白名單裡的字只有英文小寫，放進 TOML 字串不必跳脫（同交叉審查的 codexReviewArgs）。
-  if (validEffort('codex', input.effort)) {
-    args.push('-c', `model_reasoning_effort="${input.effort!}"`);
+  const effort = input.effort ?? null;
+  if (effort !== null) {
+    if ((codexEffortsFor(model, input.codexModels) as readonly string[]).includes(effort)) {
+      args.push('-c', `model_reasoning_effort="${effort}"`);
+    } else {
+      log.warn(
+        `略過 Codex 推理強度 ${JSON.stringify(effort)}（模型 ${model ?? '預設'} 不支援或不在白名單）`,
+      );
+    }
   }
   args.push('--dangerously-bypass-hook-trust');
   for (const override of codexHookOverrides(input.hookTarget)) args.push('-c', override);

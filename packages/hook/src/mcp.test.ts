@@ -498,7 +498,7 @@ describe('agent-board-mcp', () => {
     const effort = tool('spawn_member').inputSchema.properties?.effort as
       { description?: string; enum?: string[] } | undefined;
     expect(effort?.description).toBe(SPAWN_EFFORT_DESCRIPTION);
-    expect(effort?.enum).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'minimal']);
+    expect(effort?.enum).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'minimal', 'ultra']);
     expect(tool('spawn_member').inputSchema.required).not.toContain('effort');
     expect(tool('spawn_member').description).toMatch(
       /model and effort \(reasoning effort\) default to yours/,

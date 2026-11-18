@@ -1,5 +1,6 @@
 // 新增 session 的模型、推理強度、備援模型欄位（GM 2026-11-17，CONTRACTS §26）。NewSessionPage 與 QuickCreate 共用。
-// 模型下拉：預設（不指定）＋設定頁的清單＋「自訂…」（切成輸入框）。清單從 GET /api/model-lists 讀，讀不到用內建清單。
+// 模型下拉（§26.11 起分組）：預設（CLI 預設）＋釘選＋內建目錄（Claude 別名／完整版本；Codex 依那台 `codex debug models`
+// 的目錄分系列）＋自己加的＋「自訂…」（切成輸入框）。清單與隱藏／釘選從 GET /api/model-lists 讀，讀不到用內建清單。
 import { useCallback } from 'react';
 import {
   MODEL_LISTS_DEFAULT,
@@ -7,16 +8,25 @@ import {
   type AgentKind,
   type Machine,
   type ModelLists,
+  type ModelNote,
 } from '@agent-board/protocol';
+import { useLocale } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { useLoad, type T } from './common';
 import {
+  codexCatalogFor,
+  codexDefaultEffort,
   CUSTOM,
+  menuItemFor,
+  modelMenu,
   onSelect,
   optionSupport,
   pickedName,
   pickError,
   selectValue,
+  type MenuGroup,
+  type MenuItem,
+  type ModelMenu,
   type ModelPick,
   type OptionSupport,
 } from './modelChoice';
@@ -55,10 +65,28 @@ export function modelFieldErrors(
   };
 }
 
+/** 說明文字照介面語言。 */
+export function useNoteText(): (note: ModelNote | null) => string | null {
+  const locale = useLocale((s) => s.locale);
+  return (note) => (note ? (locale === 'zh-TW' ? note.zh : note.en) : null);
+}
+
+/** 分組標題（optgroup label）。 */
+export function groupLabel(t: T, group: Pick<MenuGroup, 'key' | 'series'>): string {
+  if (group.key === 'series') return group.series ?? '';
+  return t(`flows.new.modelGroup.${group.key}`);
+}
+
+/** 選項文字：`Opus · opus — 能力最強…`；顯示名稱和名稱一樣時只寫一次。 */
+export function optionText(item: MenuItem, note: string | null): string {
+  const head = item.label ? `${item.label} · ${item.value}` : item.value;
+  return note ? `${head} — ${note}` : head;
+}
+
 function ModelSelect({
   id,
   pick,
-  list,
+  menu,
   defaultLabel,
   customPlaceholder,
   onChange,
@@ -66,23 +94,34 @@ function ModelSelect({
 }: {
   id: string;
   pick: ModelPick;
-  list: readonly string[];
+  menu: ModelMenu;
   defaultLabel: string;
   customPlaceholder: string;
   onChange: (next: ModelPick) => void;
   t: T;
 }) {
-  const value = selectValue(pick, list);
+  const value = selectValue(pick, menu.names);
+  const noteText = useNoteText();
   return (
     <>
       <select id={id} value={value} onChange={(e) => onChange(onSelect(pick, e.target.value))}>
         <option value="">{defaultLabel}</option>
-        {list.map((name) => (
-          <option key={name} value={name}>
-            {name}
-          </option>
+        {menu.groups.map((group) => (
+          <optgroup
+            key={`${group.key}:${group.series ?? ''}`}
+            label={groupLabel(t, group)}
+            data-group={group.key}
+          >
+            {group.items.map((item) => (
+              <option key={item.value} value={item.value}>
+                {optionText(item, noteText(item.note))}
+              </option>
+            ))}
+          </optgroup>
         ))}
-        <option value={CUSTOM}>{t('flows.new.modelCustom')}</option>
+        <optgroup label={t('flows.new.modelGroup.custom')} data-group="custom">
+          <option value={CUSTOM}>{t('flows.new.modelCustom')}</option>
+        </optgroup>
       </select>
       {value === CUSTOM && (
         <input
@@ -126,10 +165,27 @@ export function ModelFields({
   t: T;
 }) {
   const codex = agent === 'codex';
-  const list = codex ? lists.codex : lists.claude;
-  const support = optionSupport(machine, agent);
+  const { catalog: codexCatalog, source } = codexCatalogFor(machine);
+  const menu = modelMenu(agent, lists, codexCatalog);
+  const support = optionSupport(machine, agent, pickedName(model));
   const errors = modelFieldErrors(t, support, model, fallback);
   const efforts = support.efforts as readonly string[];
+  // 目錄說的這個模型預設強度（Codex 才有）：標在那個級別旁邊。
+  const defaultEffort = codex ? codexDefaultEffort(machine, pickedName(model)) : null;
+  const noteText = useNoteText();
+  const chosen = menuItemFor(agent, codexCatalog, pickedName(model));
+  const chooseModel = (next: ModelPick) => {
+    setModel(next);
+    // 換模型時目前的強度新模型不支援就清掉（Codex 依模型，§26.11）；草稿一起清。
+    if (
+      effort &&
+      !(optionSupport(machine, agent, pickedName(next)).efforts as readonly string[]).includes(
+        effort,
+      )
+    ) {
+      setEffort('');
+    }
+  };
   return (
     <>
       <Field
@@ -141,14 +197,24 @@ export function ModelFields({
         <ModelSelect
           id={`${idPrefix}-model`}
           pick={model}
-          list={list}
-          defaultLabel={t('flows.new.modelDefault')}
+          menu={menu}
+          defaultLabel={t(codex ? 'flows.new.modelDefaultCodex' : 'flows.new.modelDefault')}
           customPlaceholder={t(
             codex ? 'flows.new.modelCustomPlaceholderCodex' : 'flows.new.modelCustomPlaceholder',
           )}
-          onChange={setModel}
+          onChange={chooseModel}
           t={t}
         />
+        {chosen && (chosen.note || chosen.label) && (
+          <p className="hint" data-testid={`${idPrefix}-model-note`}>
+            {[chosen.label, noteText(chosen.note)].filter(Boolean).join('：')}
+          </p>
+        )}
+        {codex && machine && source === 'builtin' && (
+          <p className="hint" data-testid="codex-catalog-builtin">
+            {t('flows.new.codexCatalogBuiltin', { machine: machine.name })}
+          </p>
+        )}
       </Field>
       <Field
         label={t('flows.new.effort')}
@@ -165,7 +231,7 @@ export function ModelFields({
           <option value="">{t('flows.new.effortDefault')}</option>
           {efforts.map((level) => (
             <option key={level} value={level}>
-              {level}
+              {level === defaultEffort ? t('flows.new.effortModelDefault', { level }) : level}
             </option>
           ))}
         </select>
@@ -181,7 +247,7 @@ export function ModelFields({
           <ModelSelect
             id={`${idPrefix}-fallback`}
             pick={fallback}
-            list={lists.claude}
+            menu={menu}
             defaultLabel={t('flows.new.fallbackDefault')}
             customPlaceholder={t('flows.new.modelCustomPlaceholder')}
             onChange={setFallback}

@@ -1017,6 +1017,43 @@
   gap: var(--space-1);
   flex-shrink: 0;
 }
+/* 模型清單的釘選／內建目錄／自己加的三塊（§26.11）。 */
+.flows .model-lists .sublabel {
+  display: block;
+  margin-top: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.flows .model-row-name {
+  min-width: 0;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.flows .model-row-group {
+  display: block;
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+.flows .model-list li.model-hidden .model-row-name {
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
+.flows .model-list-acts button[aria-pressed='true'] {
+  border-color: var(--accent);
+}
+/* 手機：按鈕排到名稱下面，名稱才不會被擠成一字一行。 */
+@media (max-width: 560px) {
+  .flows .model-lists .model-list li {
+    flex-wrap: wrap;
+  }
+  .flows .model-lists .model-list-acts {
+    flex-wrap: wrap;
+  }
+  /* 名稱佔滿一行、按鈕一律在下一行：每列對齊一致。 */
+  .flows .model-lists .model-row-name {
+    flex: 1 1 100%;
+  }
+}
 
 /* 聚焦時別被底部黏住的儲存列蓋住 */
 .flows .settings-panel input,

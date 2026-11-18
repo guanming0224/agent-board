@@ -1,6 +1,12 @@
 // 資料模型（DISPATCH §3、§4）。API 與 WebSocket 一律 camelCase；hub 自行對應 SQLite 的 snake_case。
 import { z } from 'zod';
-import { ClaudeFlags, MODEL_LISTS_DEFAULT, ModelLists, SessionEffort } from './modelOptions';
+import {
+  ClaudeFlags,
+  CodexModels,
+  MODEL_LISTS_DEFAULT,
+  ModelLists,
+  SessionEffort,
+} from './modelOptions';
 
 export const Id = z.string().min(1);
 export const IsoTime = z.string().datetime({ offset: true });
@@ -117,6 +123,12 @@ export const MachineCapabilities = z.object({
    * 格式不合只丟這個欄位（catch），不讓整份 hello 失敗。
    */
   claudeFlags: ClaudeFlags.nullable().optional().catch(null),
+  /**
+   * 這台 `codex debug models` 的模型目錄（§26.11，只留 slug／顯示名稱／預設強度／支援強度／visibility）。
+   * null＝新 daemon 但抓不到（沒裝 codex、指令失敗）；沒有這個鍵＝舊 daemon（或舊 hub 丟掉了）：網頁用內建名單、
+   * Codex 強度只列舊白名單。格式不合只丟這個欄位（catch）。
+   */
+  codexModels: CodexModels.nullable().optional().catch(null),
 });
 export type MachineCapabilities = z.infer<typeof MachineCapabilities>;
 

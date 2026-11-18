@@ -15,6 +15,7 @@ import {
   ClientToHub,
   DAEMON_FEATURES,
   allowedModelOptions,
+  findCodexModel,
   isSafeModelName,
   sameModel,
   supportsFallbackModel,
@@ -546,6 +547,8 @@ export class Hub {
       machineOnline: (machineId) => this.daemonFor(machineId) !== null,
       autoStaff: () => this.store.getSettings().autoStaff,
       accountLimited: (session) => this.accountLimited(session),
+      codexEffortSupported: (machineId, model, effort) =>
+        this.codexEffortSupported(machineId, model, effort),
       archiveMember: (member, by) => {
         this.archive(member, null, by);
       },
@@ -1757,6 +1760,23 @@ export class Hub {
         `Effort ${spec.effort} is not available for ${agent}`,
       );
     }
+    // Codex 的強度依那台模型目錄（§26.11）：目錄說這個模型不支援就 400（模型不在目錄、沒有目錄照白名單）。
+    if (
+      agent === 'codex' &&
+      spec.effort &&
+      !this.codexEffortSupported(machineId, spec.model, spec.effort)
+    ) {
+      const info = findCodexModel(
+        this.store.getMachine(machineId)?.capabilities.codexModels,
+        spec.model,
+      );
+      throw new HttpError(
+        400,
+        'invalid_effort',
+        `Effort ${spec.effort} is not supported by ${spec.model ?? 'the default model'} on this machine` +
+          (info?.efforts ? ` (supported: ${info.efforts.join(', ')})` : ''),
+      );
+    }
     if (spec.fallbackModel) {
       if (!supportsFallbackModel(agent)) {
         throw new HttpError(400, 'fallback_unsupported', 'Codex has no fallback model');
@@ -1780,16 +1800,31 @@ export class Hub {
   private supportedSpec(machineId: string, spec: SessionSpec): SessionSpec {
     const { effort, fallbackModel, ...rest } = spec;
     if (!effort && !fallbackModel) return rest;
-    if (!this.daemonFor(machineId)?.features.has(DAEMON_FEATURES.modelOptions)) return rest;
-    const allowed = allowedModelOptions(
-      agentOf(spec),
-      this.store.getMachine(machineId)?.capabilities.claudeFlags ?? null,
-    );
+    const daemon = this.daemonFor(machineId);
+    if (!daemon?.features.has(DAEMON_FEATURES.modelOptions)) return rest;
+    const capabilities = this.store.getMachine(machineId)?.capabilities;
+    const allowed = allowedModelOptions(agentOf(spec), capabilities?.claudeFlags ?? null, {
+      model: spec.model,
+      catalog: capabilities?.codexModels ?? null,
+      // 舊 daemon（沒宣告依模型）只收 minimal～high，ultra 這類它的 SessionSpec 根本不認得（§26.11）。
+      byModel: daemon.features.has(DAEMON_FEATURES.codexEffortsByModel),
+    });
     return {
       ...rest,
       ...(effort && allowed.efforts.includes(effort) ? { effort } : {}),
       ...(fallbackModel && allowed.fallback ? { fallbackModel } : {}),
     };
+  }
+
+  /**
+   * 那台的 Codex 模型目錄說這個模型支援這個強度嗎（§26.11）。模型不在目錄、沒有目錄：只看白名單。
+   * 只看目錄，不看 daemon 新舊（舊 daemon 的限制由 supportedSpec 拿掉，不擋建立）。
+   */
+  private codexEffortSupported(machineId: string, model: string | null, effort: string): boolean {
+    const catalog = this.store.getMachine(machineId)?.capabilities.codexModels ?? null;
+    return allowedModelOptions('codex', null, { model, catalog, byModel: true }).efforts.includes(
+      effort as never,
+    );
   }
 
   private slotAvailable(): boolean {

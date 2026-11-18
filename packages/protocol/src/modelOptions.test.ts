@@ -29,13 +29,24 @@ const baseSpec = {
 };
 
 describe('推理強度白名單', () => {
-  it('依 agent 不同：Claude 有 xhigh／max、沒有 minimal；Codex 相反', () => {
+  it('依 agent 不同：Claude 沒有 minimal／ultra；Codex 的安全集合多到 ultra（§26.11）', () => {
     expect(effortsFor('claude')).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
-    expect(effortsFor('codex')).toEqual(['minimal', 'low', 'medium', 'high']);
+    expect(effortsFor('codex')).toEqual([
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra',
+    ]);
+    expect(validEffort('claude', 'ultra')).toBe(false);
+    expect(validEffort('codex', 'ultra')).toBe(true);
+    expect(validEffort('codex', 'turbo')).toBe(false);
     expect(validEffort('claude', 'max')).toBe(true);
     expect(validEffort('claude', 'minimal')).toBe(false);
     expect(validEffort('codex', 'minimal')).toBe(true);
-    expect(validEffort('codex', 'xhigh')).toBe(false);
+    expect(validEffort('codex', 'xhigh')).toBe(true);
     expect(validEffort('claude', null)).toBe(false);
     expect(validEffort('claude', 'HIGH')).toBe(false);
   });
@@ -120,8 +131,8 @@ describe('模型清單（Settings.modelLists）', () => {
       notifications: { enabled: true, quietHours: null },
     });
     expect(settings.modelLists).toEqual(MODEL_LISTS_DEFAULT);
-    expect(MODEL_LISTS_DEFAULT.claude).toEqual(['fable', 'opus', 'sonnet', 'haiku']);
-    expect(MODEL_LISTS_DEFAULT.codex).toEqual(['gpt-6-luna']);
+    // §26.11：內建的名稱改由 CLAUDE_MODEL_CATALOG 與 Codex 目錄提供，「自己加的」預設是空的。
+    expect(MODEL_LISTS_DEFAULT).toEqual({ claude: [], codex: [] });
   });
 
   it('SettingsPatch 沒帶就不補預設；名稱一樣只收安全字元、每份最多 30 個', () => {
@@ -196,7 +207,7 @@ describe('claude --help 解析（§26.10）', () => {
     expect(parseClaudeHelp('  --effort-budget <n>  Something (low, high)\n').effort).toBe(false);
   });
 
-  it('allowedModelOptions：Codex 看白名單；Claude 看偵測結果，沒有就都不帶', () => {
+  it('allowedModelOptions：Codex 沒給目錄資訊＝舊白名單；Claude 看偵測結果，沒有就都不帶', () => {
     expect(allowedModelOptions('codex', null)).toEqual({
       efforts: ['minimal', 'low', 'medium', 'high'],
       fallback: false,

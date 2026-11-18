@@ -56,7 +56,12 @@ import {
   SearchItem,
 } from './search';
 import { GIT_INIT_FEATURE, GitInitResult } from './gitInit';
-import { MODEL_OPTIONS_FEATURE, ModelName, SessionEffort } from './modelOptions';
+import {
+  CODEX_EFFORTS_BY_MODEL_FEATURE,
+  MODEL_OPTIONS_FEATURE,
+  ModelName,
+  SessionEffort,
+} from './modelOptions';
 
 export const WS_PATHS = { daemon: '/ws/daemon', client: '/ws/client' } as const;
 
@@ -93,6 +98,8 @@ export const DAEMON_FEATURES = {
    * （送了也會被 zod 丟掉，session 照開但參數沒生效，畫面會誤以為有）。
    */
   modelOptions: MODEL_OPTIONS_FEATURE,
+  /** Codex 推理強度依模型目錄驗，收 xhigh／max／ultra（§26.11）；capabilities 帶 `codexModels`。 */
+  codexEffortsByModel: CODEX_EFFORTS_BY_MODEL_FEATURE,
 } as const;
 
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);

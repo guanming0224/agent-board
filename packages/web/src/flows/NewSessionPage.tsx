@@ -48,6 +48,8 @@ import {
 import { PairMachineNext } from './settingsParts';
 import { modelFieldErrors, ModelFields, useModelLists } from './ModelFields';
 import {
+  codexCatalogFor,
+  modelMenu,
   modelSpec,
   optionSupport,
   NO_MODEL,
@@ -186,12 +188,14 @@ export function NewSessionPage() {
   const chooseAgent = (next: AgentKind) => {
     setAgent(next);
     // 別家的別名（opus 之於 Codex）清回「預設」；自己打的自訂名稱留著。
-    setModel(pickForAgent(model, next === 'codex' ? modelLists.codex : modelLists.claude));
+    setModel(
+      pickForAgent(model, modelMenu(next, modelLists, codexCatalogFor(machine).catalog).names),
+    );
     // 新 agent 沒有的強度、不支援的備援一起清掉（草稿也清），換回來不會又冒出來。
     if (effort && !validEffort(next, effort)) setEffort('');
     if (!supportsFallbackModel(next)) setFallback(NO_MODEL);
   };
-  const support = optionSupport(machine, agent);
+  const support = optionSupport(machine, agent, pickedName(model));
   const modelErrors = modelFieldErrors(t, support, model, fallback);
   const models = modelSpec({ model, effort, fallback, support });
   // 舊資料可能有不合格的 id（hub 會拒絕），不放進建議清單。接續只列同一種 CLI 的對話。

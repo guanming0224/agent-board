@@ -331,6 +331,8 @@ export interface DispatchDeps {
   autoStaff(): AutoStaff;
   /** 這個 session 的 Claude 帳號（同機器、同 CLAUDE_CONFIG_DIR）正在限流：不擴編。 */
   accountLimited(session: Session): boolean;
+  /** Codex 成員的推理強度：那台的模型目錄支援嗎（§26.11）。沒給＝都當支援（測試）。 */
+  codexEffortSupported?(machineId: string, model: string | null, effort: string): boolean;
   /**
    * 封存成員：走 hub 的封存流程（停 session、暫停相關交接規則，可在設定→已封存還原，對話保留）。
    * 停不了（例如機器離線以外的錯）丟 HttpError。`by` 是下令的隊長（audit 用）。
@@ -885,8 +887,6 @@ export class DispatchEngine {
     const taken = new Set(store.listSessions().map((s) => s.name.toLowerCase()));
     const name = memberName(existing?.name ?? caller.name, args.role, wanted || undefined, taken);
     const message = workMessage(caller.name, prompt);
-    const created = existing === null;
-    const team = existing ?? this.createTeam(caller);
     // 模型名稱各家不同：換了 agent 就不沿用呼叫者的，用那個 CLI 自己的預設。
     const model = args.model
       ? cleanLine(args.model) || (agent === callerAgent ? caller.model : null)
@@ -895,7 +895,23 @@ export class DispatchEngine {
         : null;
     // 推理強度與備援模型（§26）照 model 的規則沿用；備援和成員的主模型相同（不分大小寫）就不帶（claude 不接受）。
     // 那台 claude 不認得的參數由 hub 的 supportedSpec 拿掉（§26.10），整隊沿用也不會讓成員開不起來。
-    const effort = wantedEffort ?? (agent === callerAgent ? (caller.effort ?? null) : null);
+    const inheritedEffort =
+      wantedEffort === null && agent === callerAgent ? (caller.effort ?? null) : null;
+    // Codex 的強度依成員的模型（§26.11）：指定了但模型不支援回 invalid_effort；沿用隊長的不支援就不帶（用 CLI 預設）。
+    const codexOk = (value: string) =>
+      agent !== 'codex' ||
+      (this.deps.codexEffortSupported?.(caller.machineId, model, value) ?? true);
+    if (wantedEffort !== null && !codexOk(wantedEffort)) {
+      return fail(
+        'invalid_effort',
+        `effort ${wantedEffort} is not supported by ${model ?? 'the default Codex model'} on this machine. Omit it to use the model's default.`,
+      );
+    }
+    const effort =
+      wantedEffort ?? (inheritedEffort && codexOk(inheritedEffort) ? inheritedEffort : null);
+    // 參數都檢查過才建團隊（上面回錯誤時不留下空團隊）。
+    const created = existing === null;
+    const team = existing ?? this.createTeam(caller);
     const inheritedFallback =
       agent === 'claude' && callerAgent === 'claude' ? (caller.fallbackModel ?? null) : null;
     const fallbackModel = sameModel(inheritedFallback, model) ? null : inheritedFallback;

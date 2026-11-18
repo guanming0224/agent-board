@@ -105,7 +105,7 @@ describe('建立 session 的推理強度與備援模型', () => {
     const { daemon, create } = await setup();
     const cases: [Record<string, unknown>, string][] = [
       [{ effort: 'minimal' }, 'invalid_effort'],
-      [{ agent: 'codex', effort: 'max' }, 'invalid_effort'],
+      [{ effort: 'ultra' }, 'invalid_effort'],
       [{ effort: 'turbo' }, 'invalid_request'],
       [{ model: 'opus; rm -rf /' }, 'invalid_model'],
       [{ model: '--dangerously-skip-permissions' }, 'invalid_model'],
@@ -294,6 +294,50 @@ describe('模型清單（settings modelLists）', () => {
     });
     expect(bad.status).toBe(400);
   });
+
+  it('隱藏／釘選（§26.11）：存得進去、一般使用者讀得到、整理去重、又釘又藏以釘選為準；舊格式照讀', async () => {
+    const { cookie } = await setup();
+    const member = await hub.createMember(cookie);
+    const saved = await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: {
+        modelLists: {
+          claude: [],
+          codex: ['my-model'],
+          pinned: {
+            claude: ['claude-opus-5-5', 'Claude-Opus-5-5', 'sonnet'],
+            codex: ['gpt-6-luna'],
+          },
+          hidden: { claude: ['haiku', 'sonnet'], codex: ['codex-auto-review'] },
+        },
+      },
+    });
+    expect(saved.status).toBe(200);
+    const expected = {
+      claude: [],
+      codex: ['my-model'],
+      pinned: { claude: ['claude-opus-5-5', 'sonnet'], codex: ['gpt-6-luna'] },
+      hidden: { claude: ['haiku'], codex: ['codex-auto-review'] },
+    };
+    expect(saved.body.modelLists).toEqual(expected);
+    expect((await hub.api('GET', '/api/model-lists', { cookie: member.cookie })).body).toEqual(
+      expected,
+    );
+    // 存別的設定不動它；hub 重新讀（settings 表）也一樣。
+    await hub.api('PATCH', '/api/settings', { cookie, body: { dispatch: false } });
+    expect(hub.running.store.getSettings().modelLists).toEqual(expected);
+    // 舊網頁只送 claude／codex：釘選與隱藏不寫（整份取代，這是舊行為）。
+    const old = await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { modelLists: { claude: ['opus'], codex: [] } },
+    });
+    expect(old.body.modelLists).toEqual({ claude: ['opus'], codex: [] });
+    const bad = await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { modelLists: { claude: [], codex: [], hidden: { claude: ['a b'], codex: [] } } },
+    });
+    expect(bad.status).toBe(400);
+  });
 });
 
 async function ask(daemon: Peer, sessionId: string, tool: string, args: Record<string, unknown>) {
@@ -384,10 +428,116 @@ describe('spawn_member 的 effort', () => {
     const bad = await spawn(daemon, lead2, {
       role: 'reviewer',
       prompt: 'Nope.',
-      agent: 'codex',
-      effort: 'xhigh',
+      effort: 'ultra',
     });
     expect(bad.reply.ok).toBe(false);
-    expect(bad.reply.text).toMatch(/^invalid_effort:.*minimal, low, medium, high/);
+    expect(bad.reply.text).toMatch(/^invalid_effort:.*Claude.*low, medium, high, xhigh, max\./);
+  });
+});
+
+describe('Codex 強度依模型目錄（§26.11）', () => {
+  const CATALOG = {
+    codexVersion: '0.167.0',
+    models: [
+      {
+        slug: 'gpt-6.2-sol',
+        displayName: 'GPT-6.2-Sol',
+        defaultEffort: 'low',
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        visibility: 'list',
+      },
+      {
+        slug: 'gpt-6-luna',
+        displayName: 'GPT-6-Luna',
+        defaultEffort: 'medium',
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        visibility: 'list',
+      },
+    ],
+  };
+  const BY_MODEL = [...NEW_FEATURES, DAEMON_FEATURES.codexEffortsByModel];
+
+  async function setupCatalog(features: string[] = BY_MODEL) {
+    hub = await startHub({ timing: { handoffEnterDelayMs: 20 } });
+    const cookie = await hub.setupOwner();
+    const { daemon, machineId } = await hub.onlineDaemon(cookie, {
+      features,
+      capabilities: { ...capabilities, codexVersion: '0.167.0', codexModels: CATALOG },
+    });
+    const create = (over: Partial<SessionSpec> = {}) =>
+      hub.api<Session & { code?: string; message?: string }>('POST', '/api/sessions', {
+        cookie,
+        body: { ...spec({ cwd: CWD, ...over }), machineId },
+      });
+    return { cookie, daemon, machineId, create };
+  }
+
+  it('目錄有列：只收它支援的（ultra 給 gpt-6.2-sol 可以、給 gpt-6-luna 400）；不在目錄、不指定模型收整份白名單', async () => {
+    const { daemon, machineId, create } = await setupCatalog();
+    // capabilities 原樣存著（網頁讀得到）。
+    expect(hub.running.store.getMachine(machineId)?.capabilities.codexModels).toEqual(CATALOG);
+    const ok = await create({ agent: 'codex', model: 'gpt-6.2-sol', effort: 'ultra' });
+    expect(ok.status).toBe(200);
+    expect(
+      (await daemon.next('session.create', (m) => m.sessionId === ok.body.id)).spec,
+    ).toMatchObject({
+      effort: 'ultra',
+    });
+    const bad = await create({ agent: 'codex', model: 'GPT-6-LUNA', effort: 'ultra' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.code).toBe('invalid_effort');
+    expect(bad.body.message).toMatch(/supported: low, medium, high, xhigh, max/);
+    const minimal = await create({ agent: 'codex', model: 'gpt-6-luna', effort: 'minimal' });
+    expect(minimal.status).toBe(400);
+    for (const over of [
+      { agent: 'codex' as const, model: 'gpt-unknown', effort: 'ultra' as const },
+      { agent: 'codex' as const, model: null, effort: 'xhigh' as const },
+    ]) {
+      const res = await create(over);
+      expect(res.status, JSON.stringify(over)).toBe(200);
+      const sent = await daemon.next('session.create', (m) => m.sessionId === res.body.id);
+      expect(sent.spec).toMatchObject({ effort: over.effort });
+    }
+  });
+
+  it('舊 daemon（沒宣告 session.codexEffortsByModel）：xhigh／ultra 不送、不記，minimal～high 照送', async () => {
+    const { daemon, create } = await setupCatalog(NEW_FEATURES);
+    const res = await create({ agent: 'codex', model: 'gpt-6.2-sol', effort: 'ultra' });
+    expect(res.status).toBe(200);
+    expect(res.body.effort).toBeUndefined();
+    const sent = await daemon.next('session.create', (m) => m.sessionId === res.body.id);
+    expect(sent.spec).not.toHaveProperty('effort');
+    expect(optsRows()).toBe(0);
+    const high = await create({ agent: 'codex', model: 'gpt-6.2-sol', effort: 'high' });
+    const sentHigh = await daemon.next('session.create', (m) => m.sessionId === high.body.id);
+    expect(sentHigh.spec).toMatchObject({ effort: 'high' });
+  });
+
+  it('spawn_member：指定成員模型不支援的強度回 invalid_effort；沿用隊長的不支援就不帶', async () => {
+    const { daemon, create } = await setupCatalog();
+    const lead = await startLead(daemon, create, {
+      agent: 'codex',
+      model: 'gpt-6.2-sol',
+      effort: 'ultra',
+    });
+    const same = await spawn(daemon, lead, { role: 'researcher', prompt: 'Look.' });
+    expect(same.spec).toMatchObject({ agent: 'codex', model: 'gpt-6.2-sol', effort: 'ultra' });
+    const luna = await spawn(daemon, lead, {
+      role: 'researcher',
+      prompt: 'Cheap.',
+      model: 'gpt-6-luna',
+    });
+    expect(luna.spec).toMatchObject({ model: 'gpt-6-luna' });
+    expect(luna.spec).not.toHaveProperty('effort');
+    const bad = await spawn(daemon, lead, {
+      role: 'researcher',
+      prompt: 'Nope.',
+      model: 'gpt-6-luna',
+      effort: 'ultra',
+    });
+    expect(bad.reply.ok).toBe(false);
+    expect(bad.reply.text).toMatch(/^invalid_effort:.*gpt-6-luna/);
+    // 參數錯誤不留下空團隊（仍是隊長原本那一隊）。
+    expect(hub.running.store.listTeams()).toHaveLength(1);
   });
 });

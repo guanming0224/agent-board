@@ -381,3 +381,83 @@ test('SessionStart 等第一句才送：NEW 靠畫面上的 Codex 標題判斷�
     .toMatch(/^[0-9a-f-]{36}$/);
   await expectStatus(page.request, late.id, 'waiting_input');
 });
+
+test('模型目錄（§26.11）：daemon 跑 codex debug models、只留五個欄位；新增頁列目錄、強度隨模型變；實際參數照帶，模型不支援的 hub 擋下', async ({
+  page,
+}) => {
+  const machines = (await (await page.request.get('/api/machines')).json()) as Machine[];
+  const machine = machines.find((m) => m.online)!;
+  expect(machine.capabilities.codexModels?.models.map((m) => m.slug)).toEqual([
+    'gpt-fake-ultra',
+    'gpt-fake-mini',
+    'fake-hidden-review',
+  ]);
+  // 假 codex 多帶的提示、帳號欄位在 daemon 就丟掉了。
+  expect(JSON.stringify(machine.capabilities.codexModels)).not.toMatch(
+    /FAKE SYSTEM PROMPT|fake-account-secret|base_instructions/,
+  );
+  expect(machine.capabilities.codexModels?.models[1]).toEqual({
+    slug: 'gpt-fake-mini',
+    displayName: 'GPT-Fake-Mini',
+    defaultEffort: 'medium',
+    efforts: ['low', 'medium', 'high'],
+    visibility: 'list',
+  });
+
+  await page.goto('/#/new');
+  await page.getByLabel('名稱').fill('codex-catalog');
+  await page.getByLabel('工作目錄').fill(repo);
+  await page.getByTestId('agent-picker').getByText('Codex', { exact: true }).click();
+  const model = page.getByLabel('模型', { exact: true });
+  const effort = page.getByLabel('推理強度', { exact: true });
+  await expect(model.locator('option')).toHaveText([
+    'Codex 預設（不指定）',
+    'GPT-Fake-Ultra · gpt-fake-ultra',
+    'GPT-Fake-Mini · gpt-fake-mini',
+    'Fake Hidden Review · fake-hidden-review',
+    '自訂…',
+  ]);
+  await model.selectOption('gpt-fake-mini');
+  await expect(effort.locator('option')).toHaveText([
+    '跟 CLI 預設',
+    'low',
+    'medium（此模型預設）',
+    'high',
+  ]);
+  await model.selectOption('gpt-fake-ultra');
+  await effort.selectOption('ultra');
+  await expect(page.getByTestId('command-preview')).toContainText(
+    `-m gpt-fake-ultra -c 'model_reasoning_effort="ultra"'`,
+  );
+  await page.getByRole('button', { name: '建立 session' }).click();
+  await expect(page.getByText('已建立 codex-catalog')).toBeVisible();
+  const created = ((await (await page.request.get('/api/sessions')).json()) as Session[]).find(
+    (s) => s.name === 'codex-catalog',
+  )!;
+  expect(created.effort).toBe('ultra');
+  await expectStatus(page.request, created.id, 'waiting_input');
+  // 真 daemon 帶給 codex 的實際參數。
+  await expect
+    .poll(async () => readScreen(page, created.id), { timeout: 20_000 })
+    .toContain('-m gpt-fake-ultra -c model_reasoning_effort="ultra"');
+
+  // hub 依目錄擋：gpt-fake-mini 沒有 xhigh。
+  const rejected = await page.request.post('/api/sessions', {
+    data: {
+      machineId: machine.id,
+      name: 'codex-bad-effort',
+      projectId: null,
+      cwd: repo,
+      useWorktree: false,
+      permissionMode: 'default',
+      model: 'gpt-fake-mini',
+      effort: 'xhigh',
+      accountProfile: null,
+      resumeClaudeSessionId: null,
+      firstPrompt: null,
+      agent: 'codex',
+    },
+  });
+  expect(rejected.status()).toBe(400);
+  expect(((await rejected.json()) as { code: string }).code).toBe('invalid_effort');
+});

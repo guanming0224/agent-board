@@ -1294,14 +1294,14 @@ GM 要新增 session 的模型欄位改成下拉，並能細調推理強度與�
 ### 26.1 CLI 參數（本機 `--help` 確認，沒有實際開對話）
 
 - Claude（claude 2.1.326）：`--model <model>`（別名 `fable`／`opus`／`sonnet`／`haiku` 永遠指最新版，或完整名稱）、`--effort <low|medium|high|xhigh|max>`、`--fallback-model <model>`（CLI 接受逗號分隔多個；這裡只收一個，模型名稱字元不含逗號）。
-- Codex（codex-cli 0.167.0）：`-m <model>`、推理強度用設定覆寫 `-c model_reasoning_effort="<minimal|low|medium|high>"`（和交叉審查 `codexReviewArgs` 同一組白名單）。Codex 沒有備援模型參數。
+- Codex（codex-cli 0.167.0）：`-m <model>`、推理強度用設定覆寫 `-c model_reasoning_effort="<level>"`（§26 時是 minimal～high，和交叉審查同一組；**§26.11 起依模型目錄，安全集合到 ultra**，交叉審查不變）。Codex 沒有備援模型參數。
 - 指令一律陣列、不經 shell（`buildClaudeArgs`、`buildCodexArgs`）。順序：Claude `… --permission-mode … [--disallowedTools …] [--model m] [--effort e] [--fallback-model f] [--mcp-config …] --name n`；Codex `[resume id] <權限> [-m m] [-c model_reasoning_effort="e"] --dangerously-bypass-hook-trust -c <hooks> …`。
 - 舊版 claude 不認得這兩個參數時會開不起來：daemon 先跑 `claude --help` 偵測（§26.10），不認得的不帶。
 - **未驗證**：`--effort` 是哪一版 claude 開始有的；真 CLI 帶這些參數實際開對話的行為（沒跑真 claude／codex）。
 
 ### 26.2 白名單與安全字元（`protocol/src/modelOptions.ts`；強度白名單本身在 `leadGuide.ts`，因為 hook 的 MCP server 不能 import zod）
 
-- `CLAUDE_EFFORTS = low, medium, high, xhigh, max`；`CODEX_EFFORTS = minimal, low, medium, high`。`SessionEffort` 是聯集；哪個 agent 能用哪些看 `validEffort(agent, effort)`。
+- `CLAUDE_EFFORTS = low, medium, high, xhigh, max`；`CODEX_EFFORTS = minimal, low, medium, high`（§26.11 改成到 `ultra` 並依模型，舊值留在 `CODEX_LEGACY_EFFORTS`）。`SessionEffort` 是聯集；哪個 agent 能用哪些看 `validEffort(agent, effort)`。
 - 模型名稱 `MODEL_NAME_RE = /^(?!-)[A-Za-z0-9._:/@[\]-]{1,100}$/`：英數與 `. _ : / @ - [ ]`（`[ ]` 給 `opus[1m]`、`@` 給 Vertex 的 `claude-opus-4-1@20250805` 這類寫法），不能以 `-` 開頭。主模型、備援模型、設定頁清單都用這條。
 - 備援模型只有 Claude（`supportsFallbackModel`），而且不能和主模型相同（claude 不接受）。比對不分大小寫（`sameModel`，hub、daemon、網頁同一個）；別名對完整名稱（`opus` 對 `claude-opus-5-5`）不比，claude 不接受時靠 §26.10 的補救。
 
@@ -1371,3 +1371,51 @@ GM 要新增 session 的模型欄位改成下拉，並能細調推理強度與�
 - **舊資料的模型名稱**（W1）：§26 以前存的模型名稱不合 `MODEL_NAME_RE` 時，接續回 409 `invalid_model`（不會讓 daemon 默默改用預設），畫面寫「到全尺寸頁側欄『模型設定』把模型清回預設再接續」。新建的 session 照舊 400 `invalid_model`。
 - daemon 存檔與 hub 的 `sessionModelOpts` 存檔 schema 的 `fallbackModel` 都是 `ModelName`，讀不懂的整筆略過（W2）。
 - **測試**：protocol（2.1.326 實際說明、沒有 `--effort`、只列到 high、括號讀不到、`--effort-xxx`、備援只能配 --print、`allowedModelOptions`、capabilities 欄位壞掉只丟這個、不分大小寫）；daemon（`claudeFlags` null／沒 effort／級別不在／備援只能配 --print 都不帶、`@` 名稱、大小寫；假 claude 的 `--help` 偵測結果進 capabilities）；hub（偵測不到時不送不記但 Codex 照送、只到 high、接續時 claude 已不認得→不送並清記錄並推 `session.updated`、大小寫、`@`、舊資料 409 與 model-reset 的權限／執行中／空 body／清掉後可接續）；web（`optionSupport`、`modelSpec`）；e2e flows（只到 high 的機器只列能用的並提示、舊 daemon 強度停用備援隱藏、換 agent 清掉備援、全尺寸頁補救）。
+
+### 26.11 模型目錄：Codex 自動抓、Claude 完整版本與說明、分組、隱藏／釘選（GM 2026-11-18）
+
+GM 回饋「模型清單太簡陋」，四項都做。**不升 schema（仍是 v11）**。
+
+**1. Codex 自動抓各機器的模型（`codex debug models`）**
+
+- daemon `resources.ts probeCodexModels`：開機時（`probeCapabilities`，有 codex 才跑）先跑 `codex debug models --help`（說明要有「model catalog」才繼續——沒有這個子指令的舊版 codex 會把 `debug` 當成第一句 prompt），再執行 `codex debug models`，失敗再跑 `codex debug models --bundled`；逾時 20 秒、輸出上限 8MB（`CODEX_CATALOG_MAX_BYTES`，本機實測約 830KB、12 個模型）。
+- **不呼叫模型，但會連網**（codex-cli 0.167.0 實測，證據寫在 `docs/no-llm-review.md`）：`--help` 寫 `--bundled  Skip refresh and dump only the bundled catalog`；第一次跑 612ms 且 `~/.codex/models_cache.json` 的修改時間變成那一刻（只看 mtime），`--bundled` 18ms；把 proxy 指到不通的位址照樣成功（用快取）；輸出與 `--bundled` 不同（依帳號）；執行檔字串有 `https://chatgpt.com/backend-api/codex`。也就是 codex 自己用使用者登入向 OpenAI 拿目錄並寫進自己的快取；中控台不讀 `~/.codex`、不經手憑證。`scripts/check-no-llm.mjs` 逐字比對 `resources.ts` 跑 codex 的參數陣列（`CODEX_PROBE_ARGS`：`['--version']`、`['debug', 'models', '--help']`、`['debug', 'models']`、`['debug', 'models', '--bundled']`）。
+- **只留五個欄位**（`protocol parseCodexModelCatalog`）：`slug`（不合 `MODEL_NAME_RE` 整筆略過、不分大小寫去重）、`display_name`→`displayName`（控制字元拿掉、最多 80 字，沒有就用 slug）、`default_reasoning_level`→`defaultEffort`（不在白名單＝null）、`supported_reasoning_levels`→`efforts`（元素是字串或 `{ effort, … }` 都收，只留白名單內、照白名單排序；沒列＝null，當不知道）、`visibility`（`list`，其他一律當 `hide`）。其他欄位（系統提示、價格、帳號相關）一律丟掉。最多 60 個（`CODEX_MODELS_MAX`）。
+- 存在 `MachineCapabilities.codexModels = { codexVersion, models } | null`（`.catch(null)`：格式壞只丟這個欄位）。新 daemon 一律帶這個鍵（抓不到＝null）；沒有這個鍵＝舊 daemon（或舊 hub 的 zod 丟掉了）。
+- **版本變了才重抓**（比照 §26.10）：daemon 每 10 分鐘的那個計時器也跑 `codex --version`（`refreshCodexCapabilities`），版本變了（含剛裝好）才重跑 `debug models`；codex 被移除＝`codexVersion` 拿掉、目錄 null。新開／接續的 Codex 立刻用新目錄；hub 與網頁看到的要等 daemon 下次 hello。目錄依帳號、伺服器端可能改，版本沒變不會重抓（daemon 重啟會）。
+- 抓不到時網頁用內建清單 `CODEX_MODELS_FALLBACK`（`protocol/src/modelCatalog.ts`，2026-11-18 開發機實際輸出裡 visibility=list 的 10 個名稱；不帶強度與預設）並提示「<機器> 沒有回報 Codex 模型目錄…」（`codex-catalog-builtin`）。
+
+**Codex 推理強度改成依模型**
+
+- 安全字元白名單 `CODEX_EFFORTS = minimal, low, medium, high, xhigh, max, ultra`（`leadGuide.ts`）；`SessionEffort` 聯集多了 `ultra`。實際能用的是 `codexEffortsFor(model, catalog)`：模型在目錄而且有列級別＝白名單與它的交集；模型不指定、不在目錄、沒有目錄、目錄沒列＝整份白名單。`-c model_reasoning_effort="…"` 照舊。
+- daemon hello 宣告 `session.codexEffortsByModel`（`DAEMON_FEATURES.codexEffortsByModel`）。**舊 daemon**（沒宣告）只認得 `CODEX_LEGACY_EFFORTS = minimal, low, medium, high`（而且它的 `SessionSpec` 不認得 `ultra`）：hub `supportedSpec` 只送這幾個，其他拿掉不記；網頁看 `capabilities.codexModels === undefined` 時只列這幾個。`allowedModelOptions(agent, claudeFlags, { model, catalog, byModel })`（hub、daemon、網頁共用；沒給第三個參數＝舊白名單）。
+- hub：`checkModelOptions` 建立時目錄說這個模型不支援 → 400 `invalid_effort`（訊息帶支援的級別）；`supportedSpec`（建立、排隊後開始、接續、派工）照目錄拿掉。`spawn_member`：指定了成員模型不支援的強度回 `invalid_effort: effort X is not supported by <model> on this machine…`；沿用隊長的強度不支援就不帶（用 CLI 預設）；參數錯誤時不先建團隊。
+- daemon `buildCodexArgs` 收 `codexModels`（daemon 自己的 capabilities），不支援的不帶並記 warn（第二層）。
+- 交叉審查（§22）的 `codexReviewArgs` 白名單**沒改**（仍是 minimal～high，`review.ts` 自己一份）。
+
+**2. Claude 內建清單（`protocol/src/modelCatalog.ts CLAUDE_MODEL_CATALOG`）**
+
+- Claude CLI 沒有列模型的指令，所以是內建的，改版只改這一個檔：別名 `fable`、`opus`、`sonnet`、`haiku`（永遠指最新）＋完整版本 `claude-fable-5-1`（Fable 5.1）、`claude-opus-5-5`（Opus 5.5）、`claude-sonnet-5-5`（Sonnet 5.5）、`claude-haiku-5-5`（Haiku 5.5）。
+- 每項一句說明（中英）：Opus「能力最強，較慢、較耗額度」、Sonnet「速度與能力平衡」、Haiku「最快、最省額度」；Fable 只寫「Fable 系列」（repo 沒有依據，不編能力描述）。
+
+**3. 下拉分組、標預設（`flows/modelChoice.ts modelMenu`、`ModelFields.tsx`）**
+
+- 原生 `<select>` ＋ `<optgroup>`：第一項「CLI 預設（不指定）」（Codex 寫「Codex 預設（不指定）」），然後「釘選」→ Claude「別名（最新）」「完整版本」／Codex 依系列（`codexSeries`：`gpt-6.2-sol`→`GPT-6.2`，照目錄順序）、認不出系列的「其他模型」、目錄標 hide 的「Codex 選單不列的」→「自己加的」→「自訂」（「自訂…」）。名稱不分大小寫只出現一次。
+- 選項文字 `顯示名稱 · 名稱 — 說明`（例：`Opus 5.5 · claude-opus-5-5 — 能力最強，較慢、較耗額度`）；選了以後欄位下面再寫一次說明（`ns-model-note`）。
+- 預設：Claude 寫「CLI 預設」；Codex 的預設**模型**目錄裡沒有標記，所以不標（不讀 `~/.codex` 設定檔）；推理強度只列該模型支援的級別，目錄的 `defaultEffort` 標成「medium（此模型預設）」。換模型時目前的強度新模型不支援就清掉（草稿一起清）。備援模型（Claude）用同一份分組。
+
+**4. 設定頁隱藏／釘選（`flows/ModelListsSection.tsx`）**
+
+- `MODEL_LISTS_DEFAULT` 改成 `{ claude: [], codex: [] }`（內建名稱改由 Claude 內建清單與 Codex 目錄提供）；§26 存過舊預設（四個別名＋`gpt-6-luna`）的設定照讀，目錄已有的不重複列，目錄沒有的（例如那台目錄裡沒有 `gpt-6-luna`）列在「自己加的」。
+- `Settings.modelLists` 擴充兩個選填鍵：`pinned`、`hidden`，各是 `{ claude: ModelName[], codex: ModelName[] }`（每份最多 100，`MODEL_PREF_MAX`）。`claude`／`codex`（§26 的清單）的意思變成「自己加的名稱」；內建目錄已有的名稱（例如 §26 的預設 `fable`…）不再另列。
+- 每個 agent 三塊：釘選（排在下拉最上面，↑ ↓ 排序、取消釘選）、內建清單／Codex 目錄（所有機器抓到的目錄合在一起，同 slug 留第一個；都沒有＝內建清單；每列「釘選」「隱藏」兩顆 `aria-pressed` 開關，隱藏的劃掉）、自己加的（新增、↑ ↓、釘選、移除）。釘選就從隱藏拿掉，隱藏就取消釘選。「恢復內建清單」同時清掉釘選與隱藏。
+- hub PATCH 存前整理（`rest.ts`）：去空白、不分大小寫去重；同一個名稱又釘又藏以釘選為準；沒送 `pinned`／`hidden` 就不寫這兩個鍵。`GET /api/model-lists` 一般使用者讀得到（含這兩個鍵）。
+- **相容**：舊資料沒有這兩個鍵＝都沒有；舊 hub 的 zod 會丟掉多的鍵（舊 hub＋新網頁＝沒有釘選／隱藏，其他照常）；舊網頁只送 `claude`／`codex`＝整份取代（釘選、隱藏消失，舊行為）。網頁讀不到 `modelLists` 照舊用內建清單。
+
+**測試**
+
+- protocol `modelCatalog.test.ts`：用本機 `codex debug models` 真實輸出做的 fixture（`src/fixtures/codex-debug-models.json`，只留五個欄位，每個級別只留 `effort`）解析出 12 個模型與各自的級別、其他欄位丟掉、字串／物件兩種級別、壞資料與上限、`codexEffortsFor`、`allowedModelOptions` 新舊 daemon、capabilities 欄位壞掉只丟這個、Claude 內建清單與說明、`pinned`／`hidden` 存取與舊 schema 讀新資料。
+- daemon `codexModels.test.ts`（假 codex 腳本：先 `--help` 再 `debug models`、沒有這個子指令的舊版只跑 `--help` 就停、丟掉多的欄位、失敗改 `--bundled`、讀不懂回 null、`probeCapabilities` 一律帶鍵；`refreshCodexCapabilities` 版本沒變不重抓、變了重抓、裝好／移除）；`codex.test.ts`（依目錄帶或不帶、hello 宣告旗標）。
+- hub `test/modelOptions.test.ts`：依目錄 200／400、不在目錄收整份、舊 daemon 只送舊白名單、`spawn_member` 指定與沿用、釘選／隱藏的存取與整理。hook `mcp.test.ts`：enum 多 `ultra`。
+- web `modelMenu.test.ts`（分組、釘選順序、隱藏、目錄來源與合併、強度依模型）。e2e `flows.spec.ts`（Claude 分組與說明、Codex 目錄分組／強度隨模型變／標預設／換模型清掉、舊 daemon 內建清單與提示、設定頁釘選隱藏後新增頁跟著變、手機 44px 與截圖）、`canvas.spec.ts`（快速建立的選項）、`codex-integration.spec.ts`（真 hub＋真 daemon＋假 codex 的 `debug models`：hub 拿到的只有五個欄位、新增頁列目錄、實際參數 `-m gpt-fake-ultra -c model_reasoning_effort="ultra"`、模型不支援 400）。
+- **未驗證**：真 codex 帶 `xhigh`／`max`／`ultra` 實際開對話；其他機器（Windows、其他帳號）的 `codex debug models` 輸出；真的舊版 codex（沒有 `debug models`）的 `--help` 輸出（測試用假的主說明；先看說明就停，不會跑 `debug models`）；Claude 完整版本名稱是否每台 claude 都認得（只依 GM 給的名稱）。

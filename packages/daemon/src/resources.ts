@@ -3,8 +3,11 @@ import { execFile } from 'node:child_process';
 import { availableParallelism, totalmem } from 'node:os';
 import { promisify } from 'node:util';
 import {
+  CODEX_CATALOG_MAX_BYTES,
   parseClaudeHelp,
+  parseCodexModelCatalog,
   type ClaudeFlags,
+  type CodexModels,
   type DaemonToHub,
   type MachineCapabilities,
   type ResourceSample,
@@ -69,7 +72,7 @@ export function parseVersion(stdout: string): string | null {
   return tokens.find((token) => /^\d+\.\d+/.test(token)) ?? tokens[0] ?? null;
 }
 
-async function probeCodex(codexBin: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+export async function probeCodex(codexBin: string, env: NodeJS.ProcessEnv): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(codexBin, ['--version'], {
       timeout: PROBE_TIMEOUT_MS,
@@ -120,6 +123,89 @@ export async function probeClaudeFlags(
   }
 }
 
+/** `codex debug models` 的逾時：要先向 OpenAI 更新目錄（實測第一次約 0.6 秒），網路慢時寬一點。 */
+const CODEX_CATALOG_TIMEOUT_MS = 20_000;
+/** 允許的兩種寫法（scripts/check-no-llm.mjs 逐字比對）：先照常（會更新目錄），失敗再只讀內建目錄。 */
+const CODEX_CATALOG_ARGS = ['debug', 'models'];
+const CODEX_BUNDLED_CATALOG_ARGS = ['debug', 'models', '--bundled'];
+/**
+ * 先確認這版 codex 真的有 `debug models`：沒有這個子指令的舊版會把 `debug` 當成第一句 prompt（`codex [PROMPT]`），
+ * 不能直接跑。`--help` 在哪個版本都只印說明就結束；新版的說明有「model catalog」，舊版印的是主說明。
+ */
+const CODEX_CATALOG_HELP_ARGS = ['debug', 'models', '--help'];
+const CODEX_CATALOG_HELP_RE = /model catalog/i;
+
+/**
+ * 這台 codex 的模型目錄（CONTRACTS §26.11）：`codex debug models` 只印目錄 JSON，不開對話、不做模型推論。
+ * 注意它不是純本機：codex 會用使用者的登入向 OpenAI 抓最新目錄並寫進 codex 自己的快取（`~/.codex/models_cache.json`），
+ * 連不上時用快取（2026-11-18 實測，見 docs/no-llm-review.md）。失敗再試 `--bundled`（只讀執行檔內建的目錄，不連網）。
+ * 只留 slug／顯示名稱／預設強度／支援強度／visibility（`parseCodexModelCatalog`），輸出超過上限當抓不到。
+ */
+export async function probeCodexModels(
+  codexBin: string,
+  env: NodeJS.ProcessEnv,
+  codexVersion: string | null,
+): Promise<CodexModels | null> {
+  try {
+    const { stdout } = await execFileAsync(codexBin, CODEX_CATALOG_HELP_ARGS, {
+      timeout: PROBE_TIMEOUT_MS,
+      env,
+      maxBuffer: 1024 * 1024,
+    });
+    if (!CODEX_CATALOG_HELP_RE.test(stdout)) {
+      log.warn('這版 codex 沒有 debug models（說明裡沒有 model catalog），不抓模型目錄');
+      return null;
+    }
+  } catch (error) {
+    log.warn(`無法執行 codex debug models --help：${errorMessage(error)}`);
+    return null;
+  }
+  for (const args of [CODEX_CATALOG_ARGS, CODEX_BUNDLED_CATALOG_ARGS]) {
+    try {
+      const { stdout } = await execFileAsync(codexBin, args, {
+        timeout: CODEX_CATALOG_TIMEOUT_MS,
+        env,
+        maxBuffer: CODEX_CATALOG_MAX_BYTES,
+      });
+      const models = parseCodexModelCatalog(stdout);
+      if (models && models.length > 0) return { codexVersion, models };
+      log.warn(`讀不懂 codex ${args.join(' ')} 的輸出`);
+    } catch (error) {
+      log.warn(`無法執行 codex ${args.join(' ')}：${errorMessage(error)}`);
+    }
+  }
+  return null;
+}
+
+export interface CodexProbes {
+  version: (codexBin: string, env: NodeJS.ProcessEnv) => Promise<string | null>;
+  models: (
+    codexBin: string,
+    env: NodeJS.ProcessEnv,
+    codexVersion: string | null,
+  ) => Promise<CodexModels | null>;
+}
+const CODEX_PROBES: CodexProbes = { version: probeCodex, models: probeCodexModels };
+
+/**
+ * codex 自動更新後重抓目錄（§26.11，比照 §26.10 的 claude）：看 `codex --version`，版本變了（含剛裝好、被移除）才重跑
+ * `codex debug models`。沒變回 null（不必更新 capabilities）。
+ */
+export async function refreshCodexCapabilities(
+  current: MachineCapabilities,
+  codexBin: string,
+  env: NodeJS.ProcessEnv,
+  probes: CodexProbes = CODEX_PROBES,
+): Promise<Pick<MachineCapabilities, 'codexVersion' | 'codexModels'> | null> {
+  const version = await probes.version(codexBin, env);
+  if (version === (current.codexVersion ?? null)) return null;
+  log.info(
+    `codex 版本 ${current.codexVersion ?? '（沒有）'} → ${version ?? '（沒有）'}，重新抓模型目錄`,
+  );
+  if (version === null) return { codexVersion: undefined, codexModels: null };
+  return { codexVersion: version, codexModels: await probes.models(codexBin, env, version) };
+}
+
 export async function probeCapabilities(
   claudeBin: string,
   env: NodeJS.ProcessEnv,
@@ -130,6 +216,8 @@ export async function probeCapabilities(
   const codexVersion = codexBin ? await probeCodex(codexBin, env) : null;
   const claudeVersion = await probeClaudeVersion(claudeBin, env);
   const claudeFlags = claudeVersion === null ? null : await probeClaudeFlags(claudeBin, env);
+  const codexModels =
+    codexBin && codexVersion ? await probeCodexModels(codexBin, env, codexVersion) : null;
   return {
     hasGpu: gpu !== null,
     gpuName: gpu?.name ?? null,
@@ -140,6 +228,8 @@ export async function probeCapabilities(
     // 認得 SessionSpec.effort／fallbackModel（§26）：網頁據此決定要不要提示「daemon 太舊」。
     modelOptions: true,
     claudeFlags,
+    // 一律帶這個鍵（null＝抓不到）：網頁據此知道 daemon 認得依模型的 Codex 強度（§26.11）。
+    codexModels,
   };
 }
 

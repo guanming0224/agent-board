@@ -73,6 +73,7 @@ import {
   probeCapabilities,
   probeClaudeFlags,
   probeClaudeVersion,
+  refreshCodexCapabilities,
   ResourceMonitor,
   type ResourceMonitorOptions,
 } from './resources';
@@ -1225,6 +1226,17 @@ export class Daemon {
   private async refreshClaudeFlags(): Promise<void> {
     if (!this.capabilities) return;
     const env = this.childEnv();
+    // Codex 的模型目錄同一個時機看（§26.11）：codex 版本變了才重跑 `codex debug models`。
+    const codexBin = this.deps.config.codexBin;
+    if (codexBin) {
+      const codex = await refreshCodexCapabilities(this.capabilities, codexBin, env).catch(
+        (error: unknown) => {
+          log.warn(`重新偵測 codex 失敗：${errorMessage(error)}`);
+          return null;
+        },
+      );
+      if (codex) this.capabilities = { ...this.capabilities, ...codex };
+    }
     const version = await probeClaudeVersion(this.deps.config.claudeBin, env);
     if (version === null || version === this.capabilities.claudeVersion) return;
     const claudeFlags = await probeClaudeFlags(this.deps.config.claudeBin, env);
@@ -1262,6 +1274,8 @@ export class Daemon {
         DAEMON_FEATURES.gitInit,
         // 新增 session 的推理強度與備援模型（CONTRACTS §26）。
         DAEMON_FEATURES.modelOptions,
+        // Codex 推理強度依模型目錄驗、收 xhigh／max／ultra（CONTRACTS §26.11）。
+        DAEMON_FEATURES.codexEffortsByModel,
         // 機器面板「重啟 session host」與 sessionHost.status（CONTRACTS §20.8）。
         DAEMON_FEATURES.sessionHostRestart,
       ],
@@ -1887,6 +1901,8 @@ export class Daemon {
         readOnly: spec.readOnly,
         model: spec.model,
         effort: spec.effort ?? null,
+        // 強度依那個模型在目錄裡支援的級別擋（§26.11）；用最近一次抓到的目錄。
+        codexModels: this.capabilities?.codexModels ?? null,
         firstPrompt: resumeId ? null : entry.pendingFirstPrompt,
         hookTarget: {
           sessionId,

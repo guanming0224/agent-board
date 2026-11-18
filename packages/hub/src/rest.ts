@@ -12,6 +12,7 @@ import {
   type TeamMember,
   type User,
   normalizeModelList,
+  sameModel,
 } from '@agent-board/protocol';
 import { z } from 'zod';
 import {
@@ -811,10 +812,23 @@ function normalizeSettings<T extends Parameters<Store['updateSettings']>[0]>(pat
     next.publicOrigin = url.origin;
   }
   // 模型清單（§26）：去空白、去重；格式已由 SettingsPatch（ModelName）擋過。
+  // 釘選／隱藏（§26.11）同樣整理；同一個名稱又釘又藏時以釘選為準（從隱藏拿掉）。沒送就不寫這兩個鍵。
   if (next.modelLists) {
+    const { pinned, hidden } = next.modelLists;
+    const pref = (kind: 'claude' | 'codex') => {
+      const pins = normalizeModelList(pinned?.[kind] ?? []);
+      const hides = normalizeModelList(hidden?.[kind] ?? []).filter(
+        (name) => !pins.some((pin) => sameModel(pin, name)),
+      );
+      return { pins, hides };
+    };
+    const claude = pref('claude');
+    const codex = pref('codex');
     next.modelLists = {
       claude: normalizeModelList(next.modelLists.claude),
       codex: normalizeModelList(next.modelLists.codex),
+      ...(pinned ? { pinned: { claude: claude.pins, codex: codex.pins } } : {}),
+      ...(hidden ? { hidden: { claude: claude.hides, codex: codex.hides } } : {}),
     };
   }
   const quiet = next.notifications?.quietHours;

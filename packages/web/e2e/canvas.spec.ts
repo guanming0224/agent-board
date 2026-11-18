@@ -877,12 +877,17 @@ test.describe('在畫布上直接新增', () => {
     await quick.locator('#qc-name').fill('tuned');
     await quick.locator('#qc-cwd').fill('/home/demo/tuned');
     await quick.getByRole('button', { name: '更多設定' }).click();
+    // §26.11：分組（別名、完整版本、自訂），每項一句說明。
     await expect(quick.locator('#qc-model option')).toHaveText([
-      '預設（不指定）',
-      'fable',
-      'opus',
-      'sonnet',
-      'haiku',
+      'CLI 預設（不指定）',
+      'Fable · fable — Fable 系列',
+      'Opus · opus — 能力最強，較慢、較耗額度',
+      'Sonnet · sonnet — 速度與能力平衡',
+      'Haiku · haiku — 最快、最省額度',
+      'Fable 5.1 · claude-fable-5-1 — Fable 系列',
+      'Opus 5.5 · claude-opus-5-5 — 能力最強，較慢、較耗額度',
+      'Sonnet 5.5 · claude-sonnet-5-5 — 速度與能力平衡',
+      'Haiku 5.5 · claude-haiku-5-5 — 最快、最省額度',
       '自訂…',
     ]);
     await quick.locator('#qc-model').selectOption('opus');
