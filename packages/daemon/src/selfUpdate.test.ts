@@ -404,6 +404,8 @@ describe('SelfUpdater：卡住的狀態（S1）', () => {
     await settle();
     await until(() => h.reports[0]?.reason === 'interrupted');
     expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
+    // 下載（續傳版多了幾個非同步步驟）、解壓在慢的 CI 上超過 50ms：等到啟動再斷言。
+    await until(() => h.spawned.length > 0);
     expect(h.spawned).toHaveLength(1);
     h.updater.dispose();
   });
@@ -429,6 +431,7 @@ describe('SelfUpdater：卡住的狀態（S1）', () => {
     await settle();
     await until(() => h.reports[0]?.reason === 'interrupted');
     expect(h.reports[0]).toMatchObject({ phase: 'failed', reason: 'interrupted' });
+    await until(() => h.spawned.length > 0);
     expect(h.spawned).toHaveLength(1);
     h.updater.dispose();
   });
@@ -519,6 +522,7 @@ describe('SelfUpdater：回滾與進行中的更新（N2）', () => {
     await settle();
     await until(() => h.reports.some((r) => r.phase === 'idle' && r.reason === 'superseded'));
     expect(h.reports.some((r) => r.phase === 'idle' && r.reason === 'superseded')).toBe(true);
+    await until(() => h.spawned.length > 0);
     expect(h.spawned).toHaveLength(1);
     expect(h.spawned[0]!.args[0]).toBe('update');
     h.updater.dispose();
