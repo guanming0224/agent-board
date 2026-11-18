@@ -659,8 +659,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     teamActivityClear: (ctx) => hub.clearTeamActivity(ctx.body.ids, ctx.user),
 
     settingsUpdate: (ctx) => {
-      const patch = normalizeSettings(ctx.body);
       const prev = store.getSettings();
+      const patch = normalizeSettings(ctx.body, prev);
       const next = store.updateSettings(patch);
       hub.audit(ctx.user.id, null, 'settings.update', Object.keys(patch).join(','));
       hub.onSettingsChanged(prev, next);
@@ -795,7 +795,10 @@ function hubOrigin(req: FastifyRequest, publicOrigin: string | null): string {
   }
 }
 
-function normalizeSettings<T extends Parameters<Store['updateSettings']>[0]>(patch: T): T {
+function normalizeSettings<T extends Parameters<Store['updateSettings']>[0]>(
+  patch: T,
+  current: ReturnType<Store['getSettings']>,
+): T {
   const next = { ...patch };
   if (next.listenAddress !== undefined) {
     try {
@@ -812,9 +815,11 @@ function normalizeSettings<T extends Parameters<Store['updateSettings']>[0]>(pat
     next.publicOrigin = url.origin;
   }
   // 模型清單（§26）：去空白、去重；格式已由 SettingsPatch（ModelName）擋過。
-  // 釘選／隱藏（§26.11）同樣整理；同一個名稱又釘又藏時以釘選為準（從隱藏拿掉）。沒送就不寫這兩個鍵。
+  // 釘選／隱藏（§26.11）同樣整理；同一個名稱又釘又藏時以釘選為準（從隱藏拿掉）。
+  // 沒送這兩個鍵（舊網頁分頁存檔）就沿用目前存著的，不會被清掉。
   if (next.modelLists) {
-    const { pinned, hidden } = next.modelLists;
+    const pinned = next.modelLists.pinned ?? current.modelLists.pinned;
+    const hidden = next.modelLists.hidden ?? current.modelLists.hidden;
     const pref = (kind: 'claude' | 'codex') => {
       const pins = normalizeModelList(pinned?.[kind] ?? []);
       const hides = normalizeModelList(hidden?.[kind] ?? []).filter(

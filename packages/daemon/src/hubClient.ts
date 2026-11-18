@@ -29,6 +29,8 @@ function mustDeliver(message: DaemonToHub): boolean {
     case 'session.event':
     case 'session.created':
     case 'session.createFailed':
+    // §26.11：hub 要靠它清掉沒生效的強度；daemon 開機接回 session 時還沒連上 hub。
+    case 'session.modelOptionsDropped':
       return true;
     default:
       return false;

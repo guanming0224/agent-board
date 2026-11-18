@@ -73,7 +73,9 @@ import {
   probeCapabilities,
   probeClaudeFlags,
   probeClaudeVersion,
+  loadCodexModelsCache,
   refreshCodexCapabilities,
+  saveCodexModelsCache,
   ResourceMonitor,
   type ResourceMonitorOptions,
 } from './resources';
@@ -658,9 +660,16 @@ export class Daemon {
         this.childEnv(),
         this.deps.config.codexBin,
       ));
+    // Codex 模型目錄（§26.11）：先用上次存的（同一版 codex），接回的 Codex session 才帶得了強度；新的在背景抓。
+    if (!this.deps.capabilities) {
+      const cached = loadCodexModelsCache(this.deps.config.dataDir, this.capabilities.codexVersion);
+      if (cached) this.capabilities = { ...this.capabilities, codexModels: cached };
+    }
     // 先把 session 接回來（status=starting），第一則 hello 才對得上帳（CONTRACTS §3.2）。
     await this.resumePersistedSessions();
     this.hub.start();
+    // 不擋 hub 連線：抓完用 daemon.capabilities 送給 hub。
+    if (!this.deps.capabilities) void this.refreshCodexModels(true);
     this.usageTimer = setInterval(() => void this.reportUsage(), USAGE_INTERVAL_MS);
     this.usageTimer.unref();
     // 測試注入的 capabilities 不重新偵測。
@@ -1225,27 +1234,57 @@ export class Daemon {
    */
   private async refreshClaudeFlags(): Promise<void> {
     if (!this.capabilities) return;
-    const env = this.childEnv();
-    // Codex 的模型目錄同一個時機看（§26.11）：codex 版本變了才重跑 `codex debug models`。
-    const codexBin = this.deps.config.codexBin;
-    if (codexBin) {
-      const codex = await refreshCodexCapabilities(this.capabilities, codexBin, env).catch(
-        (error: unknown) => {
-          log.warn(`重新偵測 codex 失敗：${errorMessage(error)}`);
-          return null;
-        },
-      );
-      if (codex) this.capabilities = { ...this.capabilities, ...codex };
-    }
-    const version = await probeClaudeVersion(this.deps.config.claudeBin, env);
+    // Codex 的模型目錄同一個時機看（§26.11）：版本變了、或上次沒抓到才重跑 `codex debug models`。
+    await this.refreshCodexModels(false);
+    const version = await probeClaudeVersion(this.deps.config.claudeBin, this.childEnv());
     if (version === null || version === this.capabilities.claudeVersion) return;
-    const claudeFlags = await probeClaudeFlags(this.deps.config.claudeBin, env);
+    const claudeFlags = await probeClaudeFlags(this.deps.config.claudeBin, this.childEnv());
     log.info(`claude 版本 ${this.capabilities.claudeVersion ?? '?'} → ${version}，重新偵測參數`);
     this.capabilities = { ...this.capabilities, claudeVersion: version, claudeFlags };
+    this.reportCapabilities();
+  }
+
+  /** 同一時間只抓一次（開機的背景抓與 10 分鐘計時器可能撞在一起）。 */
+  private codexRefresh: Promise<void> | null = null;
+
+  /** Codex 模型目錄（§26.11）：在背景抓，有變就存快取並送給 hub。`force`：開機後第一次一定抓。 */
+  private refreshCodexModels(force: boolean): Promise<void> {
+    const codexBin = this.deps.config.codexBin;
+    if (!codexBin || !this.capabilities || this.stopping) return Promise.resolve();
+    this.codexRefresh ??= (async () => {
+      const codex = await refreshCodexCapabilities(
+        this.capabilities!,
+        codexBin,
+        this.childEnv(),
+        undefined,
+        force,
+      ).catch((error: unknown) => {
+        log.warn(`重新偵測 codex 失敗：${errorMessage(error)}`);
+        return null;
+      });
+      if (!codex || !this.capabilities || this.stopping) return;
+      this.capabilities = { ...this.capabilities, ...codex };
+      if (codex.codexModels) saveCodexModelsCache(this.deps.config.dataDir, codex.codexModels);
+      this.reportCapabilities();
+    })().finally(() => {
+      this.codexRefresh = null;
+    });
+    return this.codexRefresh;
+  }
+
+  /** hello 時送給 hub 的那份；之後 capabilities 換了就送 daemon.capabilities（連線中才送，斷線的話下次 hello 會帶）。 */
+  private reportedCapabilities: MachineCapabilities | null = null;
+
+  private reportCapabilities(): void {
+    if (!this.capabilities || this.capabilities === this.reportedCapabilities) return;
+    if (!this.hub.connected) return;
+    this.reportedCapabilities = this.capabilities;
+    this.send({ type: 'daemon.capabilities', capabilities: this.capabilities });
   }
 
   private buildHello(): Extract<DaemonToHub, { type: 'daemon.hello' }> {
     if (!this.capabilities) throw new Error('capabilities 尚未就緒');
+    this.reportedCapabilities = this.capabilities;
     const hostState = this.sessionHostState;
     // hello 已經帶了：之後狀態有變才送 sessionHost.status。
     this.reportedHostState = JSON.stringify(hostState);
@@ -1334,6 +1373,8 @@ export class Daemon {
         );
         // Codex 掛 MCP（審查 S3）：只記在記憶體，hub 沒明確開就不掛（daemon 重啟、還沒連上前一律不掛）。
         this.codexMcpEnabled = message.codexMcp === true;
+        // hello 送出後、連上前 capabilities 換了（背景抓的 Codex 目錄剛好抓完）：補送（§26.11）。
+        this.reportCapabilities();
         for (const runtime of this.store.endedRuntimes) this.deliverEnded(runtime);
         // 斷線期間跑完的審查結果補送。
         this.reviews.flush();
@@ -1889,6 +1930,8 @@ export class Daemon {
     const agent = agentOf(spec);
     let args: string[];
     let launchEntry = entry;
+    // 這台帶不了而沒帶的模型參數（§26.11）：回報 hub 清掉記錄，畫面才不會顯示沒生效的值。
+    const dropped = new Set<'effort' | 'fallbackModel'>();
     const withMcp = !options.noMcp && this.codexMcpEnabled && !this.codexMcpBroken;
     if (agent === 'codex') {
       // 第一句用官方的 `codex [PROMPT]` 帶入（不必等 SessionStart 再打字）。
@@ -1903,6 +1946,7 @@ export class Daemon {
         effort: spec.effort ?? null,
         // 強度依那個模型在目錄裡支援的級別擋（§26.11）；用最近一次抓到的目錄。
         codexModels: this.capabilities?.codexModels ?? null,
+        onDrop: (field) => dropped.add(field),
         firstPrompt: resumeId ? null : entry.pendingFirstPrompt,
         hookTarget: {
           sessionId,
@@ -1937,9 +1981,18 @@ export class Daemon {
         fallbackModel: spec.fallbackModel ?? null,
         // 用最近一次偵測的結果（claude 自動更新後由 refreshClaudeFlags 更新）。
         claudeFlags: this.capabilities?.claudeFlags ?? null,
+        onDrop: (field) => dropped.add(field),
         name: spec.name,
         readOnly: spec.readOnly,
         mcp: this.prepareMcp(sessionId),
+      });
+    }
+    if (dropped.size > 0) {
+      this.send({
+        type: 'session.modelOptionsDropped',
+        sessionId,
+        effort: dropped.has('effort'),
+        fallbackModel: dropped.has('fallbackModel'),
       });
     }
     const repo = await repoInfo(entry.cwd);

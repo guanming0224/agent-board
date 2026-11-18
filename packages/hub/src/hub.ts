@@ -826,6 +826,14 @@ export class Hub {
       case 'sessionHost.status':
         conn.sessionHost = msg.state;
         return;
+      case 'daemon.capabilities':
+        // Codex 模型目錄在背景抓完、CLI 版本變了（§26.11）：整份換掉，推給畫面。
+        this.store.setMachineCapabilities(conn.machineId, msg.capabilities);
+        this.broadcastMachine(conn.machineId);
+        return;
+      case 'session.modelOptionsDropped':
+        if (this.ownsSession(conn, msg.sessionId)) this.onModelOptionsDropped(msg);
+        return;
       case 'terminal.output':
         if (this.ownsSession(conn, msg.sessionId)) {
           this.prompts.onOutput(msg.sessionId, msg.data);
@@ -1814,6 +1822,33 @@ export class Hub {
       ...(effort && allowed.efforts.includes(effort) ? { effort } : {}),
       ...(fallbackModel && allowed.fallback ? { fallbackModel } : {}),
     };
+  }
+
+  /**
+   * daemon 開 session 時沒帶的強度／備援（§26.11）：清掉記錄並推給畫面（比照 dispatchCreate 拿掉時的處理）。
+   */
+  private onModelOptionsDropped(
+    msg: Extract<DaemonToHub, { type: 'session.modelOptionsDropped' }>,
+  ): void {
+    const session = this.store.getSession(msg.sessionId);
+    if (!session) return;
+    const effort = msg.effort ? undefined : session.effort;
+    const fallbackModel = msg.fallbackModel ? undefined : session.fallbackModel;
+    if (effort === session.effort && fallbackModel === session.fallbackModel) return;
+    this.store.setSessionModelOpts(session.id, { effort, fallbackModel });
+    this.audit(
+      null,
+      session.id,
+      'session.model_options_dropped',
+      JSON.stringify({
+        ...(msg.effort && session.effort ? { effort: session.effort } : {}),
+        ...(msg.fallbackModel && session.fallbackModel
+          ? { fallbackModel: session.fallbackModel }
+          : {}),
+      }),
+    );
+    const fresh = this.store.getSession(session.id);
+    if (fresh) this.broadcast({ type: 'session.updated', session: fresh });
   }
 
   /**

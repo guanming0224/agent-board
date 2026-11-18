@@ -1378,19 +1378,19 @@ GM 回饋「模型清單太簡陋」，四項都做。**不升 schema（仍是 v
 
 **1. Codex 自動抓各機器的模型（`codex debug models`）**
 
-- daemon `resources.ts probeCodexModels`：開機時（`probeCapabilities`，有 codex 才跑）先跑 `codex debug models --help`（說明要有「model catalog」才繼續——沒有這個子指令的舊版 codex 會把 `debug` 當成第一句 prompt），再執行 `codex debug models`，失敗再跑 `codex debug models --bundled`；逾時 20 秒、輸出上限 8MB（`CODEX_CATALOG_MAX_BYTES`，本機實測約 830KB、12 個模型）。
+- daemon `resources.ts probeCodexModels`：**開機後在背景跑**（`hub.start()` 之後，不擋 hub 連線；審查 1），先跑 `codex debug models --help`（說明要有「model catalog」才繼續——沒有這個子指令的舊版 codex 會把 `debug` 當成第一句 prompt；0.167.0 的說明第一行是「Render the raw model catalog as JSON」，存成 fixture 測），再執行 `codex debug models`，失敗再跑 `codex debug models --bundled`。`--help` 逾時 5 秒、目錄每次 8 秒，輸出上限 8MB（`CODEX_CATALOG_MAX_BYTES`，本機實測約 830KB、12 個模型）。用 `runCodexProbe` 執行：stdin `ignore`、stderr 不留內容、POSIX 開成自己的程序群組（detached），逾時或輸出超量時整個群組 SIGKILL（Windows 用 `taskkill /T /F`），孫程序不殘留。失敗 log 只記 exit code／signal／逾時，不記 stderr。
 - **不呼叫模型，但會連網**（codex-cli 0.167.0 實測，證據寫在 `docs/no-llm-review.md`）：`--help` 寫 `--bundled  Skip refresh and dump only the bundled catalog`；第一次跑 612ms 且 `~/.codex/models_cache.json` 的修改時間變成那一刻（只看 mtime），`--bundled` 18ms；把 proxy 指到不通的位址照樣成功（用快取）；輸出與 `--bundled` 不同（依帳號）；執行檔字串有 `https://chatgpt.com/backend-api/codex`。也就是 codex 自己用使用者登入向 OpenAI 拿目錄並寫進自己的快取；中控台不讀 `~/.codex`、不經手憑證。`scripts/check-no-llm.mjs` 逐字比對 `resources.ts` 跑 codex 的參數陣列（`CODEX_PROBE_ARGS`：`['--version']`、`['debug', 'models', '--help']`、`['debug', 'models']`、`['debug', 'models', '--bundled']`）。
-- **只留五個欄位**（`protocol parseCodexModelCatalog`）：`slug`（不合 `MODEL_NAME_RE` 整筆略過、不分大小寫去重）、`display_name`→`displayName`（控制字元拿掉、最多 80 字，沒有就用 slug）、`default_reasoning_level`→`defaultEffort`（不在白名單＝null）、`supported_reasoning_levels`→`efforts`（元素是字串或 `{ effort, … }` 都收，只留白名單內、照白名單排序；沒列＝null，當不知道）、`visibility`（`list`，其他一律當 `hide`）。其他欄位（系統提示、價格、帳號相關）一律丟掉。最多 60 個（`CODEX_MODELS_MAX`）。
-- 存在 `MachineCapabilities.codexModels = { codexVersion, models } | null`（`.catch(null)`：格式壞只丟這個欄位）。新 daemon 一律帶這個鍵（抓不到＝null）；沒有這個鍵＝舊 daemon（或舊 hub 的 zod 丟掉了）。
-- **版本變了才重抓**（比照 §26.10）：daemon 每 10 分鐘的那個計時器也跑 `codex --version`（`refreshCodexCapabilities`），版本變了（含剛裝好）才重跑 `debug models`；codex 被移除＝`codexVersion` 拿掉、目錄 null。新開／接續的 Codex 立刻用新目錄；hub 與網頁看到的要等 daemon 下次 hello。目錄依帳號、伺服器端可能改，版本沒變不會重抓（daemon 重啟會）。
+- **只留五個欄位**（`protocol parseCodexModelCatalog`）：`slug`（不合 `MODEL_NAME_RE` 整筆略過、不分大小寫去重）、`display_name`→`displayName`（控制字元與格式字元 `\p{Cc}`／`\p{Cf}`——含雙向控制字元——拿掉、最多 80 字，沒有就用 slug）、`default_reasoning_level`→`defaultEffort`（不在白名單＝null）、`supported_reasoning_levels`→`efforts`（元素是字串或 `{ effort, … }` 都收，只留白名單內、照白名單排序；沒列或空陣列＝null，當不知道；有列但都不在白名單＝空陣列）、`visibility`（`list`，其他一律當 `hide`）。其他欄位（系統提示、價格、帳號相關）一律丟掉。最多 60 個（`CODEX_MODELS_MAX`）。
+- 存在 `MachineCapabilities.codexModels = { codexVersion, models } | null`（`.catch(null)`：格式壞只丟這個欄位）。新 daemon 一律帶這個鍵（還沒抓到或抓不到＝null）；沒有這個鍵＝舊 daemon（或舊 hub 的 zod 丟掉了）。**同步給 hub**（審查 2）：目錄抓完或有變（含 claude／codex 版本變了），daemon 送新訊息 `daemon.capabilities { capabilities }`（整份取代），hub 存起來並推 `machine.updated`；hello 送出後、welcome 前才抓完的，收到 welcome 時補送。舊 hub 不認得這個訊息（回 error 不斷線，同 `sessionHost.status`），要等下次 hello。上次抓到的目錄存在 daemon 資料夾 `codex-models.json`（只有五個欄位，同一版 codex 才用），開機接回 Codex session 時先用它，所以接回的強度不會因為目錄還在背景抓而被拿掉。
+- **重抓時機**（比照 §26.10）：daemon 每 10 分鐘的那個計時器也跑 `codex --version`（`refreshCodexCapabilities`），版本變了（含剛裝好）才重跑 `debug models`；**上次沒抓到（null，例如開機時網路不通）版本沒變也重試**（審查 10）；codex 被移除＝`codexVersion` 拿掉、目錄 null。目錄依帳號、伺服器端可能改，版本沒變而且已經抓到就不重抓（daemon 重啟會）。同一時間只跑一次。
 - 抓不到時網頁用內建清單 `CODEX_MODELS_FALLBACK`（`protocol/src/modelCatalog.ts`，2026-11-18 開發機實際輸出裡 visibility=list 的 10 個名稱；不帶強度與預設）並提示「<機器> 沒有回報 Codex 模型目錄…」（`codex-catalog-builtin`）。
 
 **Codex 推理強度改成依模型**
 
-- 安全字元白名單 `CODEX_EFFORTS = minimal, low, medium, high, xhigh, max, ultra`（`leadGuide.ts`）；`SessionEffort` 聯集多了 `ultra`。實際能用的是 `codexEffortsFor(model, catalog)`：模型在目錄而且有列級別＝白名單與它的交集；模型不指定、不在目錄、沒有目錄、目錄沒列＝整份白名單。`-c model_reasoning_effort="…"` 照舊。
+- 安全字元白名單 `CODEX_EFFORTS = minimal, low, medium, high, xhigh, max, ultra`（`leadGuide.ts`）；`SessionEffort` 聯集多了 `ultra`。實際能用的是 `codexEffortsFor(model, catalog)`（hub、daemon、網頁同一個函式；**審查 3：不 fail-open**）：沒有目錄＝舊安全集合 `CODEX_LEGACY_EFFORTS`（minimal～high）；模型不指定（Codex 預設）＝目錄裡 visibility=list、有列級別的模型共同支援的級別（交集），一個都沒有＝舊安全集合；模型在目錄而且有列級別＝白名單與它的交集（**目錄有列但交集是空的＝空陣列**，強度停用，不退回整份）；模型不在目錄（自訂名稱）或目錄沒列級別＝舊安全集合。目錄的 `efforts` null 只代表「沒列」，有列就一定是陣列。`-c model_reasoning_effort="…"` 照舊。
 - daemon hello 宣告 `session.codexEffortsByModel`（`DAEMON_FEATURES.codexEffortsByModel`）。**舊 daemon**（沒宣告）只認得 `CODEX_LEGACY_EFFORTS = minimal, low, medium, high`（而且它的 `SessionSpec` 不認得 `ultra`）：hub `supportedSpec` 只送這幾個，其他拿掉不記；網頁看 `capabilities.codexModels === undefined` 時只列這幾個。`allowedModelOptions(agent, claudeFlags, { model, catalog, byModel })`（hub、daemon、網頁共用；沒給第三個參數＝舊白名單）。
 - hub：`checkModelOptions` 建立時目錄說這個模型不支援 → 400 `invalid_effort`（訊息帶支援的級別）；`supportedSpec`（建立、排隊後開始、接續、派工）照目錄拿掉。`spawn_member`：指定了成員模型不支援的強度回 `invalid_effort: effort X is not supported by <model> on this machine…`；沿用隊長的強度不支援就不帶（用 CLI 預設）；參數錯誤時不先建團隊。
-- daemon `buildCodexArgs` 收 `codexModels`（daemon 自己的 capabilities），不支援的不帶並記 warn（第二層）。
+- daemon `buildCodexArgs` 收 `codexModels`（daemon 自己的 capabilities），不支援的不帶並記 warn（第二層）。**沒帶的回報 hub**（審查 2）：`buildCodexArgs`／`buildClaudeArgs` 的 `onDrop`，daemon 送 `session.modelOptionsDropped { sessionId, effort, fallbackModel }`（hub 斷線時排隊，連上再送）；hub 清掉那個 session 記著的值、記 audit `session.model_options_dropped`、推 `session.updated`（比照 `dispatchCreate` 拿掉時的處理）。
 - 交叉審查（§22）的 `codexReviewArgs` 白名單**沒改**（仍是 minimal～high，`review.ts` 自己一份）。
 
 **2. Claude 內建清單（`protocol/src/modelCatalog.ts CLAUDE_MODEL_CATALOG`）**
@@ -1409,8 +1409,11 @@ GM 回饋「模型清單太簡陋」，四項都做。**不升 schema（仍是 v
 - `MODEL_LISTS_DEFAULT` 改成 `{ claude: [], codex: [] }`（內建名稱改由 Claude 內建清單與 Codex 目錄提供）；§26 存過舊預設（四個別名＋`gpt-6-luna`）的設定照讀，目錄已有的不重複列，目錄沒有的（例如那台目錄裡沒有 `gpt-6-luna`）列在「自己加的」。
 - `Settings.modelLists` 擴充兩個選填鍵：`pinned`、`hidden`，各是 `{ claude: ModelName[], codex: ModelName[] }`（每份最多 100，`MODEL_PREF_MAX`）。`claude`／`codex`（§26 的清單）的意思變成「自己加的名稱」；內建目錄已有的名稱（例如 §26 的預設 `fable`…）不再另列。
 - 每個 agent 三塊：釘選（排在下拉最上面，↑ ↓ 排序、取消釘選）、內建清單／Codex 目錄（所有機器抓到的目錄合在一起，同 slug 留第一個；都沒有＝內建清單；每列「釘選」「隱藏」兩顆 `aria-pressed` 開關，隱藏的劃掉）、自己加的（新增、↑ ↓、釘選、移除）。釘選就從隱藏拿掉，隱藏就取消釘選。「恢復內建清單」同時清掉釘選與隱藏。
-- hub PATCH 存前整理（`rest.ts`）：去空白、不分大小寫去重；同一個名稱又釘又藏以釘選為準；沒送 `pinned`／`hidden` 就不寫這兩個鍵。`GET /api/model-lists` 一般使用者讀得到（含這兩個鍵）。
-- **相容**：舊資料沒有這兩個鍵＝都沒有；舊 hub 的 zod 會丟掉多的鍵（舊 hub＋新網頁＝沒有釘選／隱藏，其他照常）；舊網頁只送 `claude`／`codex`＝整份取代（釘選、隱藏消失，舊行為）。網頁讀不到 `modelLists` 照舊用內建清單。
+- hub PATCH 存前整理（`rest.ts`）：去空白、不分大小寫去重；同一個名稱又釘又藏以釘選為準；**沒送 `pinned`／`hidden` 就沿用目前存著的**（審查 10：舊網頁分頁存檔不會清掉）。
+- 設定頁存回去的 `claude`／`codex` 一律是完整清單（審查 4）：目錄已有的名稱只是畫面上不重複列，不會因為釘選、新增、上下移而被刪掉（上下移用 `moveShown` 在完整清單裡交換位置）。`GET /api/model-lists` 一般使用者讀得到（含這兩個鍵）。
+- **相容**：舊資料沒有這兩個鍵＝都沒有；舊 hub 的 zod 會丟掉多的鍵（舊 hub＋新網頁＝沒有釘選／隱藏，其他照常）；舊網頁只送 `claude`／`codex`＝釘選、隱藏沿用。網頁讀不到 `modelLists` 照舊用內建清單。
+
+**審查修正（2026-11-18，獨立審查「可以發，但建議先修」）**：上面標「審查 N」的是這一輪改的。另外 `scripts/check-no-llm.mjs` 的 codex 探測檢查搬到 `scripts/no-llm-codex-probe.mjs`，`scripts/no-llm-codex-probe.test.mjs`（列進 `test:install`）把違規片段（非互動子指令、多的常數、任意變數、迴圈混字面陣列、多的 spawn、spawnSync／execFile、其他檔案呼叫 `runCodexProbe`）餵進去確認會失敗。
 
 **測試**
 

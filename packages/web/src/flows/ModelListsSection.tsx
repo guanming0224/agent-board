@@ -17,7 +17,7 @@ import { useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
 import { Msg, type Note } from './common';
 import { groupLabel, optionText, useNoteText } from './ModelFields';
-import { catalogItems, mergedCodexCatalog } from './modelChoice';
+import { catalogItems, mergedCodexCatalog, moveShown } from './modelChoice';
 import type { ServerSettingsForm } from './ServerSettings';
 import { Section } from './settingsParts';
 
@@ -116,17 +116,19 @@ function ListEditor({
   const inCatalog = (name: string) => catalog.some((c) => sameModel(c.item.value, name));
   const pinned = lists.pinned?.[kind] ?? [];
   const hidden = lists.hidden?.[kind] ?? [];
-  // 自己加的：內建目錄已有的名稱（§26 的舊預設是 fable、opus…）不再另列，下拉也只出現一次。
-  const mine = lists[kind].filter((name) => !inCatalog(name));
+  // 自己加的：內建目錄已有的名稱（§26 的舊預設是 fable、opus…）畫面上不另列，下拉也只出現一次。
+  // 存回去的一律是完整的 lists[kind]（只在畫面上不重複顯示）：目錄會因機器、版本不同，名稱不能因此被刪掉。
+  const own = lists[kind];
+  const mine = own.filter((name) => !inCatalog(name));
 
   const setPref = (key: 'pinned' | 'hidden', list: string[]) => {
     const base: ModelPref = lists[key] ?? EMPTY_MODEL_PREF;
     onChange({ ...lists, [key]: { ...base, [kind]: list } });
   };
-  const setBoth = (pins: string[], hides: string[], own = mine) =>
+  const setBoth = (pins: string[], hides: string[], nextOwn: string[] = own) =>
     onChange({
       ...lists,
-      [kind]: own,
+      [kind]: nextOwn,
       pinned: { ...(lists.pinned ?? EMPTY_MODEL_PREF), [kind]: pins },
       hidden: { ...(lists.hidden ?? EMPTY_MODEL_PREF), [kind]: hides },
     });
@@ -148,13 +150,13 @@ function ListEditor({
       ? 'flows.modelLists.errEmpty'
       : !isSafeModelName(name)
         ? 'flows.new.err.modelName'
-        : mine.some((existing) => sameModel(existing, name)) || inCatalog(name)
+        : own.some((existing) => sameModel(existing, name)) || inCatalog(name)
           ? 'flows.modelLists.errDup'
-          : mine.length >= MODEL_LIST_MAX
+          : own.length >= MODEL_LIST_MAX
             ? 'flows.modelLists.errMax'
             : null;
     if (error) return setNote({ text: t(error, { max: MODEL_LIST_MAX }), tone: 'err' });
-    onChange({ ...lists, [kind]: [...mine, name] });
+    onChange({ ...lists, [kind]: [...own, name] });
     setText('');
     setNote(null);
   };
@@ -249,7 +251,7 @@ function ListEditor({
                   name={name}
                   index={index}
                   count={mine.length}
-                  onMove={(by) => onChange({ ...lists, [kind]: moved(mine, index, by) })}
+                  onMove={(by) => onChange({ ...lists, [kind]: moveShown(own, mine, index, by) })}
                 />
                 <PinButton
                   name={name}
@@ -261,7 +263,7 @@ function ListEditor({
                   className="sm"
                   aria-label={t('flows.modelLists.remove', { name })}
                   onClick={() =>
-                    setBoth(without(pinned, name), without(hidden, name), without(mine, name))
+                    setBoth(without(pinned, name), without(hidden, name), without(own, name))
                   }
                 >
                   {t('flows.security.remove')}

@@ -3,8 +3,16 @@ import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CodexModels, MachineCapabilities } from '@agent-board/protocol';
 import { describe, expect, it } from 'vitest';
-import { probeCapabilities, probeCodexModels, refreshCodexCapabilities } from './resources';
-import { makeTempDir } from './test-support/harness';
+import {
+  CODEX_CATALOG_HELP_RE,
+  loadCodexModelsCache,
+  probeCapabilities,
+  probeCodexModels,
+  refreshCodexCapabilities,
+  runCodexProbe,
+  saveCodexModelsCache,
+} from './resources';
+import { makeTempDir, waitUntil } from './test-support/harness';
 
 const FIXTURE = join(import.meta.dirname, '../../protocol/src/fixtures/codex-debug-models.json');
 
@@ -98,15 +106,100 @@ describe.skipIf(process.platform === 'win32')('probeCodexModels（假 codex）',
     expect(await probeCodexModels(join(dir, 'nope'), process.env, null)).toBeNull();
   });
 
-  it('probeCapabilities：有 codex 就帶目錄；沒有 codex 也帶這個鍵（null）', async () => {
+  it('probeCapabilities 不抓目錄（不擋開機，§26.11 審查）：有 codex 只看版本、這個鍵先是 null', async () => {
     const dir = makeTempDir();
-    const { bin } = fakeCodex(dir);
+    const { bin, log } = fakeCodex(dir);
     const withCodex = await probeCapabilities(join(dir, 'no-claude'), process.env, bin);
     expect(withCodex.codexVersion).toBe('0.167.0');
-    expect(withCodex.codexModels?.models).toHaveLength(12);
+    expect(withCodex.codexModels).toBeNull();
+    expect(calls(log)).toEqual(['--version']);
     const without = await probeCapabilities(join(dir, 'no-claude'), process.env, join(dir, 'nope'));
     expect(without.codexModels).toBeNull();
     expect('codexModels' in without).toBe(true);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('runCodexProbe：逾時連孫程序一起收', () => {
+  it('子程序開了孫程序又不結束：逾時後整個程序群組都停掉，沒有殘留', async () => {
+    const dir = makeTempDir();
+    const pidFile = join(dir, 'grandchild.pid');
+    const bin = join(dir, 'hang');
+    writeFileSync(
+      bin,
+      `#!/bin/sh
+sleep 30 &
+echo $! > '${pidFile}'
+sleep 30
+`,
+    );
+    chmodSync(bin, 0o755);
+    const started = Date.now();
+    const result = await runCodexProbe(bin, ['debug', 'models'], {
+      env: process.env,
+      timeoutMs: 1_500,
+      maxBytes: 1024,
+    });
+    expect(result.timedOut).toBe(true);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const grandchild = Number(readFileSync(pidFile, 'utf8').trim());
+    const alive = () => {
+      try {
+        process.kill(grandchild, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    await waitUntil(() => !alive(), 'grandchild gone');
+  });
+
+  it('stdin 不接（ignore）：等輸入的程式讀到 EOF 就結束，不會卡住', async () => {
+    const dir = makeTempDir();
+    const bin = join(dir, 'reader');
+    writeFileSync(
+      bin,
+      `#!/bin/sh
+cat
+echo done
+`,
+    );
+    chmodSync(bin, 0o755);
+    const result = await runCodexProbe(bin, [], {
+      env: process.env,
+      timeoutMs: 3_000,
+      maxBytes: 1024,
+    });
+    expect(result).toMatchObject({ timedOut: false, code: 0, stdout: 'done\n' });
+  });
+
+  it('輸出超過上限：停掉、標 tooLarge', async () => {
+    const dir = makeTempDir();
+    const bin = join(dir, 'big');
+    writeFileSync(
+      bin,
+      `#!/bin/sh
+while true; do echo xxxxxxxxxxxxxxxxxxxxxxxx; done
+`,
+    );
+    chmodSync(bin, 0o755);
+    const result = await runCodexProbe(bin, [], {
+      env: process.env,
+      timeoutMs: 5_000,
+      maxBytes: 4096,
+    });
+    expect(result.tooLarge).toBe(true);
+    expect(result.timedOut).toBe(false);
+  });
+});
+
+describe('偵測 debug models 的正規式（真 codex 0.167.0 的說明）', () => {
+  const fixture = (name: string) =>
+    readFileSync(join(import.meta.dirname, `../../protocol/src/fixtures/${name}`), 'utf8');
+  it('debug models --help 第一行「Render the raw model catalog as JSON」：認得；主說明（沒有這個子指令時印的）：不認得', () => {
+    const help = fixture('codex-debug-models-help.txt');
+    expect(help.split('\n')[0]).toBe('Render the raw model catalog as JSON');
+    expect(CODEX_CATALOG_HELP_RE.test(help)).toBe(true);
+    expect(CODEX_CATALOG_HELP_RE.test(fixture('codex-help.txt'))).toBe(false);
   });
 });
 
@@ -144,6 +237,28 @@ describe('refreshCodexCapabilities：codex 版本變了才重抓', () => {
     expect(p.counts).toEqual({ version: 1, models: 0 });
   });
 
+  it('上次沒抓到（null）：版本沒變也重試；還是抓不到就不更新', async () => {
+    const p = probes('0.167.0');
+    const failed = { ...caps('0.167.0'), codexModels: null };
+    expect(await refreshCodexCapabilities(failed, 'codex', {}, p.probes)).toEqual({
+      codexVersion: '0.167.0',
+      codexModels: { codexVersion: '0.167.0', models: [] },
+    });
+    const stillFailing = {
+      version: async () => '0.167.0',
+      models: async () => null,
+    };
+    expect(await refreshCodexCapabilities(failed, 'codex', {}, stillFailing)).toBeNull();
+  });
+
+  it('force（開機後背景第一次）：版本沒變也抓', async () => {
+    const p = probes('0.167.0');
+    expect(
+      await refreshCodexCapabilities(caps('0.167.0'), 'codex', {}, p.probes, true),
+    ).not.toBeNull();
+    expect(p.counts.models).toBe(1);
+  });
+
   it('版本變了：重抓並換上新版本', async () => {
     const p = probes('0.168.0');
     expect(await refreshCodexCapabilities(caps('0.167.0'), 'codex', {}, p.probes)).toEqual({
@@ -164,5 +279,30 @@ describe('refreshCodexCapabilities：codex 版本變了才重抓', () => {
       codexModels: null,
     });
     expect(removed.counts.models).toBe(0);
+  });
+});
+
+describe('目錄快取（開機接回 session 用）', () => {
+  it('同一版 codex 才用；版本不同、壞掉、沒有都當沒有', () => {
+    const dir = makeTempDir();
+    const catalog: CodexModels = {
+      codexVersion: '0.167.0',
+      models: [
+        {
+          slug: 'gpt-x',
+          displayName: 'X',
+          defaultEffort: 'low',
+          efforts: ['low'],
+          visibility: 'list',
+        },
+      ],
+    };
+    expect(loadCodexModelsCache(dir, '0.167.0')).toBeNull();
+    saveCodexModelsCache(dir, catalog);
+    expect(loadCodexModelsCache(dir, '0.167.0')).toEqual(catalog);
+    expect(loadCodexModelsCache(dir, '0.168.0')).toBeNull();
+    expect(loadCodexModelsCache(dir, null)).toBeNull();
+    writeFileSync(join(dir, 'codex-models.json'), '{bad');
+    expect(loadCodexModelsCache(dir, '0.167.0')).toBeNull();
   });
 });

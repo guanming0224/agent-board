@@ -169,7 +169,7 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
 
 - 執行檔：`AGENT_BOARD_CODEX_BIN`，預設 `codex`（`packages/daemon/src/config.ts`）。開機時跑一次 `codex --version`
   探測版本（`resources.ts` 的 `probeCodex`，不送 prompt），找不到就不回報、不能開 Codex session。
-- **模型目錄（2026-11-18，CONTRACTS §26.11）**：開機與 `codex --version` 變了時跑 `codex debug models`
+- **模型目錄（2026-11-18，CONTRACTS §26.11）**：開機後在背景（不擋 hub 連線）、`codex --version` 變了、或上次沒抓到時跑 `codex debug models`
   （`resources.ts` 的 `probeCodexModels`），失敗再跑 `codex debug models --bundled`。跑之前先跑 `codex debug models --help`，說明裡要有
   「model catalog」才繼續：沒有 `debug` 子指令的舊版 codex 會把 `debug` 當成第一句 prompt（`codex [PROMPT]`），不能直接跑。這兩個子指令只印模型目錄 JSON 就結束，
   **不開對話、不做模型推論、不送 prompt**。但 `debug models`（不加 `--bundled`）**會連網**，實測證據（codex-cli 0.167.0，開發機）：
@@ -182,9 +182,11 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
 
   也就是說：這是 codex 自己（用使用者的登入）向 OpenAI 拿模型清單，和 Codex App 開啟時更新選單同一件事；中控台不經手
   憑證、不讀 `~/.codex`、不代理連線。結果只留 slug／顯示名稱／預設強度／支援強度／visibility（`parseCodexModelCatalog`），
-  輸出超過 8MB 當抓不到。`scripts/check-no-llm.mjs` 逐字比對 `resources.ts` 裡跑 codex 的參數陣列（`CODEX_PROBE_ARGS`：
-  `['--version']`、`['debug', 'models', '--help']`、`['debug', 'models']`、`['debug', 'models', '--bundled']`），不准別的。`child_process` 呼叫點仍是
-  `resources.ts` 既有那一處，`CALL_SITES` 沒有新增。
+  輸出超過 8MB 當抓不到。執行用 `runCodexProbe`：stdin 不接、stderr 不留、逾時（`--help` 5 秒、目錄 8 秒）或輸出超量時整個程序群組
+  收掉（Windows `taskkill /T /F`）。`scripts/check-no-llm.mjs` 用 `scripts/no-llm-codex-probe.mjs` 逐字比對 `resources.ts` 裡跑 codex 的
+  參數陣列（`CODEX_PROBE_ARGS`：`['--version']`、`['debug', 'models', '--help']`、`['debug', 'models']`、`['debug', 'models', '--bundled']`），
+  `runCodexProbe` 只能傳這些常數、只能在 `resources.ts` 裡呼叫，不准別的寫法；`scripts/no-llm-codex-probe.test.mjs` 用違規片段確認檢查會失敗。
+  `child_process` 呼叫點仍是 `resources.ts` 既有那一處（多了 spawn 與逾時時的 `taskkill`，同一個檔、同一個 import），`CALL_SITES` 沒有新增。
 
 - 參數：`buildCodexArgs`（`packages/daemon/src/codex.ts`）只會產生 `resume <thread id>`（接回使用者自己的對話）、
   權限換算的 `-s <sandbox> -a <approval>` 或 `--dangerously-bypass-approvals-and-sandbox`（使用者選了 bypass）、

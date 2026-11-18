@@ -680,6 +680,13 @@ export class Store {
       .run(os, JSON.stringify(caps), at, id);
   }
 
+  /** daemon 連線中換了 capabilities（`daemon.capabilities`，§26.11）。 */
+  setMachineCapabilities(id: string, caps: Machine['capabilities']): void {
+    this.db
+      .prepare('UPDATE machines SET capabilities = ? WHERE id = ?')
+      .run(JSON.stringify(caps), id);
+  }
+
   setMachineOffline(id: string, at: string): void {
     this.db.prepare('UPDATE machines SET online = 0, last_seen_at = ? WHERE id = ?').run(at, id);
   }

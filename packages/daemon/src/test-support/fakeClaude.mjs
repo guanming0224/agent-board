@@ -7,11 +7,29 @@ if (argv[0] === '--version') {
   console.log('9.9.9 (Fake Claude)');
   process.exit(0);
 }
-// 測試 harness 把同一支假程式也當成 codex：`codex debug models`（§26.11）真 claude 沒有這個子指令，照未知指令結束，
-// 不要當成互動 session 一直開著（daemon 會等到逾時）。
+// 測試 harness 把同一支假程式也當成 codex：`codex debug models`（§26.11）印一份小目錄（--help 印 0.167.0 的第一行）。
+// 不能當成互動 session 一直開著（daemon 會等到逾時）。
 if (argv[0] === 'debug') {
-  console.error(`unknown command: ${argv.join(' ')}`);
-  process.exit(2);
+  if (argv[1] !== 'models') process.exit(2);
+  if (argv.includes('--help')) {
+    console.log('Render the raw model catalog as JSON');
+    process.exit(0);
+  }
+  console.log(
+    JSON.stringify({
+      models: [
+        {
+          slug: 'gpt-fake',
+          display_name: 'GPT-Fake',
+          default_reasoning_level: 'medium',
+          supported_reasoning_levels: ['low', 'medium', 'high'],
+          visibility: 'list',
+          base_instructions: 'not kept',
+        },
+      ],
+    }),
+  );
+  process.exit(0);
 }
 // `--help`（daemon 偵測認得哪些參數，§26.10）：照真 claude 2.1.326 的寫法列 --effort 與 --fallback-model。
 if (argv[0] === '--help') {

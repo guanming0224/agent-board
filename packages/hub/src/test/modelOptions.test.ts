@@ -326,12 +326,17 @@ describe('模型清單（settings modelLists）', () => {
     // 存別的設定不動它；hub 重新讀（settings 表）也一樣。
     await hub.api('PATCH', '/api/settings', { cookie, body: { dispatch: false } });
     expect(hub.running.store.getSettings().modelLists).toEqual(expected);
-    // 舊網頁只送 claude／codex：釘選與隱藏不寫（整份取代，這是舊行為）。
+    // 舊網頁分頁只送 claude／codex：釘選與隱藏沿用存著的，不會被清掉（審查 10）。
     const old = await hub.api('PATCH', '/api/settings', {
       cookie,
       body: { modelLists: { claude: ['opus'], codex: [] } },
     });
-    expect(old.body.modelLists).toEqual({ claude: ['opus'], codex: [] });
+    expect(old.body.modelLists).toEqual({
+      claude: ['opus'],
+      codex: [],
+      pinned: expected.pinned,
+      hidden: expected.hidden,
+    });
     const bad = await hub.api('PATCH', '/api/settings', {
       cookie,
       body: { modelLists: { claude: [], codex: [], hidden: { claude: ['a b'], codex: [] } } },
@@ -472,7 +477,7 @@ describe('Codex 強度依模型目錄（§26.11）', () => {
     return { cookie, daemon, machineId, create };
   }
 
-  it('目錄有列：只收它支援的（ultra 給 gpt-6.2-sol 可以、給 gpt-6-luna 400）；不在目錄、不指定模型收整份白名單', async () => {
+  it('目錄有列：只收它支援的（ultra 給 gpt-6.2-sol 可以、給 gpt-6-luna 400）；不指定模型＝list 模型交集；不在目錄＝舊安全集合', async () => {
     const { daemon, machineId, create } = await setupCatalog();
     // capabilities 原樣存著（網頁讀得到）。
     expect(hub.running.store.getMachine(machineId)?.capabilities.codexModels).toEqual(CATALOG);
@@ -489,8 +494,17 @@ describe('Codex 強度依模型目錄（§26.11）', () => {
     expect(bad.body.message).toMatch(/supported: low, medium, high, xhigh, max/);
     const minimal = await create({ agent: 'codex', model: 'gpt-6-luna', effort: 'minimal' });
     expect(minimal.status).toBe(400);
+    // 不 fail-open（審查 3）：Codex 預設模型只收兩個 list 模型都支援的；不在目錄的只收舊安全集合。
     for (const over of [
-      { agent: 'codex' as const, model: 'gpt-unknown', effort: 'ultra' as const },
+      { agent: 'codex' as const, model: null, effort: 'ultra' as const },
+      { agent: 'codex' as const, model: 'gpt-unknown', effort: 'xhigh' as const },
+    ]) {
+      const res = await create(over);
+      expect(res.status, JSON.stringify(over)).toBe(400);
+      expect(res.body.code).toBe('invalid_effort');
+    }
+    for (const over of [
+      { agent: 'codex' as const, model: 'gpt-unknown', effort: 'high' as const },
       { agent: 'codex' as const, model: null, effort: 'xhigh' as const },
     ]) {
       const res = await create(over);
@@ -498,6 +512,41 @@ describe('Codex 強度依模型目錄（§26.11）', () => {
       const sent = await daemon.next('session.create', (m) => m.sessionId === res.body.id);
       expect(sent.spec).toMatchObject({ effort: over.effort });
     }
+  });
+
+  it('daemon.capabilities（審查 2）：背景抓完的目錄換上、之後依新目錄擋；session.modelOptionsDropped：清掉記錄', async () => {
+    const { daemon, machineId, create } = await setupCatalog();
+    const before = await create({ agent: 'codex', model: 'gpt-6-luna', effort: 'max' });
+    expect(before.status).toBe(200);
+    await daemon.next('session.create', (m) => m.sessionId === before.body.id);
+    // 目錄更新：gpt-6-luna 只剩 low～high。
+    daemon.send({
+      type: 'daemon.capabilities',
+      capabilities: {
+        ...capabilities,
+        codexVersion: '0.168.0',
+        codexModels: {
+          codexVersion: '0.168.0',
+          models: [{ ...CATALOG.models[1], efforts: ['low', 'medium', 'high'] }],
+        },
+      },
+    });
+    await until(
+      () => hub.running.store.getMachine(machineId)?.capabilities.codexVersion === '0.168.0',
+      'capabilities updated',
+    );
+    const after = await create({ agent: 'codex', model: 'gpt-6-luna', effort: 'max' });
+    expect(after.status).toBe(400);
+    // daemon 開的時候沒帶（目錄在 hub 知道前就變了）：清掉 session 記著的強度。
+    expect(get(before.body.id)?.effort).toBe('max');
+    daemon.send({
+      type: 'session.modelOptionsDropped',
+      sessionId: before.body.id,
+      effort: true,
+      fallbackModel: false,
+    });
+    await until(() => get(before.body.id)?.effort === undefined, 'effort cleared');
+    expect(optsRows()).toBe(0);
   });
 
   it('舊 daemon（沒宣告 session.codexEffortsByModel）：xhigh／ultra 不送、不記，minimal～high 照送', async () => {

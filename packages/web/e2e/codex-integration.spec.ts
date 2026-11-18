@@ -385,8 +385,15 @@ test('SessionStart 等第一句才送：NEW 靠畫面上的 Codex 標題判斷�
 test('模型目錄（§26.11）：daemon 跑 codex debug models、只留五個欄位；新增頁列目錄、強度隨模型變；實際參數照帶，模型不支援的 hub 擋下', async ({
   page,
 }) => {
-  const machines = (await (await page.request.get('/api/machines')).json()) as Machine[];
-  const machine = machines.find((m) => m.online)!;
+  // 目錄在 daemon 背景抓，抓完用 daemon.capabilities 送給 hub（不擋連線，§26.11 審查 1、2）。
+  const onlineMachine = async () =>
+    ((await (await page.request.get('/api/machines')).json()) as Machine[]).find((m) => m.online)!;
+  await expect
+    .poll(async () => (await onlineMachine()).capabilities.codexModels?.models.length ?? 0, {
+      timeout: 20_000,
+    })
+    .toBe(3);
+  const machine = await onlineMachine();
   expect(machine.capabilities.codexModels?.models.map((m) => m.slug)).toEqual([
     'gpt-fake-ultra',
     'gpt-fake-mini',

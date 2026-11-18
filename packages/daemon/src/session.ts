@@ -75,6 +75,8 @@ export interface ClaudeArgsInput {
    * 舊版 claude 才不會因為不認得參數而開不起來（resume、daemon 接回也一樣）。
    */
   claudeFlags: ClaudeFlags | null;
+  /** 有指定但這台 claude 帶不了而沒帶（§26.11）：daemon 回報 hub 清掉記錄。 */
+  onDrop?: (field: 'effort' | 'fallbackModel') => void;
   name: string;
   /** 唯讀 session：拿掉改檔工具（SessionSpec.readOnly）。 */
   readOnly?: boolean;
@@ -110,12 +112,16 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
       log.warn(
         `這台 claude 不支援 --effort ${JSON.stringify(input.effort.slice(0, 20))}，這次不帶`,
       );
+      input.onDrop?.('effort');
     }
   }
   const fallback = safeModel(input.fallbackModel);
   if (fallback && !sameModel(fallback, model)) {
     if (allowed.fallback) args.push('--fallback-model', fallback);
-    else log.warn('這台 claude 不支援互動模式的 --fallback-model，這次不帶');
+    else {
+      log.warn('這台 claude 不支援互動模式的 --fallback-model，這次不帶');
+      input.onDrop?.('fallbackModel');
+    }
   }
   // 兩個都是可變長度參數：一個值一個 argv，最後一定接 --name，才不會吞到別的參數。
   // `--allowedTools` 只列設定開著的 agent-board 工具（派工 4 個、進度卡 2 個），不放寬任何其他工具

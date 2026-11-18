@@ -183,15 +183,20 @@ export function parseCodexModelCatalog(stdout: string): CodexModelInfo[] | null 
     if (out.some((m) => sameModel(m.slug, slug))) continue;
     const name =
       typeof entry.display_name === 'string'
-        ? // 控制字元拿掉、壓成一行；顯示用，不進 argv。
+        ? // 控制字元與格式字元（含雙向控制字元 U+202E 這類）拿掉、壓成一行；顯示用，不進 argv。
           entry.display_name
-            .replace(/\p{Cc}/gu, ' ')
+            .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
             .replace(/\s+/g, ' ')
             .trim()
             .slice(0, 80)
         : '';
-    const levels = Array.isArray(entry.supported_reasoning_levels)
-      ? entry.supported_reasoning_levels
+    // 目錄有列級別（非空陣列）＝已知：和白名單交集，交集是空的就是空陣列（這個模型沒有能帶的強度）；
+    // 沒列或空陣列＝不知道（null）。
+    const listed =
+      Array.isArray(entry.supported_reasoning_levels) &&
+      entry.supported_reasoning_levels.length > 0;
+    const levels = listed
+      ? (entry.supported_reasoning_levels as unknown[])
           .map((level: unknown) =>
             typeof level === 'string'
               ? level
@@ -208,7 +213,7 @@ export function parseCodexModelCatalog(stdout: string): CodexModelInfo[] | null 
       defaultEffort: isCodexEffort(entry.default_reasoning_level)
         ? entry.default_reasoning_level
         : null,
-      efforts: efforts.length > 0 ? efforts : null,
+      efforts: listed ? efforts : null,
       visibility: entry.visibility === 'list' ? 'list' : 'hide',
     });
   }
@@ -225,15 +230,24 @@ export function findCodexModel(
 }
 
 /**
- * Codex 這個模型能用的推理強度：目錄有列就是白名單與它的交集；模型不指定、不在目錄、沒有目錄、目錄沒列級別＝整份白名單
- * （CLI 自己會處理；值仍只有安全字元）。
+ * Codex 這個模型能用的推理強度（§26.11，hub、daemon、網頁共用）。值一律只有安全字元白名單裡的：
+ * - 沒有目錄（舊 daemon、抓不到）：舊安全集合 `CODEX_LEGACY_EFFORTS`（minimal～high）。
+ * - 模型不指定（Codex 預設）：目錄裡 visibility=list、有列級別的模型共同支援的級別（交集）；一個都沒有＝舊安全集合。
+ * - 模型在目錄而且有列級別：白名單與它的交集（可能是空的＝這個模型帶不了強度）。
+ * - 模型不在目錄（自訂名稱）或目錄沒列它的級別：舊安全集合。
  */
 export function codexEffortsFor(
   model: string | null | undefined,
   catalog: CodexModels | null | undefined,
 ): readonly SessionEffort[] {
+  if (!catalog) return CODEX_LEGACY_EFFORTS;
+  if (!model) {
+    const known = catalog.models.filter((m) => m.visibility === 'list' && m.efforts !== null);
+    if (known.length === 0) return CODEX_LEGACY_EFFORTS;
+    return CODEX_EFFORTS.filter((level) => known.every((m) => m.efforts!.includes(level)));
+  }
   const info = findCodexModel(catalog, model);
-  if (!info?.efforts) return CODEX_EFFORTS;
+  if (!info?.efforts) return CODEX_LEGACY_EFFORTS;
   return CODEX_EFFORTS.filter((level) => info.efforts!.includes(level));
 }
 

@@ -31,8 +31,10 @@ export interface CodexArgsInput {
    * `-c model_reasoning_effort="<level>"`。模型不在目錄或沒有目錄＝整份白名單。
    */
   effort?: string | null;
-  /** 這台 `codex debug models` 的目錄（daemon 的 capabilities）；null＝抓不到。 */
+  /** 這台 `codex debug models` 的目錄（daemon 的 capabilities）；null＝還沒抓到或抓不到（舊安全集合）。 */
   codexModels?: CodexModels | null;
+  /** 有指定但這台帶不了而沒帶（§26.11）：daemon 回報 hub 清掉記錄。 */
+  onDrop?: (field: 'effort') => void;
   /** 新對話的第一句（使用者在新增 session 時填的）；用官方的 `codex [PROMPT]` 帶入，接續時不帶。 */
   firstPrompt?: string | null;
   /** 這個 session 的 hook 位址，寫進每個 hook 指令。 */
@@ -59,8 +61,9 @@ export function buildCodexArgs(input: CodexArgsInput): string[] {
       args.push('-c', `model_reasoning_effort="${effort}"`);
     } else {
       log.warn(
-        `略過 Codex 推理強度 ${JSON.stringify(effort)}（模型 ${model ?? '預設'} 不支援或不在白名單）`,
+        `略過 Codex 推理強度 ${JSON.stringify(effort.slice(0, 20))}（模型 ${model ?? '預設'} 不支援或不在白名單）`,
       );
+      input.onDrop?.('effort');
     }
   }
   args.push('--dangerously-bypass-hook-trust');

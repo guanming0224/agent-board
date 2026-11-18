@@ -1194,16 +1194,14 @@ test.describe('新增 session', () => {
     // 內建清單的 gpt-6-luna（§26 預設）和目錄的同一個，不重複。
     expect(await groupLabels(model)).toEqual(['GPT-6.2', 'GPT-6', 'Codex 選單不列的', '自訂']);
     await expect(page.getByTestId('codex-catalog-builtin')).toHaveCount(0);
-    // 不指定模型：整份安全白名單。
+    // 不指定模型（Codex 預設）：目錄裡 list 模型共同支援的（審查 3：不 fail-open）。
     await expect(effort.locator('option')).toHaveText([
       '跟 CLI 預設',
-      'minimal',
       'low',
       'medium',
       'high',
       'xhigh',
       'max',
-      'ultra',
     ]);
     await model.selectOption('gpt-6.2-sol');
     await expect(effort.locator('option')).toHaveText([
@@ -2171,6 +2169,43 @@ test.describe('設定', () => {
     await page.getByTestId('model-lists-reset').click();
     await expect(claude).toContainText('還沒有釘選');
     await expect(claude.locator('li.model-hidden')).toHaveCount(0);
+  });
+
+  test('模型清單（§26.11 審查）：釘選、新增、上下移時，目錄已有而畫面沒列的名稱照樣存回去，不會被刪掉', async ({
+    page,
+  }) => {
+    await open(page, 'settings/sessions', {
+      patch: `const get = backend.getSettings;
+        backend.getSettings = async () => ({ ...(await get()), modelLists: {
+          claude: ['claude-opus-5-5', 'my-old'], codex: ['gpt-6-luna'] } });`,
+    });
+    const section = page.locator('#s-modelLists');
+    const claude = section.getByTestId('model-list-claude');
+    const codex = section.getByTestId('model-list-codex');
+    // 畫面只列目錄沒有的。
+    await expect(claude.getByTestId('model-mine-claude').locator('li code')).toHaveText(['my-old']);
+    await expect(codex).toContainText('還沒有自己加的名稱');
+    await claude.getByRole('button', { name: '釘選 fable' }).click();
+    const input = claude.getByLabel('新增到 Claude Code 的模型名稱');
+    await input.fill('my-new');
+    await input.press('Enter');
+    await claude.getByRole('button', { name: 'my-new 往上移' }).click();
+    await codex.getByRole('button', { name: '從下拉隱藏 gpt-6.2-sol' }).click();
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    expect(await calls(page)).toEqual([
+      {
+        type: 'settings',
+        patch: {
+          modelLists: {
+            claude: ['claude-opus-5-5', 'my-new', 'my-old'],
+            codex: ['gpt-6-luna'],
+            pinned: { claude: ['fable'], codex: [] },
+            hidden: { claude: [], codex: ['gpt-6.2-sol'] },
+          },
+        },
+      },
+    ]);
   });
 
   test('機器：配對碼，移除要按兩次', async ({ page }) => {

@@ -265,6 +265,21 @@ export const DaemonToHub = z.discriminatedUnion('type', [
   }),
   /** session host 狀態變了（退回舊模式、切回 host、輸入可能失效／恢復）。舊 hub 不認得，回 error 不斷線。 */
   z.object({ type: z.literal('sessionHost.status'), state: SessionHostState }),
+  /**
+   * 機器能力變了（§26.11）：Codex 模型目錄在背景抓完、codex／claude 版本變了重抓。整份取代 hello 時的 capabilities。
+   * 舊 hub 不認得，回 error 不斷線（同 sessionHost.status），要等下次 hello 才看得到。
+   */
+  z.object({ type: z.literal('daemon.capabilities'), capabilities: MachineCapabilities }),
+  /**
+   * daemon 開 session 時因為這台不支援而沒帶的模型參數（§26.11；hub 已依目錄擋過，這是目錄在 hub 不知道時變了的情況）。
+   * hub 清掉那個 session 記著的值並推給畫面，畫面才不會顯示沒生效的強度。舊 hub 不認得，回 error 不斷線。
+   */
+  z.object({
+    type: z.literal('session.modelOptionsDropped'),
+    sessionId: Id,
+    effort: z.boolean(),
+    fallbackModel: z.boolean(),
+  }),
   z.object({ type: z.literal('session.created'), requestId: Id, session: SessionRuntime }),
   z.object({ type: z.literal('session.createFailed'), requestId: Id, error: z.string() }),
   z.object({ type: z.literal('session.runtime'), session: SessionRuntime }),

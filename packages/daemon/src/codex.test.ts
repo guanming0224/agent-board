@@ -1,5 +1,5 @@
 // Codex 節點（CONTRACTS §19）：參數組合、hook 回答格式、找對話紀錄、daemon 開 Codex／接回。
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   CODEX_HOOK_EVENTS,
@@ -84,7 +84,7 @@ describe('buildCodexArgs', () => {
     expect(injected.some((a) => a.includes('model_reasoning_effort'))).toBe(false);
   });
 
-  it('推理強度依模型目錄（§26.11）：目錄有列只收它支援的；不在目錄、沒有目錄收整份安全集合', () => {
+  it('推理強度依模型目錄（§26.11）：目錄有列只收它支援的；不指定模型＝list 模型交集；不在目錄、沒有目錄＝舊安全集合；沒帶就回報', () => {
     const codexModels = {
       codexVersion: '0.167.0',
       models: [
@@ -111,12 +111,33 @@ describe('buildCodexArgs', () => {
     // 目錄說 gpt-6-luna 沒有 ultra／minimal：不帶（hub 已經擋過，這是第二層）。
     expect(effortOf('gpt-6-luna', 'ultra')).toBeNull();
     expect(effortOf('GPT-6-LUNA', 'minimal')).toBeNull();
-    // 不在目錄、沒指定模型、沒有目錄：整份白名單。
-    expect(effortOf('gpt-6.2-sol', 'ultra')).toBe('model_reasoning_effort="ultra"');
+    // 不指定模型：目錄裡 list 模型的交集（這裡只有 gpt-6-luna）。
     expect(effortOf(null, 'xhigh')).toBe('model_reasoning_effort="xhigh"');
-    expect(effortOf('gpt-6-luna', 'ultra', null)).toBe('model_reasoning_effort="ultra"');
+    expect(effortOf(null, 'ultra')).toBeNull();
+    // 不在目錄、沒有目錄（還沒抓到）：舊安全集合 minimal～high，不 fail-open。
+    expect(effortOf('gpt-6.2-sol', 'ultra')).toBeNull();
+    expect(effortOf('gpt-6.2-sol', 'high')).toBe('model_reasoning_effort="high"');
+    expect(effortOf('gpt-6-luna', 'ultra', null)).toBeNull();
+    expect(effortOf('gpt-6-luna', 'minimal', null)).toBe('model_reasoning_effort="minimal"');
     // 白名單外（含注入字串）一律不帶。
     expect(effortOf('gpt-6.2-sol', 'ultra"\nsandbox="x')).toBeNull();
+    // 沒帶的回報（daemon 轉給 hub 清掉記錄）；帶了的不回報。
+    const drops: string[] = [];
+    build({
+      permissionMode: 'plan',
+      model: 'gpt-6-luna',
+      effort: 'ultra',
+      codexModels,
+      onDrop: (f) => drops.push(f),
+    });
+    build({
+      permissionMode: 'plan',
+      model: 'gpt-6-luna',
+      effort: 'max',
+      codexModels,
+      onDrop: (f) => drops.push(f),
+    });
+    expect(drops).toEqual(['effort']);
   });
 
   it('第一句放在 -- 之後（以 - 開頭也不會被當成參數）', () => {
@@ -338,6 +359,60 @@ describe.skipIf(process.platform === 'win32')('daemon 開 Codex', () => {
     expect(h.hellos().at(-1)?.capabilities.codexVersion).toBe('0.167.0');
     // §26.11：依模型的 Codex 強度一律宣告。
     expect(h.hellos().at(-1)?.features).toContain(DAEMON_FEATURES.codexEffortsByModel);
+  });
+
+  it('§26.11：目錄在背景抓（不擋 hello），抓完送 daemon.capabilities；存快取，下次開機 hello 就帶', async () => {
+    await h.hub.start();
+    await h.startDaemon({ capabilities: undefined });
+    const hello = await h.hub.waitFor('daemon.hello');
+    expect(hello.capabilities.codexVersion).toBe('9.9.9');
+    const update = await h.hub.waitFor('daemon.capabilities');
+    expect(update.capabilities.codexModels).toEqual({
+      codexVersion: '9.9.9',
+      models: [
+        {
+          slug: 'gpt-fake',
+          displayName: 'GPT-Fake',
+          defaultEffort: 'medium',
+          efforts: ['low', 'medium', 'high'],
+          visibility: 'list',
+        },
+      ],
+    });
+    await waitUntil(() => existsSync(join(h.dataDir, 'codex-models.json')), 'cache written');
+    await h.restartDaemon({ capabilities: undefined });
+    await waitUntil(() => h.hellos().length >= 2, 'second hello');
+    expect(h.hellos().at(-1)?.capabilities.codexModels?.models[0]?.slug).toBe('gpt-fake');
+  });
+
+  it('§26.11：目錄說這個模型不支援的強度不帶，並回報 hub（session.modelOptionsDropped）', async () => {
+    await h.start();
+    await h.restartDaemon({
+      capabilities: {
+        ...codexCaps,
+        codexModels: {
+          codexVersion: '0.167.0',
+          models: [
+            {
+              slug: 'gpt-6-luna',
+              displayName: 'GPT-6-Luna',
+              defaultEffort: 'medium',
+              efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+              visibility: 'list',
+            },
+          ],
+        },
+      },
+    });
+    await h.createAndSubscribe('xd', { agent: 'codex', model: 'gpt-6-luna', effort: 'ultra' });
+    expect(
+      h
+        .runs()
+        .at(-1)
+        ?.argv.some((a) => a.includes('model_reasoning_effort')),
+    ).toBe(false);
+    const dropped = await h.hub.waitFor('session.modelOptionsDropped');
+    expect(dropped).toMatchObject({ sessionId: 'xd', effort: true, fallbackModel: false });
   });
 
   it('開 Codex：參數照對應表、不寫 hook 設定檔、不設 CLAUDE_CONFIG_DIR、thread id 等 SessionStart', async () => {

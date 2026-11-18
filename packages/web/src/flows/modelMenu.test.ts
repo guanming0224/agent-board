@@ -12,6 +12,7 @@ import {
   mergedCodexCatalog,
   modelMenu,
   modelSpec,
+  moveShown,
   NO_MODEL,
   optionSupport,
 } from './modelChoice';
@@ -146,7 +147,7 @@ describe('Codex 目錄來源', () => {
 });
 
 describe('optionSupport：Codex 強度依模型（§26.11）', () => {
-  it('daemon 帶了目錄：只列該模型支援的；不在目錄、沒指定模型列整份；舊 daemon（沒有這個鍵）只列舊白名單', () => {
+  it('daemon 帶了目錄：只列該模型支援的；沒指定模型＝list 模型的交集；不在目錄、沒有目錄、舊 daemon＝舊安全集合', () => {
     const m = caps({ codexModels: CATALOG });
     expect(optionSupport(m, 'codex', 'gpt-6-luna').efforts).toEqual([
       'low',
@@ -156,11 +157,40 @@ describe('optionSupport：Codex 強度依模型（§26.11）', () => {
       'max',
     ]);
     expect(optionSupport(m, 'codex', 'gpt-6.2-sol').efforts).toContain('ultra');
-    expect(optionSupport(m, 'codex', 'something-else').efforts).toHaveLength(7);
-    expect(optionSupport(m, 'codex', null).efforts).toHaveLength(7);
-    expect(optionSupport(caps({ codexModels: null }), 'codex', 'gpt-6-luna').efforts).toHaveLength(
-      7,
-    );
+    expect(optionSupport(m, 'codex', 'something-else').efforts).toEqual([
+      'minimal',
+      'low',
+      'medium',
+      'high',
+    ]);
+    // Codex 預設：visibility=list 的兩個（6.2-sol、6-luna）共同支援的；hide 的審查模型不算。
+    expect(optionSupport(m, 'codex', null).efforts).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ]);
+    expect(optionSupport(caps({ codexModels: null }), 'codex', 'gpt-6-luna').efforts).toEqual([
+      'minimal',
+      'low',
+      'medium',
+      'high',
+    ]);
+    expect(optionSupport(undefined, 'codex', 'gpt-6.2-sol').efforts).toEqual([
+      'minimal',
+      'low',
+      'medium',
+      'high',
+    ]);
+    // 目錄有列級別但和白名單沒有交集：空的（強度停用），不是退回整份。
+    const none = caps({
+      codexModels: {
+        codexVersion: null,
+        models: [{ ...CATALOG.models[0]!, slug: 'gpt-odd', efforts: [] }],
+      },
+    });
+    expect(optionSupport(none, 'codex', 'gpt-odd').efforts).toEqual([]);
     expect(optionSupport(caps({}), 'codex', 'gpt-6.2-sol').efforts).toEqual([
       'minimal',
       'low',
@@ -175,5 +205,15 @@ describe('optionSupport：Codex 強度依模型（§26.11）', () => {
         support: optionSupport(m, 'codex', 'gpt-6-luna'),
       }),
     ).toEqual({ model: 'gpt-6-luna' });
+  });
+});
+
+describe('moveShown：設定頁「自己加的」上下移不丟名稱（§26.11 審查）', () => {
+  it('只交換畫面上那兩個在完整清單裡的位置，目錄已有、畫面沒列的原地保留', () => {
+    const full = ['opus', 'a', 'claude-opus-5-5', 'b', 'c'];
+    const shown = ['a', 'b', 'c'];
+    expect(moveShown(full, shown, 1, -1)).toEqual(['opus', 'b', 'claude-opus-5-5', 'a', 'c']);
+    expect(moveShown(full, shown, 1, 1)).toEqual(['opus', 'a', 'claude-opus-5-5', 'c', 'b']);
+    expect(moveShown(full, shown, 0, -1)).toEqual(full);
   });
 });

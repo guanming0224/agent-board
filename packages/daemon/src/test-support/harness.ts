@@ -212,7 +212,9 @@ export class Harness {
   async cleanup(): Promise<void> {
     for (const daemon of this.daemons) await daemon.stop().catch(() => {});
     await this.hub.stop().catch(() => {});
-    rmSync(this.root, { recursive: true, force: true });
+    // 被 SIGKILL 的 daemon 留下的子程序（假 claude 的 session 結束時寫 log、背景抓 Codex 目錄的探測程序）可能在刪資料夾時
+    // 還在寫：ENOTEMPTY 就稍等重試。
+    rmSync(this.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

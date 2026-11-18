@@ -159,6 +159,28 @@ export function modelMenu(
   return { groups, names: groups.flatMap((g) => g.items.map((i) => i.value)) };
 }
 
+/**
+ * 設定頁「自己加的」上下移（§26.11）：畫面只列 `shown`（完整清單去掉目錄已有的），移動時在完整清單 `full` 裡
+ * 交換那兩個名稱的位置，其他（目錄已有、畫面沒列的）原地不動、不會被刪掉。
+ */
+export function moveShown(
+  full: readonly string[],
+  shown: readonly string[],
+  index: number,
+  by: -1 | 1,
+): string[] {
+  const a = shown[index];
+  const b = shown[index + by];
+  const next = [...full];
+  if (a === undefined || b === undefined) return next;
+  const ia = next.indexOf(a);
+  const ib = next.indexOf(b);
+  if (ia === -1 || ib === -1) return next;
+  next[ia] = b;
+  next[ib] = a;
+  return next;
+}
+
 /** 目錄（或內建清單）裡這個名稱的資料；自己打的名稱回 null。 */
 export function menuItemFor(
   agent: AgentKind,

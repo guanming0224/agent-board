@@ -13,6 +13,11 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { collectShipped } from './release-shipped.mjs';
 import { checkReviewBoundary, NON_INTERACTIVE_FILE } from './no-llm-review-boundary.mjs';
+import {
+  checkCodexProbe,
+  checkCodexProbeCallers,
+  CODEX_PROBE_FILE,
+} from './no-llm-codex-probe.mjs';
 
 const root = join(import.meta.dirname, '..');
 
@@ -178,21 +183,6 @@ const CODEX_FLAGS = new Set([
   '--dangerously-bypass-approvals-and-sandbox', // 使用者選 bypassPermissions 時（沿用 bypass 警示）
 ]);
 const CODEX_FILES = ['packages/daemon/src/codex.ts', 'packages/protocol/src/codex.ts'];
-/**
- * daemon 探測 codex 時（resources.ts）可以跑的指令，逐字比對陣列（GM 2026-11-18，CONTRACTS §26.11）：
- * - `--version`：版本。
- * - `debug models`：印模型目錄 JSON 就結束，不開對話、不做模型推論。**會連網**：codex 用使用者的登入向 OpenAI 抓
- *   最新目錄、寫進 codex 自己的快取（docs/no-llm-review.md 有實測證據）；不是 LLM 呼叫、不送 prompt。
- * - `debug models --bundled`：只讀執行檔內建的目錄（不連網），上面失敗時才用。
- * - `debug models --help`：先確認這版有 `debug models`（沒有的舊版會把 `debug` 當成 prompt），只印說明。
- */
-const CODEX_PROBE_ARGS = new Set([
-  "['--version']",
-  "['debug', 'models']",
-  "['debug', 'models', '--bundled']",
-  // 先確認有 debug models 這個子指令（舊版 codex 會把 debug 當成 prompt）；--help 只印說明。
-  "['debug', 'models', '--help']",
-]);
 const CODEX_NON_INTERACTIVE = /'(exec|e|review|--json|--output-last-message|-o)'/;
 
 const isTest = (path) =>
@@ -264,35 +254,11 @@ for (const key of CALL_SITES) {
   if (!seen.has(key)) warnings.push(`CALL_SITES 的 ${key} 已找不到，可以從清單移除`);
 }
 
-// 3a. 探測 codex 的指令（resources.ts）：execFileAsync(codexBin, …) 與 *_ARGS 常數都只能是白名單裡的陣列。
-{
-  const file = 'packages/daemon/src/resources.ts';
-  const text = readFileSync(join(root, file), 'utf8');
-  const arrays = [
-    ...[...text.matchAll(/execFileAsync\(codexBin,\s*(\[[^\]]*\])/g)].map((m) => m[1]),
-    ...[...text.matchAll(/const CODEX_\w*ARGS = (\[[^\]]*\])/g)].map((m) => m[1]),
-  ];
-  const calls = [...text.matchAll(/execFileAsync\(codexBin,\s*([^,]+),/g)].map((m) => m[1].trim());
-  for (const value of arrays) {
-    if (!CODEX_PROBE_ARGS.has(value.replace(/\s+/g, ' '))) {
-      problems.push(`${file}：codex 探測參數 ${value} 不在允許清單`);
-    }
-  }
-  for (const value of calls) {
-    // 用變數傳的只能是 CODEX_*_ARGS 常數（值在上面逐字比對過），或迴圈裡的 args（清單只能放這些常數，見下）。
-    if (!value.startsWith('[') && value !== 'args' && !/^CODEX_\w*ARGS$/.test(value)) {
-      problems.push(`${file}：codex 探測參數 ${value} 不是字面陣列，無法審查`);
-    }
-  }
-  if (
-    /for \(const args of \[([^\]]*)\]\)/
-      .exec(text)?.[1]
-      ?.split(',')
-      .some((n) => !/^\s*CODEX_\w*ARGS\s*$/.test(n))
-  ) {
-    problems.push(`${file}：codex 探測的參數清單只能放 CODEX_*_ARGS 常數`);
-  }
-}
+// 3a. 探測 codex 的指令（resources.ts，§26.11）：只准白名單裡的參數（scripts/no-llm-codex-probe.mjs）。
+problems.push(
+  ...checkCodexProbe(readFileSync(join(root, CODEX_PROBE_FILE), 'utf8')),
+  ...checkCodexProbeCallers(sources.map((f) => ({ path: rel(f), text: readFileSync(f, 'utf8') }))),
+);
 
 // 3. claude 的參數
 for (const file of ['packages/daemon/src/session.ts', 'packages/daemon/src/resources.ts']) {

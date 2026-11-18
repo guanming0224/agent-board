@@ -122,6 +122,11 @@ describe('parseCodexModelCatalog（欄位過濾與壞資料）', () => {
       visibility: 'hide',
     });
     expect(one({ slug: 'a', display_name: 'A\u0007\nB' })![0]!.displayName).toBe('A B');
+    // 雙向控制字元（\p{Cf}）也拿掉，名稱才不會在畫面上被反轉。
+    expect(one({ slug: 'a', display_name: 'GPT\u202Eevil\u200B' })![0]!.displayName).toBe(
+      'GPT evil',
+    );
+    expect(one({ slug: 'a', supported_reasoning_levels: [] })![0]!.efforts).toBeNull();
     expect(one({ slug: 'a', display_name: 'x'.repeat(200) })![0]!.displayName).toHaveLength(80);
   });
 
@@ -158,7 +163,7 @@ describe('Codex 強度依模型（hub、daemon、網頁共用）', () => {
     models: parseCodexModelCatalog(FIXTURE)!,
   };
 
-  it('目錄有列：取交集；不在目錄、沒指定模型、沒有目錄：整份安全集合', () => {
+  it('目錄有列：取交集；沒指定模型：list 模型的交集；不在目錄、沒有目錄：舊安全集合（不 fail-open）', () => {
     expect(codexEffortsFor('gpt-6-luna', catalog)).toEqual([
       'low',
       'medium',
@@ -167,17 +172,22 @@ describe('Codex 強度依模型（hub、daemon、網頁共用）', () => {
       'max',
     ]);
     expect(codexEffortsFor('GPT-6.2-SOL', catalog)).toContain('ultra');
-    expect(codexEffortsFor('gpt-unknown', catalog)).toEqual([
-      'minimal',
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-      'ultra',
-    ]);
-    expect(codexEffortsFor(null, catalog)).toHaveLength(7);
-    expect(codexEffortsFor('gpt-6-luna', null)).toHaveLength(7);
+    const legacy = ['minimal', 'low', 'medium', 'high'];
+    expect(codexEffortsFor('gpt-unknown', catalog)).toEqual(legacy);
+    // 真實目錄 visibility=list 的 10 個：有的只到 max，所以交集是 low～max（hide 的 gpt-reserve 等不算）。
+    expect(codexEffortsFor(null, catalog)).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(codexEffortsFor('gpt-6-luna', null)).toEqual(legacy);
+    expect(codexEffortsFor(null, null)).toEqual(legacy);
+    expect(codexEffortsFor(null, { codexVersion: null, models: [] })).toEqual(legacy);
+    // 有列級別但和白名單交集是空的：空陣列（這個模型帶不了強度）。
+    const odd = parseCodexModelCatalog(
+      JSON.stringify({
+        models: [{ slug: 'gpt-odd', supported_reasoning_levels: ['turbo'], visibility: 'list' }],
+      }),
+    )!;
+    expect(odd[0]!.efforts).toEqual([]);
+    expect(codexEffortsFor('gpt-odd', { codexVersion: null, models: odd })).toEqual([]);
+    expect(codexEffortsFor(null, { codexVersion: null, models: odd })).toEqual([]);
     expect(findCodexModel(catalog, 'Gpt-6-Luna')?.slug).toBe('gpt-6-luna');
   });
 
@@ -191,7 +201,7 @@ describe('Codex 強度依模型（hub、daemon、網頁共用）', () => {
     expect(
       allowedModelOptions('codex', null, { model: 'gpt-6.2-sol', catalog: null, byModel: true })
         .efforts,
-    ).toContain('ultra');
+    ).toEqual(['minimal', 'low', 'medium', 'high']);
   });
 
   it('SessionSpec 收 ultra；daemon 宣告旗標；capabilities 的 codexModels 壞掉只丟這個欄位', () => {
