@@ -395,8 +395,12 @@ export class ReleaseManager {
         from: state.fromVersion,
         to: state.toVersion,
         reason: state.reason,
+        ...(state.retry ? { retryRound: state.retry.round, retryAt: state.retry.at } : {}),
       }),
     );
+    // download_failed 而 daemon 排了下一輪自動重試（§21.12）：只記 audit，不推播、不算 canary 失敗；
+    // 最後一輪（retry.at 為 null）也失敗才推播。
+    if (state.reason === 'download_failed' && state.retry?.at) return;
     if (this.channelOf(machineId) === 'canary') this.bumpStat('updateFailures');
     this.deps.notifyUpdateFailed(machineId, machine?.name ?? machineId, state);
   }

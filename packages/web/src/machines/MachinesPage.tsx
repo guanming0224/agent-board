@@ -4,7 +4,12 @@
 // 下方：各機一列——平台、版本、通道（可切換）、最後連線、更新狀態、立即更新、回滾到上一版。
 // 非 owner 只能看（按鈕停用並說明；hub 也會擋）。開著時每 5 秒重讀。
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import type { MachineRelease, ReleaseChannel, ReleaseOverview } from '@agent-board/protocol';
+import {
+  DOWNLOAD_AUTO_RETRY_ROUNDS,
+  type MachineRelease,
+  type ReleaseChannel,
+  type ReleaseOverview,
+} from '@agent-board/protocol';
 import { useCurrentUser } from '../flows/common';
 import { useLocale, useT } from '../shared/i18n';
 import { useBoard } from '../shared/store';
@@ -719,6 +724,7 @@ function MachineRow({
   apply: (o: ReleaseOverview) => void;
 }) {
   const t = useT();
+  const locale = useLocale((s) => s.locale);
   const backend = useBoard((s) => s.backend);
   const action = useAction(apply);
   const status = releaseStatus(machine);
@@ -771,6 +777,17 @@ function MachineRow({
       {machine.update?.detail && status.kind === 'failed' && (
         <p className="hint rel-detail">{machine.update.detail}</p>
       )}
+      {status.kind === 'failed' &&
+        machine.update?.reason === 'download_failed' &&
+        machine.update.retry?.at && (
+          <p className="sub" data-testid={`machine-retry-${machine.machineId}`}>
+            {t('machines.retryAt', {
+              time: new Date(machine.update.retry.at).toLocaleString(locale),
+              round: machine.update.retry.round + 1,
+              max: DOWNLOAD_AUTO_RETRY_ROUNDS,
+            })}
+          </p>
+        )}
       {machine.unverifiedPlatform && (
         <UnverifiedSwitch machine={machine} owner={owner} apply={apply} />
       )}

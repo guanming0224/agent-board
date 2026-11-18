@@ -205,8 +205,9 @@ describe('SelfUpdater', () => {
     expect(h.reports.at(-1)).toMatchObject({
       phase: 'failed',
       reason: 'download_failed',
-      detail: 'HTTP 404',
+      detail: expect.stringContaining('HTTP 404'),
     });
+    // 404 不重試（成品不在 hub 的 cache）：只問一次。
   });
 
   it('有 PERM 延後（不下載），5 分鐘後再看；PERM 沒了就更新', async () => {
@@ -723,6 +724,165 @@ describe('SelfUpdater：手動回滾後的保險（M1）', () => {
     h.updater.onTarget(target(), true);
     await until(() => h.spawned.length > 0);
     expect(h.spawned).toHaveLength(1);
+    h.updater.dispose();
+  });
+});
+
+describe('SelfUpdater：下載續傳與 download_failed 自動重試（§21.12）', () => {
+  /** 假 hub：照 Range 回 206；cut＝這次送到第幾個位元組就斷線（null＝送完）。 */
+  function rangeFetch(cuts: (number | null)[]) {
+    const ranges: (string | null)[] = [];
+    const fn = (async (_url: string, init: RequestInit) => {
+      const range = new Headers(init.headers).get('range');
+      ranges.push(range);
+      const start = range ? Number(/bytes=(\d+)-/.exec(range)![1]) : 0;
+      const cut = cuts[ranges.length - 1] ?? null;
+      const bytes = Buffer.from(ARCHIVE);
+      // 先送資料、下一次讀才斷（直接 error 會把還沒讀的資料一起丟掉）。
+      let sent = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (!sent) {
+            sent = true;
+            controller.enqueue(new Uint8Array(bytes.subarray(start, cut ?? bytes.length)));
+          } else if (cut === null) {
+            controller.close();
+          } else {
+            controller.error(
+              Object.assign(new TypeError('terminated'), { cause: { code: 'ECONNRESET' } }),
+            );
+          }
+        },
+      });
+      return start > 0
+        ? new Response(body, {
+            status: 206,
+            headers: { 'content-range': `bytes ${start}-${bytes.length - 1}/${bytes.length}` },
+          })
+        : new Response(body);
+    }) as typeof fetch;
+    return { fn, ranges };
+  }
+
+  const fast = { maxAttempts: 1, sleep: async () => {} };
+
+  it('一直失敗：10 分鐘（測試縮短）後自動再試，最多 3 輪，每輪從 .part 續傳；之後停在 failed', async () => {
+    const f = rangeFetch([4, 6, 8, 10, null]);
+    const h = harness({
+      fetch: f.fn,
+      download: fast,
+      downloadRetryMs: 40,
+      now: () => new Date(),
+    });
+    h.updater.onTarget(target(), false);
+    await until(() => h.reports.at(-1)?.retry?.round === 3 && h.reports.at(-1)?.phase === 'failed');
+    const failed = h.reports.filter((r) => r.phase === 'failed');
+    expect(failed.map((r) => r.retry?.round)).toEqual([0, 1, 2, 3]);
+    expect(failed.slice(0, 3).every((r) => r.retry?.at !== null)).toBe(true);
+    expect(failed[3]!.retry?.at).toBeNull();
+    expect(failed.every((r) => r.reason === 'download_failed')).toBe(true);
+    expect(failed[0]!.detail).toContain('共 1 次嘗試');
+    expect(failed[0]!.detail).toContain('ECONNRESET');
+    // 每輪都從上一輪留下的 .part 接著下載。
+    expect(f.ranges).toEqual([null, 'bytes=4-', 'bytes=6-', 'bytes=8-']);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(f.ranges).toHaveLength(4);
+    expect(h.spawned).toEqual([]);
+    // 用完輪數之後「立即更新」：重新開始（第 0 輪），續傳完成。
+    h.updater.onTarget(target(), true);
+    await until(() => h.spawned.length > 0);
+    expect(f.ranges.at(-1)).toBe('bytes=10-');
+    h.updater.dispose();
+  });
+
+  it('第一輪失敗、第二輪續傳成功：繼續安裝；不是自動重試的失敗（checksum）不排下一輪', async () => {
+    const f = rangeFetch([7, null]);
+    const h = harness({ fetch: f.fn, download: fast, downloadRetryMs: 30, now: () => new Date() });
+    h.updater.onTarget(target(), false);
+    await until(() => h.spawned.length > 0);
+    expect(h.phases()).toEqual(['downloading', 'failed', 'downloading', 'installing']);
+    expect(h.reports[2]!.retry).toEqual({ round: 1, at: null });
+    expect(f.ranges).toEqual([null, 'bytes=7-']);
+    h.updater.dispose();
+
+    const bad = harness({ downloadRetryMs: 30, now: () => new Date() });
+    rmSync(join(root, 'releases'), { recursive: true, force: true });
+    await writeUpdateState(data, { ...inProgress({ phase: 'idle' }) });
+    bad.updater.onTarget(target({ sha256: 'f'.repeat(64) }), false);
+    await until(() => bad.reports.at(-1)?.phase === 'failed');
+    expect(bad.reports.at(-1)).toMatchObject({ reason: 'checksum_mismatch' });
+    expect(bad.reports.at(-1)!.retry).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(bad.fetches).toHaveLength(1);
+    bad.updater.dispose();
+  });
+
+  it('daemon 重啟：上次 download_failed 的下一輪時間已過就接著做（輪數 +1）；還沒到就等到時間', async () => {
+    const failedAt = (at: string, round = 0): UpdateState => ({
+      phase: 'failed',
+      fromVersion: '0.1.0',
+      toVersion: '0.2.0',
+      reason: 'download_failed',
+      detail: 'x',
+      at: new Date().toISOString(),
+      retry: { round, at },
+    });
+    await writeUpdateState(data, failedAt(new Date(Date.now() - 1000).toISOString(), 1));
+    const h = harness({ now: () => new Date() });
+    h.updater.onTarget(target(), false);
+    await until(() => h.spawned.length > 0);
+    expect(h.reports[0]).toMatchObject({ phase: 'downloading', retry: { round: 2, at: null } });
+    h.updater.dispose();
+
+    rmSync(join(root, 'releases'), { recursive: true, force: true });
+    await writeUpdateState(data, failedAt(new Date(Date.now() + 300).toISOString()));
+    const later = harness({ now: () => new Date() });
+    later.updater.onTarget(target(), false);
+    await settle();
+    expect(later.fetches).toEqual([]);
+    await until(() => later.spawned.length > 0);
+    expect(later.fetches).toHaveLength(1);
+    later.updater.dispose();
+
+    // 輪數用完（at null）：不自動做。
+    await writeUpdateState(data, {
+      ...failedAt(new Date().toISOString(), 3),
+      retry: { round: 3, at: null },
+    });
+    const done = harness({ now: () => new Date() });
+    done.updater.onTarget(target(), false);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(done.fetches).toEqual([]);
+    done.updater.dispose();
+  });
+
+  it('下載進度回報 hub（progress），最後的狀態不會被晚到的進度蓋掉', async () => {
+    const chunks = ['fake ', 'archive ', 'bytes'];
+    const h = harness({
+      download: { progressMs: 0 },
+      fetch: (async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              const next = chunks.shift();
+              if (next === undefined) controller.close();
+              else controller.enqueue(new TextEncoder().encode(next));
+            },
+          }),
+        )) as typeof fetch,
+    });
+    h.updater.onTarget(target(), false);
+    await until(() => h.spawned.length > 0);
+    await settle();
+    const progress = h.reports.filter((r) => r.progress).map((r) => r.progress);
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress.at(-1)).toMatchObject({
+      received: ARCHIVE.length,
+      total: ARCHIVE.length,
+      attempt: 1,
+    });
+    expect(h.reports.at(-1)!.phase).toBe('installing');
+    expect(readUpdateState(data)!.phase).toBe('installing');
     h.updater.dispose();
   });
 });

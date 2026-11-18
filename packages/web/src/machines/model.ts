@@ -13,7 +13,11 @@ import {
   type ReleaseOverview,
   type UpdatePhase,
   type UpdateReason,
+  type UpdateState,
 } from '@agent-board/protocol';
+
+/** 下載進度（UpdateState.progress，§21.12）。 */
+export type DownloadProgress = NonNullable<UpdateState['progress']>;
 
 /**
  * 一台機器的更新狀態（畫面上那一格）。順序就是優先序：相容性問題最先講（連不上就談不上更新），
@@ -24,7 +28,13 @@ export type ReleaseStatus =
   | { kind: 'hub_too_old' }
   /** daemon 太舊，hub 拒絕：要更新 daemon（會每 5 分鐘再試）。 */
   | { kind: 'needs_update' }
-  | { kind: 'updating'; phase: UpdatePhase; toVersion: string | null }
+  | {
+      kind: 'updating';
+      phase: UpdatePhase;
+      toVersion: string | null;
+      /** 下載中的進度（新 daemon＋新 hub 才有）。 */
+      progress: DownloadProgress | null;
+    }
   | { kind: 'deferred'; reason: UpdateReason | null; toVersion: string | null }
   | { kind: 'failed'; phase: UpdatePhase; reason: UpdateReason | null; toVersion: string | null }
   /** 舊 daemon 沒回報版本。 */
@@ -44,7 +54,12 @@ export function releaseStatus(m: MachineRelease): ReleaseStatus {
   if (m.compat === 'needs_update') return { kind: 'needs_update' };
   const update = m.update;
   if (update && UPDATE_IN_PROGRESS.includes(update.phase)) {
-    return { kind: 'updating', phase: update.phase, toVersion: update.toVersion };
+    return {
+      kind: 'updating',
+      phase: update.phase,
+      toVersion: update.toVersion,
+      progress: update.phase === 'downloading' ? (update.progress ?? null) : null,
+    };
   }
   if (update?.phase === 'deferred') {
     return { kind: 'deferred', reason: update.reason, toVersion: update.toVersion };
@@ -185,11 +200,37 @@ export function formatAge(ms: number, t: Translate): string {
   return t('machines.span.m', { m });
 }
 
+const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+
+/** 位元組／秒 → `1.2 MB/s` 或 `350 KB/s`。 */
+export function formatSpeed(bytesPerSec: number): string {
+  return bytesPerSec >= 1024 * 1024
+    ? `${mib(bytesPerSec)} MB/s`
+    : `${Math.round(bytesPerSec / 1024)} KB/s`;
+}
+
+/** 下載中：`下載中 42%（12.3/29.8 MB，1.2 MB/s）`；第 2 次以後的嘗試加「第 n 次嘗試」（§21.12）。 */
+export function downloadText(progress: DownloadProgress, t: Translate): string {
+  const pct = Math.min(100, Math.floor((progress.received / progress.total) * 100));
+  const text = t('machines.download.progress', {
+    pct,
+    received: mib(progress.received),
+    total: mib(progress.total),
+    speed: formatSpeed(progress.bytesPerSec),
+  });
+  return progress.attempt > 1
+    ? `${text}${t('machines.download.attempt', { attempt: progress.attempt })}`
+    : text;
+}
+
 /** 更新狀態的文字（含原因代碼的翻譯）。 */
 export function statusText(status: ReleaseStatus, t: Translate): string {
   const reason = (code: string | null) => t(`machines.reason.${code ?? 'none'}`);
   switch (status.kind) {
     case 'updating':
+      if (status.progress && status.progress.total > 0) {
+        return t('machines.status.updating', { phase: downloadText(status.progress, t) });
+      }
       return t('machines.status.updating', { phase: t(`machines.phase.${status.phase}`) });
     case 'deferred':
       return t('machines.status.deferred', { reason: reason(status.reason) });

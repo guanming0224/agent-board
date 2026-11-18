@@ -105,6 +105,7 @@ describe('更新狀態（MachineRelease → 畫面）', () => {
         kind: 'updating',
         phase,
         toVersion: '0.1.1',
+        progress: null,
       });
     }
     expect(
@@ -203,8 +204,42 @@ describe('更新狀態（MachineRelease → 畫面）', () => {
     expect(statusText({ kind: 'failed', phase: 'failed', reason: null, toVersion: null }, zh)).toBe(
       '失敗：原因不明',
     );
-    expect(statusText({ kind: 'updating', phase: 'installing', toVersion: '0.1.1' }, zh)).toBe(
-      '更新中：安裝中',
+    expect(
+      statusText({ kind: 'updating', phase: 'installing', toVersion: '0.1.1', progress: null }, zh),
+    ).toBe('更新中：安裝中');
+    // 下載進度（§21.12）：百分比、MB、速度；第 2 次以後的嘗試標出來。舊 daemon／舊 hub 沒有 progress＝只說下載中。
+    const downloading = releaseStatus(
+      machine({
+        update: update('downloading', {
+          progress: {
+            received: 15 * 1024 * 1024,
+            total: 30 * 1024 * 1024,
+            attempt: 1,
+            bytesPerSec: 1.5 * 1024 * 1024,
+          },
+        }),
+      }),
+    );
+    expect(statusText(downloading, zh)).toBe('更新中：下載中 50%（15.0/30.0 MB，1.5 MB/s）');
+    expect(
+      statusText(
+        releaseStatus(
+          machine({
+            update: update('downloading', {
+              progress: {
+                received: 3 * 1024 * 1024,
+                total: 30 * 1024 * 1024,
+                attempt: 3,
+                bytesPerSec: 200 * 1024,
+              },
+            }),
+          }),
+        ),
+        enT,
+      ),
+    ).toBe('Updating: downloading 10% (3.0/30.0 MB, 200 KB/s), attempt 3');
+    expect(statusText(releaseStatus(machine({ update: update('downloading') })), zh)).toBe(
+      '更新中：下載中',
     );
     expect(statusText({ kind: 'latest' }, zh)).toBe('最新');
     expect(statusText({ kind: 'needs_update' }, enT)).toBe(

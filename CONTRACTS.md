@@ -884,7 +884,7 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 - 每 10 分鐘（開機 30 秒後第一次；`AGENT_BOARD_DISABLE_RELEASE_CHECK=1` 關）或面板「檢查新版」：`gh auth status` → `gh release list --repo <repo> --exclude-drafts --json tagName,isDraft,publishedAt` → 最大的 `v<semver>` 比 canary 新，就 `gh release download v<版本> --pattern SHA256SUMS --pattern agent-board-<版本>-<平台>.*` 到 `<dataDir>/release-cache/.download-*`、對 `SHA256SUMS` 驗每個成品，全部對才寫 `verified.json`、改名成 `release-cache/<版本>/`、設為 canary、audit `release.canary`。不符或下載失敗：不改 canary，`lastCheckError` 記原因，audit `release.fetch_failed`。cache 留 5 版（canary、stable 一定留）。
 - **gh**：`AGENT_BOARD_GH_BIN` 或 PATH 上的 `gh`；子程序環境拿掉 `GH_TOKEN`、`GITHUB_TOKEN`、`GH_ENTERPRISE_TOKEN`、`GITHUB_ENTERPRISE_TOKEN`，加 `GH_PROMPT_DISABLED=1`。hub 不讀任何權杖檔。找不到 gh → `gh.state: missing`；沒登入 → `not_logged_in`（帶 gh 的第一行訊息）；沒設 repo → `no_repo`。都只影響這個功能。
 - 目標：`channelTarget`（canary 跟 canary 與 stable 較新的那個，stable 只跟 stable），而且這台回報的平台在 cache 裡有成品才有（`ReleaseTarget { version, platform, asset, sha256, size }`），放在 `hub.welcome.release`；canary／stable／通道變了送 `release.target { target, force: false }` 給每台連著的 daemon。
-- `GET /api/releases/:version/:platform`：**機器 token**（`Authorization: Bearer`），只回 cache 裡驗過的檔（`x-agent-board-sha256`），audit `release.download`。瀏覽器 cookie 不行。
+- `GET /api/releases/:version/:platform`：**機器 token**（`Authorization: Bearer`），只回 cache 裡驗過的檔（`x-agent-board-sha256`），audit `release.download`。瀏覽器 cookie 不行。支援單一區段 Range（206／416，續傳用，見 21.12）。
 - REST（`protocol/src/rest.ts`）：`GET /api/releases`（user，`ReleaseOverview`）；以下 owner：`POST /api/releases/check`、`POST /api/releases/promote { version, confirm }`（設定 `canarySoakHours` > 0 而 canary 還沒跑滿這麼多小時、沒帶 `confirm` → 409 `canary_too_new`；門檻 0（預設）不檢查；不在 cache → 409 `not_cached`。見 21.11）、`PATCH /api/releases/config { repo }`、`PUT /api/machines/:id/channel { channel }`、`POST /api/machines/:id/update`（送 `release.target { force: true }`；離線 409 `machine_offline`、沒目標 409 `no_target`）、`POST /api/machines/:id/rollback`（送 `release.rollback`；不知道上一版 409 `no_previous`）、`PUT /api/machines/:id/allow-unverified { allow, confirm }`（2026-11-12，見下）。audit：`release.repo`、`release.channel`、`release.promote`（`early` 標還沒跑滿設定的門檻；門檻 0 一律 false）、`release.update_now`、`release.rollback`、`release.update_failed`、`release.allow_unverified`。
 - **未驗證平台逐台允許（2026-11-12，§20.7）**：settings `machineAllowUnverified:<機器 id>`（`true` 或沒有）。`PUT /api/machines/:id/allow-unverified`：owner 才能改；打開沒帶 `confirm: true` 回 400 `confirm_required`；這台回報的平台不在 `UNVERIFIED_PLATFORMS`（或還沒回報）回 409 `platform_verified`；關掉不用 confirm；audit `release.allow_unverified`（machineId、platform、allow）；改了就重送目標；刪機器一起刪。預設照舊不發 win-x64（`platform_unverified`）。`MachineRelease` 多 `unverifiedPlatform`、`allowUnverified`（舊 hub 不送＝false）。面板對未驗證平台的機器顯示說明與「允許自動更新」（打開要再確認一次）／「停止自動更新」（不用確認），中英文；demo 的 demo-gpu（Windows）是已允許的。
 - 「升為 stable」旁的統計（`CanaryStats`）：canary 開始時間、期間 canary 機器 session 進入 error 的狀態事件數、daemon 非預期斷線數（更新中的斷線不算）、更新失敗數。
@@ -892,9 +892,9 @@ NDJSON，一行一則，上限 16 MB。`SESSION_HOST_PROTOCOL = 2`（2026-11-12 
 
 **daemon**（`daemon/src/selfUpdate.ts`）：
 
-1. 收到目標（welcome、`release.target`、`daemon.rejected.release`）：平台不同、同版、比目前舊（沒 force）、上次在這版失敗過（沒 force）、更新程式還在跑 → 不動。沒有 `AGENT_BOARD_INSTALL_ROOT`（開發模式、dev 實例）→ 只回報 `phase: idle, reason: not_installed`。
+1. 收到目標（welcome、`release.target`、`daemon.rejected.release`）：平台不同、同版、比目前舊（沒 force）、上次在這版失敗過（沒 force；`download_failed` 有排下一輪的除外，21.12）、更新程式還在跑 → 不動。沒有 `AGENT_BOARD_INSTALL_ROOT`（開發模式、dev 實例）→ 只回報 `phase: idle, reason: not_installed`。
 2. 延後（`updateDeferReason`）：有 PERM 就延後；下載解壓後看新版 `session-host/dist/meta.json` 的協定和 `install.json` 的 `sessionHostProtocol` 不同（要換 host）而有 RUN／PERM／PLAN／starting 也延後。`phase: deferred, reason`，每 5 分鐘再看（解好的新版留著不重下載）。
-3. 下載：`GET <hub>/api/releases/<版本>/<平台>`（機器 token），邊下載邊算 SHA-256，和目標的 `sha256` 不同 → `failed/checksum_mismatch`；系統 `tar -xf` 解到 `releases/.incoming/<版本>/`，確認 `package.json` 名稱與版本、`BUILD_ID`、`scripts/updater.mjs` 都在。
+3. 下載：`GET <hub>/api/releases/<版本>/<平台>`（機器 token），寫到 `.part`、停滯 45 秒就中止、用 Range 續傳、退避重試，完成後整檔算 SHA-256（21.12），和目標的 `sha256` 不同 → `failed/checksum_mismatch`；`download_failed` 10 分鐘後自動再試，最多 3 輪（21.12）；系統 `tar -xf` 解到 `releases/.incoming/<版本>/`，確認 `package.json` 名稱與版本、`BUILD_ID`、`scripts/updater.mjs` 都在。
 4. 寫 `phase: installing`，用安裝時記下的系統 node（`AGENT_BOARD_NODE`；沒有才用 daemon 自己的 node，§21.10）以 **detached**（`setsid`，新的 session 與 process group）、stdio 接 `<dataDir>/logs/updater.log`、`unref` 啟動**新版裡的** `scripts/updater.mjs update --source … --to … --from … --data … --root …`。launchd 停 daemon 只對 daemon 的 process group 送訊號，收不到它（`scripts/updater.test.mjs` 用「停服務時殺整個 process group」的假 launchctl 驗證；**未用真的 launchd 驗證**）。
 5. 每次連上 hub 寫 `<dataDir>/daemon-status.json`（pid、version、buildId、connectedAt；600）；`update-state.json` 放進 hello 的 `update`，還在進行中時每 2 秒讀一次、變了送 `update.status`（最多 10 分鐘）。
 
@@ -1003,6 +1003,30 @@ GM 不需要「canary 跑滿 24 小時才升 stable」的規定，改成設定�
 - **面板**：`ReleaseOverview.canarySoakHours`（選填；`GET /api/releases` 是 user 權限，面板讀不到 settings，所以放這裡）。門檻 0：不顯示「建議跑滿…」、按「升為 stable」直接升；>0：顯示「（建議跑滿 N 小時）」，不到時跳二次確認「…還不到 N 小時…」，N 是實際設定值。面板資料舊了（例如別的分頁剛把門檻從 0 改大）而 hub 回 409：照樣跳二次確認，改用不帶小時數的訊息。
 - **舊版相容**：舊網頁連新 hub：舊網頁照舊用固定 24 小時判斷要不要先跳確認，確認後帶 `confirm: true`，hub 照升（只是多問一次）。新網頁連舊 hub：總覽沒有 `canarySoakHours` → 當成 `LEGACY_CANARY_SOAK_HOURS = 24`，照舊提示與二次確認；設定頁讀到的設定沒有這個鍵 → 區塊只顯示「hub 版本較舊、固定 24 小時」，不給輸入、不送出這個鍵。`CANARY_SOAK_MS` 保留為舊行為的 24 小時。
 - 測試：`protocol/src/release.test.ts`（預設 0、範圍、`SettingsPatch` 不補預設、總覽選填）、`hub/src/test/release.test.ts`（0 直接升、24 未滿 409、帶 confirm 照升與 `early`、owner 權限與範圍、成員從總覽讀得到門檻）、`web/src/machines/model.test.ts`（`canarySoak` 依門檻；舊 hub 24）、`web/src/shared/fakeRelease.test.ts`、e2e `flows-machines.spec.ts`（門檻 0 直接升；設定頁改 12 小時後面板顯示 12、未滿要確認；門檻 2 小時不用確認；舊 hub 照 24 小時並說明不支援）。
+
+### 21.12 下載續傳、停滯偵測、自動重試（GM 2026-11-19「Windows 自動更新要能順利自動更新」）
+
+起因：Windows 筆電的 daemon 下載更新成品（約 30MB zip）連續兩次 `download_failed`（detail `terminated`；hub log 20:36:20Z 開始、20:42:11Z「stream closed prematurely」，第二次 21:04:37Z–21:15:04Z），Mac 走同一條路（tailscale serve HTTPS → hub）正常、同時間 Taildrop 到同一台很順。原因沒確定（判斷見本節最後「原因判斷」，未驗證），所以目標是**不管原因為何都自己完成**，並留下下次找得到原因的紀錄。
+
+- **hub `GET /api/releases/:version/:platform` 支援 Range**（`server.ts` 的 `parseByteRange`）：單一區段 `bytes=<起>-` 或 `bytes=<起>-<迄>`（迄超過檔尾截到檔尾）→ 206＋`Content-Range: bytes <起>-<迄>/<總長>`＋這段的 `Content-Length`；格式不對、多區段、`bytes=-<n>`、起點超過檔尾 → 416＋`Content-Range: bytes */<總長>`。每個回應都有 `Accept-Ranges: bytes`。audit `release.download` 在續傳時多 `rangeStart`。
+- **daemon 下載**（`daemon/src/releaseDownload.ts`，`selfUpdate.ts` 呼叫）：
+  - 寫 `releases/.incoming/<成品>.part`，旁邊 `<成品>.part.json` 記 `{ sha256, size }`。下載完**對整個檔案重算 SHA-256**，對了才改名成 `<成品>`；不對 → `.part` 刪掉、`checksum_mismatch`（這次用過續傳就先從頭重下一次）。舊 `.part` 的記錄不是這個成品（sha256／大小不同、沒有記錄）或比總長大 → 刪掉從頭來。
+  - **停滯偵測**：等回應標頭或兩次收到資料之間超過 45 秒（`DEFAULT_STALL_MS`）就中止這次連線（自己的 AbortController，不等 undici 的 5 分鐘 bodyTimeout）。寫檔時間不算停滯，但記下最久一次寫檔。
+  - **續傳**：送 `Range: bytes=<已下載>-`。206 而且 `Content-Range` 起點、總長對 → 接著寫；200（舊 hub 不支援 Range）→ 從頭寫；206 起點不對或 416 → 刪 `.part` 馬上從頭來。401／403／404 不重試。
+  - **退避**：失敗後等 5s、15s、30s、60s、60s…（這次有收到資料就回到 5s），單次更新最多 8 次嘗試、總時間 30 分鐘。用完 → `failed/download_failed`，`.part` 留著（下一輪接著下載）。
+  - **紀錄**（daemon log，只有網址路徑，不記主機、token）：每次嘗試一行——起點、HTTP 狀態、收到的位元組、目前／總量、耗時、平均速度、最久寫檔、結束原因（完成／停滯 n 秒沒有資料或回應標頭／連線錯誤＋錯誤代碼（undici 的 `cause.code`，例如 `UND_ERR_SOCKET`、`ECONNRESET`）／HTTP n／提早結束）。
+  - **失敗的 detail**：`已收 12.3/30.0 MB（…/… 位元組），共 8 次嘗試；最後一次：停滯（45 秒沒有資料）`。
+- **進度**：`UpdateState.progress?: { received, total, attempt, bytesPerSec }`（選填，`.catch(undefined)`）。下載中每 5 秒（或多收 5% 而且距上次至少 1 秒）寫狀態檔並送 `update.status`；狀態檔依序寫（晚到的進度不會蓋掉之後的 installing／failed）。面板 `downloading` 顯示「下載中 42%（12.3/30.0 MB，1.2 MB/s）」，第 2 次以後加「，第 n 次嘗試」（中英文）。
+- **download_failed 自動重試**（決定要不要再試的是 daemon 的 `SelfUpdater.consider`）：`UpdateState.retry?: { round, at }`。下載失敗時 `round` 還沒到 `DOWNLOAD_AUTO_RETRY_ROUNDS = 3` 就把 `at` 設成 10 分鐘後（`DOWNLOAD_AUTO_RETRY_MS`）並排計時器；時間到（或 daemon 重啟後收到目標時已經過了）以 `round + 1` 再做一次。第 3 輪也失敗 → `at: null`，停在 failed 等「立即更新」（force 從第 0 輪重新算）。自動重試那一輪下載中 daemon 重啟（`interrupted`）沿用輪數。**其他失敗原因（checksum、解壓、健康檢查、回滾…）照舊不自動重試。** 面板在 failed／download_failed 而且有 `retry.at` 時顯示「下載失敗會自動重試：<時間>（第 n/3 輪）」。
+- **hub**：`release.update_failed` audit 多 `retryRound`、`retryAt`；`download_failed` 而且 `retry.at` 不是 null（還會自動重試）→ 只記 audit，**不推播、不算 canary 更新失敗**；最後一輪才推播。
+- **相容性**：協定版本不變。舊 hub 的 `UpdateState` 是 zod `z.object`（預設丟掉不認得的欄位），新 daemon 送的 `progress`／`retry` 會被丟掉、整份照收（面板只顯示「下載中」、沒有重試時間；舊 hub 每一輪失敗都會推播一次）。舊 daemon 不送這兩個欄位＝和以前一樣。新 daemon 連舊 hub：Range 被忽略、回 200 → 從頭重下（仍有停滯偵測與重試）。
+- **測試**：`daemon/src/releaseDownload.test.ts`（本機 http server：傳到一半停住不關、等不到標頭、傳到一半斷線、不支援 Range 回 200、正常 206、206 起點不對、hash 錯、續傳後 hash 錯、一直失敗的 detail 與退避、總時限、404 不重試、舊 `.part` 清理；**Windows CI 也跑**：`ci.yml` windows job、`release.yml`、`test:windows`）、`daemon/src/selfUpdate.test.ts`（3 輪自動重試而且每輪續傳、第二輪成功繼續安裝、checksum 不排重試、daemon 重啟後接著／等到時間、輪數用完不做、進度回報與最後狀態不被蓋掉）、`hub/src/test/release.test.ts`（206／416／`Accept-Ranges`／audit `rangeStart`；排了重試不推播、最後一輪推播、`progress` 存得進總覽）、`web/src/machines/model.test.ts`（進度文字）。
+- **未驗證**：真的 Windows 筆電上的續傳（CI 的 windows job 只跑本機 http server）；tailscale serve 是否原樣轉送 `Range`／206（照 HTTP 反向代理的一般行為推測會；不轉送也只是退回從頭重下）。
+- **原因判斷（全部未驗證）**：
+  - 時間線：第一次 20:36:20→20:42:11＝351 秒＝5 分鐘＋51 秒，第二次 627 秒，都在舊程式 15 分鐘 `AbortSignal.timeout` 之內。最符合的是「前面有資料、之後整整 5 分鐘沒資料 → undici bodyTimeout（300 秒）中止 → `TypeError: terminated`」；hub 看到「stream closed prematurely」是客戶端那側先關，和 daemon 主動中止一致。舊程式只記 `error.message`，`cause.code`（`UND_ERR_BODY_TIMEOUT` 還是 `UND_ERR_SOCKET`）丟了，所以分不出「停住」還是「被關」——新的紀錄會記。
+  - 讀程式沒找到 Windows 特有、會讓資料流停住的地方：`on('data')`＋`pipeline` 混用時，pipe 的 pause／resume 對有 data listener 的流照樣有效，hash 是同步算的，不會卡死；`createWriteStream` 的 `mode` 在 Windows 被忽略；路徑在 `%LOCALAPPDATA%` 底下、不長；daemon 其他工作（模型目錄是子程序、用量掃描是非同步 IO、狀態檔很小）沒有會佔住 event loop 幾分鐘的同步工作；工作排程器的 `<Priority>5</Priority>` 是一般優先序。
+  - 最可能（推測）：筆電在下載期間進入 Modern Standby（螢幕關、闔蓋、閒置）或省電模式，背景程序的網路被暫停幾分鐘；或防毒即時掃描讓寫檔卡很久（背壓 → 不讀 socket）。Taildrop 是系統服務 tailscaled 做的、而且當時 GM 正在用筆電，所以不受影響。
+  - 下次怎麼確認：daemon log 每次嘗試的結束原因（停滯還是連線錯誤代碼）、最久一次寫檔（毫秒）、時間點；Windows 上對照 `Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-Kernel-Power'}`（Modern Standby 進出）或 `powercfg /sleepstudy` 的時間。停滯時間和待命時間重疊＝待命；最久寫檔很大＝防毒／磁碟。
 
 ## 22. Codex 第二輪：Codex 用量、Codex 派工、交叉審查（GM 2026-11-12）
 

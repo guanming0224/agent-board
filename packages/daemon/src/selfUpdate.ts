@@ -13,22 +13,14 @@
 // daemon 自己的 node。
 // 只連 hub（已配對的那一台），不連 GitHub、不呼叫 LLM。
 import { execFile, spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
-import {
-  closeSync,
-  createWriteStream,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  writeFileSync,
-} from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { lstat, mkdir, readdir, readlink, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, posix, resolve, sep } from 'node:path';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import {
   compareVersions,
+  DOWNLOAD_AUTO_RETRY_MS,
+  DOWNLOAD_AUTO_RETRY_ROUNDS,
   releaseAssetName,
   releaseDownloadPath,
   UPDATE_FAILED,
@@ -41,6 +33,7 @@ import {
 } from '@agent-board/protocol';
 import { z } from 'zod';
 import { errorMessage, log } from './log';
+import { downloadRelease, DownloadError, type DownloadRequest } from './releaseDownload';
 
 /** 延後時多久再看一次（規格 §5 第 2 點）。 */
 export const UPDATE_DEFER_RETRY_MS = 5 * 60_000;
@@ -290,6 +283,13 @@ export interface SelfUpdaterDeps {
   healthTimeoutMs?: number;
   /** 新 daemon 起來了但還連不上 hub 時最多等多久（毫秒）；預設 5 分鐘，測試縮短。 */
   connectTimeoutMs?: number;
+  /** 下載的停滯、退避、總時限等（releaseDownload.ts 的預設值；測試縮短）。 */
+  download?: Pick<
+    DownloadRequest,
+    'stallMs' | 'retryDelaysMs' | 'maxAttempts' | 'deadlineMs' | 'progressMs' | 'sleep'
+  >;
+  /** download_failed 後多久自動再試（預設 DOWNLOAD_AUTO_RETRY_MS＝10 分鐘，§21.12）。 */
+  downloadRetryMs?: number;
 }
 
 class UpdateFailure extends Error {
@@ -308,6 +308,10 @@ export class SelfUpdater {
   private force = false;
   private busy = false;
   private retryTimer: NodeJS.Timeout | null = null;
+  /** download_failed 的自動重試（§21.12）；和延後的 retryTimer 分開。 */
+  private downloadRetryTimer: NodeJS.Timeout | null = null;
+  /** 狀態檔一個一個寫（下載進度是背景回呼，不能讓晚到的進度蓋掉之後的 installing／failed）。 */
+  private stateQueue: Promise<unknown> = Promise.resolve();
   private pollTimer: NodeJS.Timeout | null = null;
   private disposed = false;
   /** 回滾因為延後條件在等（retryTimer 是回滾的）。新目標不會無聲取消它（N2）。 */
@@ -335,20 +339,26 @@ export class SelfUpdater {
   dispose(): void {
     this.disposed = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.downloadRetryTimer) clearTimeout(this.downloadRetryTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.retryTimer = null;
+    this.downloadRetryTimer = null;
     this.pollTimer = null;
   }
 
-  private async setState(state: StateFields): Promise<UpdateState> {
-    const full: UpdateState = { ...state, at: new Date(this.nowMs()).toISOString() };
-    try {
-      await writeUpdateState(this.deps.dataDir, full);
-    } catch (error) {
-      log.warn(`寫不進更新狀態檔：${errorMessage(error)}`);
-    }
-    this.deps.report(full);
-    return full;
+  private setState(state: StateFields): Promise<UpdateState> {
+    const next = this.stateQueue.then(async () => {
+      const full: UpdateState = { ...state, at: new Date(this.nowMs()).toISOString() };
+      try {
+        await writeUpdateState(this.deps.dataDir, full);
+      } catch (error) {
+        log.warn(`寫不進更新狀態檔：${errorMessage(error)}`);
+      }
+      this.deps.report(full);
+      return full;
+    });
+    this.stateQueue = next.catch(() => undefined);
+    return next;
   }
 
   /**
@@ -393,6 +403,8 @@ export class SelfUpdater {
       toVersion: state.toVersion,
       reason: 'interrupted',
       detail: `${state.phase}：${why}`,
+      // 自動重試那一輪中斷：記著輪數（下次接著算，不重新給滿輪數）。
+      ...(state.retry ? { retry: { round: state.retry.round, at: null } } : {}),
     });
   }
 
@@ -495,6 +507,9 @@ export class SelfUpdater {
       if (!expired) return;
       last = expired;
     }
+    // download_failed 的自動重試（§21.12）：沒動到安裝，安全。下一輪的時間還沒到就排計時器；
+    // 輪數用完（retry.at 為 null）或其他失敗原因就照舊停在 failed，等「立即更新」。
+    let round = 0;
     if (
       !force &&
       last &&
@@ -502,7 +517,20 @@ export class SelfUpdater {
       last.toVersion === target.version &&
       last.reason !== 'interrupted'
     ) {
-      return;
+      const retryAt = last.reason === 'download_failed' ? last.retry?.at : null;
+      if (!retryAt) return;
+      const wait = Date.parse(retryAt) - this.nowMs();
+      if (wait > 0) {
+        this.scheduleDownloadRetry(wait);
+        return;
+      }
+      round = (last.retry?.round ?? 0) + 1;
+      log.info(
+        `下載失敗後自動重試 ${target.version}（第 ${round}/${DOWNLOAD_AUTO_RETRY_ROUNDS} 輪）`,
+      );
+    } else if (!force && last?.reason === 'interrupted' && last.toVersion === target.version) {
+      // 自動重試那一輪下載到一半 daemon 重啟（標成 interrupted）：沿用輪數，不重新給 3 輪。
+      round = last.retry?.round ?? 0;
     }
     // 保險（M1）：剛手動回滾掉的那一版，不自動升回去（hub 也會暫停它）；按「立即更新」才再升。
     if (
@@ -525,12 +553,25 @@ export class SelfUpdater {
       }
       return;
     }
+    if (this.downloadRetryTimer) clearTimeout(this.downloadRetryTimer);
+    this.downloadRetryTimer = null;
     this.busy = true;
     try {
-      await this.run(target);
+      await this.run(target, round);
     } finally {
       this.busy = false;
     }
+  }
+
+  /** download_failed 之後的下一輪（§21.12）：時間到再 consider（目標沒變、沒被 force 取代才會真的再下載）。 */
+  private scheduleDownloadRetry(ms: number): void {
+    if (this.disposed) return;
+    if (this.downloadRetryTimer) clearTimeout(this.downloadRetryTimer);
+    this.downloadRetryTimer = setTimeout(() => {
+      this.downloadRetryTimer = null;
+      void this.consider();
+    }, ms);
+    this.downloadRetryTimer.unref();
   }
 
   private defer(target: ReleaseTarget | null, reason: UpdateReason, toVersion: string | null) {
@@ -545,11 +586,13 @@ export class SelfUpdater {
     });
   }
 
-  private async run(target: ReleaseTarget): Promise<void> {
+  private async run(target: ReleaseTarget, round: number): Promise<void> {
     const root = this.deps.installRoot!;
     const from = this.deps.currentVersion;
     const startedAt = new Date(this.nowMs()).toISOString();
     const base = { fromVersion: from, toVersion: target.version, startedAt };
+    // 這一輪是第幾輪自動重試（只在下載相關的狀態帶；失敗時算下一輪的時間）。
+    const retry = { round, at: null };
     const permission = updateDeferReason(this.deps.sessionStatuses(), false);
     if (permission) {
       await this.defer(target, permission, target.version);
@@ -566,12 +609,24 @@ export class SelfUpdater {
           reason: null,
           detail: null,
           pid: process.pid,
+          retry,
         });
-        await rm(incoming, { recursive: true, force: true });
+        const archive = join(incoming, target.asset);
+        // 清掉上次留下的東西，但留著這個成品的 .part（續傳，§21.12；內容不是這個成品的由 downloadRelease 刪）。
+        await this.cleanIncoming(incoming, target.asset);
         const partial = `${extracted}.partial`;
         await mkdir(partial, { recursive: true, mode: 0o700 });
-        const archive = join(incoming, target.asset);
-        await this.download(target, archive);
+        await this.download(target, archive, (progress) => {
+          void this.setState({
+            ...base,
+            phase: 'downloading',
+            reason: null,
+            detail: null,
+            pid: process.pid,
+            retry,
+            progress,
+          });
+        });
         try {
           await (this.deps.inspectArchive ?? checkArchive)(archive);
           await (this.deps.extract ?? tarExtract)(archive, partial);
@@ -631,13 +686,47 @@ export class SelfUpdater {
     } catch (error) {
       const reason = error instanceof UpdateFailure ? error.reason : 'unknown';
       log.warn(`更新到 ${target.version} 失敗（${reason}）：${errorMessage(error)}`);
-      await rm(incoming, { recursive: true, force: true }).catch(() => undefined);
+      if (reason === 'download_failed') {
+        // 下載失敗：留著 .part，下一輪（或「立即更新」）從斷掉的地方續傳。
+        await this.cleanIncoming(incoming, target.asset).catch(() => undefined);
+      } else {
+        await rm(incoming, { recursive: true, force: true }).catch(() => undefined);
+      }
+      const next =
+        reason === 'download_failed' && round < DOWNLOAD_AUTO_RETRY_ROUNDS
+          ? this.nowMs() + (this.deps.downloadRetryMs ?? DOWNLOAD_AUTO_RETRY_MS)
+          : null;
       await this.setState({
         ...base,
         phase: 'failed',
         reason,
         detail: errorMessage(error).slice(0, 500),
+        ...(reason === 'download_failed'
+          ? { retry: { round, at: next !== null ? new Date(next).toISOString() : null } }
+          : {}),
       });
+      if (next !== null) {
+        const wait = next - this.nowMs();
+        log.info(
+          `${Math.round(wait / 60_000)} 分鐘後自動重試下載 ${target.version}` +
+            `（第 ${round + 1}/${DOWNLOAD_AUTO_RETRY_ROUNDS} 輪）`,
+        );
+        this.scheduleDownloadRetry(wait);
+      }
+    }
+  }
+
+  /** 清 `.incoming`：只留 `keepAsset` 的 `.part` 與 `.part.json`（續傳用）。 */
+  private async cleanIncoming(incoming: string, keepAsset: string): Promise<void> {
+    const keep = new Set([`${keepAsset}.part`, `${keepAsset}.part.json`]);
+    let names: string[];
+    try {
+      names = await readdir(incoming);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!keep.has(name)) await rm(join(incoming, name), { recursive: true, force: true });
     }
   }
 
@@ -688,34 +777,29 @@ export class SelfUpdater {
     }
   }
 
-  private async download(target: ReleaseTarget, archive: string): Promise<void> {
+  private async download(
+    target: ReleaseTarget,
+    archive: string,
+    onProgress: DownloadRequest['onProgress'],
+  ): Promise<void> {
     const url = `${hubHttpBase(this.deps.hubUrl)}${releaseDownloadPath(target.version, target.platform)}`;
-    let response: Response;
     try {
-      // 只連已配對的 hub（機器 token），不連 GitHub（docs/no-llm-review.md「自動更新」）。
-      const init: RequestInit = {
-        headers: { authorization: `Bearer ${this.deps.token}` },
-        signal: AbortSignal.timeout(15 * 60_000),
-      };
-      response = await (this.deps.fetch ? this.deps.fetch(url, init) : fetch(url, init));
+      await downloadRelease({
+        url,
+        token: this.deps.token,
+        dest: archive,
+        sha256: target.sha256,
+        size: target.size,
+        ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
+        ...this.deps.download,
+        ...(onProgress ? { onProgress } : {}),
+        logger: log,
+      });
     } catch (error) {
+      if (error instanceof DownloadError && error.kind === 'checksum') {
+        throw new UpdateFailure('checksum_mismatch', error.message);
+      }
       throw new UpdateFailure('download_failed', errorMessage(error));
-    }
-    if (!response.ok || !response.body) {
-      throw new UpdateFailure('download_failed', `HTTP ${response.status}`);
-    }
-    const hash = createHash('sha256');
-    const body = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
-    body.on('data', (chunk: Buffer) => hash.update(chunk));
-    try {
-      await pipeline(body, createWriteStream(archive, { mode: 0o600 }));
-    } catch (error) {
-      throw new UpdateFailure('download_failed', errorMessage(error));
-    }
-    const actual = hash.digest('hex');
-    if (actual !== target.sha256) {
-      await rm(archive, { force: true });
-      throw new UpdateFailure('checksum_mismatch', `expected ${target.sha256}, got ${actual}`);
     }
   }
 

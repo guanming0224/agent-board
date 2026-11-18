@@ -272,6 +272,59 @@ describe('通道、目標與 daemon', () => {
     expect((await get('/api/releases/0.9.9/darwin-arm64', token)).status).toBe(404);
     expect((await get('/api/releases/0.2.0/linux-x64', token)).status).toBe(404);
     expect((await get('/api/releases/..%2F..%2Fhub.db/darwin-arm64', token)).status).toBe(404);
+    expect(ok.headers.get('accept-ranges')).toBe('bytes');
+  });
+
+  it('下載端點的 Range（§21.12）：206＋Content-Range、416、audit 只在續傳時帶 rangeStart', async () => {
+    const { hub, cookie } = await withCanary();
+    await hub.api('POST', '/api/releases/check', { cookie });
+    const { token, machineId } = await hub.pair(cookie);
+    const body = 'mac 0.2.0';
+    const get = (range?: string) =>
+      fetch(`${hub.url}/api/releases/0.2.0/darwin-arm64`, {
+        headers: { authorization: `Bearer ${token}`, ...(range ? { range } : {}) },
+      });
+    const part = await get('bytes=4-');
+    expect(part.status).toBe(206);
+    expect(part.headers.get('content-range')).toBe(`bytes 4-${body.length - 1}/${body.length}`);
+    expect(part.headers.get('content-length')).toBe(String(body.length - 4));
+    expect(part.headers.get('accept-ranges')).toBe('bytes');
+    expect(part.headers.get('x-agent-board-sha256')).toBe(sha(body));
+    expect(await part.text()).toBe(body.slice(4));
+    const middle = await get('bytes=0-2');
+    expect(middle.status).toBe(206);
+    expect(await middle.text()).toBe('mac');
+    // 迄點超過檔尾：截到檔尾。
+    const tail = await get('bytes=8-100');
+    expect(tail.headers.get('content-range')).toBe(`bytes 8-8/${body.length}`);
+    expect(await tail.text()).toBe('0');
+    for (const bad of [
+      `bytes=${body.length}-`,
+      'bytes=-3',
+      'bytes=0-1,3-4',
+      'items=0-',
+      'bytes=5-2',
+    ]) {
+      const res = await get(bad);
+      expect(res.status, bad).toBe(416);
+      expect(res.headers.get('content-range')).toBe(`bytes */${body.length}`);
+      await res.text();
+    }
+    const full = await get();
+    expect(full.status).toBe(200);
+    expect(full.headers.get('content-length')).toBe(String(body.length));
+    expect(await full.text()).toBe(body);
+    const audit = await hub.api<{ detail: string }[]>('GET', '/api/audit?action=release.download', {
+      cookie,
+    });
+    const details = audit.body.map((e) => JSON.parse(e.detail) as object);
+    expect(details).toContainEqual({
+      machineId,
+      version: '0.2.0',
+      platform: 'darwin-arm64',
+      rangeStart: 4,
+    });
+    expect(details).toContainEqual({ machineId, version: '0.2.0', platform: 'darwin-arm64' });
   });
 
   it('升為 stable：預設門檻 0，剛出來的 canary 直接升、audit early=false', async () => {
@@ -450,6 +503,75 @@ describe('通道、目標與 daemon', () => {
     expect(hub.push.sent.length).toBe(1);
     const overview = await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie });
     expect(overview.body.machines[0]!.update).toMatchObject({ phase: 'rolled_back' });
+  });
+
+  it('download_failed 排了自動重試（§21.12）：只記 audit 不推播；最後一輪才推播；進度欄位留著給面板', async () => {
+    const untilAsync = async (check: () => Promise<boolean>, what: string) => {
+      const deadline = Date.now() + 10_000;
+      while (!(await check())) {
+        if (Date.now() > deadline) throw new Error(`timeout: ${what}`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    const { hub, cookie } = await withCanary();
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { notifications: { enabled: true, coalesce: false, quietHours: null } },
+    });
+    await hub.api('POST', '/api/push/subscriptions', {
+      cookie,
+      body: { endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } },
+    });
+    const { daemon } = await hub.onlineDaemon(cookie, macHello() as never);
+    const base = { fromVersion: '0.1.0', toVersion: '0.2.0', detail: null };
+    daemon.send({
+      type: 'update.status',
+      state: {
+        ...base,
+        phase: 'downloading',
+        reason: null,
+        at: new Date().toISOString(),
+        progress: { received: 1000, total: 4000, attempt: 2, bytesPerSec: 512 },
+        retry: { round: 0, at: null },
+      },
+    });
+    await untilAsync(async () => {
+      const m = (await hub.api<ReleaseOverview>('GET', '/api/releases', { cookie })).body
+        .machines[0];
+      return m?.update?.progress?.received === 1000;
+    }, 'progress');
+    daemon.send({
+      type: 'update.status',
+      state: {
+        ...base,
+        phase: 'failed',
+        reason: 'download_failed',
+        detail: 'stalled',
+        at: new Date(Date.now() + 1).toISOString(),
+        retry: { round: 0, at: new Date(Date.now() + 600_000).toISOString() },
+      },
+    });
+    await untilAsync(async () => {
+      const audit = await hub.api<{ detail: string }[]>(
+        'GET',
+        '/api/audit?action=release.update_failed',
+        { cookie },
+      );
+      return audit.body.length === 1;
+    }, 'audit');
+    expect(hub.push.sent).toHaveLength(0);
+    daemon.send({
+      type: 'update.status',
+      state: {
+        ...base,
+        phase: 'failed',
+        reason: 'download_failed',
+        detail: 'stalled',
+        at: new Date(Date.now() + 2).toISOString(),
+        retry: { round: 3, at: null },
+      },
+    });
+    await until(() => hub.push.sent.length === 1, 'push');
   });
 
   it('回滾：不知道上一版回 409；有的話送 release.rollback；離線回 machine_offline', async () => {

@@ -197,8 +197,34 @@ export const UpdateState = z.object({
   pid: z.number().int().positive().optional(),
   /** 這次更新開始的時間（判斷進行中的狀態是否過期）。舊版沒有。 */
   startedAt: IsoTime.optional(),
+  /**
+   * 下載進度（phase downloading 才有，§21.12）：已收／總量（位元組）、第幾次嘗試、最近的速度（位元組／秒）。
+   * 0.1.16 起的 daemon 才送；舊 hub 的 zod 會丟掉這個欄位（不會讓整份被拒），面板就只顯示「下載中」。
+   */
+  progress: z
+    .object({
+      received: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+      attempt: z.number().int().positive(),
+      bytesPerSec: z.number().nonnegative(),
+    })
+    .optional()
+    .catch(undefined),
+  /**
+   * download_failed 的自動重試（§21.12）：round＝這是第幾輪自動重試（0＝第一次、不是自動重試），
+   * at＝下一輪自動重試的時間（沒有下一輪為 null：已經用完 DOWNLOAD_AUTO_RETRY_ROUNDS 輪，等人按「立即更新」）。
+   * 0.1.16 起的 daemon 才送；舊 hub 丟掉。
+   */
+  retry: z
+    .object({ round: z.number().int().nonnegative(), at: IsoTime.nullable() })
+    .optional()
+    .catch(undefined),
 });
 export type UpdateState = z.infer<typeof UpdateState>;
+
+/** download_failed 之後自動再試幾輪（每輪間隔 DOWNLOAD_AUTO_RETRY_MS），用完才停在 failed（§21.12）。 */
+export const DOWNLOAD_AUTO_RETRY_ROUNDS = 3;
+export const DOWNLOAD_AUTO_RETRY_MS = 10 * 60_000;
 
 /**
  * 進行中的狀態的硬上限：更新程式還拿著鎖也一樣，超過就當作卡住（N2）。正常的更新（安裝、60 秒健康檢查、

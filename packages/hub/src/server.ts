@@ -124,6 +124,23 @@ function contentSecurityPolicy(host: string | undefined): string {
   );
 }
 
+/**
+ * 成品下載的 Range（§21.12）：沒有 Range → null（整份 200）；`bytes=<起>-`、`bytes=<起>-<迄>`（迄超過檔尾就截到檔尾）
+ * → 這一段；格式不對、多區段、`bytes=-<尾端長度>`、起點不在檔案內 → 'invalid'（416）。
+ */
+export function parseByteRange(
+  header: string | undefined,
+  size: number,
+): { start: number; end: number } | null | 'invalid' {
+  if (header === undefined) return null;
+  const match = /^bytes=(\d+)-(\d*)$/.exec(header.trim());
+  if (!match) return 'invalid';
+  const start = Number(match[1]);
+  const end = match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
+  if (!Number.isSafeInteger(start) || start >= size || end < start) return 'invalid';
+  return { start, end };
+}
+
 function rejectUpgrade(socket: Duplex, status: number, text: string): void {
   socket.on('error', () => undefined);
   socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
@@ -256,6 +273,15 @@ export function createHub(options: HubOptions): RunningHub {
       await hub.release.loadCache();
       const file = hub.release.releaseFile(req.params.version, req.params.platform);
       if (!file) throw new HttpError(404, 'not_found', 'No such release file');
+      // 續傳（§21.12）：只收單一區段 `bytes=<起>-` 或 `bytes=<起>-<迄>`；格式不對、多區段、起點超過檔尾 → 416。
+      const range = parseByteRange(req.headers.range, file.size);
+      if (range === 'invalid') {
+        return reply
+          .status(416)
+          .header('accept-ranges', 'bytes')
+          .header('content-range', `bytes */${file.size}`)
+          .send({ code: 'range_not_satisfiable', message: 'Range not satisfiable' });
+      }
       hub.audit(
         null,
         null,
@@ -264,13 +290,21 @@ export function createHub(options: HubOptions): RunningHub {
           machineId: machine.id,
           version: req.params.version,
           platform: req.params.platform,
+          ...(range ? { rangeStart: range.start } : {}),
         }),
       );
-      return reply
+      reply
         .header('content-type', 'application/octet-stream')
-        .header('content-length', file.size)
-        .header('x-agent-board-sha256', file.sha256)
-        .send(createReadStream(file.path));
+        .header('accept-ranges', 'bytes')
+        .header('x-agent-board-sha256', file.sha256);
+      if (!range) {
+        return reply.header('content-length', file.size).send(createReadStream(file.path));
+      }
+      return reply
+        .status(206)
+        .header('content-range', `bytes ${range.start}-${range.end}/${file.size}`)
+        .header('content-length', range.end - range.start + 1)
+        .send(createReadStream(file.path, { start: range.start, end: range.end }));
     },
   );
 

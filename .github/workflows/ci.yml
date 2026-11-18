@@ -24,7 +24,7 @@ jobs:
       - run: pnpm -r test --retry=2 --testTimeout=20000
 
   # Windows（原生、PowerShell 7、工作排程器；CONTRACTS §20.7、§21.10）：push 到 main、PR、手動才跑（其他分支的 push 不跑）。
-  # 跑 protocol、web、session-host、hook 全部，daemon 的 processCheck／hookServer／codex，
+  # 跑 protocol、web、session-host、hook 全部，daemon 的 processCheck／hookServer／codex／releaseDownload（下載續傳，§21.12），
   # 安裝的 windows-paths（junction、檔案鎖、cmd.exe 跑 hook 包裝）、process-start（真的 PowerShell）、service-templates、
   # service-processes（真的 Get-CimInstance 找服務程序）、windows-update（真的工作排程器跑自動更新，§21.7）。
   # 跑不了的測試在檔案裡 skipIf(win32) 並寫原因（daemon 的整套假 claude 是 sh 腳本）。和 release.yml 的 Windows 建置同一組。
@@ -42,7 +42,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
       - run: pnpm --filter @agent-board/protocol --filter @agent-board/web --filter @agent-board/session-host --filter @agent-board/hook test --retry=2 --testTimeout=20000
-      - run: pnpm --filter @agent-board/daemon exec vitest run --retry=2 --testTimeout=20000 src/processCheck.test.ts src/hookServer.test.ts src/codex.test.ts
+      - run: pnpm --filter @agent-board/daemon exec vitest run --retry=2 --testTimeout=20000 src/processCheck.test.ts src/hookServer.test.ts src/codex.test.ts src/releaseDownload.test.ts
       - run: node --test scripts/windows-paths.test.mjs scripts/process-start.test.mjs scripts/service-processes.test.mjs scripts/service-templates.test.mjs
       # 自動更新走真的工作排程器（CONTRACTS §21.7）：裝假的 daemon／session host 成排程工作、由 daemon 啟動更新程式、
       # 換版、回滾、換 host、解除安裝。會建立並刪掉這個使用者的 AgentBoard-* 排程工作，只在 CI 跑。

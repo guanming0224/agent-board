@@ -220,6 +220,17 @@ export function createFakeReleases(
     reason: null,
     detail: null,
     at: new Date().toISOString(),
+    // demo 的下載進度（§21.12）：面板顯示百分比與速度。
+    ...(phase === 'downloading'
+      ? {
+          progress: {
+            received: 13_212_057,
+            total: 31_457_280,
+            attempt: 1,
+            bytesPerSec: 2_202_009,
+          },
+        }
+      : {}),
     ...over,
   });
 

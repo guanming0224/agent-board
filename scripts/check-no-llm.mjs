@@ -89,7 +89,8 @@ const CALL_SITES = new Set([
   'packages/daemon/src/hookServer.ts node-network',
   // 自動更新（2026-11-11，CONTRACTS §21.3）：用機器 token 向已配對的 hub 下載成品（不連 GitHub）、
   // 用系統 tar 解壓、以 detached 方式啟動新版裡的 scripts/updater.mjs。
-  'packages/daemon/src/selfUpdate.ts fetch',
+  // 2026-11-19 下載搬到 releaseDownload.ts（續傳、停滯偵測，CONTRACTS §21.12），連的位置不變。
+  'packages/daemon/src/releaseDownload.ts fetch',
   'packages/daemon/src/selfUpdate.ts child-process',
   // session host（2026-11-10，CONTRACTS §20）：本機 socket／named pipe，用 node-pty 開 daemon 指定的 agent、
   // 原樣轉送 daemon 的輸入。不連網路、不解析畫面、不呼叫 LLM。
