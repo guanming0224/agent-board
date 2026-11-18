@@ -298,17 +298,19 @@ describe('通道、目標與 daemon', () => {
     const tail = await get('bytes=8-100');
     expect(tail.headers.get('content-range')).toBe(`bytes 8-8/${body.length}`);
     expect(await tail.text()).toBe('0');
-    for (const bad of [
-      `bytes=${body.length}-`,
-      'bytes=-3',
-      'bytes=0-1,3-4',
-      'items=0-',
-      'bytes=5-2',
-    ]) {
+    // 起點超過檔尾：416。
+    for (const bad of [`bytes=${body.length}-`, `bytes=${body.length + 5}-${body.length + 9}`]) {
       const res = await get(bad);
       expect(res.status, bad).toBe(416);
       expect(res.headers.get('content-range')).toBe(`bytes */${body.length}`);
       await res.text();
+    }
+    // 看不懂的 Range（不認得的單位、語法錯、多區段、尾端長度、迄 < 起）：照 RFC 9110 忽略，回整份 200。
+    for (const ignored of ['bytes=-3', 'bytes=0-1,3-4', 'items=0-', 'bytes=5-2', 'bytes=abc']) {
+      const res = await get(ignored);
+      expect(res.status, ignored).toBe(200);
+      expect(res.headers.get('content-range')).toBeNull();
+      expect(await res.text()).toBe(body);
     }
     const full = await get();
     expect(full.status).toBe(200);

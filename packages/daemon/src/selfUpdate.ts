@@ -79,7 +79,13 @@ export async function writeUpdateState(dataDir: string, state: UpdateState): Pro
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const temp = join(dataDir, `.${UPDATE_STATE_FILE}.${randomBytes(4).toString('hex')}`);
   await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  await rename(temp, join(dataDir, UPDATE_STATE_FILE));
+  try {
+    await rename(temp, join(dataDir, UPDATE_STATE_FILE));
+  } catch (error) {
+    // 改名失敗（例如 Windows 上狀態檔被別的程式開著）：不留暫存檔。
+    await rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 const DAEMON_STARTED_AT = new Date().toISOString();
@@ -305,7 +311,15 @@ type StateFields = Omit<UpdateState, 'at'>;
 
 export class SelfUpdater {
   private target: ReleaseTarget | null = null;
-  private force = false;
+  /**
+   * 這次（被延後的）更新是不是「立即更新」觸發的：只給延後後的重試用（延後前按的「立即更新」延後後仍算數）。
+   * 「立即更新」只用一次（S1）：不是存在 updater 上一直有效的旗標，否則自動重試的輪數永遠從 0 算、無限重下。
+   */
+  private deferredForce = false;
+  /** download_failed 的下一輪時間到了（計時器觸發）：時鐘倒退時 retry.at 看起來還很久，也照樣做（W5）。 */
+  private downloadRetryDue = false;
+  /** 進行中的下載：dispose 時中止。 */
+  private downloadAbort: AbortController | null = null;
   private busy = false;
   private retryTimer: NodeJS.Timeout | null = null;
   /** download_failed 的自動重試（§21.12）；和延後的 retryTimer 分開。 */
@@ -338,6 +352,7 @@ export class SelfUpdater {
 
   dispose(): void {
     this.disposed = true;
+    this.downloadAbort?.abort();
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.downloadRetryTimer) clearTimeout(this.downloadRetryTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
@@ -441,7 +456,10 @@ export class SelfUpdater {
         return;
       }
       this.stopPolling();
-      if (next?.phase === 'deferred') this.scheduleRetry();
+      if (next?.phase === 'deferred') {
+        const force = this.deferredForce;
+        this.scheduleRetry(() => void this.consider(force));
+      }
     }, STATE_POLL_MS);
     this.pollTimer.unref();
   }
@@ -460,10 +478,9 @@ export class SelfUpdater {
     this.retryTimer.unref();
   }
 
-  /** hub 給了新目標（welcome、release.target）。force：面板按「立即更新」。 */
+  /** hub 給了新目標（welcome、release.target）。force：面板按「立即更新」（只對這一次有效）。 */
   onTarget(target: ReleaseTarget | null, force: boolean): void {
     this.target = target;
-    this.force = force;
     if (this.pendingRollback) {
       if (!force) {
         // 回滾在等延後條件：新目標先記著，回滾做完（或被取代）之後才看（N2：不無聲取消回滾）。
@@ -480,16 +497,19 @@ export class SelfUpdater {
         toVersion: target?.version ?? null,
         reason: 'superseded',
         detail: '延後中的回滾被「立即更新」取代',
-      }).then(() => this.consider());
+      }).then(() => this.consider(true));
       return;
     }
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
-    void this.consider();
+    void this.consider(force);
   }
 
   /** 要不要動手：版本不同、不是降級（除非 force）、上次沒在這版失敗過（除非 force；中斷的可以重試）。 */
-  private async consider(): Promise<void> {
+  private async consider(force = false): Promise<void> {
+    // 計時器觸發的那一次才算到期（W5）；之後不管做不做都清掉。
+    const due = this.downloadRetryDue;
+    this.downloadRetryDue = false;
     const target = this.target;
     if (!target || this.busy || this.disposed) return;
     const { currentVersion, platform } = this.deps;
@@ -499,7 +519,6 @@ export class SelfUpdater {
       log.warn(`hub 給的成品名稱不對：${target.asset}，不更新`);
       return;
     }
-    const force = this.force;
     if (!force && compareVersions(target.version, currentVersion) < 0) return;
     let last = this.state;
     if (last && UPDATE_IN_PROGRESS.includes(last.phase)) {
@@ -520,16 +539,21 @@ export class SelfUpdater {
       const retryAt = last.reason === 'download_failed' ? last.retry?.at : null;
       if (!retryAt) return;
       const wait = Date.parse(retryAt) - this.nowMs();
-      if (wait > 0) {
-        this.scheduleDownloadRetry(wait);
+      if (wait > 0 && !due) {
+        // 時鐘倒退時 wait 可能很大（setTimeout 超過 2^31 會立刻觸發而變成忙迴圈）：最多等一輪的間隔（W5）。
+        this.scheduleDownloadRetry(Math.min(wait, this.retryIntervalMs()));
         return;
       }
       round = (last.retry?.round ?? 0) + 1;
       log.info(
         `下載失敗後自動重試 ${target.version}（第 ${round}/${DOWNLOAD_AUTO_RETRY_ROUNDS} 輪）`,
       );
-    } else if (!force && last?.reason === 'interrupted' && last.toVersion === target.version) {
-      // 自動重試那一輪下載到一半 daemon 重啟（標成 interrupted）：沿用輪數，不重新給 3 輪。
+    } else if (
+      !force &&
+      (last?.reason === 'interrupted' || last?.phase === 'deferred') &&
+      last.toVersion === target.version
+    ) {
+      // 自動重試那一輪下載到一半 daemon 重啟（interrupted）、或被延後（deferred，W1）：沿用輪數，不重新給 3 輪。
       round = last.retry?.round ?? 0;
     }
     // 保險（M1）：剛手動回滾掉的那一版，不自動升回去（hub 也會暫停它）；按「立即更新」才再升。
@@ -557,36 +581,56 @@ export class SelfUpdater {
     this.downloadRetryTimer = null;
     this.busy = true;
     try {
-      await this.run(target, round);
+      await this.run(target, round, force);
     } finally {
       this.busy = false;
     }
   }
 
   /** download_failed 之後的下一輪（§21.12）：時間到再 consider（目標沒變、沒被 force 取代才會真的再下載）。 */
+  // 一律不是 force（S1）：自動重試不能變成「立即更新」。
   private scheduleDownloadRetry(ms: number): void {
     if (this.disposed) return;
     if (this.downloadRetryTimer) clearTimeout(this.downloadRetryTimer);
     this.downloadRetryTimer = setTimeout(() => {
       this.downloadRetryTimer = null;
-      void this.consider();
+      this.downloadRetryDue = true;
+      void this.consider(false);
     }, ms);
     this.downloadRetryTimer.unref();
   }
 
-  private defer(target: ReleaseTarget | null, reason: UpdateReason, toVersion: string | null) {
+  private retryIntervalMs(): number {
+    return this.deps.downloadRetryMs ?? DOWNLOAD_AUTO_RETRY_MS;
+  }
+
+  /**
+   * 延後，5 分鐘後再看。force：延後前按的是「立即更新」，再看時仍算 force（只到那一次）。
+   * retry：自動重試那一輪被延後（W1），記著輪數，再看時沿用。
+   */
+  private defer(
+    target: ReleaseTarget | null,
+    reason: UpdateReason,
+    toVersion: string | null,
+    options: { force?: boolean; round?: number } = {},
+  ) {
     this.pendingRollback = target === null;
-    this.scheduleRetry(target ? undefined : () => void this.rollback());
+    const force = options.force ?? false;
+    this.deferredForce = force;
+    this.scheduleRetry(target ? () => void this.consider(force) : () => void this.rollback());
     return this.setState({
       phase: 'deferred',
       fromVersion: this.deps.currentVersion,
       toVersion,
       reason,
       detail: null,
+      ...(options.round ? { retry: { round: options.round, at: null } } : {}),
     });
   }
 
-  private async run(target: ReleaseTarget, round: number): Promise<void> {
+  private async run(target: ReleaseTarget, round: number, force: boolean): Promise<void> {
+    // 更新程式之後若因 session 忙碌寫成 deferred（W5 的延後），再看時沿用這次是不是「立即更新」。
+    this.deferredForce = force;
     const root = this.deps.installRoot!;
     const from = this.deps.currentVersion;
     const startedAt = new Date(this.nowMs()).toISOString();
@@ -595,7 +639,7 @@ export class SelfUpdater {
     const retry = { round, at: null };
     const permission = updateDeferReason(this.deps.sessionStatuses(), false);
     if (permission) {
-      await this.defer(target, permission, target.version);
+      await this.defer(target, permission, target.version, { force, round });
       return;
     }
     const incoming = join(root, 'releases', '.incoming');
@@ -650,7 +694,7 @@ export class SelfUpdater {
       );
       const busy = updateDeferReason(this.deps.sessionStatuses(), hostChange);
       if (busy) {
-        await this.defer(target, busy, target.version);
+        await this.defer(target, busy, target.version, { force, round });
         return;
       }
       await this.setState({ ...base, phase: 'installing', reason: null, detail: null });
@@ -694,7 +738,7 @@ export class SelfUpdater {
       }
       const next =
         reason === 'download_failed' && round < DOWNLOAD_AUTO_RETRY_ROUNDS
-          ? this.nowMs() + (this.deps.downloadRetryMs ?? DOWNLOAD_AUTO_RETRY_MS)
+          ? this.nowMs() + this.retryIntervalMs()
           : null;
       await this.setState({
         ...base,
@@ -783,8 +827,11 @@ export class SelfUpdater {
     onProgress: DownloadRequest['onProgress'],
   ): Promise<void> {
     const url = `${hubHttpBase(this.deps.hubUrl)}${releaseDownloadPath(target.version, target.platform)}`;
+    const abort = new AbortController();
+    this.downloadAbort = abort;
     try {
       await downloadRelease({
+        signal: abort.signal,
         url,
         token: this.deps.token,
         dest: archive,
@@ -800,6 +847,8 @@ export class SelfUpdater {
         throw new UpdateFailure('checksum_mismatch', error.message);
       }
       throw new UpdateFailure('download_failed', errorMessage(error));
+    } finally {
+      if (this.downloadAbort === abort) this.downloadAbort = null;
     }
   }
 

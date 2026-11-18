@@ -2,6 +2,7 @@
 // 真的網路堆疊（Node 內建 fetch／undici），Windows CI 也跑（ci.yml 的 windows job、test:windows）。
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { open, rename, type FileHandle } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,7 @@ import {
   errorCode,
   parseContentRange,
   partPath,
+  renameWithRetry,
   type DownloadProgress,
   type DownloadRequest,
 } from './releaseDownload';
@@ -292,6 +294,144 @@ describe('downloadRelease', () => {
     expect(requests.map((r) => r.range)).toEqual([undefined, 'bytes=1000-', undefined]);
     expect(logs.join('\n')).toContain('Content-Range 不符');
     expect(readFileSync(dest).equals(BODY)).toBe(true);
+  });
+
+  it('416（例如 hub 的檔案換了、.part 比較長）：刪 .part 從頭來', async () => {
+    const url = await serve((_req, res, n, range) => {
+      if (n === 1) {
+        send(res, range, { upto: 1000 });
+        setTimeout(() => res.socket?.destroy(), 50);
+      } else if (n === 2) {
+        res.writeHead(416, { 'content-range': `bytes */${BODY.length}` });
+        res.end();
+      } else {
+        send(res, range);
+      }
+    });
+    const { req, dest, logs } = request(url);
+    expect(await downloadRelease(req)).toMatchObject({ attempts: 3 });
+    expect(requests.map((r) => r.range)).toEqual([undefined, 'bytes=1000-', undefined]);
+    expect(logs.join('\n')).toContain('從頭重下（HTTP 416）');
+    expect(readFileSync(dest).equals(BODY)).toBe(true);
+  });
+
+  it('收到的比總長多（overrun）：刪 .part 從頭來', async () => {
+    const url = await serve((_req, res, n, range) => {
+      if (n === 1) {
+        // 沒有 content-length（chunked），送比總長多的資料。
+        res.writeHead(200);
+        res.end(Buffer.concat([BODY, Buffer.from('extra bytes')]));
+      } else {
+        send(res, range);
+      }
+    });
+    const { req, dest, logs } = request(url);
+    expect(await downloadRelease(req)).toMatchObject({ attempts: 2 });
+    expect(logs.join('\n')).toContain('收到的比總長');
+    expect(readFileSync(dest).equals(BODY)).toBe(true);
+  });
+
+  it('上次留下的 .part 已是完整大小但 hash 錯：當成續傳過，從頭重下一次（W4）', async () => {
+    const url = await serve((_req, res, _n, range) => send(res, range));
+    const { req, dest } = request(url);
+    const wrong = Buffer.from(BODY);
+    wrong[0] = wrong[0]! ^ 0xff;
+    writeFileSync(partPath(dest), wrong);
+    writeFileSync(`${dest}.part.json`, JSON.stringify({ sha256: SHA, size: BODY.length }));
+    expect(await downloadRelease(req)).toMatchObject({ attempts: 2 });
+    expect(requests.map((r) => r.range)).toEqual([undefined]);
+    expect(readFileSync(dest).equals(BODY)).toBe(true);
+  });
+
+  it('寫檔卡住：超過 writeTimeoutMs 記成寫檔停滯並中止連線，不會永遠等（W2）', async () => {
+    const url = await serve((_req, res, _n, range) => send(res, range));
+    let opens = 0;
+    const { req, logs } = request(url, {
+      writeTimeoutMs: 200,
+      maxAttempts: 2,
+      openFile: async () => {
+        opens += 1;
+        return {
+          write: () => new Promise(() => {}),
+          close: async () => {},
+        } as unknown as FileHandle;
+      },
+    });
+    const error = (await downloadRelease(req).catch((e: unknown) => e)) as DownloadError;
+    expect(error.kind).toBe('download');
+    expect(error.message).toContain('寫檔停滯');
+    expect(opens).toBe(2);
+    expect(logs.join('\n')).toMatch(/最久一次寫檔 \d{3,} ms/);
+  });
+
+  it('磁碟錯誤（ENOSPC）：不退避重試，detail 寫錯誤代碼（W3）', async () => {
+    const url = await serve((_req, res, _n, range) => send(res, range));
+    const { req, delays } = request(url, {
+      openFile: async () => {
+        throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+      },
+    });
+    const error = (await downloadRelease(req).catch((e: unknown) => e)) as DownloadError;
+    expect(error.message).toContain('寫檔錯誤（ENOSPC）');
+    expect(requests).toHaveLength(1);
+    expect(delays).toEqual([]);
+  });
+
+  it('開檔很慢（防毒）：不算網路停滯（W3）', async () => {
+    const url = await serve((_req, res, _n, range) => send(res, range));
+    const { req, dest, logs } = request(url, {
+      openFile: async (path, flags) => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return open(path, flags, 0o600);
+      },
+    });
+    expect(await downloadRelease(req)).toEqual({ attempts: 1, resumed: false });
+    expect(readFileSync(dest).equals(BODY)).toBe(true);
+    expect(logs.join('\n')).not.toContain('停滯');
+  });
+
+  it('改名被鎖住（EPERM／EBUSY）：等一下再試；其他錯誤直接丟（W6）', async () => {
+    const url = await serve((_req, res, _n, range) => send(res, range));
+    let calls = 0;
+    const { req, dest } = request(url, {
+      renameFile: async (from, to) => {
+        calls += 1;
+        if (calls <= 2)
+          throw Object.assign(new Error('locked'), { code: calls === 1 ? 'EPERM' : 'EBUSY' });
+        await rename(from, to);
+      },
+    });
+    await downloadRelease(req);
+    expect(calls).toBe(3);
+    expect(readFileSync(dest).equals(BODY)).toBe(true);
+    await expect(
+      renameWithRetry('a', 'b', async () => {
+        throw Object.assign(new Error('nope'), { code: 'ENOENT' });
+      }),
+    ).rejects.toThrow('nope');
+    let tries = 0;
+    await expect(
+      renameWithRetry(
+        'a',
+        'b',
+        async () => {
+          tries += 1;
+          throw Object.assign(new Error('still locked'), { code: 'EACCES' });
+        },
+        [1, 1],
+      ),
+    ).rejects.toThrow('still locked');
+    expect(tries).toBe(3);
+  });
+
+  it('signal 中止：這次連線收掉、不再重試', async () => {
+    const url = await serve((_req, res, _n, range) => send(res, range, { upto: 1000 }));
+    const controller = new AbortController();
+    const { req } = request(url, { signal: controller.signal, stallMs: 10_000 });
+    setTimeout(() => controller.abort(), 200);
+    const error = (await downloadRelease(req).catch((e: unknown) => e)) as DownloadError;
+    expect(error.message).toContain('中止');
+    expect(requests).toHaveLength(1);
   });
 
   it('工具函式：Content-Range、錯誤代碼', () => {

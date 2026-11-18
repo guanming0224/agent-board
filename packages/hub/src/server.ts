@@ -125,8 +125,9 @@ function contentSecurityPolicy(host: string | undefined): string {
 }
 
 /**
- * 成品下載的 Range（§21.12）：沒有 Range → null（整份 200）；`bytes=<起>-`、`bytes=<起>-<迄>`（迄超過檔尾就截到檔尾）
- * → 這一段；格式不對、多區段、`bytes=-<尾端長度>`、起點不在檔案內 → 'invalid'（416）。
+ * 成品下載的 Range（§21.12）：`bytes=<起>-`、`bytes=<起>-<迄>`（迄超過檔尾就截到檔尾）→ 這一段；
+ * 起點不在檔案內 → 'invalid'（416）。沒有 Range、不認得的單位、語法錯誤、多區段、`bytes=-<尾端長度>`、
+ * 迄 < 起 → null：照 RFC 9110 忽略 Range，回整份 200（daemon 收到 200 就從頭寫）。
  */
 export function parseByteRange(
   header: string | undefined,
@@ -134,10 +135,11 @@ export function parseByteRange(
 ): { start: number; end: number } | null | 'invalid' {
   if (header === undefined) return null;
   const match = /^bytes=(\d+)-(\d*)$/.exec(header.trim());
-  if (!match) return 'invalid';
+  if (!match) return null;
   const start = Number(match[1]);
+  if (match[2] && Number(match[2]) < start) return null;
+  if (!Number.isSafeInteger(start) || start >= size) return 'invalid';
   const end = match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
-  if (!Number.isSafeInteger(start) || start >= size || end < start) return 'invalid';
   return { start, end };
 }
 
@@ -273,7 +275,8 @@ export function createHub(options: HubOptions): RunningHub {
       await hub.release.loadCache();
       const file = hub.release.releaseFile(req.params.version, req.params.platform);
       if (!file) throw new HttpError(404, 'not_found', 'No such release file');
-      // 續傳（§21.12）：只收單一區段 `bytes=<起>-` 或 `bytes=<起>-<迄>`；格式不對、多區段、起點超過檔尾 → 416。
+      // 續傳（§21.12）：只收單一區段 `bytes=<起>-` 或 `bytes=<起>-<迄>`；起點超過檔尾 → 416；
+      // 其他看不懂的 Range 忽略（RFC 9110），回整份 200。
       const range = parseByteRange(req.headers.range, file.size);
       if (range === 'invalid') {
         return reply

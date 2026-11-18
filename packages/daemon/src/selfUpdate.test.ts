@@ -889,4 +889,99 @@ describe('SelfUpdater：下載續傳與 download_failed 自動重試（§21.12�
     expect(readUpdateState(data)!.phase).toBe('installing');
     h.updater.dispose();
   });
+
+  /** 一直失敗的假 hub（連線錯誤）。 */
+  const failingFetch = () => {
+    const calls: number[] = [];
+    const fn = (async () => {
+      calls.push(Date.now());
+      throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } });
+    }) as unknown as typeof fetch;
+    return { fn, calls };
+  };
+
+  it('「立即更新」只用一次（S1）：之後的自動重試照輪數 0→1→2→3，用完停下、不再下載', async () => {
+    const f = failingFetch();
+    const h = harness({ fetch: f.fn, download: fast, downloadRetryMs: 30, now: () => new Date() });
+    h.updater.onTarget(target(), true);
+    await until(() => h.reports.at(-1)?.phase === 'failed' && h.reports.at(-1)?.retry?.at === null);
+    const failed = h.reports.filter((r) => r.phase === 'failed');
+    expect(failed.map((r) => r.retry?.round)).toEqual([0, 1, 2, 3]);
+    expect(failed.at(-1)!.retry).toEqual({ round: 3, at: null });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(f.calls).toHaveLength(4);
+    h.updater.dispose();
+  });
+
+  it('自動重試那一輪遇到延後（PERM）：deferred 帶著輪數，再試時沿用（W1）', async () => {
+    await writeUpdateState(data, {
+      phase: 'failed',
+      fromVersion: '0.1.0',
+      toVersion: '0.2.0',
+      reason: 'download_failed',
+      detail: 'x',
+      at: new Date().toISOString(),
+      retry: { round: 1, at: new Date(Date.now() - 1000).toISOString() },
+    });
+    const f = failingFetch();
+    const h = harness({
+      fetch: f.fn,
+      download: fast,
+      deferRetryMs: 30,
+      downloadRetryMs: 60_000,
+      now: () => new Date(),
+    });
+    h.setStatuses(['waiting_permission']);
+    h.updater.onTarget(target(), false);
+    await until(() => h.reports.at(-1)?.phase === 'deferred');
+    expect(h.reports.at(-1)).toMatchObject({
+      phase: 'deferred',
+      reason: 'waiting_permission',
+      retry: { round: 2, at: null },
+    });
+    h.setStatuses([]);
+    await until(() => h.reports.at(-1)?.phase === 'failed');
+    expect(h.reports.at(-1)!.retry?.round).toBe(2);
+    h.updater.dispose();
+  });
+
+  it('時鐘倒退（retry.at 在很久以後）：最多等一輪的間隔就做，不會溢位成忙迴圈（W5）', async () => {
+    await writeUpdateState(data, {
+      phase: 'failed',
+      fromVersion: '0.1.0',
+      toVersion: '0.2.0',
+      reason: 'download_failed',
+      detail: 'x',
+      at: new Date().toISOString(),
+      retry: { round: 0, at: new Date(Date.now() + 100 * 24 * 3600_000).toISOString() },
+    });
+    const h = harness({ downloadRetryMs: 100, now: () => new Date() });
+    h.updater.onTarget(target(), false);
+    await settle();
+    expect(h.fetches).toEqual([]);
+    await until(() => h.spawned.length > 0);
+    expect(h.fetches).toHaveLength(1);
+    expect(h.reports[0]).toMatchObject({ phase: 'downloading', retry: { round: 1, at: null } });
+    h.updater.dispose();
+  });
+
+  it('dispose 中止進行中的下載', async () => {
+    let aborted = false;
+    const h = harness({
+      download: fast,
+      fetch: ((_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            aborted = true;
+            reject(new Error('aborted'));
+          });
+        })) as typeof fetch,
+    });
+    h.updater.onTarget(target(), false);
+    await until(() => h.reports.at(-1)?.phase === 'downloading');
+    h.updater.dispose();
+    await until(() => h.reports.at(-1)?.phase === 'failed');
+    expect(aborted).toBe(true);
+    expect(h.reports.at(-1)!.detail).toContain('中止');
+  });
 });

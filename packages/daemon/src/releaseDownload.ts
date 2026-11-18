@@ -3,20 +3,26 @@
 // 2026-11-19 Windows 筆電連續兩次 download_failed（detail `terminated`：undici 的 body 5 分鐘沒資料就中止），
 // 同一條路 Mac 正常。原因未確定，所以這裡的目標是「不管原因為何都自己下載完」，並留下下次找原因用的紀錄：
 // - 寫到 `<成品>.part`（旁邊 `<成品>.part.json` 記 sha256／大小，不是這個成品的就刪掉重來），完成而且整檔
-//   SHA-256 正確才改名成 `<成品>`。續傳時記憶體裡的 hash 不完整，所以完成後對整個檔案重算。
+//   SHA-256 正確才改名成 `<成品>`。續傳時記憶體裡的 hash 不完整，所以完成後對整個檔案重算。用過續傳
+//   （或沿用了上次留下的 .part）而 hash 不對，先從頭重下一次。
 // - 自己的停滯偵測：連續 stallMs（預設 45 秒）沒收到資料（含等回應標頭）就中止這次連線，不等 undici 的 5 分鐘。
-//   寫檔的時間不算網路停滯（寫檔前停表、寫完再開），但每次嘗試會記下最久一次寫檔花多久（防毒掃描的線索）。
+//   磁碟動作（寫 .part.json、開檔、寫入）不算網路停滯（做的時候停表），但各有上限 writeTimeoutMs
+//   （預設 max(stallMs, 5 分鐘)），超過記成「寫檔停滯」並中止這次連線（防毒掃描卡住時不會永遠等下去）。
+//   每次嘗試記下最久一次寫檔花多久（防毒掃描的線索）。磁碟錯誤（ENOSPC、EACCES…）不重試。
 // - 中斷後送 `Range: bytes=<已下載>-` 續傳；伺服器回 200（舊 hub 不支援 Range）就從頭寫。回 206 但起點不對、
-//   或 416，就刪掉 .part 從頭來。401／403／404 不重試（token 或成品有問題，重試也沒用）。
+//   416、或收到的比總長多，就刪掉 .part 從頭來。401／403／404 不重試（token 或成品有問題，重試也沒用）。
 // - 重試間隔退避（5s、15s、30s、60s…；這次有收到資料就回到最短的間隔），最多 maxAttempts 次（預設 8），
 //   總時間上限 deadlineMs（預設 30 分鐘）。
+// - 拿到回應之後不管怎麼結束都在同一個 finally 收：清所有計時器、沒完成就 abort 連線、關檔。
+// - 改名被防毒／索引程式鎖住（Windows 的 EPERM／EBUSY／EACCES）：等 100ms、300ms、1s、3s 再試。
 // - 進度每 progressMs（預設 5 秒；或多收 5% 而且距上次至少 1 秒）回呼一次：已收／總量、速度、第幾次嘗試。
 // - 每次嘗試在 daemon 紀錄寫一行：起點、HTTP 狀態、收到的位元組、耗時、平均速度、最久寫檔、結束原因。
 //   只記網址的路徑（不記主機、不記 token）。
+// - `signal`（daemon 結束時）中止整個下載，不再重試。
 // 用 Node 內建 fetch（測試注入），讀 body 用 reader，停滯／總時限都用自己的 AbortController。
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { open, readFile, rename, rm, stat, writeFile, type FileHandle } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import type { Logger } from './log';
 
@@ -26,6 +32,10 @@ export const DEFAULT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 60_000, 6
 export const DEFAULT_MAX_ATTEMPTS = 8;
 export const DEFAULT_DEADLINE_MS = 30 * 60_000;
 export const DEFAULT_PROGRESS_MS = 5_000;
+/** 單一磁碟動作的上限下限（實際是 max(stallMs, 這個)）。 */
+export const MIN_WRITE_TIMEOUT_MS = 5 * 60_000;
+/** 改名被鎖住時的重試間隔（Windows 防毒、索引程式）。 */
+export const RENAME_RETRY_MS = [100, 300, 1_000, 3_000];
 
 export interface DownloadProgress {
   received: number;
@@ -45,6 +55,8 @@ export interface DownloadRequest {
   size: number;
   fetch?: typeof fetch;
   stallMs?: number;
+  /** 單一磁碟動作（寫記錄、開檔、寫入）的上限；預設 max(stallMs, 5 分鐘)。 */
+  writeTimeoutMs?: number;
   retryDelaysMs?: readonly number[];
   maxAttempts?: number;
   deadlineMs?: number;
@@ -53,11 +65,17 @@ export interface DownloadRequest {
   logger?: Pick<Logger, 'info' | 'warn'>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** 中止整個下載（daemon 結束）。 */
+  signal?: AbortSignal;
+  /** 測試用：開檔（模擬寫入卡住、磁碟錯誤）。 */
+  openFile?: (path: string, flags: 'a' | 'w') => Promise<FileHandle>;
+  /** 測試用：改名（模擬被鎖住）。 */
+  renameFile?: (from: string, to: string) => Promise<void>;
 }
 
 export interface DownloadResult {
   attempts: number;
-  /** 有沒有用過 Range 續傳（伺服器回 206）。 */
+  /** 有沒有接著舊資料下載（伺服器回 206，或沿用了上次留下的 .part）。 */
   resumed: boolean;
 }
 
@@ -74,17 +92,31 @@ export class DownloadError extends Error {
 /** 一次嘗試怎麼結束的。 */
 type Outcome =
   | { kind: 'complete' }
-  | { kind: 'stall'; seconds: number; phase: 'headers' | 'body' }
+  | { kind: 'stall'; seconds: number; phase: 'headers' | 'body' | 'write' }
   | { kind: 'network'; code: string }
+  /** 寫 .part／.part.json 失敗（磁碟滿、權限…）：不重試。 */
+  | { kind: 'disk'; code: string }
   | { kind: 'http'; status: number; fatal: boolean }
   /** 連線正常結束但少了資料（伺服器提早關）。 */
   | { kind: 'short' }
-  /** 206 的起點和要的不同、或收到的比總長多：.part 不可信，刪掉從頭來。 */
+  /** 206 的起點和要的不同、416、或收到的比總長多：.part 不可信，刪掉從頭來。 */
   | { kind: 'restart'; why: string }
-  | { kind: 'deadline' };
+  | { kind: 'deadline' }
+  /** 外面要求中止（daemon 結束）。 */
+  | { kind: 'aborted' };
 
 export const partPath = (dest: string): string => `${dest}.part`;
 const metaPath = (dest: string): string => `${dest}.part.json`;
+
+/** 磁碟動作的錯誤（和網路錯誤分開）。 */
+class DiskFailure extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
+
+/** 磁碟動作超過上限。 */
+class WriteTimeout extends Error {}
 
 /** fetch／undici 的錯誤代碼：cause 的 code（ECONNRESET、UND_ERR_SOCKET…）優先，其次訊息。 */
 export function errorCode(error: unknown): string {
@@ -108,9 +140,13 @@ export function describeOutcome(outcome: Outcome): string {
     case 'stall':
       return outcome.phase === 'headers'
         ? `停滯（${outcome.seconds} 秒沒有回應標頭）`
-        : `停滯（${outcome.seconds} 秒沒有資料）`;
+        : outcome.phase === 'write'
+          ? `寫檔停滯（${outcome.seconds} 秒沒有寫完）`
+          : `停滯（${outcome.seconds} 秒沒有資料）`;
     case 'network':
       return `連線錯誤（${outcome.code}）`;
+    case 'disk':
+      return `寫檔錯誤（${outcome.code}）`;
     case 'http':
       return `HTTP ${outcome.status}`;
     case 'short':
@@ -119,6 +155,8 @@ export function describeOutcome(outcome: Outcome): string {
       return `從頭重下（${outcome.why}）`;
     case 'deadline':
       return '超過總時間上限';
+    case 'aborted':
+      return '中止（daemon 結束）';
   }
 }
 
@@ -149,6 +187,26 @@ export function parseContentRange(
   };
 }
 
+/** 改名；被鎖住（EPERM／EBUSY／EACCES，Windows 防毒常見）就照 RENAME_RETRY_MS 再試。 */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  renameFn: (from: string, to: string) => Promise<void> = rename,
+  delays: readonly number[] = RENAME_RETRY_MS,
+): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      await renameFn(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const delay = delays[i];
+      if (delay === undefined || !['EPERM', 'EBUSY', 'EACCES'].includes(code ?? '')) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 export async function downloadRelease(request: DownloadRequest): Promise<DownloadResult> {
   const {
     url,
@@ -161,9 +219,12 @@ export async function downloadRelease(request: DownloadRequest): Promise<Downloa
     maxAttempts = DEFAULT_MAX_ATTEMPTS,
     deadlineMs = DEFAULT_DEADLINE_MS,
     progressMs = DEFAULT_PROGRESS_MS,
+    signal,
   } = request;
+  const writeTimeoutMs = request.writeTimeoutMs ?? Math.max(stallMs, MIN_WRITE_TIMEOUT_MS);
   const now = request.now ?? Date.now;
   const sleep = request.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const openFile = request.openFile ?? ((path, flags) => open(path, flags, 0o600));
   const logger = request.logger;
   const part = partPath(dest);
   const meta = metaPath(dest);
@@ -174,6 +235,9 @@ export async function downloadRelease(request: DownloadRequest): Promise<Downloa
     await rm(part, { force: true });
     await rm(meta, { force: true });
   };
+
+  /** 是不是接在舊資料後面（206 續傳，或沿用上次的 .part）：hash 不對時先從頭重下一次。 */
+  let resumed = false;
 
   // 舊的 .part：不是這個成品（sha256／大小不同，或沒有記錄）、或比總長大，就刪掉重來。
   {
@@ -193,6 +257,7 @@ export async function downloadRelease(request: DownloadRequest): Promise<Downloa
       await dropPart();
     } else if (have !== null) {
       logger?.info(`下載 ${path}：找到上次的 .part（${have}/${total} 位元組），續傳`);
+      if (have > 0) resumed = true;
     }
   }
 
@@ -209,17 +274,17 @@ export async function downloadRelease(request: DownloadRequest): Promise<Downloa
     request.onProgress?.({ received, total, attempt, bytesPerSec });
   };
 
-  let resumed = false;
-
   const attemptOnce = async (attempt: number): Promise<{ outcome: Outcome; bytes: number }> => {
     const start = (await sizeOf(part)) ?? 0;
     if (start === total && total > 0) return { outcome: { kind: 'complete' }, bytes: 0 };
     const startedAt = now();
     const controller = new AbortController();
-    let stalled: 'headers' | 'body' | null = null;
+    let stalled: 'headers' | 'body' | 'write' | null = null;
     let deadlineHit = false;
+    let aborted = false;
     let phase: 'headers' | 'body' = 'headers';
     let stallTimer: NodeJS.Timeout | undefined;
+    let writeTimer: NodeJS.Timeout | undefined;
     const arm = () => {
       clearTimeout(stallTimer);
       stallTimer = setTimeout(() => {
@@ -235,131 +300,159 @@ export async function downloadRelease(request: DownloadRequest): Promise<Downloa
       },
       Math.max(0, deadlineAt - now()),
     );
+    const onOuterAbort = () => {
+      aborted = true;
+      controller.abort(new Error('aborted'));
+    };
+    signal?.addEventListener('abort', onOuterAbort, { once: true });
     let status = 0;
     let bytes = 0;
     let maxWriteMs = 0;
     let written = start;
+    let file: FileHandle | null = null;
+    /** 寫入卡住：close 會等卡住的寫入，不能 await。 */
+    let writeHung = false;
     lastEmit = now();
     lastEmitBytes = start;
     if (attempt > 1) emit(start, attempt, true);
 
-    const finish = (outcome: Outcome) => {
-      clearTimeout(stallTimer);
-      clearTimeout(deadlineTimer);
-      const secs = Math.max(0.001, (now() - startedAt) / 1000);
-      logger?.info(
-        `下載 ${path} 第 ${attempt} 次：從 ${start} 位元組開始，HTTP ${status || '-'}，` +
-          `收 ${bytes} 位元組（目前 ${written}/${total}），${secs.toFixed(1)} 秒，` +
-          `平均 ${(bytes / 1024 / secs).toFixed(1)} KB/s，最久一次寫檔 ${maxWriteMs} ms，` +
-          `結束：${describeOutcome(outcome)}`,
-      );
-      return { outcome, bytes };
+    /** 磁碟動作：停網路停滯表、限時、錯誤分成 DiskFailure。 */
+    const disk = async <T>(op: () => Promise<T>): Promise<T> => {
+      pause();
+      const started = now();
+      try {
+        return await new Promise<T>((resolve, reject) => {
+          writeTimer = setTimeout(() => {
+            stalled = 'write';
+            writeHung = true;
+            controller.abort(new Error('write stalled'));
+            reject(new WriteTimeout());
+          }, writeTimeoutMs);
+          op().then(resolve, (error: unknown) =>
+            reject(new DiskFailure((error as NodeJS.ErrnoException).code ?? errorCode(error))),
+          );
+        });
+      } finally {
+        clearTimeout(writeTimer);
+        maxWriteMs = Math.max(maxWriteMs, now() - started);
+      }
     };
 
     const failure = (error: unknown): Outcome => {
-      if (stalled) return { kind: 'stall', seconds: Math.round(stallMs / 1000), phase: stalled };
+      if (aborted) return { kind: 'aborted' };
+      if (stalled) {
+        const ms = stalled === 'write' ? writeTimeoutMs : stallMs;
+        return { kind: 'stall', seconds: Math.round(ms / 1000), phase: stalled };
+      }
       if (deadlineHit) return { kind: 'deadline' };
+      if (error instanceof DiskFailure) return { kind: 'disk', code: error.code };
       return { kind: 'network', code: errorCode(error) };
     };
 
-    arm();
-    let response: Response;
-    try {
+    const run = async (): Promise<Outcome> => {
+      arm();
       const headers: Record<string, string> = { authorization: `Bearer ${token}` };
       if (start > 0) headers.range = `bytes=${start}-`;
       // 只連已配對的 hub（機器 token），不連 GitHub（docs/no-llm-review.md「自動更新」）。
       const init: RequestInit = { headers, signal: controller.signal };
-      response = await (request.fetch ? request.fetch(url, init) : fetch(url, init));
-    } catch (error) {
-      return finish(failure(error));
-    }
-    status = response.status;
-    const cancelBody = () => response.body?.cancel().catch(() => undefined);
-
-    let append: boolean;
-    if (status === 206) {
-      const range = parseContentRange(response.headers.get('content-range'));
-      if (!range || range.start !== start || (range.total !== null && range.total !== total)) {
-        await cancelBody();
-        await dropPart();
-        return finish({
-          kind: 'restart',
-          why: `Content-Range 不符：${range ? `${range.start}-${range.end}/${range.total}` : '沒有'}`,
-        });
+      const response = await (request.fetch ? request.fetch(url, init) : fetch(url, init));
+      pause();
+      status = response.status;
+      let append: boolean;
+      if (status === 206) {
+        const range = parseContentRange(response.headers.get('content-range'));
+        if (!range || range.start !== start || (range.total !== null && range.total !== total)) {
+          return {
+            kind: 'restart',
+            why: `Content-Range 不符：${range ? `${range.start}-${range.end}/${range.total}` : '沒有'}`,
+          };
+        }
+        append = true;
+        resumed = true;
+      } else if (status === 200) {
+        // 舊 hub 不支援 Range：從頭寫。
+        append = false;
+        written = 0;
+        lastEmitBytes = 0;
+      } else if (status === 416) {
+        return { kind: 'restart', why: 'HTTP 416' };
+      } else {
+        return { kind: 'http', status, fatal: [401, 403, 404].includes(status) };
       }
-      append = true;
-      resumed = true;
-    } else if (status === 200) {
-      // 舊 hub 不支援 Range：從頭寫。
-      append = false;
-      written = 0;
-      lastEmitBytes = 0;
-    } else if (status === 416) {
-      await cancelBody();
-      await dropPart();
-      return finish({ kind: 'restart', why: 'HTTP 416' });
-    } else {
-      await cancelBody();
-      return finish({ kind: 'http', status, fatal: [401, 403, 404].includes(status) });
-    }
-    if (!response.body) return finish({ kind: 'short' });
-
-    if (!append || start === 0) {
-      await writeFile(meta, JSON.stringify({ sha256, size: total }), { mode: 0o600 });
-    }
-    const file = await open(part, append ? 'a' : 'w', 0o600);
-    const reader = response.body.getReader();
-    phase = 'body';
-    arm();
-    let outcome: Outcome | null = null;
-    try {
+      if (!response.body) return { kind: 'short' };
+      if (!append || start === 0) {
+        await disk(() => writeFile(meta, JSON.stringify({ sha256, size: total }), { mode: 0o600 }));
+      }
+      const handle = await disk(() => openFile(part, append ? 'a' : 'w'));
+      file = handle;
+      const reader = response.body.getReader();
+      phase = 'body';
+      arm();
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        pause();
         if (written + value.byteLength > total) {
-          outcome = { kind: 'restart', why: `收到的比總長 ${total} 多` };
-          break;
+          return { kind: 'restart', why: `收到的比總長 ${total} 多` };
         }
-        const writeStarted = now();
-        await file.write(value);
-        maxWriteMs = Math.max(maxWriteMs, now() - writeStarted);
+        await disk(() => handle.write(value));
         bytes += value.byteLength;
         written += value.byteLength;
         emit(written, attempt, false);
         arm();
       }
+      return written === total ? { kind: 'complete' } : { kind: 'short' };
+    };
+
+    let outcome: Outcome;
+    try {
+      outcome = await run();
     } catch (error) {
       outcome = failure(error);
     } finally {
-      pause();
-      await file.close().catch(() => undefined);
+      clearTimeout(stallTimer);
+      clearTimeout(writeTimer);
+      clearTimeout(deadlineTimer);
+      signal?.removeEventListener('abort', onOuterAbort);
     }
-    if (outcome?.kind === 'restart') {
-      await reader.cancel().catch(() => undefined);
-      await dropPart();
-      return finish(outcome);
+    // 沒完成就把連線收掉（標頭到了、body 還沒讀完的也會被取消）。
+    if (outcome.kind !== 'complete') controller.abort(new Error('attempt ended'));
+    const opened = file as FileHandle | null;
+    if (opened) {
+      const closing = opened.close().catch(() => undefined);
+      if (!writeHung) await closing;
     }
-    if (outcome) return finish(outcome);
-    return finish(written === total ? { kind: 'complete' } : { kind: 'short' });
+    if (outcome.kind === 'restart') await dropPart();
+    const secs = Math.max(0.001, (now() - startedAt) / 1000);
+    logger?.info(
+      `下載 ${path} 第 ${attempt} 次：從 ${start} 位元組開始，HTTP ${status || '-'}，` +
+        `收 ${bytes} 位元組（目前 ${written}/${total}），${secs.toFixed(1)} 秒，` +
+        `平均 ${(bytes / 1024 / secs).toFixed(1)} KB/s，最久一次寫檔 ${maxWriteMs} ms，` +
+        `結束：${describeOutcome(outcome)}`,
+    );
+    return { outcome, bytes };
   };
 
   let attempt = 0;
   let redone = false;
   let last: Outcome = { kind: 'short' };
   for (;;) {
+    if (signal?.aborted) {
+      last = { kind: 'aborted' };
+      break;
+    }
     attempt += 1;
     const { outcome, bytes } = await attemptOnce(attempt);
     last = outcome;
     if (outcome.kind === 'complete') {
       const actual = await fileSha256(part);
       if (actual === sha256) {
-        await rename(part, dest);
+        await renameWithRetry(part, dest, request.renameFile);
         await rm(meta, { force: true });
         return { attempts: attempt, resumed };
       }
       await dropPart();
-      // 用過續傳而 hash 不對：可能是接起來的地方壞了，從頭重下一次（不等待）；否則就是成品本身不對。
+      // 接在舊資料後面而 hash 不對：可能是接起來的地方（或上次留下的 .part）壞了，從頭重下一次（不等待）；
+      // 否則就是成品本身不對。
       if (resumed && !redone && attempt < maxAttempts && now() < deadlineAt) {
         logger?.warn(`下載 ${path}：續傳後 SHA-256 不符（${actual}），從頭重下一次`);
         redone = true;
@@ -369,6 +462,7 @@ export async function downloadRelease(request: DownloadRequest): Promise<Downloa
       throw new DownloadError('checksum', `expected ${sha256}, got ${actual}`);
     }
     if (outcome.kind === 'http' && outcome.fatal) break;
+    if (outcome.kind === 'disk' || outcome.kind === 'aborted') break;
     if (outcome.kind === 'deadline' || attempt >= maxAttempts) break;
     // 被要求從頭來（.part 不可信）：不算網路問題，馬上再試。
     if (outcome.kind === 'restart') continue;
