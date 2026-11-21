@@ -46,6 +46,12 @@ import {
   type Template,
   type User,
   type Zone,
+  shiftUsageDay,
+  USAGE_HISTORY_RECENT_DAYS,
+  usageWeight,
+  type StoredHistoryCell,
+  type StoredHistoryMachine,
+  type UsageHistoryCell,
 } from '@agent-board/protocol';
 import { z } from 'zod';
 import type { Db } from './db';
@@ -2093,6 +2099,132 @@ export class Store {
       }
     }
     return out;
+  }
+
+  /**
+   * 用量歷史（schema v12，CONTRACTS §27）：一次寫入一台機器的好幾列。保存規則（同 protocol 的
+   * shouldReplaceHistory）：沒存過就寫；日期 ≥ 機器的「今天」往前 USAGE_HISTORY_RECENT_DAYS−1 天時以新值為準；
+   * 更早的只在新值四項合計 ≥ 舊值時整列換。從不刪列。回傳實際寫入（新增或換掉）的列數。
+   */
+  upsertUsageHistory(
+    machine: { machineId: string; name: string; timeZone: string | null; today: string | null },
+    cells: readonly UsageHistoryCell[],
+    at: string,
+    complete: boolean,
+  ): number {
+    // 沒有「今天」（舊格式而且沒有日期）時不允許變小。
+    const recentFrom =
+      machine.today === null
+        ? '9999-12-31'
+        : shiftUsageDay(machine.today, -(USAGE_HISTORY_RECENT_DAYS - 1));
+    const upsert = this.db.prepare(
+      `INSERT INTO usage_history
+         (machine_id, day, source, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, updated_at)
+       VALUES (@machineId, @day, @source, @model, @input, @output, @read, @write, @at)
+       ON CONFLICT (machine_id, day, source, model) DO UPDATE SET
+         input_tokens = excluded.input_tokens,
+         output_tokens = excluded.output_tokens,
+         cache_read_tokens = excluded.cache_read_tokens,
+         cache_creation_tokens = excluded.cache_creation_tokens,
+         updated_at = excluded.updated_at
+       WHERE (excluded.day >= @recentFrom
+          OR excluded.input_tokens + excluded.output_tokens + excluded.cache_read_tokens + excluded.cache_creation_tokens
+             >= usage_history.input_tokens + usage_history.output_tokens + usage_history.cache_read_tokens + usage_history.cache_creation_tokens)
+         -- 數字一樣時不必寫（更新時間只記真的變了的）。
+         AND NOT (excluded.input_tokens = usage_history.input_tokens
+              AND excluded.output_tokens = usage_history.output_tokens
+              AND excluded.cache_read_tokens = usage_history.cache_read_tokens
+              AND excluded.cache_creation_tokens = usage_history.cache_creation_tokens)`,
+    );
+    const meta = this.db.prepare(
+      `INSERT INTO usage_history_machines (machine_id, name, time_zone, updated_at, complete_at)
+       VALUES (@machineId, @name, @timeZone, @at, @completeAt)
+       ON CONFLICT (machine_id) DO UPDATE SET
+         name = excluded.name,
+         time_zone = COALESCE(excluded.time_zone, usage_history_machines.time_zone),
+         updated_at = excluded.updated_at,
+         complete_at = COALESCE(excluded.complete_at, usage_history_machines.complete_at)`,
+    );
+    return this.db.transaction(() => {
+      let written = 0;
+      for (const c of cells) {
+        // 全是 0 的列不寫（daemon 本來就不送；已存的日子也不會因為 0 被蓋掉）。
+        if (usageWeight(c) === 0) continue;
+        const result = upsert.run({
+          machineId: machine.machineId,
+          day: c.day,
+          source: c.source,
+          model: c.model,
+          input: c.inputTokens,
+          output: c.outputTokens,
+          read: c.cacheReadTokens,
+          write: c.cacheCreationTokens,
+          at,
+          recentFrom,
+        });
+        written += result.changes;
+      }
+      meta.run({
+        machineId: machine.machineId,
+        name: machine.name,
+        timeZone: machine.timeZone,
+        at,
+        completeAt: complete ? at : null,
+      });
+      return written;
+    })();
+  }
+
+  listUsageHistory(): StoredHistoryCell[] {
+    const rows = this.db
+      .prepare(
+        `SELECT machine_id, day, source, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+         FROM usage_history`,
+      )
+      .all() as {
+      machine_id: string;
+      day: string;
+      source: string;
+      model: string;
+      input_tokens: number;
+      output_tokens: number;
+      cache_read_tokens: number;
+      cache_creation_tokens: number;
+    }[];
+    return rows
+      .filter((r) => r.source === 'claude' || r.source === 'codex')
+      .map((r) => ({
+        machineId: r.machine_id,
+        day: r.day,
+        source: r.source as 'claude' | 'codex',
+        model: r.model,
+        inputTokens: r.input_tokens,
+        outputTokens: r.output_tokens,
+        cacheReadTokens: r.cache_read_tokens,
+        cacheCreationTokens: r.cache_creation_tokens,
+      }))
+      .filter((c) => usageWeight(c) > 0);
+  }
+
+  listUsageHistoryMachines(): StoredHistoryMachine[] {
+    const rows = this.db
+      .prepare(
+        'SELECT machine_id, name, time_zone, updated_at, complete_at FROM usage_history_machines',
+      )
+      .all() as {
+      machine_id: string;
+      name: string;
+      time_zone: string | null;
+      updated_at: string;
+      complete_at: string | null;
+    }[];
+    return rows.map((r) => ({
+      machineId: r.machine_id,
+      name: r.name,
+      timeZone: r.time_zone,
+      updatedAt: r.updated_at,
+      completeAt: r.complete_at,
+    }));
   }
 
   deleteUsage(machineId: string): void {

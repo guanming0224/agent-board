@@ -2,7 +2,13 @@
 // 對應到看板 session 的規則和 hub 同一份（protocol 的 buildUsageReport）。
 // demo-laptop 沒回報（和頁首、側欄的 demo 一致）；要測「daemon 太舊沒細項」時 e2e 自己換掉 usageReport。
 import {
+  buildUsageHistoryReport,
   buildUsageReport,
+  detailToHistoryCells,
+  type StoredHistoryCell,
+  type StoredHistoryMachine,
+  type UsageHistoryCell,
+  type UsageHistoryReport,
   localUsageDay,
   shiftUsageDay,
   USAGE_DETAIL_VERSION,
@@ -238,4 +244,77 @@ export function demoUsageReport(state: {
     }
   });
   return buildUsageReport({ now, latest, ...state });
+}
+
+/**
+ * 「全部」期間的假資料（GM 2026-11-21）：hub 歷史比機器上還留著的紀錄早——demo-studio 從 7 個月前、
+ * demo-gpu 從 5 個月前、Codex 從 6 個月前；另有一台已移除的 demo-old-mac（只剩 hub 歷史）。
+ * 近 90 天和細項同一份（machines 目前的掃描），合併規則和 hub 一樣（buildUsageHistoryReport）。
+ */
+export function demoUsageHistory(machines: readonly Machine[]): UsageHistoryReport {
+  const now = new Date();
+  const today = localUsageDay(now);
+  const rand = random(20261121);
+  const stored: StoredHistoryCell[] = [];
+  const current = new Map<string, UsageHistoryCell[]>();
+  const old = (
+    machineId: string,
+    source: 'claude' | 'codex',
+    model: string,
+    fromAgo: number,
+    toAgo: number,
+    scale: number,
+  ) => {
+    for (let ago = fromAgo; ago >= toAgo; ago -= 1) {
+      if (rand() < 0.3) continue;
+      const output = Math.round(scale * (0.3 + rand() * 1.4));
+      stored.push({
+        machineId,
+        day: shiftUsageDay(today, -ago),
+        source,
+        model,
+        inputTokens: Math.round(output * (0.12 + rand() * 0.1)),
+        outputTokens: output,
+        cacheReadTokens: Math.round(output * (30 + rand() * 20)),
+        cacheCreationTokens: source === 'codex' ? 0 : Math.round(output * 2),
+      });
+    }
+  };
+  machines.forEach((m, i) => {
+    const detail = demoDetail(m.id, today, 20261109 + i);
+    const codex = demoCodexDetail(m.id, today, 20261112 + i);
+    if (!detail) return;
+    current.set(m.id, [
+      ...detailToHistoryCells(detail, 'claude'),
+      ...(codex ? detailToHistoryCells(codex, 'codex') : []),
+    ]);
+    // Claude Code 已清掉、只剩 hub 歷史的日子。
+    if (m.id === 'm-studio') {
+      old(m.id, 'claude', MODELS[0]!, 210, 34, 30_000);
+      old(m.id, 'claude', MODELS[1]!, 150, 34, 12_000);
+      old(m.id, 'codex', 'gpt-5-codex', 180, 120, 8_000);
+    } else if (m.id === 'm-gpu') {
+      old(m.id, 'claude', MODELS[2]!, 150, 71, 9_000);
+    }
+  });
+  old('m-old-mac', 'claude', MODELS[1]!, 330, 200, 16_000);
+  const storedMachines: StoredHistoryMachine[] = [
+    {
+      machineId: 'm-old-mac',
+      name: 'demo-old-mac',
+      timeZone: 'Asia/Taipei',
+      updatedAt: new Date(now.getTime() - 200 * 24 * 60 * 60_000).toISOString(),
+      completeAt: new Date(now.getTime() - 330 * 24 * 60 * 60_000).toISOString(),
+    },
+    ...machines
+      .filter((m) => current.has(m.id))
+      .map((m) => ({
+        machineId: m.id,
+        name: m.name,
+        timeZone: 'Asia/Taipei',
+        updatedAt: new Date(now.getTime() - 6 * 60_000).toISOString(),
+        completeAt: new Date(now.getTime() - 6 * 60_000).toISOString(),
+      })),
+  ];
+  return buildUsageHistoryReport({ now, machines, stored, storedMachines, current });
 }

@@ -53,6 +53,7 @@ import {
   ZoneName,
 } from './models';
 import { UsageReport } from './usage';
+import { UsageHistoryReport } from './usageHistory';
 import { Review, REVIEW_BOARD_KEEP, REVIEW_REASON_MAX, ReviewTargetInput } from './review';
 import { HealthInfo, ReleaseChannel, ReleaseOverview, ReleaseRepo, Version } from './release';
 import { ProgressCard, ProgressRevision, ProgressWrite } from './progress';
@@ -327,6 +328,13 @@ export const routes = {
     path: '/api/usage',
     auth: 'user',
     response: UsageReport,
+  }),
+  /** 用量歷史（GM 2026-11-21）：hub 每天存的「機器 × 日期 × 來源 × 模型」∪ 各機器目前的掃描，給「全部」期間。 */
+  usageHistory: route({
+    method: 'GET',
+    path: '/api/usage/history',
+    auth: 'user',
+    response: UsageHistoryReport,
   }),
 
   // Session

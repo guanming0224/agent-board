@@ -54,10 +54,19 @@ export function TrendChart({
   data,
   series,
   testId,
+  shortLabel = shortDay,
+  columnLabel,
+  ariaLabel,
 }: {
   data: Daily;
   series: readonly SeriesLabel[];
   testId: string;
+  /** x 軸的短標籤（預設 11/9 這種日期；「全部」期間的每月趨勢傳月份）。 */
+  shortLabel?: (key: string) => string;
+  /** 表格第一欄的欄名（預設「日期」）。 */
+  columnLabel?: string;
+  /** 整張圖的說明（預設每日的說明）。 */
+  ariaLabel?: string;
 }) {
   const t = useT();
   const { locale } = useLocale();
@@ -163,7 +172,7 @@ export function TrendChart({
           <table className="usage-data-table" data-testid={`${testId}-table`}>
             <thead>
               <tr>
-                <th scope="col">{t('usage.chart.day')}</th>
+                <th scope="col">{columnLabel ?? t('usage.chart.day')}</th>
                 {series.length > 1 &&
                   series.map((s) => (
                     <th key={s.key} scope="col" className="num">
@@ -198,10 +207,13 @@ export function TrendChart({
             ref={box}
             tabIndex={0}
             role="group"
-            aria-label={t('usage.chart.aria', {
-              from: data.days[0] ?? '',
-              to: data.days[n - 1] ?? '',
-            })}
+            aria-label={
+              ariaLabel ??
+              t('usage.chart.aria', {
+                from: data.days[0] ?? '',
+                to: data.days[n - 1] ?? '',
+              })
+            }
             onKeyDown={onKey}
             onBlur={() => setActive(null)}
             data-testid={`${testId}-plot`}
@@ -265,7 +277,7 @@ export function TrendChart({
                         y={HEIGHT - 6}
                         textAnchor="middle"
                       >
-                        {shortDay(day)}
+                        {shortLabel(day)}
                       </text>
                     )}
                     {/* 命中區比長條大：整欄高、整格寬。 */}

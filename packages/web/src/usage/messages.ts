@@ -85,6 +85,25 @@ export const zhTW: Record<string, string> = {
   'usage.agent.codex': 'Codex',
   'usage.share.noModel': '（紀錄沒寫模型）',
   'usage.share.pct': '{pct}%',
+
+  'usage.period.all': '全部',
+  'usage.stack.source': '依代理',
+  'usage.history.open': '看 hub 保存的全部歷史',
+  'usage.history.total': '全部時間合計',
+  'usage.history.range': '{from} 到 {to}',
+  'usage.history.machine': '機器',
+  'usage.history.allMachines': '全部機器',
+  'usage.history.removedTag': '（已移除）',
+  'usage.history.machineRange': '{name}：{from} 到 {to}',
+  'usage.history.noBackfill': 'daemon 版本太舊或還沒回填，只有近 90 天',
+  'usage.history.note':
+    '資料是 hub 每天保存的歷史加上各台機器目前還留著的對話紀錄，每天取較大的數字。Claude Code 會依 cleanupPeriodDays（預設 30 天）清掉舊的對話紀錄：在 hub 開始保存之前就被清掉的紀錄算不到，所以實際用量可能比這裡多。',
+  'usage.history.trend': '每月趨勢',
+  'usage.history.month': '月份',
+  'usage.history.chartAria':
+    '每月用量長條圖，{from} 到 {to}。用左右鍵逐月查看，或打開「表格」看全部數字。',
+  'usage.history.noRanking':
+    '全部時間不分 session（hub 只保存每天 × 模型的數字）；團隊、session、專案的排行請切回 7／30／90 天。',
 };
 
 export const en: Record<string, string> = {
@@ -177,6 +196,25 @@ export const en: Record<string, string> = {
   'usage.agent.codex': 'Codex',
   'usage.share.noModel': '(no model in the transcript)',
   'usage.share.pct': '{pct}%',
+
+  'usage.period.all': 'All',
+  'usage.stack.source': 'By agent',
+  'usage.history.open': 'Open the full history kept by the hub',
+  'usage.history.total': 'All-time total',
+  'usage.history.range': '{from} to {to}',
+  'usage.history.machine': 'Machine',
+  'usage.history.allMachines': 'All machines',
+  'usage.history.removedTag': ' (removed)',
+  'usage.history.machineRange': '{name}: {from} to {to}',
+  'usage.history.noBackfill': 'daemon too old or not backfilled yet; last 90 days only',
+  'usage.history.note':
+    'Combines the daily history kept by the hub with the transcripts still on each machine, taking the larger number for each day. Claude Code deletes old transcripts after cleanupPeriodDays (30 by default); anything deleted before the hub started keeping history cannot be counted, so real usage may be higher.',
+  'usage.history.trend': 'Monthly trend',
+  'usage.history.month': 'Month',
+  'usage.history.chartAria':
+    'Monthly usage bar chart, {from} to {to}. Use the arrow keys to step through months, or open “Table” for every number.',
+  'usage.history.noRanking':
+    'All time is not broken down by session (the hub only keeps day × model totals); switch back to 7, 30 or 90 days for team, session and project rankings.',
 };
 
 registerMessages('zh-TW', zhTW);

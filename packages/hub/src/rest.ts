@@ -351,6 +351,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       return hub.latestUsage(id);
     },
     usageReport: () => hub.usageReport(),
+    usageHistory: () => hub.usageHistoryReport(),
 
     sessionsList: (ctx) => store.listSessions(ctx.query.archived),
     sessionsCreate: (ctx) => hub.createSession(ctx.body, ctx.user),

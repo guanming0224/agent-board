@@ -64,6 +64,32 @@
 .usage-detail > .empty {
   margin-top: var(--space-4);
 }
+.usage-detail > .empty p {
+  margin: 0 0 var(--space-2);
+}
+
+/* 「全部」期間（GM 2026-11-21）：每月趨勢、全部時間合計、各台保存的日期範圍 */
+.usage-alltime.refreshing {
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+.usage-control select {
+  max-width: 14rem;
+  font-size: var(--fs-ctl-sm);
+}
+.usage-coverage {
+  margin-top: var(--space-2);
+}
+.usage-coverage li {
+  display: flex;
+  gap: var(--space-1h);
+}
+.usage-alltime .usage-tile-value {
+  margin-top: var(--space-1);
+}
+.usage-alltime .usage-breakdown {
+  max-width: 32rem;
+}
 
 .usage-machines {
   list-style: none;

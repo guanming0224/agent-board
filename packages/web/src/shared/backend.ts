@@ -51,6 +51,7 @@ import type {
   Template,
   TranscriptPage,
   UsageReport,
+  UsageHistoryReport,
   UsageSummary,
   User,
   Zone,
@@ -258,6 +259,8 @@ export interface BoardBackend {
   machineUsage(machineId: string): Promise<UsageSummary | null>;
   /** 用量詳情（GM 2026-11-09）：跨機器彙整的細項。 */
   usageReport(): Promise<UsageReport>;
+  /** 用量詳情「全部」期間（GM 2026-11-21）：hub 每天存的歷史 ∪ 各機器目前的掃描。 */
+  usageHistory(): Promise<UsageHistoryReport>;
 
   /**
    * 機器面板（發版與自動更新，docs/release-update-spec.md §7、CONTRACTS §21）。全部回最新的總覽。

@@ -95,7 +95,15 @@ import { claudeConfigFor, findTranscriptFiles, inspectSession, purgeSession } fr
 import type { CreateStatusTracker } from './status/types';
 import { SessionStore, type PersistedSession } from './store';
 import { readTranscript } from './transcript';
-import { scanCodexUsage, scanUsage } from './usage';
+import { dayFormatter, scanCodexUsage, scanUsage } from './usage';
+import {
+  historyDelta,
+  newHistorySendState,
+  USAGE_HISTORY_CACHE_FILE,
+  UsageHistoryScanner,
+  type HistorySendState,
+  type UsageHistoryScan,
+} from './usageHistory';
 import { ReviewRunner } from './review';
 import {
   createWorktree,
@@ -345,7 +353,15 @@ export class Daemon {
   private usageTimer: NodeJS.Timeout | null = null;
   private claudeFlagsTimer: NodeJS.Timeout | null = null;
   private usageRunning = false;
+  /** 用量回報進行中又被要求一次（例如全部時間的首次掃描剛做完）：做完再跑一次。 */
+  private usageAgain = false;
   private usageReportedOnConnect = false;
+  /** 全部時間的用量（GM 2026-11-21，CONTRACTS §27）：增量快取掃描器、這條連線送過的歷史。 */
+  private readonly usageHistory: UsageHistoryScanner;
+  private historySend: HistorySendState = newHistorySendState();
+  /** 首次全掃做完了沒（做完之前回報不等它，背景跑）。 */
+  private historyWarm = false;
+  private historyWarming = false;
   private stopping = false;
   private revokedTimer: NodeJS.Timeout | null = null;
   /** `Settings.dispatch`（hub.welcome 下發）：新開的 PTY 要不要掛派工工具。 */
@@ -409,6 +425,7 @@ export class Daemon {
     const { config } = deps;
     this.baseEnv = deps.baseEnv ?? process.env;
     this.store = new SessionStore(config.dataDir);
+    this.usageHistory = new UsageHistoryScanner(join(config.dataDir, USAGE_HISTORY_CACHE_FILE));
     // hub 還沒連上時也要擋危險指令：用上次下發的規則，再不然用預設值。
     this.dangerRules = this.store.dangerRules ?? DEFAULT_DANGER_RULES;
     this.stuckMinutes = this.store.stuckMinutes ?? DEFAULT_STUCK_MINUTES;
@@ -1350,6 +1367,8 @@ export class Daemon {
 
   private handleHubDisconnected(): void {
     this.usageReportedOnConnect = false;
+    // 重連後再回填一次全部歷史（hub 依保存規則合併，重送不會多算）。
+    this.historySend = newHistorySendState();
     // hub 重連後會重新訂閱（CONTRACTS §6.1），這裡回到沒人看的狀態。
     this.resources.stop();
     this.deepSearch.cancelAll();
@@ -2392,7 +2411,11 @@ export class Daemon {
   // ── 用量 ─────────────────────────────────────────────────
 
   private async reportUsage(): Promise<void> {
-    if (this.usageRunning || !this.hub.connected) return;
+    if (!this.hub.connected) return;
+    if (this.usageRunning) {
+      this.usageAgain = true;
+      return;
+    }
     this.usageRunning = true;
     try {
       // 總數與細項同一次掃描（GM 2026-11-09 用量詳情），不多讀一次檔。
@@ -2412,16 +2435,63 @@ export class Daemon {
         codex !== null &&
         (this.capabilities?.codexVersion !== undefined ||
           codex.stats.files + codex.stats.skippedFiles > 0);
-      this.send({
+      // 全部時間（§27）：首次全掃在背景跑、不擋這次回報；做完之後每次回報都做增量掃描，只送有變的日子。
+      const history = this.historyWarm ? await this.scanHistory(sendCodex) : null;
+      const delta = history
+        ? historyDelta(history, dayFormatter(history.timeZone)(Date.now()), this.historySend)
+        : null;
+      const message: DaemonToHub = {
         type: 'usage',
         summary,
         detail,
         ...(sendCodex ? { codex: { summary: codex.summary, detail: codex.detail } } : {}),
-      });
+        ...(delta ? { history: delta.history } : {}),
+      };
+      if (delta) {
+        const state = this.historySend;
+        this.hub.sendConfirmed(message, (sent) => {
+          // 連線換過了（state 已重設）就不記：新連線會整份回填。
+          if (sent && state === this.historySend) delta.commit();
+        });
+      } else {
+        this.send(message);
+      }
+      if (!this.historyWarm) this.warmHistory(sendCodex);
     } catch (error) {
       log.warn(`用量統計失敗：${errorMessage(error)}`);
     } finally {
       this.usageRunning = false;
+      if (this.usageAgain) {
+        this.usageAgain = false;
+        void this.reportUsage();
+      }
     }
+  }
+
+  private scanHistory(codex: boolean): Promise<UsageHistoryScan> {
+    return this.usageHistory.scan({
+      claude: [this.deps.config.claudeConfigDir, ...this.accountProfiles],
+      codex: codex ? codexHome(this.childEnv()) : null,
+    });
+  }
+
+  /** 首次全掃（可能要讀幾百 MB）：背景跑，做完立刻再回報一次，把全部日子補給 hub。 */
+  private warmHistory(codex: boolean): void {
+    if (this.historyWarming || this.stopping) return;
+    this.historyWarming = true;
+    this.scanHistory(codex).then(
+      (scan) => {
+        this.historyWarming = false;
+        this.historyWarm = true;
+        log.info(
+          `用量歷史首次掃描完成：${scan.stats.files} 個檔、讀 ${Math.round(scan.stats.bytesRead / 1048576)}MB、${scan.stats.ms}ms`,
+        );
+        if (!this.stopping) void this.reportUsage();
+      },
+      (error: unknown) => {
+        this.historyWarming = false;
+        log.warn(`用量歷史掃描失敗：${errorMessage(error)}`);
+      },
+    );
   }
 }

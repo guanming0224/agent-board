@@ -65,7 +65,14 @@ import {
   type TeamSessionRef,
   type TerminalSignal,
   buildUsageReport,
+  buildUsageHistoryReport,
+  detailToHistoryCells,
+  historyToCells,
   StoredUsage,
+  USAGE_HISTORY_VERSION,
+  type UsageHistory,
+  type UsageHistoryCell,
+  type UsageHistoryReport,
   usableDetail,
   type LatestUsage,
   type CodexUsage,
@@ -864,6 +871,12 @@ export class Hub {
         return;
       case 'usage':
         this.recordUsage(conn.machineId, msg.summary, msg.detail ?? null, msg.codex ?? null);
+        this.recordUsageHistory(
+          conn.machineId,
+          msg.detail ?? null,
+          msg.codex ?? null,
+          msg.history ?? null,
+        );
         return;
       case 'fs.listResult':
       case 'fs.gitInitResult':
@@ -2971,6 +2984,69 @@ export class Hub {
       // 存不下只影響重啟後那一段時間，記憶體裡照樣有。
       this.log.warn({ err: error, machineId }, 'failed to persist usage');
     }
+  }
+
+  /**
+   * 用量歷史（§27）：新 daemon 送 `history` 就寫它；沒有（舊 daemon、首次全掃還沒做完）就把 90 天細項壓成
+   * 「日期 × 模型」寫。保存規則在 store.upsertUsageHistory（舊日子不會被清掉的紀錄歸零）。寫不進去只記 log。
+   */
+  private recordUsageHistory(
+    machineId: string,
+    detail: UsageDetail | null,
+    codex: CodexUsage | null,
+    history: UsageHistory | null,
+  ): void {
+    const useHistory = history !== null && history.version === USAGE_HISTORY_VERSION;
+    const claudeDetail = usableDetail(detail);
+    const codexDetail = usableDetail(codex?.detail);
+    const cells: UsageHistoryCell[] = useHistory
+      ? historyToCells(history)
+      : [
+          ...(claudeDetail ? detailToHistoryCells(claudeDetail, 'claude') : []),
+          ...(codexDetail ? detailToHistoryCells(codexDetail, 'codex') : []),
+        ];
+    if (!useHistory && claudeDetail === null && codexDetail === null) return;
+    const today = useHistory
+      ? history.today
+      : (claudeDetail?.days.at(-1) ?? codexDetail?.days.at(-1) ?? null);
+    const timeZone = useHistory
+      ? history.timeZone
+      : (claudeDetail?.timeZone ?? codexDetail?.timeZone ?? null);
+    try {
+      this.store.upsertUsageHistory(
+        {
+          machineId,
+          name: this.store.getMachine(machineId)?.name ?? machineId,
+          timeZone,
+          today,
+        },
+        cells,
+        this.deps.now().toISOString(),
+        useHistory && history.complete,
+      );
+    } catch (error) {
+      this.log.warn({ err: error, machineId }, 'failed to persist usage history');
+    }
+  }
+
+  /** 「全部」期間（GET /api/usage/history）：hub 歷史 ∪ 各機器記憶體裡最新的細項，每格取較大者。 */
+  usageHistoryReport(): UsageHistoryReport {
+    const current = new Map<string, UsageHistoryCell[]>();
+    for (const [machineId, latest] of this.usage) {
+      const claude = usableDetail(latest.detail);
+      const codex = usableDetail(latest.codex?.detail);
+      current.set(machineId, [
+        ...(claude ? detailToHistoryCells(claude, 'claude') : []),
+        ...(codex ? detailToHistoryCells(codex, 'codex') : []),
+      ]);
+    }
+    return buildUsageHistoryReport({
+      now: this.deps.now(),
+      machines: this.store.listMachines(),
+      stored: this.store.listUsageHistory(),
+      storedMachines: this.store.listUsageHistoryMachines(),
+      current,
+    });
   }
 
   /** 啟動時讀回上次存的用量；壞掉的、機器已刪的略過。 */

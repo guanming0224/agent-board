@@ -427,8 +427,15 @@ describe('listening address', () => {
 });
 
 /** 退回 v6 的樣子：拿掉 v7 加的欄位（額度恢復後自動接續）。 */
+/** 退回 v11 的樣子：拿掉 v12 加的用量歷史兩張表（GM 2026-11-21）。 */
+const dropV12 = (db: ReturnType<typeof openDatabase>) => {
+  db.exec('DROP TABLE usage_history');
+  db.exec('DROP TABLE usage_history_machines');
+};
+
 /** 退回 v10 的樣子：拿掉 v11 加的交叉審查表（Codex 第二輪）。 */
 const dropV11 = (db: ReturnType<typeof openDatabase>) => {
+  dropV12(db);
   db.exec('DROP INDEX reviews_created');
   db.exec('DROP TABLE reviews');
 };
@@ -512,6 +519,8 @@ describe('database', () => {
       'progress_cards',
       'progress_revisions',
       'reviews',
+      'usage_history',
+      'usage_history_machines',
     ];
     expect(tables.map((t) => t.name).sort()).toEqual([...expected].sort());
     for (const { name } of tables) {

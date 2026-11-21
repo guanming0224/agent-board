@@ -35,6 +35,7 @@ import {
 } from './models';
 import { AgentBoardTool, ProgressCard } from './progress';
 import { CodexUsage, UsageDetail } from './usage';
+import { UsageHistory } from './usageHistory';
 import { ReleaseTarget, SessionHostState, UpdateState } from './release';
 import {
   Review,
@@ -327,6 +328,11 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     detail: UsageDetail.optional().catch(undefined),
     /** Codex 的用量（Codex 第二輪）；這台沒有 Codex 紀錄或 daemon 太舊時不送。壞掉當沒送。 */
     codex: CodexUsage.optional().catch(undefined),
+    /**
+     * 用量歷史（GM 2026-11-21）：機器上掃得到的全部日子（連上 hub 後第一次）或最近幾天＋有變動的日子。
+     * 舊 hub 不認得就忽略（zod 物件預設丟掉不認得的欄位）；壞掉或超過上限當沒送，總數與細項照收。
+     */
+    history: UsageHistory.optional().catch(undefined),
   }),
   z.object({
     type: z.literal('fs.listResult'),

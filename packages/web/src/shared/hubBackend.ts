@@ -619,6 +619,7 @@ export function createHubBackend() {
     },
     machineUsage: (id) => call('machineUsage', { params: { id } }),
     usageReport: () => call('usageReport'),
+    usageHistory: () => call('usageHistory'),
     releases: () => call('releasesOverview'),
     checkReleases: () => call('releasesCheck'),
     promoteRelease: (version, confirm) => call('releasesPromote', { body: { version, confirm } }),

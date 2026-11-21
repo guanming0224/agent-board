@@ -1663,6 +1663,14 @@ describe('其他 hub 指令', () => {
     await h.startDaemon();
     const usage = await h.hub.waitFor('usage', (m) => m.summary.inputTokens === 11);
     expect(usage.summary.outputTokens).toBe(22);
+    // 全部時間（§27）：首次全掃在背景做完後再回報一次，帶回填的歷史（complete）。
+    // 先前停掉的 daemon 也送過一則空的回填（那時還沒有紀錄檔）：等有列的那則。
+    const backfill = await h.hub.waitFor(
+      'usage',
+      (m) => m.history?.complete === true && m.history.rows.length > 0,
+    );
+    expect(backfill.history!.rows.map((r) => r.slice(2))).toEqual([[0, 11, 22, 0, 0]]);
+    expect(existsSync(join(h.dataDir, 'usage-history-cache.json'))).toBe(true);
   });
 });
 
@@ -1898,7 +1906,11 @@ describe('與 hub 的語意（Agent C）', () => {
     client.close();
 
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(h.hub.received.filter((m) => m.type === 'usage')).toHaveLength(1);
+    // 連上時回報一次；全部時間的首次掃描做完會再回報一次（帶回填的歷史，§27），welcome 重送不會再掃。
+    const usage = h.hub.received.filter((m) => m.type === 'usage');
+    expect(usage.filter((m) => !m.history)).toHaveLength(1);
+    expect(usage.filter((m) => m.history?.complete === true).length).toBeLessThanOrEqual(1);
+    expect(usage.length).toBeLessThanOrEqual(2);
   });
 
   it('接續已結束的 session（同 sessionId、resumeClaudeSessionId）：新 PTY、新畫面、新 session.created', async () => {

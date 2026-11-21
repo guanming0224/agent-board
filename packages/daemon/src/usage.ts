@@ -20,7 +20,7 @@ import {
 } from '@agent-board/protocol';
 
 type Usage = Omit<UsageSummary, 'machineId'>;
-type Counts = Omit<Usage, 'from' | 'to'>;
+export type Counts = Omit<Usage, 'from' | 'to'>;
 
 const DAY_MS = 24 * 60 * 60_000;
 /** 日期換算的快取粒度：時區偏移都是 15 分鐘的倍數，同一格一定同一天。 */
@@ -46,7 +46,7 @@ function addInto(target: Counts, counts: Counts): void {
 const weight = (c: Counts) =>
   c.inputTokens + c.outputTokens + c.cacheReadTokens + c.cacheCreationTokens;
 
-async function* jsonlFiles(dir: string): AsyncGenerator<string> {
+export async function* jsonlFiles(dir: string): AsyncGenerator<string> {
   let dirents;
   try {
     dirents = await readdir(dir, { withFileTypes: true });
@@ -78,7 +78,7 @@ export function sessionIdFromPath(file: string): string | null {
   return null;
 }
 
-interface Parsed {
+export interface Parsed {
   key: string | null;
   at: number | null;
   model: string;
@@ -91,7 +91,7 @@ const text = (value: unknown, max: number): string | null =>
   typeof value === 'string' && value.length > 0 && value.length <= max ? value : null;
 
 /** 同一則回應可能佔好幾行且 usage 相同，有 id 的同 key 只算一次（各欄取最大）。 */
-function parseLine(line: string): Parsed | null {
+export function parseLine(line: string): Parsed | null {
   // 多數行沒有 usage，先擋掉省下 JSON.parse。
   if (!line.includes('"usage"')) return null;
   let record: Record<string, unknown>;
@@ -129,7 +129,7 @@ function parseLine(line: string): Parsed | null {
 export const shiftDay = shiftUsageDay;
 
 /** 把時間換成某時區的日期；同一個 15 分鐘格只算一次（一次掃描有幾十萬行）。 */
-function dayFormatter(timeZone: string): (ms: number) => string {
+export function dayFormatter(timeZone: string): (ms: number) => string {
   const format = new Intl.DateTimeFormat('en-CA', {
     timeZone,
     year: 'numeric',
@@ -273,9 +273,16 @@ export async function scanUsage(
 }
 
 /** 一個對話紀錄檔的讀法：檔名推得出的 session，和逐行解析（Codex 要記住前面的行，所以每個檔案一份）。 */
-interface FileReader {
+export interface FileReader {
   sessionId: string | null;
   parse(line: string): Parsed | null;
+}
+
+/** Codex 讀到一半的狀態（用量歷史的增量快取從檔案中間接著讀時要還原）。 */
+export interface CodexReaderState {
+  model: string;
+  cwd: string | null;
+  previousTotal: number | null;
 }
 
 const claudeFile = (file: string): FileReader => ({
@@ -434,12 +441,17 @@ const record = (value: unknown): Record<string, unknown> | null =>
  * - 0.167 起另有 `token_usage_record`，和 token_count 重複，不讀。
  * session 一律用檔名裡的 thread id（`Session.claudeSessionId` 存的就是它，§19.1）。讀不懂的行略過。
  */
-export function codexFile(file: string, seen: Set<string> = new Set()): FileReader {
-  let model = '';
-  let cwd: string | null = null;
-  let previousTotal: number | null = null;
+export function codexFile(
+  file: string,
+  seen: Set<string> | null = new Set(),
+  init?: CodexReaderState,
+): FileReader & { state(): CodexReaderState } {
+  let model = init?.model ?? '';
+  let cwd: string | null = init?.cwd ?? null;
+  let previousTotal: number | null = init?.previousTotal ?? null;
   return {
     sessionId: CODEX_ROLLOUT_ID.exec(file)?.[1]?.toLowerCase() ?? null,
+    state: () => ({ model, cwd, previousTotal }),
     parse(line) {
       // 多數行是對話內容，先擋掉省下 JSON.parse。
       if (
@@ -475,16 +487,21 @@ export function codexFile(file: string, seen: Set<string> = new Set()): FileRead
       if (totalTokens !== null && totalTokens === previousTotal) return null;
       if (totalTokens !== null) previousTotal = totalTokens;
       // 審查 W10：fork／resume 出來的檔可能整段複製上一個檔的事件。整次掃描共用一份去重（時間＋累計 total）。
+      // seen 是 null（用量歷史）：不在這裡去重，改回傳 key，由呼叫端跨檔去重（同一則事件數字一樣，取最大＝取一份）。
+      let key: string | null = null;
       if (typeof row.timestamp === 'string' && totalTokens !== null) {
-        const key = `${row.timestamp}\0${totalTokens}`;
-        if (seen.has(key)) return null;
-        seen.add(key);
+        key = `${row.timestamp}\0${totalTokens}`;
+        if (seen !== null) {
+          if (seen.has(key)) return null;
+          seen.add(key);
+          key = null;
+        }
       }
       const input = tokenCount(last.input_tokens);
       const cached = Math.min(tokenCount(last.cached_input_tokens), input);
       const at = typeof row.timestamp === 'string' ? Date.parse(row.timestamp) : NaN;
       return {
-        key: null,
+        key,
         at: Number.isNaN(at) ? null : at,
         model,
         sessionId: null,

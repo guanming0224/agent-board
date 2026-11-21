@@ -58,7 +58,7 @@ const backups = () => readdirSync(dir).filter((name) => name.includes('.bak-'));
 
 describe('backup before schema upgrade', () => {
   it('backs up an older database (0600, opens, still the old version) before migrating, and logs the path', () => {
-    expect(SCHEMA_VERSION).toBe(11);
+    expect(SCHEMA_VERSION).toBe(12);
     const path = join(dir, 'hub.db');
     makeV7(path);
     const lines: string[] = [];
@@ -396,9 +396,9 @@ describe('schema v9：工作區', () => {
 
 // P3 整合：三個項目的 v10 片段併成同一個 migration（只升一次）。
 describe('schema v10：P3 只有一個 migration', () => {
-  it('v10 是一個 migration：v9 升一次就有進度卡、Presets、搜尋索引全部（之後還有 v11）', () => {
-    expect(MIGRATIONS).toHaveLength(11);
-    expect(SCHEMA_VERSION).toBe(11);
+  it('v10 是一個 migration：v9 升一次就有進度卡、Presets、搜尋索引全部（之後還有 v11、v12）', () => {
+    expect(MIGRATIONS).toHaveLength(12);
+    expect(SCHEMA_VERSION).toBe(12);
     const path = join(dir, 'hub.db');
     makeAt(path, 9).close();
     const db = openDatabase(path, { log: () => undefined, now: NOW });
