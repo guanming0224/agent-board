@@ -186,7 +186,8 @@ describe('UsageHistoryScanner 全部時間', () => {
     // 快取寫在 daemon 資料夾，只有數字（沒有對話內容）；重開 daemon（新的掃描器）沿用。
     const cacheText = readFileSync(join(data, USAGE_HISTORY_CACHE_FILE), 'utf8');
     expect(cacheText).not.toContain('sessionId');
-    expect(cacheText).not.toContain('a1');
+    // 'a1' 不能出現在十六進位字元以外的位置：鍵是 sha256 十六進位，裸的子字串比對約四次有一次會碰巧命中雜湊。
+    expect(cacheText).not.toMatch(/(?<![0-9a-f])a1(?![0-9a-f])/);
     // 不存路徑（路徑裡有 session id 與專案資料夾）：鍵是路徑的 sha256。
     expect(cacheText).not.toContain(SA);
     expect(cacheText).not.toContain('projects');
