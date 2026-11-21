@@ -1884,7 +1884,7 @@ test.describe('新增 session：團隊模式（§27）', () => {
     );
     // 選了組合：守則多一句「已有隊員」。
     await expect(page.getByTestId('team-mode-guide').locator('pre')).toContainText(
-      'Members from a team preset were started for you',
+      'Members from a team preset were created together with this session',
     );
     await expect(page.getByTestId('team-mode-capped')).toHaveCount(0);
     await page.getByRole('button', { name: '建立 session' }).click();
