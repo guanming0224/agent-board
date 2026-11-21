@@ -4,16 +4,18 @@
 import type {
   PermissionMode,
   Session,
-  Team,
+  TeamModeMember,
+  TeamModeResult,
   TeamPreset,
   TeamPresetRule,
 } from '@agent-board/protocol';
 import type { BoardBackend } from '../shared/backend';
 import { createRules } from '../team/handoffRules';
 import { presetRuleInputs, presetToPlanRows } from '../team/presetPlan';
-import { runPlan } from '../team/runPlan';
 import {
+  isResearchKind,
   presetRows,
+  rowUsesWorktree,
   validatePlan,
   type PlanError,
   type PlanRow,
@@ -122,70 +124,45 @@ export function ruleSessionIds(
   return ids;
 }
 
-export interface TeamModeStartResult {
-  /** 隊長所在的團隊（找不到＝hub 沒建，例如舊 hub）。 */
-  teamId: string | null;
+/**
+ * 送給 hub 的隊員列（審查 W2：hub 在建立隊長的同一個請求裡開好隊員才回應）。worktree 照角色規則與資料夾是不是 git
+ * 算好（`rowUsesWorktree`）；唯讀由 hub 依角色決定。名稱只用在 session 名稱，不進守則。
+ */
+export function teamMembersInput(members: TeamModeMembers, gitOk: boolean): TeamModeMember[] {
+  return members.rows.map((row) => ({
+    name: row.name.trim(),
+    role: row.role as TeamModeMember['role'],
+    ...(isResearchKind(row.kind) ? { kind: row.kind } : {}),
+    permissionMode: row.mode,
+    model: row.model?.trim() || null,
+    useWorktree: rowUsesWorktree(row, gitOk),
+  }));
+}
+
+export interface TeamModeRulesResult {
   created: number;
   failed: number;
-  rulesCreated: number;
-  rulesFailed: number;
 }
 
 /**
- * 隊長建好之後開隊員：找到 hub 建的團隊（名稱＝session 名稱、隊長＝這個 session），沿用 runPlan 補成員
- * （同機器、同 cwd、worktree 照 Preset 的列與角色規則，部分失敗保留已建的），再照 Preset 建交接規則。
+ * hub 回來之後照 Preset 建交接規則（隊長列換成這個 session、開好的隊員換成它們的 session，沒開的列略過）。
+ * 交接規則不影響守則，所以留在網頁建（和套用 Preset 同一套 createRules）。
  */
-export async function startTeamMembers(
+export async function createTeamModeRules(
   backend: BoardBackend,
-  input: {
-    lead: Session;
-    members: TeamModeMembers;
-    machineId: string;
-    cwd: string;
-    projectId: string | null;
-    gitOk: boolean;
-  },
-): Promise<TeamModeStartResult> {
-  const { lead, members } = input;
-  const empty = { created: 0, failed: 0, rulesCreated: 0, rulesFailed: 0 };
-  let team: Team | null = null;
-  for (const candidate of (await backend.listTeams()).filter((t) => t.name === lead.name)) {
-    const roster = await backend.listTeamMembers(candidate.id);
-    if (roster.some((m) => m.sessionId === lead.id && m.role === 'lead')) {
-      team = candidate;
-      break;
-    }
-  }
-  if (!team) return { teamId: null, ...empty };
-  if (members.rows.length === 0) return { teamId: team.id, ...empty };
-  const result = await runPlan(
-    backend,
-    {
-      team: { existing: team },
-      machineId: input.machineId,
-      cwd: input.cwd,
-      projectId: input.projectId,
-      gitOk: input.gitOk,
-      rows: members.rows,
-    },
-    () => {},
+  lead: Session,
+  members: TeamModeMembers,
+  result: TeamModeResult,
+): Promise<TeamModeRulesResult> {
+  if (members.rules.length === 0) return { created: 0, failed: 0 };
+  const created = new Map(
+    result.members.flatMap((m) => {
+      const row = members.rows[m.index];
+      return row ? [[row.key, m.sessionId] as const] : [];
+    }),
   );
-  let rulesCreated = 0;
-  let rulesFailed = 0;
-  if (members.rules.length > 0) {
-    const { inputs } = presetRuleInputs(
-      members.rules,
-      ruleSessionIds(members, lead.id, result.sessionIds),
-    );
-    const made = await createRules(backend, team.id, inputs);
-    rulesCreated = made.created.length;
-    rulesFailed = made.failed.length;
-  }
-  return {
-    teamId: team.id,
-    created: result.sessionIds.size,
-    failed: result.failed,
-    rulesCreated,
-    rulesFailed,
-  };
+  const { inputs } = presetRuleInputs(members.rules, ruleSessionIds(members, lead.id, created));
+  if (inputs.length === 0) return { created: 0, failed: 0 };
+  const made = await createRules(backend, result.teamId, inputs);
+  return { created: made.created.length, failed: made.failed.length };
 }

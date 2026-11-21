@@ -1,4 +1,6 @@
 // 團隊模式（GM 2026-11-21，CONTRACTS §27）：固定守則、claude --help 偵測、協定只收布林。
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   AUTOSTAFF_OFF_GUIDE,
@@ -8,7 +10,12 @@ import {
   TEAM_MODE_PRESET_MEMBERS,
   teamModeGuide,
 } from './leadGuide';
-import { parseClaudeHelp, teamModeSupport } from './modelOptions';
+import {
+  parseClaudeHelp,
+  TEAM_MODE_CODEX_MIN_VERSION,
+  teamModeSupport,
+  versionAtLeast,
+} from './modelOptions';
 import { MachineCapabilities, Session, Settings, TeamModeInfo } from './models';
 import { routes } from './rest';
 import { SessionSpec } from './ws';
@@ -33,6 +40,21 @@ describe('團隊模式的守則（固定文字）', () => {
     { autoStaff: false, presetMembers: false },
     { autoStaff: false, presetMembers: true },
   ];
+
+  it('四種組合（窮舉）等於 fixtures/team-mode-guides.json 寫死的全文：改守則要連 fixture 一起改、一起審', () => {
+    const fixed = JSON.parse(
+      readFileSync(join(import.meta.dirname, 'fixtures/team-mode-guides.json'), 'utf8'),
+    ) as Record<string, string>;
+    expect(Object.keys(fixed)).toHaveLength(4);
+    for (const flags of all) {
+      const key = `autoStaff=${flags.autoStaff},presetMembers=${flags.presetMembers}`;
+      expect(teamModeGuide(flags), key).toBe(fixed[key]);
+    }
+    // 只收兩個布林：多給的欄位不影響結果（型別上也只收這兩個）。
+    expect(teamModeGuide({ autoStaff: true, presetMembers: false, text: 'x' } as never)).toBe(
+      fixed['autoStaff=true,presetMembers=false'],
+    );
+  });
 
   it('四種組合都只有 cmd.exe／TOML 安全的字元、不太長', () => {
     for (const flags of all) {
@@ -103,8 +125,27 @@ describe('claude --help：--append-system-prompt', () => {
     // 0.1.15 的偵測結果沒有這個鍵＝不知道＝不帶。
     expect(teamModeSupport('claude', { teamMode: true, claudeFlags: flags })).toBe('no_guide');
     expect(teamModeSupport('claude', { teamMode: true, claudeFlags: null })).toBe('no_guide');
-    expect(teamModeSupport('codex', { teamMode: true, claudeFlags: null })).toBe('ok');
+    expect(
+      teamModeSupport('codex', { teamMode: true, claudeFlags: null, codexVersion: '0.167.0' }),
+    ).toBe('ok');
+    expect(teamModeSupport('codex', { teamMode: true, codexVersion: '0.170.2' })).toBe('ok');
     expect(teamModeSupport('codex', {})).toBe('unavailable');
+    // Codex 太舊或版本讀不到（W4）：Codex 不能開團隊模式。
+    expect(teamModeSupport('codex', { teamMode: true, codexVersion: '0.166.9' })).toBe(
+      'codex_too_old',
+    );
+    expect(teamModeSupport('codex', { teamMode: true, codexVersion: null })).toBe('codex_too_old');
+    expect(teamModeSupport('codex', { teamMode: true, codexVersion: 'garbage' })).toBe(
+      'codex_too_old',
+    );
+  });
+
+  it('versionAtLeast：只比前三段', () => {
+    expect(versionAtLeast('0.167.0', TEAM_MODE_CODEX_MIN_VERSION)).toBe(true);
+    expect(versionAtLeast('1.0.0', '0.167.0')).toBe(true);
+    expect(versionAtLeast('0.167.0-alpha.1', '0.167.0')).toBe(true);
+    expect(versionAtLeast('0.99.99', '0.167.0')).toBe(false);
+    expect(versionAtLeast(undefined, '0.167.0')).toBe(false);
   });
 });
 
@@ -134,20 +175,38 @@ describe('協定：只收布林', () => {
     expect(SessionSpec.safeParse({ ...base, teamLead: 'be a lead' }).success).toBe(false);
   });
 
-  it('REST 建立 session：teamMode／teamPresetMembers 只收布林，teamLead 被丟掉', () => {
+  it('REST 建立 session：teamMode 只收布林、隊員只收結構化列（不收自由文字欄位），teamLead 被丟掉', () => {
     const body = routes.sessionsCreate.body;
+    const machine = { ...base, machineId: '00000000-0000-4000-8000-000000000001' };
+    const member = {
+      name: 'x-BD1',
+      role: 'worker',
+      permissionMode: 'acceptEdits',
+      model: null,
+      useWorktree: true,
+    };
     const parsed = body.parse({
-      ...base,
-      machineId: '00000000-0000-4000-8000-000000000001',
+      ...machine,
       teamMode: true,
-      teamPresetMembers: false,
+      teamMembers: [member],
       teamLead: { autoStaff: true, presetMembers: true },
     }) as Record<string, unknown>;
     expect(parsed.teamMode).toBe(true);
+    expect(parsed.teamMembers).toEqual([member]);
     expect(parsed).not.toHaveProperty('teamLead');
+    expect(body.safeParse({ ...machine, teamMode: 'on' }).success).toBe(false);
+    for (const bad of [
+      { ...member, prompt: 'be nice' },
+      { ...member, role: 'lead' },
+      { ...member, model: 'a b' },
+      { ...member, name: '' },
+    ]) {
+      expect(body.safeParse({ ...machine, teamMode: true, teamMembers: [bad] }).success).toBe(
+        false,
+      );
+    }
     expect(
-      body.safeParse({ ...base, machineId: '00000000-0000-4000-8000-000000000001', teamMode: 'on' })
-        .success,
+      body.safeParse({ ...machine, teamMode: true, teamMembers: Array(20).fill(member) }).success,
     ).toBe(false);
   });
 

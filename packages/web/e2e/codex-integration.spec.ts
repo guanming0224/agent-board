@@ -168,7 +168,7 @@ test('建立管理員、配對機器：daemon 回報 Codex 版本', async ({ pag
       },
       { timeout: 30_000 },
     )
-    .toBe('0.0.0-fake');
+    .toBe('0.167.0-fake');
 });
 
 test('新增頁選 Codex：預覽是 codex 的參數；建立後卡片標 Codex、狀態 NEW', async ({ page }) => {

@@ -15,8 +15,10 @@ import {
   type CodexHookTarget,
   type HookEventName,
   type PermissionMode,
+  TEAM_MODE_CODEX_MIN_VERSION,
   teamModeGuide,
   tomlString,
+  versionAtLeast,
 } from '@agent-board/protocol';
 import type { HookOutput } from './hookServer';
 import { log } from './log';
@@ -44,6 +46,8 @@ export interface CodexArgsInput {
    * `-c developer_instructions="…"` 帶（只在這次啟動有效，不寫 ~/.codex）。resume 也帶。
    */
   teamLead?: { autoStaff: boolean; presetMembers: boolean } | null;
+  /** 這台 codex 的版本（daemon 的 capabilities）：低於 TEAM_MODE_CODEX_MIN_VERSION 不帶守則（W4，第二層）。 */
+  codexVersion?: string | null;
   /** 這個 session 的 hook 位址，寫進每個 hook 指令。 */
   hookTarget: CodexHookTarget;
   /** agent-board MCP server（派工、進度卡，Codex 第二輪）；設定都關著或找不到 server 時不掛。 */
@@ -74,7 +78,14 @@ export function buildCodexArgs(input: CodexArgsInput): string[] {
     }
   }
   if (input.teamLead) {
-    args.push('-c', `developer_instructions="${tomlString(teamModeGuide(input.teamLead))}"`);
+    // 會取代使用者 config.toml 裡自己設的同名鍵（只在這次啟動），CONTRACTS §27.2。
+    if (versionAtLeast(input.codexVersion, TEAM_MODE_CODEX_MIN_VERSION)) {
+      args.push('-c', `developer_instructions="${tomlString(teamModeGuide(input.teamLead))}"`);
+    } else {
+      log.warn(
+        `codex ${input.codexVersion ?? '(版本不明)'} 低於 ${TEAM_MODE_CODEX_MIN_VERSION}，團隊模式的隊長守則這次不帶`,
+      );
+    }
   }
   args.push('--dangerously-bypass-hook-trust');
   for (const override of codexHookOverrides(input.hookTarget)) args.push('-c', override);

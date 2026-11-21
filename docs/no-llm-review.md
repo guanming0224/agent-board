@@ -270,14 +270,22 @@ GM 問「隊長每次都會記得叫隊友嗎？」——原本只有 Claude 自
   一樣是使用者選了選項後由中控台決定的**啟動設定**；Claude／Codex 仍只在使用者（或使用者啟用的規則）送字時才回合，
   中控台不會因為團隊模式多送任何一行。守則只是告訴隊長「先 `list_members`、照節奏開人／派工／封存、小事自己做」，
   真的開人仍要 Claude 自己呼叫 `spawn_member`，受原本的派工設定、人數上限、加開申請、權限上限管。
-- **只收布林**：網頁送 `teamMode`、`teamPresetMembers`（REST body 只收布林，`SessionSpec.teamLead` 從 body 拿掉）；hub 依
-  設定填 `teamLead: { autoStaff, presetMembers }`（zod `.strict()`，多的欄位拒絕）送 daemon；daemon 用這兩個布林選常數。
-  使用者與網頁送不進任何文字到命令列。
-- **`check:no-llm`**：`CLAUDE_FLAGS` 加 `--append-system-prompt`；新增檢查 3d：`session.ts` 的 `--append-system-prompt` 與
-  `codex.ts` 的 `developer_instructions=` 各只能出現一次，值只能是 `teamModeGuide(input.teamLead)`。Codex 的 `-c` 本來就在
-  允許清單。`CALL_SITES` 不變（沒有新的連線、行程或終端機輸入點）。
-- 一建立就成為團隊（hub 在建立 session 的同一個交易裡建團隊、加隊長）與照 Preset 開隊員（網頁沿用 `runPlan` 呼叫
-  `createSession`，隊員沒有第一個指令、待命）都不送字、不呼叫模型。
+- **只收布林**：守則只看 hub 填的 `teamLead: { autoStaff, presetMembers }`（zod `.strict()`，多的欄位拒絕）；網頁送的
+  `teamMode` 是布林，`SessionSpec.teamLead` 從 REST body 拿掉。Preset 隊員（審查 W2）是結構化列 `teamMembers`
+  （名稱、角色、權限、模型、worktree），名稱只當 session 名稱，**不進守則**；守則只知道「有沒有開成隊員」這個布林。
+  daemon 用這兩個布林選常數。使用者與網頁送不進任何文字到守則。
+- **`check:no-llm`**：`CLAUDE_FLAGS` 加 `--append-system-prompt`；新增檢查 3d（`scripts/no-llm-team-mode.mjs`，審查 W1 收緊）：
+  去掉註解、空白正規化後**整句比對**——`session.ts` 的 `'--append-system-prompt'` 只出現一次，而且整句是
+  `args.push('--append-system-prompt', teamModeGuide(input.teamLead));`；`codex.ts` 的 `developer_instructions` 只出現一次，
+  整句是 ``args.push('-c', `developer_instructions="${tomlString(teamModeGuide(input.teamLead))}"`);``；兩檔的
+  `teamModeGuide(` 都只能呼叫這一次。另外鎖住 `teamModeGuide` 本身：簽名只收兩個布林、本體只能拼 `TEAM_MODE_*` 常數
+  （沒有字串、樣板字串、其他識別字），每個 `TEAM_MODE_*` 只能是字串字面值用 `+` 串接；protocol 測試逐字比對四種組合與
+  `fixtures/team-mode-guides.json`。反例（`+ input.name`、樣板字串、多帶一次、換值、簽名多收文字）在
+  `scripts/no-llm-team-mode.test.mjs`（列進 `test:install`）一定失敗。Codex 的 `-c` 本來就在允許清單。
+  `CALL_SITES` 不變（沒有新的連線、行程或終端機輸入點）。
+- Codex 的 `-c developer_instructions` 會取代使用者自己在 config.toml 設的同名鍵（只在這次啟動）；codex 低於 0.167.0 不帶。
+- 一建立就成為團隊、照 Preset 開隊員（hub 在建立隊長的同一個請求裡開好隊員，隊員沒有第一個指令、待命、不帶守則）、
+  團隊變了或設定變了重新判斷要不要帶守則（`session.teamLead` 只改 daemon 本機清單）都不送字、不呼叫模型。
 
 ## 送進 `claude` 的字從哪裡來（全部）
 

@@ -68,9 +68,16 @@ describe('buildCodexArgs', () => {
   it('團隊模式（§27）：-c developer_instructions="<固定守則>"，在 --dangerously-bypass-hook-trust 前面；resume 也帶；沒開不帶', () => {
     const teamLead = { autoStaff: true, presetMembers: false };
     const expected = `developer_instructions="${teamModeGuide(teamLead)}"`;
-    const fresh = build({ permissionMode: 'default', model: null, teamLead });
+    const v = { codexVersion: '0.167.0' };
+    const fresh = build({ permissionMode: 'default', model: null, teamLead, ...v });
     expect(fresh.slice(4, 7)).toEqual(['-c', expected, '--dangerously-bypass-hook-trust']);
-    const resumed = build({ resumeId: THREAD, permissionMode: 'default', model: null, teamLead });
+    const resumed = build({
+      resumeId: THREAD,
+      permissionMode: 'default',
+      model: null,
+      teamLead,
+      ...v,
+    });
     expect(resumed).toContain(expected);
     expect(resumed.slice(0, 2)).toEqual(['resume', THREAD]);
     expect(
@@ -80,6 +87,14 @@ describe('buildCodexArgs', () => {
     ).toBe(false);
     // 守則只有安全字元，TOML 跳脫後和原文一樣（沒有雙引號、反斜線）。
     expect(expected).not.toContain('\\');
+    // 版本低於下限或讀不到（W4）：不帶。
+    for (const codexVersion of ['0.166.0', null, undefined]) {
+      expect(
+        build({ permissionMode: 'default', model: null, teamLead, codexVersion }).some((a) =>
+          a.startsWith('developer_instructions='),
+        ),
+      ).toBe(false);
+    }
   });
 
   it('推理強度（§26）：白名單內用 -c model_reasoning_effort，接回時也帶；白名單外／不安全的模型名稱不帶', () => {

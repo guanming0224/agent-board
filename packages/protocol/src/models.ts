@@ -5,6 +5,7 @@ import {
   CodexModels,
   MODEL_LISTS_DEFAULT,
   ModelLists,
+  ModelName,
   SessionEffort,
 } from './modelOptions';
 
@@ -1030,6 +1031,37 @@ export const TeamModeInfo = z.object({
   teamLimit: z.number().int().positive(),
 });
 export type TeamModeInfo = z.infer<typeof TeamModeInfo>;
+
+/**
+ * 團隊模式一起開的隊員（CONTRACTS §27.5，審查 W2）：網頁照 Preset／內建組合算好的結構化列，hub 在建立隊長的同一個
+ * 請求裡開好、加進團隊，才回應。**名稱只用在 session 名稱**，不會進守則（守則只看「有沒有開成隊員」這個布林）。
+ * 隊長不在這裡（隊長就是這次建立的 session）；唯讀由 hub 依角色決定（研究、審查）。
+ */
+export const TeamModeMember = z
+  .object({
+    name: z.string().trim().min(1).max(100),
+    role: TeamRole.exclude(['lead']),
+    kind: ResearchKind.optional(),
+    permissionMode: PermissionMode,
+    model: ModelName.nullable(),
+    useWorktree: z.boolean(),
+  })
+  .strict();
+export type TeamModeMember = z.infer<typeof TeamModeMember>;
+
+/** 建立團隊模式 session 的結果（`POST /api/sessions` 回應多的欄位；舊網頁忽略）。 */
+export const TeamModeResult = z.object({
+  teamId: Id,
+  /** 開好而且加進團隊的隊員（照送來的順序）。 */
+  members: z.array(
+    z.object({ index: z.number().int().nonnegative(), sessionId: Id, name: z.string() }),
+  ),
+  /** 沒開成的隊員與原因代碼（hub 的錯誤代碼）。 */
+  failed: z.array(
+    z.object({ index: z.number().int().nonnegative(), name: z.string(), code: z.string() }),
+  ),
+});
+export type TeamModeResult = z.infer<typeof TeamModeResult>;
 
 // ── 全部暫停（P2 項目三，GM 2026-11-08） ─────────────────────
 /**

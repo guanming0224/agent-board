@@ -52,6 +52,9 @@ import {
   Zone,
   ZoneName,
   TeamModeInfo,
+  TeamModeMember,
+  TeamModeResult,
+  TEAM_SIZE_MAX,
 } from './models';
 import { UsageReport } from './usage';
 import { Review, REVIEW_BOARD_KEEP, REVIEW_REASON_MAX, ReviewTargetInput } from './review';
@@ -345,16 +348,21 @@ export const routes = {
     auth: 'user',
     /** zoneId：放在哪個工作區（P2 §2：新建 session 放在目前工作區）；沒帶＝排第一個的工作區。 */
     /**
-     * 團隊模式（CONTRACTS §27）：`teamMode: true`＝建立時就成為新團隊的隊長、啟動時帶固定守則；`teamPresetMembers`：
-     * 網頁接著會照 Preset 開隊員（守則多一句）。只收布林，`SessionSpec.teamLead` 由 hub 填，網頁送不進來。
+     * 團隊模式（CONTRACTS §27）：`teamMode: true`＝建立時就成為新團隊的隊長、啟動時帶固定守則；`teamMembers`：
+     * 一起開的隊員（結構化列，hub 在同一個請求裡先開好才開隊長，結果在回應的 `teamModeResult`）。守則只看布林，
+     * `SessionSpec.teamLead` 由 hub 填，網頁送不進來。
      */
     body: SessionSpec.omit({ teamLead: true }).extend({
       machineId: Id,
       zoneId: Id.optional(),
       teamMode: z.boolean().optional(),
-      teamPresetMembers: z.boolean().optional(),
+      /** 一起開的隊員（審查 W2：hub 在同一個請求裡開好才回應），最多 `TEAM_SIZE_MAX - 1`，實際上限看設定。 */
+      teamMembers: z
+        .array(TeamModeMember)
+        .max(TEAM_SIZE_MAX - 1)
+        .optional(),
     }),
-    response: Session,
+    response: Session.extend({ teamModeResult: TeamModeResult.optional() }),
   }),
   sessionsUpdate: route({
     method: 'PATCH',

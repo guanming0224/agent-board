@@ -18,6 +18,7 @@ import {
   checkCodexProbeCallers,
   CODEX_PROBE_FILE,
 } from './no-llm-codex-probe.mjs';
+import { checkTeamMode } from './no-llm-team-mode.mjs';
 
 const root = join(import.meta.dirname, '..');
 
@@ -364,26 +365,9 @@ problems.push(
   }
 }
 
-// 3d. 團隊模式的守則（§27）：--append-system-prompt 與 developer_instructions 的值只能是 teamModeGuide(...)
-// （leadGuide.ts 的固定常數組合），不能是 spec 裡的字串或任何變數。
-{
-  const checks = [
-    ['packages/daemon/src/session.ts', /'--append-system-prompt',\s*([^)]*\))/g],
-    ['packages/daemon/src/codex.ts', /developer_instructions=("\$\{[^}]*\}")/g],
-  ];
-  for (const [file, re] of checks) {
-    const text = readFileSync(join(root, file), 'utf8');
-    const uses = [...text.matchAll(re)];
-    if (uses.length !== 1) {
-      problems.push(`${file}：團隊模式的守則應該剛好組一次（找到 ${uses.length} 次）`);
-    }
-    for (const [, value] of uses) {
-      if (!/^"?(\$\{tomlString\()?teamModeGuide\(input\.teamLead\)\)?\}?"?$/.test(value.trim())) {
-        problems.push(`${file}：團隊模式的守則只能是 teamModeGuide(input.teamLead)，找到 ${value}`);
-      }
-    }
-  }
-}
+// 3d. 團隊模式的守則（§27）：--append-system-prompt 與 developer_instructions 的值只能是 teamModeGuide(input.teamLead)
+// 整句比對，teamModeGuide 只能拼 leadGuide.ts 的 TEAM_MODE_* 字面值（scripts/no-llm-team-mode.mjs，反例測試在 .test.mjs）。
+problems.push(...checkTeamMode((file) => readFileSync(join(root, file), 'utf8')));
 
 // 3c. codex 的參數與子指令（只允許互動式 TUI 用的）。
 for (const file of CODEX_FILES) {

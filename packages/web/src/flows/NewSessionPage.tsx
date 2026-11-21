@@ -9,6 +9,7 @@ import {
   codexPermissionArgs,
   PermissionMode,
   supportsFallbackModel,
+  TEAM_MODE_CODEX_MIN_VERSION,
   teamModeGuide,
   teamModeSupport,
   validEffort,
@@ -63,7 +64,8 @@ import { usePresetList } from '../team/presetStore';
 import { refreshTeams } from '../team/store';
 import { PRESET_IDS } from '../team/teamPlan';
 import {
-  startTeamMembers,
+  createTeamModeRules,
+  teamMembersInput,
   teamModeMembers,
   teamModePlanError,
   type TeamModeChoice,
@@ -240,7 +242,12 @@ export function NewSessionPage() {
         ? t('flows.teamMode.dispatchOff')
         : codex && !info.codexMcp
           ? t('flows.teamMode.codexMcpOff')
-          : null;
+          : teamSupport === 'codex_too_old'
+            ? t('flows.teamMode.codexTooOld', {
+                machine: machine?.name ?? '—',
+                min: TEAM_MODE_CODEX_MIN_VERSION,
+              })
+            : null;
   const teamOn = !!info && teamBlocked === null && (teamChoice ?? info.defaultOn);
   const teamName = name.trim();
   const teamMembers = teamOn
@@ -357,9 +364,14 @@ export function NewSessionPage() {
         ...(codex ? { agent } : {}),
         // 新建 session 放在目前工作區（P2 §2.3）。
         zoneId: currentZoneId(),
-        // 團隊模式（§27）：只送布林，守則文字在 hub／daemon。
+        // 團隊模式（§27）：teamMode 只是布林，守則文字在 hub／daemon；隊員是結構化列，hub 在同一個請求裡開好（審查 W2）。
         ...(teamOn
-          ? { teamMode: true, teamPresetMembers: (teamMembers?.rows.length ?? 0) > 0 }
+          ? {
+              teamMode: true,
+              ...(teamMembers && teamMembers.rows.length > 0
+                ? { teamMembers: teamMembersInput(teamMembers, !advice.notGit) }
+                : {}),
+            }
           : {}),
       });
       // 清掉名稱，避免連按建立出第二個一樣的 session。
@@ -369,30 +381,36 @@ export function NewSessionPage() {
       setNote({ text: done });
       let teamText: string | null = null;
       let teamFailed = false;
+      const teamResult = created.teamModeResult;
       if (teamOn && teamMembers && teamMembers.rows.length > 0) {
-        try {
-          const result = await startTeamMembers(backend, {
-            lead: created,
-            members: teamMembers,
-            machineId,
-            cwd: cwd.trim(),
-            projectId: projectId || null,
-            gitOk: !advice.notGit,
-          });
-          teamText =
-            result.teamId === null
-              ? t('flows.teamMode.noTeam')
-              : result.failed > 0
-                ? t('flows.teamMode.partial', {
-                    team: created.name,
-                    created: result.created,
-                    failed: result.failed,
-                  })
-                : t('flows.teamMode.created', { team: created.name, created: result.created });
-          teamFailed = result.teamId === null || result.failed > 0;
-        } catch (e) {
-          teamText = t('flows.teamMode.membersFailed', { error: errorText(e) });
+        if (!teamResult) {
+          teamText = t('flows.teamMode.noTeam');
           teamFailed = true;
+        } else {
+          const failed = teamResult.failed;
+          teamText =
+            failed.length > 0
+              ? t('flows.teamMode.partial', {
+                  team: created.name,
+                  created: teamResult.members.length,
+                  failed: failed.map((f) => `${f.name}（${f.code}）`).join('、'),
+                })
+              : t('flows.teamMode.created', {
+                  team: created.name,
+                  created: teamResult.members.length,
+                });
+          teamFailed = failed.length > 0;
+          // 交接規則（Preset 有的話）：不影響守則，回來之後再建。
+          try {
+            const rules = await createTeamModeRules(backend, created, teamMembers, teamResult);
+            if (rules.failed > 0) {
+              teamText += ` ${t('flows.teamMode.rulesFailed', { failed: rules.failed })}`;
+              teamFailed = true;
+            }
+          } catch (e) {
+            teamText += ` ${t('flows.teamMode.membersFailed', { error: errorText(e) })}`;
+            teamFailed = true;
+          }
         }
       }
       // 畫布的團隊框馬上出現（hub 也會推 team.updated，這裡再讀一次不用等輪詢）。
@@ -605,6 +623,11 @@ export function NewSessionPage() {
             {errors.agent && <p className="field-error">{errors.agent}</p>}
           </fieldset>
 
+          {teamInfo.error && (
+            <p className="field-error" data-testid="team-mode-error">
+              {t('flows.teamMode.infoError', { error: teamInfo.error })}
+            </p>
+          )}
           {info && (
             <fieldset className="field" data-testid="team-mode">
               <legend>{t('flows.teamMode.legend')}</legend>
@@ -630,6 +653,11 @@ export function NewSessionPage() {
               {teamOn && !info.autoStaff && (
                 <p className="hint" data-testid="team-mode-autostaff-off">
                   {t('flows.teamMode.autoStaffOff')}
+                </p>
+              )}
+              {teamOn && codex && (
+                <p className="hint" data-testid="team-mode-codex-replaces">
+                  {t('flows.teamMode.codexReplaces')}
                 </p>
               )}
               {teamOn && teamSupport === 'no_guide' && (

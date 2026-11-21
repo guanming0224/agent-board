@@ -3,7 +3,13 @@ import { TeamPresetConfig, type TeamPreset } from '@agent-board/protocol';
 import { describe, expect, it } from 'vitest';
 import type { BoardBackend } from '../shared/backend';
 import { createFakeBackend } from '../shared/fakeBackend';
-import { ruleSessionIds, startTeamMembers, teamModeMembers, teamModePlanError } from './teamMode';
+import {
+  createTeamModeRules,
+  ruleSessionIds,
+  teamMembersInput,
+  teamModeMembers,
+  teamModePlanError,
+} from './teamMode';
 
 const preset: TeamPreset = {
   id: 'p1',
@@ -114,13 +120,11 @@ function snapshot(backend: BoardBackend) {
   return snap!;
 }
 
-describe('startTeamMembers（假後端）', () => {
-  it('隊長建立時就有團隊；照 Preset 開隊員加入同一隊、建交接規則（指到沒開的略過）', async () => {
-    const backend = createFakeBackend();
-    const machine = snapshot(backend).machines.find((m) => m.online && m.capabilities.teamMode)!;
-    const lead = await backend.createSession({
+describe('teamMembersInput／createTeamModeRules（假後端，審查 W2：隊員由 hub 在同一個請求裡開）', () => {
+  const lead = (backend: BoardBackend, machineId: string, extra: Record<string, unknown>) =>
+    backend.createSession({
       name: 'Alpha',
-      machineId: machine.id,
+      machineId,
       projectId: null,
       cwd: '/home/demo/alpha',
       useWorktree: false,
@@ -130,59 +134,67 @@ describe('startTeamMembers（假後端）', () => {
       resumeClaudeSessionId: null,
       firstPrompt: null,
       readOnly: false,
-      teamMode: true,
-      teamPresetMembers: true,
+      ...extra,
     });
-    expect(lead.teamMode).toBe(true);
+
+  it('送給 hub 的列：角色、模式、模型、worktree 照規則（不是 git 就不開）；不帶唯讀與隊長', () => {
     const members = teamModeMembers('preset:p1', [preset], 'Alpha', 12);
-    const result = await startTeamMembers(backend, {
-      lead,
-      members,
-      machineId: machine.id,
-      cwd: '/home/demo/alpha',
-      projectId: null,
-      gitOk: true,
+    expect(teamMembersInput(members, true)).toEqual([
+      {
+        name: 'Alpha-BD1',
+        role: 'worker',
+        permissionMode: 'acceptEdits',
+        model: 'sonnet',
+        useWorktree: true,
+      },
+      {
+        name: 'Alpha-QA',
+        role: 'reviewer',
+        permissionMode: 'plan',
+        model: null,
+        useWorktree: false,
+      },
+    ]);
+    expect(teamMembersInput(members, false)[0]!.useWorktree).toBe(false);
+  });
+
+  it('一次建立：隊長＋隊員都在同一隊、回應帶 teamModeResult；交接規則照 Preset 建（指到沒開的略過）', async () => {
+    const backend = createFakeBackend();
+    const machine = snapshot(backend).machines.find((m) => m.online && m.capabilities.teamMode)!;
+    const members = teamModeMembers('preset:p1', [preset], 'Alpha', 12);
+    const created = await lead(backend, machine.id, {
+      teamMode: true,
+      teamMembers: teamMembersInput(members, true),
     });
-    expect(result).toMatchObject({ created: 2, failed: 0, rulesCreated: 2, rulesFailed: 0 });
-    const roster = await backend.listTeamMembers(result.teamId!);
+    expect(created.teamMode).toBe(true);
+    const result = created.teamModeResult!;
+    expect(result.members.map((m) => [m.index, m.name])).toEqual([
+      [0, 'Alpha-BD1'],
+      [1, 'Alpha-QA'],
+    ]);
+    expect(result.failed).toEqual([]);
+    const roster = await backend.listTeamMembers(result.teamId);
     expect(roster.map((m) => m.role).sort()).toEqual(['lead', 'reviewer', 'worker']);
     const sessions = snapshot(backend).sessions.filter((s) => s.name.startsWith('Alpha-'));
     expect(sessions.map((s) => [s.name, s.readOnly]).sort()).toEqual([
       ['Alpha-BD1', false],
       ['Alpha-QA', true],
     ]);
+    expect(await createTeamModeRules(backend, created, members, result)).toEqual({
+      created: 2,
+      failed: 0,
+    });
   });
 
-  it('找不到團隊（舊 hub 沒建）：不開隊員', async () => {
+  it('沒選組合：沒有 teamModeResult 的隊員，也不建規則', async () => {
     const backend = createFakeBackend();
-    const machine = snapshot(backend).machines.find((m) => m.online)!;
-    const lead = await backend.createSession({
-      name: 'Solo',
-      machineId: machine.id,
-      projectId: null,
-      cwd: '/home/demo/solo',
-      useWorktree: false,
-      permissionMode: 'default',
-      model: null,
-      accountProfile: null,
-      resumeClaudeSessionId: null,
-      firstPrompt: null,
-      readOnly: false,
-    });
-    const result = await startTeamMembers(backend, {
-      lead,
-      members: teamModeMembers('builtin:squad', [], 'Solo', 12),
-      machineId: machine.id,
-      cwd: '/home/demo/solo',
-      projectId: null,
-      gitOk: true,
-    });
-    expect(result).toEqual({
-      teamId: null,
+    const machine = snapshot(backend).machines.find((m) => m.online && m.capabilities.teamMode)!;
+    const created = await lead(backend, machine.id, { teamMode: true });
+    expect(created.teamModeResult?.members).toEqual([]);
+    const none = teamModeMembers('', [preset], 'Alpha', 12);
+    expect(await createTeamModeRules(backend, created, none, created.teamModeResult!)).toEqual({
       created: 0,
       failed: 0,
-      rulesCreated: 0,
-      rulesFailed: 0,
     });
   });
 });

@@ -17,7 +17,7 @@ import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 if (args[0] === '--version') {
-  console.log('codex-cli 0.0.0-fake');
+  console.log('codex-cli 0.167.0-fake');
   process.exit(0);
 }
 

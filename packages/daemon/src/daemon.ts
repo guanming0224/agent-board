@@ -1411,6 +1411,16 @@ export class Daemon {
       case 'session.create':
         void this.createSession(message.requestId, message.sessionId, message.spec);
         return;
+      case 'session.teamLead': {
+        // 團隊模式（§27，審查 W3）：只改本機清單裡的 spec，下次 daemon 重啟接回才用；正在跑的 agent 不受影響。
+        const entry = this.store.sessions.find((s) => s.sessionId === message.sessionId);
+        if (!entry) return;
+        const spec = { ...entry.spec };
+        if (message.teamLead) spec.teamLead = message.teamLead;
+        else delete spec.teamLead;
+        this.store.patch(message.sessionId, { spec });
+        return;
+      }
       case 'session.stop':
         if (this.blocked.has(message.sessionId)) {
           void this.endBlocked(message.sessionId);
@@ -1952,6 +1962,7 @@ export class Daemon {
         firstPrompt: resumeId ? null : entry.pendingFirstPrompt,
         // 團隊模式（§27）：固定的隊長守則，新開、resume、daemon 接回都帶（spec 存在本機 sessions.json）。
         teamLead: spec.teamLead ?? null,
+        codexVersion: this.capabilities?.codexVersion ?? null,
         hookTarget: {
           sessionId,
           socketPath: this.hookServer.path,

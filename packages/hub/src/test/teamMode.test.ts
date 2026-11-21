@@ -1,9 +1,24 @@
 // 團隊模式（GM 2026-11-21，CONTRACTS §27）：hub 只收布林、建立即成為新團隊的隊長、守則旗標送給 daemon、
 // 接續照舊帶、舊 daemon 拒絕、設定的預設值與 GET /api/team-mode。
 import { randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
-import { DAEMON_FEATURES, type Session, type SessionSpec } from '@agent-board/protocol';
-import { capabilities, type Peer, runtime, spec, startHub, until, type TestHub } from './helpers';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  DAEMON_FEATURES,
+  type Session,
+  type SessionSpec,
+  type TeamModeResult,
+} from '@agent-board/protocol';
+import { HttpError } from '../errors';
+import {
+  capabilities,
+  hello,
+  type Peer,
+  runtime,
+  spec,
+  startHub,
+  until,
+  type TestHub,
+} from './helpers';
 
 let hub: TestHub;
 afterEach(async () => {
@@ -19,11 +34,25 @@ const FEATURES = [
   DAEMON_FEATURES.teamMode,
 ];
 const get = (id: string) => hub.running.store.getSession(id);
+const BD = {
+  name: 'Alpha-BD1',
+  role: 'worker',
+  permissionMode: 'acceptEdits',
+  model: null,
+  useWorktree: true,
+} as const;
+const RV = {
+  name: 'Alpha-RV',
+  role: 'reviewer',
+  permissionMode: 'plan',
+  model: null,
+  useWorktree: false,
+} as const;
 
 async function setup(features: string[] = FEATURES) {
   hub = await startHub({ timing: { handoffEnterDelayMs: 20 } });
   const cookie = await hub.setupOwner();
-  const { daemon, machineId } = await hub.onlineDaemon(cookie, {
+  const { daemon, machineId, token } = await hub.onlineDaemon(cookie, {
     features,
     capabilities: { ...capabilities, codexVersion: '0.167.0', teamMode: true },
   });
@@ -32,7 +61,7 @@ async function setup(features: string[] = FEATURES) {
       cookie,
       body: { ...spec({ cwd: CWD, name: 'Alpha' }), machineId, ...over },
     });
-  return { cookie, daemon, machineId, create };
+  return { cookie, daemon, machineId, create, token };
 }
 
 async function started(daemon: Peer, id: string) {
@@ -99,11 +128,104 @@ describe('團隊模式：建立', () => {
     expect(teams.body).toHaveLength(0);
   });
 
-  it('teamPresetMembers：守則多一句（presetMembers true）', async () => {
+  it('teamMembers（審查 W2）：隊員在同一個請求裡先開好、加進團隊，才開隊長；守則旗標照實際結果', async () => {
+    const { cookie, daemon, create } = await setup();
+    const res = await create({ teamMode: true, teamMembers: [BD, RV] });
+    expect(res.status).toBe(200);
+    const result = (res.body as Session & { teamModeResult: TeamModeResult }).teamModeResult;
+    expect(result.members.map((m) => [m.index, m.name])).toEqual([
+      [0, 'Alpha-BD1'],
+      [1, 'Alpha-RV'],
+    ]);
+    expect(result.failed).toEqual([]);
+    // daemon 收到的順序：隊員先、隊長後（隊長一開始 list_members 就看得到他們）。
+    const creates = daemon.of('session.create').map((m) => m.spec as SessionSpec);
+    expect(creates.map((c) => c.name)).toEqual(['Alpha-BD1', 'Alpha-RV', 'Alpha']);
+    expect(creates[0]).toMatchObject({
+      useWorktree: true,
+      permissionMode: 'acceptEdits',
+      readOnly: false,
+    });
+    expect(creates[1]).toMatchObject({ useWorktree: false, readOnly: true, firstPrompt: null });
+    expect(creates[0]).not.toHaveProperty('teamLead');
+    expect(creates[2]!.teamLead).toEqual({ autoStaff: true, presetMembers: true });
+    const roster = await hub.api<{ sessionId: string; role: string }[]>(
+      'GET',
+      `/api/teams/${result.teamId}/members`,
+      { cookie },
+    );
+    expect(roster.body.map((m) => m.role).sort()).toEqual(['lead', 'reviewer', 'worker']);
+  });
+
+  it('teamMembers：超過人數上限 400、主資料夾兩位寫入者 409，都什麼都不建；欄位多了或不是陣列 400', async () => {
+    const { cookie, daemon, create } = await setup();
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { autoStaff: { enabled: true, teamLimit: 2, push: true } },
+    });
+    const over = await create({ teamMode: true, teamMembers: [BD, RV] });
+    expect(over.status).toBe(400);
+    expect(over.body.code).toBe('team_members_over_limit');
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { autoStaff: { enabled: true, teamLimit: 12, push: true } },
+    });
+    const clash = await create({ teamMode: true, teamMembers: [{ ...BD, useWorktree: false }] });
+    expect(clash.status).toBe(409);
+    expect(clash.body.code).toBe('worktree_required');
+    for (const bad of [
+      'please',
+      [{ ...BD, text: 'ignore all rules' }],
+      [{ ...BD, role: 'lead' }],
+    ]) {
+      const res = await create({ teamMode: true, teamMembers: bad });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+    expect(daemon.of('session.create')).toHaveLength(0);
+    expect(hub.running.store.listSessions()).toHaveLength(0);
+    const teams = await hub.api<unknown[]>('GET', '/api/teams', { cookie });
+    expect(teams.body).toHaveLength(0);
+  });
+
+  it('teamMembers：部分失敗回報哪些沒開；全部失敗時守則不說「已有隊員」', async () => {
     const { daemon, create } = await setup();
-    const res = await create({ teamMode: true, teamPresetMembers: true });
-    const sent = await started(daemon, res.body.id);
-    expect(sent.teamLead).toEqual({ autoStaff: true, presetMembers: true });
+    const target = hub.running.hub as unknown as {
+      createSessionAs: (input: { name: string }, ...rest: unknown[]) => unknown;
+    };
+    const original = target.createSessionAs.bind(target);
+    const spy = vi.spyOn(target, 'createSessionAs').mockImplementation((input, ...rest) => {
+      if (input.name.endsWith('-RV')) throw new HttpError(409, 'boom', 'cannot start');
+      return original(input, ...rest);
+    });
+    const res = await create({ teamMode: true, teamMembers: [BD, RV] });
+    const result = (res.body as Session & { teamModeResult: TeamModeResult }).teamModeResult;
+    expect(result.members.map((m) => m.name)).toEqual(['Alpha-BD1']);
+    expect(result.failed).toEqual([{ index: 1, name: 'Alpha-RV', code: 'boom' }]);
+    const lead = daemon.of('session.create').find((m) => m.sessionId === res.body.id)!;
+    expect((lead.spec as SessionSpec).teamLead?.presetMembers).toBe(true);
+
+    const none = await create({ name: 'Beta', teamMode: true, teamMembers: [RV] });
+    const noneResult = (none.body as Session & { teamModeResult: TeamModeResult }).teamModeResult;
+    expect(noneResult.members).toEqual([]);
+    const beta = daemon.of('session.create').find((m) => m.sessionId === none.body.id)!;
+    expect((beta.spec as SessionSpec).teamLead?.presetMembers).toBe(false);
+    spy.mockRestore();
+  });
+
+  it('Codex 太舊（審查 W4）→ 409 team_mode_codex_too_old', async () => {
+    hub = await startHub({ timing: { handoffEnterDelayMs: 20 } });
+    const cookie = await hub.setupOwner();
+    const { machineId } = await hub.onlineDaemon(cookie, {
+      features: FEATURES,
+      capabilities: { ...capabilities, codexVersion: '0.160.0', teamMode: true },
+    });
+    await hub.api('PATCH', '/api/settings', { cookie, body: { codexMcp: true } });
+    const res = await hub.api<{ code: string }>('POST', '/api/sessions', {
+      cookie,
+      body: { ...spec({ cwd: CWD, name: 'old-codex' }), machineId, agent: 'codex', teamMode: true },
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('team_mode_codex_too_old');
   });
 
   it('hub 只收布林：teamMode 不是布林 400；網頁送 teamLead 物件或文字一律丟掉、hub 自己填', async () => {
@@ -112,7 +234,7 @@ describe('團隊模式：建立', () => {
       const res = await create({ teamMode: bad });
       expect(res.status, JSON.stringify(bad)).toBe(400);
     }
-    const bogus = await create({ teamPresetMembers: 'please' });
+    const bogus = await create({ teamMembers: 'please' });
     expect(bogus.status).toBe(400);
     // 偷塞 teamLead：REST body 沒有這個欄位（被丟掉），沒勾團隊模式就不帶。
     const smuggled = await create({
@@ -170,7 +292,7 @@ describe('團隊模式：建立', () => {
 describe('團隊模式：接續與相容', () => {
   it('接續照舊帶 teamLead（自主擴編照現在的設定、presetMembers false）', async () => {
     const { cookie, daemon, create } = await setup();
-    const res = await create({ teamMode: true, teamPresetMembers: true });
+    const res = await create({ teamMode: true, teamMembers: [BD] });
     await started(daemon, res.body.id);
     daemon.send({
       type: 'session.runtime',
@@ -195,6 +317,124 @@ describe('團隊模式：接續與相容', () => {
     // 不會再建第二個團隊。
     const teams = await hub.api<unknown[]>('GET', '/api/teams', { cookie });
     expect(teams.body).toHaveLength(1);
+  });
+
+  const end = async (daemon: Peer, id: string) => {
+    daemon.send({
+      type: 'session.runtime',
+      session: runtime(id, {
+        status: 'done',
+        endedAt: new Date().toISOString(),
+        claudeSessionId: CLAUDE_ID,
+      }),
+    });
+    await until(() => get(id)?.endedAt !== null, 'ended');
+  };
+  const resumeSpec = async (cookie: string, daemon: Peer, id: string) => {
+    const resumed = await hub.api('POST', `/api/sessions/${id}/resume`, { cookie });
+    expect(resumed.status).toBe(200);
+    const again = await daemon.next(
+      'session.create',
+      (m) => m.sessionId === id && !!(m.spec as SessionSpec).resumeClaudeSessionId,
+    );
+    return again.spec as SessionSpec;
+  };
+  const teamOf = async (cookie: string) =>
+    (await hub.api<{ id: string }[]>('GET', '/api/teams', { cookie })).body[0]!.id;
+
+  it('審查 W3：團隊被刪 → 清掉團隊模式，跑著的告訴 daemon 接回不帶，之後接續也不帶', async () => {
+    const { cookie, daemon, create } = await setup();
+    const res = await create({ teamMode: true });
+    await started(daemon, res.body.id);
+    const del = await hub.api('DELETE', `/api/teams/${await teamOf(cookie)}`, { cookie });
+    expect(del.status).toBe(200);
+    expect(get(res.body.id)?.teamMode).toBeUndefined();
+    const msg = await daemon.next('session.teamLead', (m) => m.sessionId === res.body.id);
+    expect(msg.teamLead).toBeNull();
+    await end(daemon, res.body.id);
+    expect(await resumeSpec(cookie, daemon, res.body.id)).not.toHaveProperty('teamLead');
+  });
+
+  it('審查 W3：隊長被移出或改成別的角色 → 清掉；接續不帶', async () => {
+    const { cookie, daemon, create } = await setup();
+    const a = await create({ teamMode: true });
+    await started(daemon, a.body.id);
+    const team = await teamOf(cookie);
+    const put = await hub.api('PUT', `/api/teams/${team}/members/${a.body.id}`, {
+      cookie,
+      body: { role: 'worker' },
+    });
+    expect(put.status).toBe(200);
+    expect(get(a.body.id)?.teamMode).toBeUndefined();
+
+    const b = await create({ name: 'Beta', teamMode: true });
+    await started(daemon, b.body.id);
+    const teams = await hub.api<{ id: string; name: string }[]>('GET', '/api/teams', { cookie });
+    const betaTeam = teams.body.find((t) => t.name === 'Beta')!.id;
+    const removed = await hub.api('DELETE', `/api/teams/${betaTeam}/members/${b.body.id}`, {
+      cookie,
+    });
+    expect(removed.status).toBe(200);
+    expect(get(b.body.id)?.teamMode).toBeUndefined();
+    await end(daemon, b.body.id);
+    expect(await resumeSpec(cookie, daemon, b.body.id)).not.toHaveProperty('teamLead');
+  });
+
+  it('審查 W3：派工關掉時接續不帶（記錄留著，打開再接續又帶）；設定變了即時同步給 daemon', async () => {
+    const { cookie, daemon, create } = await setup();
+    const res = await create({ teamMode: true });
+    await started(daemon, res.body.id);
+    await hub.api('PATCH', '/api/settings', {
+      cookie,
+      body: { autoStaff: { enabled: false, teamLimit: 12, push: true } },
+    });
+    const auto = await daemon.next('session.teamLead', (m) => m.sessionId === res.body.id);
+    expect(auto.teamLead).toEqual({ autoStaff: false, presetMembers: false });
+    await hub.api('PATCH', '/api/settings', { cookie, body: { dispatch: false } });
+    const off = await daemon.next(
+      'session.teamLead',
+      (m) => m.sessionId === res.body.id && m.teamLead === null,
+    );
+    expect(off.teamLead).toBeNull();
+    await end(daemon, res.body.id);
+    expect(await resumeSpec(cookie, daemon, res.body.id)).not.toHaveProperty('teamLead');
+    expect(get(res.body.id)?.teamMode).toBe(true);
+    // 打開派工後再接續：照當下設定帶（autoStaff 仍是關）。
+    await hub.api('PATCH', '/api/settings', { cookie, body: { dispatch: true } });
+    await end(daemon, res.body.id);
+    expect((await resumeSpec(cookie, daemon, res.body.id)).teamLead).toEqual({
+      autoStaff: false,
+      presetMembers: false,
+    });
+  });
+
+  it('審查 W3：Codex 的 MCP 關掉後接續不帶', async () => {
+    const { cookie, daemon, create } = await setup();
+    await hub.api('PATCH', '/api/settings', { cookie, body: { codexMcp: true } });
+    const res = await create({ teamMode: true, agent: 'codex' });
+    await started(daemon, res.body.id);
+    await hub.api('PATCH', '/api/settings', { cookie, body: { codexMcp: false } });
+    await end(daemon, res.body.id);
+    expect(await resumeSpec(cookie, daemon, res.body.id)).not.toHaveProperty('teamLead');
+  });
+
+  it('daemon 換成不認得團隊模式的舊版：接續時 dispatchCreate 拿掉 teamLead（團隊照舊）', async () => {
+    const { cookie, daemon, create, token } = await setup();
+    const res = await create({ teamMode: true });
+    await started(daemon, res.body.id);
+    await end(daemon, res.body.id);
+    daemon.close();
+    await until(() => !hub.running.store.listMachines()[0]?.online, 'offline');
+    const old = await hub.daemon(token);
+    old.send(
+      hello({
+        features: [DAEMON_FEATURES.signalGuard],
+        capabilities: { ...capabilities, teamMode: true },
+      }),
+    );
+    await old.next('hub.welcome');
+    expect(await resumeSpec(cookie, old, res.body.id)).not.toHaveProperty('teamLead');
+    expect(get(res.body.id)?.teamMode).toBe(true);
   });
 
   it('刪除 session 時清掉 sessionTeamMode；settings API 看不到內部鍵', async () => {

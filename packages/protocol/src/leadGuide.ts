@@ -91,7 +91,8 @@ export const DISPATCH_TOOL_DESCRIPTIONS = {
 //   Claude：`--append-system-prompt <文字>`；Codex：`-c developer_instructions="<文字>"`。
 // 只有這幾段常數，hub／daemon 只收布林（SessionSpec.teamLead 的 autoStaff、presetMembers），使用者與網頁送不進任何文字。
 // 文字刻意只用英數、底線、空白與 . , : ; ' ( ) -（不用雙引號、%、^、&、|、<、>、…）：Windows 經 claude.cmd 啟動時
-// cmd.exe 不會把它拆壞，放進 Codex 的 TOML 字串也不必擔心跳脫（仍照樣跳脫）。leadGuide.test 檢查字元。
+// cmd.exe 不會把它拆壞，放進 Codex 的 TOML 字串也不必擔心跳脫（仍照樣跳脫）。teamMode.test 檢查字元，並比對四種組合
+// 等於 fixtures/team-mode-guides.json 寫死的全文；scripts/no-llm-team-mode.mjs 檢查 teamModeGuide 只拼這些常數。
 
 /** 團隊模式的開頭：你是隊長、團隊已經建好。 */
 export const TEAM_MODE_INTRO =
@@ -100,7 +101,7 @@ export const TEAM_MODE_INTRO =
 
 /** 團隊模式：照 Preset 開好的隊員。 */
 export const TEAM_MODE_PRESET_MEMBERS =
-  'Members from a team preset were started for you together with this session and are waiting for work: look at them with list_members before assigning work, give them tasks with send_task, and only add someone if a needed role is still missing.';
+  'Members from a team preset were created together with this session (some may still be starting) and wait for work: look at them with list_members before assigning work, give them tasks with send_task, and only add someone if a needed role is still missing.';
 
 /** 團隊模式的節奏（以 LEAD_STAFFING_RHYTHM 為基礎，改成 cmd.exe 安全的字元）。 */
 export const TEAM_MODE_RHYTHM =
@@ -114,6 +115,9 @@ export const TEAM_MODE_RHYTHM =
 /** 團隊模式、隊長自主擴編關著（AUTOSTAFF_OFF_GUIDE 的意思）。 */
 export const TEAM_MODE_FIXED_STAFF =
   'The user turned off lead auto-staffing: you cannot add or release members. Split the work among the current members with send_task, then end your turn: their results are typed back to you after your turn ends, so do not sleep or poll. If the team lacks a needed skill, tell the user.';
+
+/** 段落之間的分隔（一個空白）。 */
+export const TEAM_MODE_SEPARATOR = ' ';
 
 /** 團隊模式的結尾：小事自己做。 */
 export const TEAM_MODE_SMALL_WORK =
@@ -129,7 +133,7 @@ export function teamModeGuide(flags: { autoStaff: boolean; presetMembers: boolea
     ...(flags.presetMembers ? [TEAM_MODE_PRESET_MEMBERS] : []),
     flags.autoStaff ? TEAM_MODE_RHYTHM : TEAM_MODE_FIXED_STAFF,
     TEAM_MODE_SMALL_WORK,
-  ].join(' ');
+  ].join(TEAM_MODE_SEPARATOR);
 }
 
 /** 團隊模式文字只能有的字元（cmd.exe 與 TOML 都安全）。 */

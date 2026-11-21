@@ -449,6 +449,15 @@ export const HubToDaemon = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('session.create'), requestId: Id, sessionId: Id, spec: SessionSpec }),
   z.object({ type: z.literal('session.stop'), sessionId: Id }),
+  /**
+   * 團隊模式（§27，審查 W3）：更新 daemon 本機清單裡這個 session 的 `spec.teamLead`（daemon 重啟接回時用）。
+   * null＝之後接回不帶守則（不再是隊長、派工關了…）。只送給宣告 `session.teamMode` 的 daemon；正在跑的 agent 不受影響。
+   */
+  z.object({
+    type: z.literal('session.teamLead'),
+    sessionId: Id,
+    teamLead: z.object({ autoStaff: z.boolean(), presetMembers: z.boolean() }).strict().nullable(),
+  }),
   z.object({ type: z.literal('terminal.subscribe'), sessionId: Id }),
   z.object({ type: z.literal('terminal.unsubscribe'), sessionId: Id }),
   z.object({ type: z.literal('terminal.input'), sessionId: Id, data: z.string() }),

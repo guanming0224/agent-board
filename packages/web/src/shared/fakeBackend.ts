@@ -2,6 +2,7 @@
 import {
   AUDIT_SYSTEM_USER,
   AUTO_STAFF_DEFAULT,
+  READ_ONLY_ROLES,
   REVIEW_SETTINGS_DEFAULT,
   CANARY_SOAK_HOURS_DEFAULT,
   CANVAS_LAYOUT_SET,
@@ -58,6 +59,7 @@ import type {
   Team,
   TeamHold,
   TeamHoldResult,
+  TeamModeResult,
   TeamMember,
   TeamResumeResult,
   TeamPreset,
@@ -1275,6 +1277,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         zoneId: input.zoneId ?? DEFAULT_ZONE_ID,
       });
       // 和 hub 相同（§27）：團隊模式一建立就是新團隊的隊長；daemon 太舊、派工關著、Codex 沒開 MCP 都 409。
+      let teamModeResult: TeamModeResult | undefined;
       if (input.teamMode) {
         // e2e 直接塞進畫面的機器不在假後端的清單裡：那種不擋（畫面已經照 capabilities 停用開關）。
         const target = state.machines.find((m) => m.id === input.machineId);
@@ -1299,7 +1302,39 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
           zoneId: created.zoneId,
         };
         teams.push(team);
+        // 和 hub 相同（審查 W2）：隊員在同一個請求裡開好、加進團隊才回應。
+        const rows = input.teamMembers ?? [];
+        if (rows.length + 1 > settings.autoStaff.teamLimit) {
+          throw apiError(400, 'team_members_over_limit', 'Too many members');
+        }
+        const result: TeamModeResult = { teamId: team.id, members: [], failed: [] };
+        rows.forEach((row, index) => {
+          const rowSlug = row.name.replace(/[^\w.-]+/g, '-');
+          const member = session({
+            id: crypto.randomUUID(),
+            name: row.name,
+            machineId: input.machineId,
+            status: 'starting',
+            cwd: input.cwd,
+            worktreePath: row.useWorktree ? `/home/demo/.agent-board-wt/${rowSlug}` : null,
+            branch: row.useWorktree ? `ab/${rowSlug}` : 'main',
+            readOnly: (READ_ONLY_ROLES as readonly string[]).includes(row.role),
+            permissionMode: row.permissionMode,
+            model: row.model,
+            projectId: input.projectId,
+            zoneId: created.zoneId,
+          });
+          state.sessions = [...state.sessions, member];
+          members.push({
+            teamId: team.id,
+            sessionId: member.id,
+            role: row.role,
+            ...(row.kind ? { kind: row.kind } : {}),
+          });
+          result.members.push({ index, sessionId: member.id, name: row.name });
+        });
         members.push({ teamId: team.id, sessionId: created.id, role: 'lead' });
+        teamModeResult = result;
       }
       state.sessions = [...state.sessions, created];
       // 和 hub 相同：第一個指令也是送進終端機的輸入，記一筆 terminal.input。
@@ -1314,7 +1349,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         });
       }
       publish();
-      return created;
+      return teamModeResult ? { ...created, teamModeResult } : created;
     },
     async updateSession(id, patch) {
       const s = find(id);

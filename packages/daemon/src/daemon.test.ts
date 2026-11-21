@@ -856,6 +856,32 @@ describe('daemon 重啟', () => {
     expect(h.runs()[1]?.argv).toEqual(['--resume', claudeId, '--permission-mode', 'plan', ...tail]);
   });
 
+  it('團隊模式（審查 W3）：hub 送 session.teamLead 更新本機清單，重啟接回照新的帶（null＝不帶）', async () => {
+    await h.createAndSubscribe('tl', {
+      permissionMode: 'plan',
+      name: 'tl',
+      teamLead: { autoStaff: true, presetMembers: false },
+    });
+    const claudeId = h.runs()[0]?.argv[1] as string;
+    h.hub.send({
+      type: 'session.teamLead',
+      sessionId: 'tl',
+      teamLead: { autoStaff: false, presetMembers: false },
+    });
+    await waitUntil(
+      () =>
+        JSON.stringify(persisted().sessions[0]?.spec.teamLead) ===
+        JSON.stringify({ autoStaff: false, presetMembers: false }),
+      '清單更新',
+    );
+    h.hub.send({ type: 'session.teamLead', sessionId: 'tl', teamLead: null });
+    await waitUntil(() => persisted().sessions[0]?.spec.teamLead === undefined, '清單拿掉');
+    writeTranscript(claudeId);
+    await h.restartDaemon();
+    await waitUntil(() => h.runs().length === 2, '第二次啟動');
+    expect(h.runs()[1]?.argv).not.toContain('--append-system-prompt');
+  });
+
   it('唯讀 session：拿掉改檔工具；記在清單裡，重啟接回時照樣帶', async () => {
     await h.createAndSubscribe('ro', { readOnly: true, permissionMode: 'plan', name: 'rv' });
     const tools = ['--disallowedTools', 'Edit', 'Write', 'NotebookEdit'];

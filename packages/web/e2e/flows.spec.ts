@@ -1892,16 +1892,18 @@ test.describe('新增 session：團隊模式（§27）', () => {
     const creates = (await calls(page)).filter((c) => c.type === 'create') as {
       input: Record<string, unknown>;
     }[];
-    expect(creates.map((c) => c.input.name)).toEqual([
-      'Alpha',
-      'Alpha-BD1',
-      'Alpha-BD2',
-      'Alpha-RV',
-    ]);
-    expect(creates[0]!.input).toMatchObject({ teamMode: true, teamPresetMembers: true });
+    // 審查 W2：一次請求，隊員是結構化列，hub 開好才回應。
+    expect(creates).toHaveLength(1);
+    expect(creates[0]!.input).toMatchObject({
+      name: 'Alpha',
+      teamMode: true,
+      teamMembers: [
+        { name: 'Alpha-BD1', role: 'worker', permissionMode: 'acceptEdits', useWorktree: true },
+        { name: 'Alpha-BD2', role: 'worker', permissionMode: 'acceptEdits', useWorktree: true },
+        { name: 'Alpha-RV', role: 'reviewer', permissionMode: 'plan', useWorktree: false },
+      ],
+    });
     expect(creates[0]!.input).not.toHaveProperty('teamLead');
-    // 隊員不是團隊模式（守則只給隊長）。
-    expect(creates[1]!.input).not.toHaveProperty('teamMode');
   });
 
   test('人數上限：只開到上限並提示；自主擴編關著：守則改成只能用現有隊員；設定預設開＝一打開就勾著', async ({

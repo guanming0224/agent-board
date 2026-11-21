@@ -58,6 +58,11 @@ import {
   type Settings,
   type Task,
   type AgentKind,
+  READ_ONLY_ROLES,
+  TEAM_MODE_CODEX_MIN_VERSION,
+  type TeamModeMember,
+  type TeamModeResult,
+  teamModeSupport,
   type Team,
   type TeamHold,
   type TeamHoldMode,
@@ -331,6 +336,10 @@ function validAccountProfile(profile: string | null): string | null | undefined 
 }
 
 /** 排隊中的 spec 來自資料庫（可能是舊版寫的）：送出前照協定再驗一次，'' 當 null、id 轉小寫。 */
+/** 研究、審查一律開成唯讀 session（同建立團隊表單與 spawn_member）。 */
+const isReadOnlyTeamRole = (role: string): boolean =>
+  (READ_ONLY_ROLES as readonly string[]).includes(role);
+
 function sanitizeSpec(spec: SessionSpec): SessionSpec | null {
   const parsed = SessionSpec.safeParse({ ...spec, accountProfile: spec.accountProfile || null });
   return parsed.success ? parsed.data : null;
@@ -945,6 +954,8 @@ export class Hub {
     // 機器上線：它的 QUE 變成繼續後會開的（排隊統計）。
     this.pauseCountsChanged();
     this.send(conn.ws, this.welcomeFor(conn.machineId));
+    // 團隊模式（審查 W3）：斷線期間設定或團隊變了，daemon 本機清單裡接回用的守則旗標重送一次。
+    this.syncTeamLeads(conn.machineId);
 
     // session：有回報的用真實狀態；還標著活著但沒回報的，就是在斷線期間消失了。
     const reported = new Set<string>();
@@ -1661,17 +1672,18 @@ export class Hub {
       machineId: string;
       zoneId?: string;
       teamMode?: boolean;
-      teamPresetMembers?: boolean;
+      teamMembers?: TeamModeMember[];
     },
     user: User,
-  ): Session {
-    const { teamMode, teamPresetMembers, ...rest } = input;
-    return this.createSessionAs(
-      rest,
-      user.id,
-      null,
-      teamMode === true ? { presetMembers: teamPresetMembers === true } : null,
-    );
+  ): Session & { teamModeResult?: TeamModeResult } {
+    const { teamMode, teamMembers, ...rest } = input;
+    if (teamMode !== true) return this.createSessionAs(rest, user.id, null);
+    const result: { value?: TeamModeResult } = {};
+    const session = this.createSessionAs(rest, user.id, null, {
+      members: teamMembers ?? [],
+      result,
+    });
+    return result.value ? { ...session, teamModeResult: result.value } : session;
   }
 
   /**
@@ -1703,7 +1715,79 @@ export class Hub {
         'Team mode for Codex needs the Agent Board MCP tools for Codex. Turn them on in Settings first.',
       );
     }
+    // Codex 太舊（審查 W4）：不確定認得 developer_instructions，Codex 不開團隊模式。
+    const capabilities = this.store.getMachine(machineId)?.capabilities;
+    if (agent === 'codex' && teamModeSupport('codex', capabilities) === 'codex_too_old') {
+      throw conflict(
+        'team_mode_codex_too_old',
+        `Team mode for Codex needs codex-cli ${TEAM_MODE_CODEX_MIN_VERSION} or newer on this machine.`,
+      );
+    }
     return { autoStaff: settings.autoStaff.enabled, presetMembers };
+  }
+
+  /**
+   * 團隊模式的隊員（審查 W2）先檢查再開：人數（含隊長）不能超過設定的上限；主資料夾（沒開 worktree、會改檔案的）
+   * 最多一位，隊長算在內（同 hub 的同資料夾規則）。不合就 400／409，什麼都不建。
+   */
+  private checkTeamModeMembers(lead: SessionSpec, members: readonly TeamModeMember[]): void {
+    const limit = this.store.getSettings().autoStaff.teamLimit;
+    if (members.length + 1 > limit) {
+      throw new HttpError(
+        400,
+        'team_members_over_limit',
+        `The team size limit is ${limit} (lead included); send at most ${limit - 1} members`,
+      );
+    }
+    const writesMain = (readOnly: boolean, useWorktree: boolean) => !readOnly && !useWorktree;
+    const mainWriters =
+      (writesMain(lead.readOnly, lead.useWorktree) ? 1 : 0) +
+      members.filter((m) => writesMain(isReadOnlyTeamRole(m.role), m.useWorktree)).length;
+    if (mainWriters > 1) {
+      throw conflict(
+        'worktree_required',
+        'Members that edit files each need their own worktree (only one may share the folder).',
+      );
+    }
+  }
+
+  /** 開一位團隊模式的隊員並加進團隊（同機器、同資料夾、沒有第一個指令）。失敗回錯誤代碼。 */
+  private startTeamModeMember(
+    lead: SessionSpec,
+    member: TeamModeMember,
+    team: Team,
+    machineId: string,
+    userId: string | null,
+  ): { sessionId: string } | { code: string } {
+    try {
+      const created = this.createSessionAs(
+        {
+          name: member.name,
+          projectId: lead.projectId,
+          cwd: lead.cwd,
+          useWorktree: member.useWorktree,
+          permissionMode: member.permissionMode,
+          model: member.model,
+          accountProfile: null,
+          resumeClaudeSessionId: null,
+          firstPrompt: null,
+          readOnly: isReadOnlyTeamRole(member.role),
+          machineId,
+          zoneId: team.zoneId,
+        },
+        userId,
+        null,
+      );
+      this.store.upsertTeamMember({
+        teamId: team.id,
+        sessionId: created.id,
+        role: member.role,
+        ...(member.kind ? { kind: member.kind } : {}),
+      });
+      return { sessionId: created.id };
+    } catch (error) {
+      return { code: error instanceof HttpError ? error.code : 'start_failed' };
+    }
   }
 
   /**
@@ -1714,7 +1798,10 @@ export class Hub {
     input: SessionSpec & { machineId: string; zoneId?: string },
     userId: string | null,
     dispatchedBy: string | null,
-    teamMode: { presetMembers: boolean } | null = null,
+    teamMode: {
+      members: readonly TeamModeMember[];
+      result: { value?: TeamModeResult };
+    } | null = null,
   ): Session {
     // teamLead 只能由 hub 依 teamMode 布林填（REST body 本來就沒有這個欄位，這裡再拿掉一次）。
     const { machineId, zoneId = this.store.defaultZoneId(), ...withLead } = input;
@@ -1726,10 +1813,39 @@ export class Hub {
     const agent = agentOf(base);
     if (agent === 'codex') this.assertCodexReady(machineId, base);
     const given: SessionSpec = teamMode
-      ? { ...base, teamLead: this.teamLeadSpec(machineId, agent, teamMode.presetMembers) }
+      ? { ...base, teamLead: this.teamLeadSpec(machineId, agent, false) }
       : base;
-    const spec = this.checkModelOptions(machineId, given);
+    let spec = this.checkModelOptions(machineId, given);
     this.assertCwdNotDeleting(machineId, spec.cwd);
+    if (teamMode) this.checkTeamModeMembers(spec, teamMode.members);
+    // 團隊模式：一建立就是新團隊的隊長（名稱＝session 名稱，同 spawn_member 第一次開人時建的團隊）。
+    const team: Team | null = teamMode
+      ? {
+          id: randomUUID(),
+          name: spec.name,
+          goal: '',
+          doneCriteria: '',
+          color: DEFAULT_TEAM_COLOR,
+          contextMd: '',
+          taskAuto: false,
+          zoneId,
+        }
+      : null;
+    if (team && teamMode) {
+      // 隊員先開好、加進團隊，再開隊長（審查 W2）：隊長一開始 list_members 就看得到他們；守則那一句照實際結果帶。
+      this.store.upsertTeam(team);
+      const result: TeamModeResult = { teamId: team.id, members: [], failed: [] };
+      teamMode.members.forEach((member, index) => {
+        const started = this.startTeamModeMember(spec, member, team, machineId, userId);
+        if ('sessionId' in started) {
+          result.members.push({ index, sessionId: started.sessionId, name: member.name });
+        } else {
+          result.failed.push({ index, name: member.name, code: started.code });
+        }
+      });
+      teamMode.result.value = result;
+      spec = { ...spec, teamLead: { ...spec.teamLead!, presetMembers: result.members.length > 0 } };
+    }
     const now = this.nowIso();
     const session: Session = {
       id: randomUUID(),
@@ -1765,19 +1881,6 @@ export class Hub {
       ...(spec.fallbackModel ? { fallbackModel: spec.fallbackModel } : {}),
       ...(teamMode ? { teamMode: true as const } : {}),
     };
-    // 團隊模式：一建立就是新團隊的隊長（名稱＝session 名稱，同 spawn_member 第一次開人時建的團隊）。
-    const team: Team | null = teamMode
-      ? {
-          id: randomUUID(),
-          name: spec.name,
-          goal: '',
-          doneCriteria: '',
-          color: DEFAULT_TEAM_COLOR,
-          contextMd: '',
-          taskAuto: false,
-          zoneId,
-        }
-      : null;
     const blocked = this.queueReason(session);
     if (blocked !== undefined) {
       session.status = 'queued';
@@ -1789,7 +1892,6 @@ export class Hub {
       this.store.setSessionModelOpts(session.id, spec);
       if (team) {
         this.store.setSessionTeamMode(session.id);
-        this.store.upsertTeam(team);
         this.store.upsertTeamMember({ teamId: team.id, sessionId: session.id, role: 'lead' });
       }
       this.audit(
@@ -1798,7 +1900,13 @@ export class Hub {
         'session.create',
         JSON.stringify({
           ...(team
-            ? { teamMode: true, teamId: team.id, presetMembers: teamMode?.presetMembers }
+            ? {
+                teamMode: true,
+                teamId: team.id,
+                presetMembers: spec.teamLead?.presetMembers ?? false,
+                members: teamMode?.result.value?.members.length ?? 0,
+                membersFailed: teamMode?.result.value?.failed.length ?? 0,
+              }
             : {}),
           ...(agent === 'codex' ? { agent } : {}),
           name: spec.name,
@@ -2033,6 +2141,80 @@ export class Hub {
     }
   }
 
+  /** 這個 session 現在是不是某一隊的隊長（team_members 的 role）。 */
+  private isTeamLead(sessionId: string): boolean {
+    return this.store
+      .teamsOfSession(sessionId)
+      .some((team) =>
+        this.store
+          .listTeamMembers(team.id)
+          .some((m) => m.sessionId === sessionId && m.role === 'lead'),
+      );
+  }
+
+  /**
+   * 團隊模式的 session 現在該帶的守則旗標（審查 W3）；null＝不帶。不再是隊長就順便清掉 `sessionTeamMode`（不可逆）；
+   * 派工、Codex MCP 關著只是這次不帶（設定打開後再接續又會帶）。presetMembers 一律 false（團隊早就在了）。
+   */
+  private currentTeamLead(session: Session): NonNullable<SessionSpec['teamLead']> | null {
+    if (!session.teamMode) return null;
+    if (!this.isTeamLead(session.id)) {
+      this.dropTeamMode(session.id);
+      return null;
+    }
+    const settings = this.store.getSettings();
+    if (!settings.dispatch) return null;
+    if (agentOf(session) === 'codex') {
+      const capabilities = this.store.getMachine(session.machineId)?.capabilities;
+      if (!settings.codexMcp || teamModeSupport('codex', capabilities) !== 'ok') return null;
+    }
+    return { autoStaff: settings.autoStaff.enabled, presetMembers: false };
+  }
+
+  /** 清掉團隊模式記錄，推給畫面，告訴 daemon 之後接回不帶守則。 */
+  private dropTeamMode(sessionId: string): void {
+    if (!this.store.clearSessionTeamMode(sessionId)) return;
+    const fresh = this.store.getSession(sessionId);
+    if (fresh) {
+      this.broadcast({ type: 'session.updated', session: fresh });
+      this.sendTeamLead(fresh, null);
+    }
+  }
+
+  /** 送 daemon 本機清單要用的守則旗標（只給宣告 session.teamMode 的 daemon；已結束的不用）。 */
+  private sendTeamLead(
+    session: Session,
+    teamLead: NonNullable<SessionSpec['teamLead']> | null,
+  ): void {
+    if (session.endedAt !== null) return;
+    const conn = this.daemonFor(session.machineId);
+    if (!conn?.features.has(DAEMON_FEATURES.teamMode)) return;
+    this.send(conn.ws, { type: 'session.teamLead', sessionId: session.id, teamLead });
+  }
+
+  /**
+   * 團隊刪了、成員被移出或改角色之後（審查 W3）：團隊模式的 session 不再是任何一隊的隊長就清掉記錄，
+   * 之後接續、daemon 接回都不帶守則。rest.ts 的 teamsDelete／teamMembersPut／teamMembersDelete 呼叫。
+   */
+  revalidateTeamModes(): void {
+    for (const id of this.store.teamModeSessionIds()) {
+      if (!this.isTeamLead(id)) this.dropTeamMode(id);
+    }
+  }
+
+  /**
+   * 把現在該帶的守則旗標同步給 daemon（審查 W3）：daemon 重啟接回時用本機 sessions.json 的 spec，這裡讓它跟著
+   * 設定（自主擴編、派工、Codex MCP）與團隊變化。machineId 給了只送那一台（daemon 剛連上）。
+   */
+  private syncTeamLeads(machineId?: string): void {
+    for (const id of this.store.teamModeSessionIds()) {
+      const session = this.store.getSession(id);
+      if (!session || session.endedAt !== null) continue;
+      if (machineId && session.machineId !== machineId) continue;
+      this.sendTeamLead(session, this.currentTeamLead(session));
+    }
+  }
+
   private dispatchCreate(session: Session, spec: SessionSpec): void {
     const conn = this.daemonFor(session.machineId);
     if (!conn) return;
@@ -2183,17 +2365,11 @@ export class Hub {
       // 推理強度與備援模型（§26）：建立時指定的，接續照舊帶。
       ...(session.effort ? { effort: session.effort } : {}),
       ...(session.fallbackModel ? { fallbackModel: session.fallbackModel } : {}),
-      // 團隊模式（§27）：接續也帶守則（claude 的 --append-system-prompt 只對這次啟動有效）。自主擴編照現在的設定；
-      // Preset 隊員那一句只在建立時說，接續時團隊已經在了，守則本來就叫它先 list_members。
-      ...(session.teamMode
-        ? {
-            teamLead: {
-              autoStaff: this.store.getSettings().autoStaff.enabled,
-              presetMembers: false,
-            },
-          }
-        : {}),
     };
+    // 團隊模式（§27，審查 W3）：接續時即時判斷——還是某一隊的隊長、派工開著、Codex 還要 MCP 開著與版本夠新——
+    // 才帶守則（claude 的 --append-system-prompt 只對這次啟動有效）；自主擴編照現在的設定。已經不是隊長就清掉記錄。
+    const teamLead = this.currentTeamLead(session);
+    if (teamLead) spec.teamLead = teamLead;
     this.audit(user.id, id, 'session.resume', '');
     this.store.setPendingSpec(id, spec);
     const blocked = this.queueReason(session);
@@ -3697,6 +3873,14 @@ export class Hub {
       for (const conn of this.daemons.values()) {
         if (conn.helloed) this.send(conn.ws, this.welcomeFor(conn.machineId));
       }
+    }
+    // 團隊模式（審查 W3）：影響守則的設定變了，daemon 接回用的旗標跟著更新。
+    if (
+      prev.dispatch !== next.dispatch ||
+      prev.codexMcp !== next.codexMcp ||
+      prev.autoStaff.enabled !== next.autoStaff.enabled
+    ) {
+      this.guarded('team lead sync', () => this.syncTeamLeads());
     }
     this.drainQueue();
     // 名額上限或限流設定改了：會放出的 QUE 數可能變了。

@@ -136,17 +136,42 @@ export const MODEL_OPTIONS_FEATURE = 'session.modelOptions';
 export const TEAM_MODE_FEATURE = 'session.teamMode';
 
 /**
- * 這台能不能把團隊模式的守則帶給 agent（hub、網頁共用）：daemon 要宣告團隊模式（capabilities.teamMode）；
- * Claude 還要這台 claude 認得 `--append-system-prompt`（`claudeFlags.appendSystemPrompt`）。Codex 用
- * `-c developer_instructions=…`（官方設定鍵），不看版本。
- * 回 `unavailable`＝daemon 太舊（不能開團隊模式）；`no_guide`＝可以建團隊但守則帶不進去；`ok`＝都可以。
+ * Codex 帶團隊模式守則（`-c developer_instructions=…`）的最低版本。官方 config reference 有列這個鍵，但查不到是哪一版
+ * 加的（changelog 沒寫，2026-11-21 查），所以用本機實際對過 `--help`／文件的 codex-cli 0.167.0 當下限；更舊的版本
+ * 對不認得的設定鍵是忽略還是報錯未驗證，乾脆不帶。
+ */
+export const TEAM_MODE_CODEX_MIN_VERSION = '0.167.0';
+
+/** `x.y.z`（可帶預發布或其他尾巴）的前三段比 min 大或相等；讀不懂＝false。 */
+export function versionAtLeast(version: string | null | undefined, min: string): boolean {
+  const parse = (v: string) =>
+    /^(\d+)\.(\d+)\.(\d+)/.exec(v.trim())?.slice(1, 4).map(Number) ?? null;
+  const a = version ? parse(version) : null;
+  const b = parse(min);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! > b[i]!;
+  return true;
+}
+
+/**
+ * 這台能不能把團隊模式的守則帶給 agent（hub、daemon、網頁共用）：daemon 要宣告團隊模式（capabilities.teamMode）；
+ * Claude 還要這台 claude 認得 `--append-system-prompt`（`claudeFlags.appendSystemPrompt`）；Codex 用
+ * `-c developer_instructions=…`（官方設定鍵），版本要 ≥ `TEAM_MODE_CODEX_MIN_VERSION`。
+ * `unavailable`＝daemon 太舊（不能開團隊模式）；`codex_too_old`＝Codex 太舊（Codex 不能開團隊模式）；
+ * `no_guide`＝Claude 可以建團隊但守則帶不進去；`ok`＝都可以。
  */
 export function teamModeSupport(
   agent: Agent,
-  capabilities: { teamMode?: boolean; claudeFlags?: ClaudeFlags | null } | undefined,
-): 'ok' | 'no_guide' | 'unavailable' {
+  capabilities:
+    | { teamMode?: boolean; claudeFlags?: ClaudeFlags | null; codexVersion?: string | null }
+    | undefined,
+): 'ok' | 'no_guide' | 'unavailable' | 'codex_too_old' {
   if (!capabilities?.teamMode) return 'unavailable';
-  if (agent === 'codex') return 'ok';
+  if (agent === 'codex') {
+    return versionAtLeast(capabilities.codexVersion, TEAM_MODE_CODEX_MIN_VERSION)
+      ? 'ok'
+      : 'codex_too_old';
+  }
   return capabilities.claudeFlags?.appendSystemPrompt === true ? 'ok' : 'no_guide';
 }
 

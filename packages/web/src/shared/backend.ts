@@ -61,6 +61,8 @@ import type {
   ZoneGroups,
   ModelLists,
   TeamModeInfo,
+  TeamModeMember,
+  TeamModeResult,
 } from '@agent-board/protocol';
 import type { TerminalStream } from './terminal-contract';
 
@@ -189,17 +191,18 @@ export interface BoardBackend {
 
   /** zoneId：放在哪個工作區（新建 session 放在目前工作區）；沒給＝預設工作區。 */
   /**
-   * 團隊模式（CONTRACTS §27）：`teamMode` 只是布林，守則文字是 hub／daemon 裡的固定常數；`teamPresetMembers`：
-   * 接著會照 Preset 開隊員。舊 hub 不認得這兩個欄位（zod 丟掉），所以畫面看 `getTeamModeInfo` 決定顯不顯示。
+   * 團隊模式（CONTRACTS §27）：`teamMode` 只是布林，守則文字是 hub／daemon 裡的固定常數；`teamMembers`：一起開的隊員
+   * （結構化列，hub 在同一個請求裡開好才回應，結果在 `teamModeResult`）。舊 hub 不認得這些欄位（zod 丟掉），所以畫面看
+   * `getTeamModeInfo` 決定顯不顯示。
    */
   createSession(
     input: Omit<SessionSpec, 'teamLead'> & {
       machineId: string;
       zoneId?: string;
       teamMode?: boolean;
-      teamPresetMembers?: boolean;
+      teamMembers?: TeamModeMember[];
     },
-  ): Promise<Session>;
+  ): Promise<Session & { teamModeResult?: TeamModeResult }>;
   updateSession(
     id: string,
     patch: { name?: string; archived?: boolean; markDone?: true; zoneId?: string },

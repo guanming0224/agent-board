@@ -698,11 +698,15 @@ export function createHubBackend() {
     },
     getSettings: () => call('settingsGet'),
     getModelLists: () => call('modelListsGet'),
-    // 舊 hub 沒有 /api/team-mode（404，或被當成網頁回 HTML）：當成不支援團隊模式，不顯示開關。
+    // 舊 hub 沒有 /api/team-mode（hub 對不認得的 /api 一律回 404 not_found）：當成不支援團隊模式，不顯示開關。
+    // 其他錯誤（斷線、500…）照常丟出，畫面顯示讀不到（審查順手修正）。
     getTeamModeInfo: () =>
       call('teamModeGet').then(
-        (info) => TeamModeInfo.safeParse(info).data ?? null,
-        () => null,
+        (info) => TeamModeInfo.parse(info),
+        (error: unknown) => {
+          if (error instanceof ApiRequestError && error.status === 404) return null;
+          throw error;
+        },
       ),
     updateSettings: (patch) => call('settingsUpdate', { body: patch }),
     pushVapidKey: async () => (await call('pushVapidKey')).publicKey,

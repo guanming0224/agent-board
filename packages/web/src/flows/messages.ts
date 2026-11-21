@@ -378,13 +378,19 @@ export const zhTW: Record<string, string> = {
     '團隊人數上限 {limit} 人（含隊長）：只會開前 {kept} 位隊員，另外 {dropped} 位不開。',
   'flows.teamMode.created': '團隊「{team}」：開好 {created} 位隊員。',
   'flows.teamMode.partial':
-    '團隊「{team}」：開好 {created} 位隊員，{failed} 位沒開成（到團隊面板補）。',
-  'flows.teamMode.noTeam': '沒找到團隊（hub 可能是舊版），隊員沒有開。',
-  'flows.teamMode.membersFailed': '隊員沒開成：{error}',
+    '團隊「{team}」：開好 {created} 位隊員；沒開成：{failed}（到團隊面板補）。',
+  'flows.teamMode.noTeam': 'hub 沒有回報團隊（可能是舊版），隊員沒有開。',
+  'flows.teamMode.membersFailed': '交接規則沒建成：{error}',
+  'flows.teamMode.rulesFailed': '有 {failed} 條交接規則沒建成（到團隊面板補）。',
+  'flows.teamMode.codexTooOld':
+    '{machine} 的 Codex 太舊（要 {min} 以上）才確定認得帶守則的 developer_instructions，Codex 先不能用團隊模式。',
+  'flows.teamMode.codexReplaces':
+    'Codex 會用這段守則取代你在 config.toml 自己設的 developer_instructions（只在這個 session）。',
+  'flows.teamMode.infoError': '讀不到團隊模式的設定：{error}',
   'flows.teamMode.guideTitle': '團隊模式守則（固定文字，啟動時帶給 agent）',
   'flows.teamMode.defaultLabel': '新增 session 預設開「團隊模式」',
   'flows.teamMode.defaultHint':
-    '只改新增 session 頁一打開時的預設值，每次建立前都還能關掉。團隊模式的 session 一建立就是新團隊的隊長，並帶固定的隊長守則。',
+    '只改新增 session 頁一打開時的預設值，每次建立前都還能關掉。團隊模式的 session 一建立就是新團隊的隊長，並帶固定的隊長守則；Codex 的守則會取代你在 config.toml 自己設的 developer_instructions（只在那個 session）。',
   'flows.teamMode.needsDispatch': '派工關著時團隊模式不能用。',
   'flows.new.create': '建立 session',
   'flows.new.creating': '建立中…',
@@ -1341,13 +1347,21 @@ export const en: Record<string, string> = {
     'Team size limit is {limit} (lead included): only the first {kept} members start; {dropped} more are skipped.',
   'flows.teamMode.created': 'Team "{team}": {created} members started.',
   'flows.teamMode.partial':
-    'Team "{team}": {created} members started, {failed} failed (add them from the team panel).',
-  'flows.teamMode.noTeam': 'No team found (the hub may be old); members were not started.',
-  'flows.teamMode.membersFailed': 'Members not started: {error}',
+    'Team "{team}": {created} members started; not started: {failed} (add them from the team panel).',
+  'flows.teamMode.noTeam':
+    'The hub did not report a team (it may be old); members were not started.',
+  'flows.teamMode.membersFailed': 'Handoff rules not created: {error}',
+  'flows.teamMode.rulesFailed':
+    '{failed} handoff rules were not created (add them from the team panel).',
+  'flows.teamMode.codexTooOld':
+    'Codex on {machine} is too old (needs {min} or newer) to be sure it accepts developer_instructions, so team mode is off for Codex.',
+  'flows.teamMode.codexReplaces':
+    'Codex uses this guide instead of any developer_instructions you set in config.toml (for this session only).',
+  'flows.teamMode.infoError': 'Could not read the team mode settings: {error}',
   'flows.teamMode.guideTitle': 'Team mode guide (fixed text passed to the agent at start)',
   'flows.teamMode.defaultLabel': 'New sessions start in team mode by default',
   'flows.teamMode.defaultHint':
-    'Only changes what the New session page starts with; you can still turn it off each time. A team-mode session is the lead of a new team from the start and gets the fixed lead guide.',
+    'Only changes what the New session page starts with; you can still turn it off each time. A team-mode session is the lead of a new team from the start and gets the fixed lead guide; for Codex the guide replaces any developer_instructions you set in config.toml (for that session only).',
   'flows.teamMode.needsDispatch': 'Team mode does not work while dispatch is off.',
   'flows.new.create': 'Create session',
   'flows.new.creating': 'Creating…',

@@ -841,6 +841,21 @@ export class Store {
     return this.teamModeCache;
   }
 
+  /** 團隊模式的 session id（審查 W3：重新檢查還是不是隊長用）。 */
+  teamModeSessionIds(): string[] {
+    return [...this.allTeamModes()];
+  }
+
+  /** 不再是隊長（團隊刪了、被移出或改角色）：拿掉團隊模式，之後接續不帶守則（審查 W3）。 */
+  clearSessionTeamMode(sessionId: string): boolean {
+    const changed =
+      this.db
+        .prepare('DELETE FROM settings WHERE key = ?')
+        .run(`${SESSION_TEAM_MODE_PREFIX}${sessionId}`).changes === 1;
+    this.teamModeCache = null;
+    return changed;
+  }
+
   /** 記下這個 session 是團隊模式（CONTRACTS §27）；只有建立時寫一次。 */
   setSessionTeamMode(sessionId: string): void {
     this.setRaw(`${SESSION_TEAM_MODE_PREFIX}${sessionId}`, true);

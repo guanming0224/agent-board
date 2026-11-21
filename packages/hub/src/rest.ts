@@ -502,6 +502,8 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       hub.broadcastTeam(team.id);
       // 加開申請（§23 S1）：這一隊待處理的申請直接失敗、告訴隊長。
       hub.staffRequests.revalidate();
+      // 團隊模式（審查 W3）：隊長不再是隊長，之後接續不帶守則。
+      hub.revalidateTeamModes();
       return ok;
     },
     teamHold: (ctx) => hub.holdTeam(requireTeam(param(ctx)).id, ctx.body.mode, ctx.user),
@@ -544,6 +546,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       store.upsertTeamMember(member);
       // 隊長改成別的角色：它在這一隊待處理的加開申請直接失敗（§23 S1）。
       hub.staffRequests.revalidate();
+      hub.revalidateTeamModes();
       return member;
     },
     teamMembersDelete: (ctx) => {
@@ -554,6 +557,7 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
       }
       hub.leaveTeamZone(sessionId, team);
       hub.staffRequests.revalidate();
+      hub.revalidateTeamModes();
       return ok;
     },
     teamBroadcast: (ctx) =>
