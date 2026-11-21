@@ -35,6 +35,7 @@ import {
 } from './models';
 import { AgentBoardTool, ProgressCard } from './progress';
 import { CodexUsage, UsageDetail } from './usage';
+import { UsageHistory } from './usageHistory';
 import { ReleaseTarget, SessionHostState, UpdateState } from './release';
 import {
   Review,
@@ -340,6 +341,11 @@ export const DaemonToHub = z.discriminatedUnion('type', [
     detail: UsageDetail.optional().catch(undefined),
     /** Codex 的用量（Codex 第二輪）；這台沒有 Codex 紀錄或 daemon 太舊時不送。壞掉當沒送。 */
     codex: CodexUsage.optional().catch(undefined),
+    /**
+     * 用量歷史（GM 2026-11-21）：機器上掃得到的全部日子（連上 hub 後第一次）或最近幾天＋有變動的日子。
+     * 舊 hub 不認得就忽略（zod 物件預設丟掉不認得的欄位）；壞掉或超過上限當沒送，總數與細項照收。
+     */
+    history: UsageHistory.optional().catch(undefined),
   }),
   z.object({
     type: z.literal('fs.listResult'),
@@ -416,6 +422,11 @@ export const HubToDaemon = z.discriminatedUnion('type', [
     memory: z.boolean().optional(),
     /** `Settings.codexMcp`：新開的 Codex 要不要掛 agent-board MCP（Codex 第二輪）。不送＝不掛。 */
     codexMcp: z.boolean().optional(),
+    /**
+     * hub 收得下 `usage.history` 並會回 `usage.historyAck`（CONTRACTS §28）。舊 hub 不送 → daemon 不送歷史
+     * （舊 hub 本來就丟掉這個欄位，送了只是白白每次回填）。
+     */
+    usageHistory: z.boolean().optional(),
     /** hub 的協定版本（CONTRACTS §21.4）。舊 hub 不送。 */
     protocolVersion: z.number().int().positive().optional(),
     /** 這台的更新目標（依通道）；null＝沒有。舊 hub 不送。 */
@@ -432,6 +443,11 @@ export const HubToDaemon = z.discriminatedUnion('type', [
   }),
   /** 面板按「回滾到上一版」。 */
   z.object({ type: z.literal('release.rollback') }),
+  /**
+   * 用量歷史寫入結果（CONTRACTS §28.2）：ok＝已寫進資料庫，daemon 才把這則記成「送過」；false（寫入失敗）
+   * 下次回報再送。只回給帶 `history.id` 的新 daemon。
+   */
+  z.object({ type: z.literal('usage.historyAck'), id: z.string().min(1).max(64), ok: z.boolean() }),
   /**
    * 面板按「重啟 session host」（owner，CONTRACTS §20.8）：daemon 用服務管理程式重啟 host（該機所有 agent 結束一次，
    * 之後 --resume 接回）。只送給 hello `features` 有 `sessionHost.restart` 的 daemon。

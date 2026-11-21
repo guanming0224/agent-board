@@ -85,7 +85,7 @@ import { DECOMPOSE_PROMPT_START } from './decomposePrompt';
 import { fakeDeepSearch } from './fakeDeepSearch';
 import { fakeSearch } from './fakeSearch';
 import { createFakeReleases } from './fakeRelease';
-import { demoUsageReport } from './fakeUsage';
+import { demoUsageReport, demoUsageHistory } from './fakeUsage';
 import { createFakeReviews } from './fakeReviews';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
@@ -1761,6 +1761,7 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
         zones,
         projects,
       }),
+    usageHistory: async () => demoUsageHistory(state.machines),
     // 機器面板（發版與自動更新）：假資料與規則在 fakeRelease.ts。
     ...createFakeReleases(
       () => state.machines,

@@ -68,7 +68,7 @@ describe('schema v10：team_presets', () => {
   }
 
   it('v9 升級：寫 -v9 備份；team_presets 存在且為空；舊資料（團隊、session、工作區、範本、座標）原封不動', () => {
-    expect(SCHEMA_VERSION).toBe(11);
+    expect(SCHEMA_VERSION).toBe(12);
     const path = join(dir, 'hub.db');
     makeV9(path);
     const before = new Database(path, { readonly: true });

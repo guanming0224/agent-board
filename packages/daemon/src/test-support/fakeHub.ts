@@ -22,6 +22,10 @@ export class FakeHub {
   memory: boolean | undefined = undefined;
   /** hub.welcome 的 codexMcp（Codex 掛 MCP，Codex 第二輪）；undefined＝不送。 */
   codexMcp: boolean | undefined = undefined;
+  /** hub.welcome 的 usageHistory（用量歷史，CONTRACTS §28）；undefined＝舊版 hub，daemon 不送歷史。 */
+  usageHistory: boolean | undefined = undefined;
+  /** 收到帶 id 的歷史時自動回的 ack（null＝不回）。 */
+  historyAck: boolean | null = true;
   private wss!: WebSocketServer;
   private socket: WebSocket | null = null;
   private waiters: { predicate: Predicate; resolve: (m: DaemonToHub) => void }[] = [];
@@ -69,6 +73,16 @@ export class FakeHub {
           ...(this.dispatch === undefined ? {} : { dispatch: this.dispatch }),
           ...(this.memory === undefined ? {} : { memory: this.memory }),
           ...(this.codexMcp === undefined ? {} : { codexMcp: this.codexMcp }),
+          ...(this.usageHistory === undefined ? {} : { usageHistory: this.usageHistory }),
+        } satisfies HubToDaemon),
+      );
+    }
+    if (message.type === 'usage' && message.history?.id && this.historyAck !== null) {
+      socket.send(
+        JSON.stringify({
+          type: 'usage.historyAck',
+          id: message.history.id,
+          ok: this.historyAck,
         } satisfies HubToDaemon),
       );
     }

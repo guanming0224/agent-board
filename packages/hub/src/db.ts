@@ -338,6 +338,35 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX reviews_created ON reviews(created_at);
   `,
+  /*
+   * 12：用量歷史（GM 2026-11-21，CONTRACTS §28）。**只加表，不動既有資料**（升級前照樣寫 -v11 備份）。
+   * usage_history：每台機器「日期（那台機器時區的日）× 來源（claude／codex）× 模型」的四種 token，
+   *   只存數字與更新時間（不存 session、cwd、對話內容）。保存規則見 protocol 的 shouldReplaceHistory：
+   *   最近 2 天以最新為準，更早的只在新值的四項合計 ≥ 舊值時整列換（Claude Code 清掉舊紀錄不會把它歸零）；
+   *   從不刪列。
+   * usage_history_machines：機器名稱、時區、最後寫入時間、最後一次收到完整回填的時間（機器移除後歷史仍可看）。
+   * 不設外鍵：機器刪掉後歷史照留（和 reviews、audit 一樣）。
+   */ `
+  CREATE TABLE usage_history (
+    machine_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('claude', 'codex')),
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL,
+    cache_creation_tokens INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (machine_id, day, source, model)
+  ) WITHOUT ROWID;
+  CREATE TABLE usage_history_machines (
+    machine_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    time_zone TEXT,
+    updated_at TEXT NOT NULL,
+    complete_at TEXT
+  );
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

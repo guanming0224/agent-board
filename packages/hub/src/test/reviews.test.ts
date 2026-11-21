@@ -134,9 +134,9 @@ describe('schema v11：reviews', () => {
         .get();
       old.close();
 
-      expect(SCHEMA_VERSION).toBe(11);
+      expect(SCHEMA_VERSION).toBe(12);
       const db = openDatabase(path, { log: () => undefined });
-      expect(db.pragma('user_version', { simple: true })).toBe(11);
+      expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
       expect(readdirSync(dir).filter((n) => n.includes('.bak-'))).toEqual([
         expect.stringMatching(/^hub\.db\.bak-\d{8}-\d{6}-v10$/),
       ]);

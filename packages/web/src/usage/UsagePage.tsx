@@ -24,7 +24,6 @@ import {
   hasCodexUsage,
   change,
   conversation,
-  allTokens,
   daily,
   overview,
   periodEnding,
@@ -33,25 +32,25 @@ import {
   sortRows,
   sortValue,
   todayOf,
-  TOKEN_KINDS,
-  type Counts,
   type AgentFilter,
   type Measure,
   type OverviewItem,
   type RankKind,
   type RankRow,
   type RankTarget,
-  type Share,
   type SortKey,
   type StackBy,
 } from './model';
 import { TrendChart, type SeriesLabel } from './TrendChart';
+import { Breakdown, Seg, Shares } from './parts';
+import { AllTime } from './AllTime';
 import './messages';
 import './usage.css';
 
 /** hub 只讀記憶體，很便宜；daemon 每 15 分才更新一次，每分鐘問一次就夠。 */
 const REFRESH_MS = 60_000;
-const PERIODS = [7, 30, 90] as const;
+const PERIODS = [7, 30, 90, 'all'] as const;
+type Period = (typeof PERIODS)[number];
 const FIRST_ROWS = 20;
 const PHONE_QUERY = '(max-width: 640px)';
 
@@ -160,38 +159,6 @@ function MachineStates({ machines }: { machines: readonly UsageReportMachine[] }
   );
 }
 
-function Seg<V extends string | number>({
-  label,
-  value,
-  options,
-  onChange,
-  testId,
-}: {
-  label: string;
-  value: V;
-  options: readonly { value: V; label: string }[];
-  onChange: (v: V) => void;
-  testId: string;
-}) {
-  return (
-    <div className="usage-control">
-      <span className="usage-control-label">{label}</span>
-      <div className="seg sm" role="group" aria-label={label} data-testid={testId}>
-        {options.map((o) => (
-          <button
-            key={String(o.value)}
-            type="button"
-            aria-pressed={o.value === value}
-            onClick={() => onChange(o.value)}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function Change({ item }: { item: OverviewItem }) {
   const t = useT();
   const { locale } = useLocale();
@@ -222,29 +189,6 @@ function Change({ item }: { item: OverviewItem }) {
         </span>
       )}
     </p>
-  );
-}
-
-function Breakdown({ counts }: { counts: Counts }) {
-  const t = useT();
-  const { locale } = useLocale();
-  return (
-    <dl className="usage-breakdown">
-      {TOKEN_KINDS.map((k) => (
-        <div key={k}>
-          <dt>{t(`usage.kind.${k}`)}</dt>
-          <dd className="num" title={formatTokensFull(counts[k], locale)}>
-            {formatTokens(counts[k], locale)}
-          </dd>
-        </div>
-      ))}
-      <div className="usage-breakdown-all">
-        <dt>{t('usage.all')}</dt>
-        <dd className="num" title={formatTokensFull(allTokens(counts), locale)}>
-          {formatTokens(allTokens(counts), locale)}
-        </dd>
-      </div>
-    </dl>
   );
 }
 
@@ -470,58 +414,13 @@ function Ranking({ report, period }: { report: UsageReport; period: number }) {
   );
 }
 
-function Shares({
-  title,
-  shares,
-  testId,
-  labelOf,
-  caption,
-}: {
-  title: string;
-  shares: readonly Share[];
-  testId: string;
-  labelOf: (s: Share) => string;
-  caption: string;
-}) {
-  const t = useT();
-  const { locale } = useLocale();
-  const total = shares.reduce((a, s) => a + s.value, 0);
-  const max = Math.max(1, ...shares.map((s) => s.value));
-  return (
-    <section className="usage-card" data-testid={testId}>
-      <h3>
-        {title}
-        <span className="usage-caption">{caption}</span>
-      </h3>
-      {shares.length === 0 ? (
-        <p className="empty">{t('usage.rank.empty')}</p>
-      ) : (
-        <ul className="usage-shares">
-          {shares.map((s) => {
-            const pct = total > 0 ? Math.round((s.value / total) * 100) : 0;
-            return (
-              <li key={s.key} title={formatTokensFull(s.value, locale)}>
-                <span className="usage-share-label">{labelOf(s)}</span>
-                <span className="usage-share-value num">
-                  {formatTokens(s.value, locale)}
-                  <span className="hint-inline"> {t('usage.share.pct', { pct })}</span>
-                </span>
-                <span className="usage-meter" aria-hidden="true">
-                  <span style={{ width: `${(s.value / max) * 100}%` }} />
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </section>
-  );
-}
-
 function Detail({ report: full, refreshing }: { report: UsageReport; refreshing: boolean }) {
   const t = useT();
   const mask = useMaskText();
-  const [period, setPeriod] = useState<number>(30);
+  // 'all'：全部時間（GM 2026-11-21），資料另外向 hub 要（hub 歷史 ∪ 各機器目前的掃描），以月為單位。
+  const [periodChoice, setPeriod] = useState<Period>(30);
+  const allTime = periodChoice === 'all';
+  const period = allTime ? 90 : periodChoice;
   const [stackBy, setStackBy] = useState<StackBy>('type');
   const [measure, setMeasure] = useState<Measure>('conversation');
   // Codex 第二輪：代理維度。沒有 Codex 用量時不顯示切換，畫面和以前一樣。
@@ -554,33 +453,64 @@ function Detail({ report: full, refreshing }: { report: UsageReport; refreshing:
     measure === 'all' ? 'usage.all' : 'usage.conversation',
   )}`;
 
+  const periodSeg = (
+    <Seg
+      label={t('usage.period')}
+      value={periodChoice}
+      options={PERIODS.map((n) => ({
+        value: n,
+        label: n === 'all' ? t('usage.period.all') : t('usage.period.days', { n }),
+      }))}
+      onChange={setPeriod}
+      testId="usage-period"
+    />
+  );
+  const measureSeg = (
+    <Seg
+      label={t('usage.measure')}
+      value={measure}
+      options={[
+        { value: 'conversation', label: t('usage.conversation') },
+        { value: 'all', label: t('usage.all') },
+      ]}
+      onChange={setMeasure}
+      testId="usage-measure"
+    />
+  );
+
   return (
     <div className={`usage-detail${refreshing ? ' refreshing' : ''}`}>
       <MachineStates machines={report.machines} />
-      {!hasDetail ? (
-        <p className="empty" data-testid="usage-no-detail">
-          {t('usage.empty')}
-        </p>
+      {allTime ? (
+        <AllTime
+          filters={
+            <>
+              {periodSeg}
+              {measureSeg}
+            </>
+          }
+          measure={measure}
+          agent={agent}
+          onAgent={setAgent}
+        />
+      ) : !hasDetail ? (
+        <div className="empty" data-testid="usage-no-detail">
+          <p>{t('usage.empty')}</p>
+          {/* 機器都還沒回報（或已移除）時，hub 存的歷史仍可以看。 */}
+          <button
+            type="button"
+            className="sm"
+            onClick={() => setPeriod('all')}
+            data-testid="usage-open-all"
+          >
+            {t('usage.history.open')}
+          </button>
+        </div>
       ) : (
         <>
           <div className="usage-filters">
-            <Seg
-              label={t('usage.period')}
-              value={period}
-              options={PERIODS.map((n) => ({ value: n, label: t('usage.period.days', { n }) }))}
-              onChange={setPeriod}
-              testId="usage-period"
-            />
-            <Seg
-              label={t('usage.measure')}
-              value={measure}
-              options={[
-                { value: 'conversation', label: t('usage.conversation') },
-                { value: 'all', label: t('usage.all') },
-              ]}
-              onChange={setMeasure}
-              testId="usage-measure"
-            />
+            {periodSeg}
+            {measureSeg}
             {codex && (
               <Seg
                 label={t('usage.agent')}

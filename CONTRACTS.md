@@ -587,7 +587,7 @@ hub／protocol 在 P2 第一輪；前端（底部指令列、暫停提示列、�
   - **上限**：依四項合計留前 `USAGE_DETAIL_SESSION_LIMIT`（200）個 session，其餘併成「其他」（`otherSessions` 記幾個），總數不變；列數超過 `USAGE_DETAIL_ROW_LIMIT`（20,000）時 session 數減半重來，全部併成「其他」仍放不下才從最舊的日子丟。
   - **量測**（2026-11-09，開發機一台的真實資料，只讀）：260 個 JSONL、682MB，近 30 天內改過的 247 個、約 16 萬行、其中 4.7 萬行有 usage；一次掃描 1.7–2.5 秒、RSS 約 330MB，和只算總數的舊版（1.7–2.5 秒）差不多；細項 102 個 session、5 個模型、157–198 列，整則 `usage` 訊息 18–21KB。細項保留 30／60／90 天要讀的檔幾乎一樣（247／247／252 個），所以取 90 天（「近 30 天」要和前 30 天比至少要 60 天）。
 - **WS**：`usage { summary, detail? }`。`detail` 是選用欄位，schema 用 `.catch(undefined)`：細項壞掉或超過上限只丟細項、總數照收。舊 daemon 不送 → hub 當「daemon 版本太舊，沒有細項」；`detail.version` 不是 `USAGE_DETAIL_VERSION`（1）也一樣。
-- **hub**：每台最新一筆（總數＋細項）放記憶體，同時存進 settings 表的 `usage:<機器 id>` 鍵（**不升 schema**；`getSettings` 不讀 `usage:` 開頭的鍵，`/api/settings` 看不到），hub 重啟後、下一次掃描前先用上次存的（`restored: true`），`GET /api/machines/:id/usage`（頁首的總數）也一樣。刪機器時一起刪。存檔失敗只記 log。
+- **hub**：每台最新一筆（總數＋細項）放記憶體，同時存進 settings 表的 `usage:<機器 id>` 鍵（**不升 schema**；`getSettings` 不讀 `usage:` 開頭的鍵，`/api/settings` 看不到），hub 重啟後、下一次掃描前先用上次存的（`restored: true`），`GET /api/machines/:id/usage`（頁首的總數）也一樣。刪機器時一起刪。存檔失敗只記 log。2026-11-21 起另有每日歷史（schema v12，§28），刪機器時歷史留著。
 - **REST**：`GET /api/usage`（auth **user**）→ `UsageReport { generatedAt, days, models, machines, sessions, rows }`。`machines[]` 依機器列表順序，`state`：`detail`｜`old_daemon`｜`not_reported`，另有 `online`、`summary`（同頁首）、`countedAt`（細項的統計時間）、`restored`、`timeZone`、`earliestAt`、`otherSessions`。`days` 是各台日期的聯集；`rows` 每列 `[機器索引, 日期索引, 模型索引, session 索引, 輸入, 輸出, 快取讀, 快取寫]`；`sessions[]` 是對應過的 Claude session：`{ machineId, claudeSessionId（null＝這台的「其他」）, cwd, boardSessionId, name, archived, teamId, teamName, zoneId, zoneName, projectId, projectName }`。
 - **對應規則**（`protocol/src/usageReport.ts` 的 `buildUsageReport`，hub 與網頁的假後端共用）：同一台機器、`Session.claudeSessionId` 相同（不分大小寫）的 Agent Board session；好幾個（resume 開的新卡）時取沒封存、較新的。團隊取 `team_members` 裡名稱排序第一個團隊，工作區跟著團隊（沒團隊用 `Session.zoneId`），專案是 `Session.projectId`。對不到的 `boardSessionId: null`，畫面歸「中控台外的 session」並依 cwd 顯示。**已知限制**：Agent Board 只記每個 session 目前的 Claude id，`/clear` 或換過對話之前的用量也算「中控台外」（專案分頁照資料夾合在一起）；各台用自己的時區算日期，網頁的「今天」用瀏覽器時區。
 - **前端**（`web/src/usage/`）：頁首的「近 30 天 N token」與側欄用量區下方的「看用量詳情 →」打開 `#/usage`（`ModalKind` 加 `usage`，桌面置中次畫面、手機全螢幕頁，可深連結）。開著時每分鐘重讀，重讀中保留上一次畫面（淡化）。由上而下：說明（不是官方額度、日期用各台時區）與每台狀態（最後統計時間、hub 重啟後的舊資料、daemon 太舊沒細項、還沒回報、失聯、幾個 session 併成「其他」）→ 一列篩選（期間 7／30／90 天、計算：輸入＋輸出（同頁首）或四項合計，管下面全部）→ 總覽（今天、近 7 天、近 30 天固定；大數字是輸入＋輸出，下方四項拆開＋四項合計；和前一期比，增減只用 ▲▼ 與文字；前一期早於某台最早紀錄時加 ⚠ 說明不完整）→ 每日趨勢（SVG 自己畫的堆疊長條，依 token 類型或依機器（前 4 台各一層、其餘併成「其他機器」）；滑鼠／鍵盤左右鍵看單日數字、可切表格）→ 排行（團隊／session／專案（資料夾）三個分頁，六個數字欄都可排序；點團隊開 `#/team/<id>`，點 session 在畫布聚焦那張卡（封存的開 `#/archive/<id>`；手機開收件匣、團隊頁或全螢幕終端機），專案列聚焦該資料夾用最多的看板 session）→ 依模型、依機器的分布。手機：表格改成清單（每格自帶欄名）、趨勢圖可橫向捲。遮蔽模式下名稱、資料夾、機器名都過 `useMaskText`。假後端：`shared/fakeUsage.ts`（固定種子，demo-studio、demo-gpu 有細項，demo-laptop 沒回報）。
@@ -1507,3 +1507,56 @@ GM 問「隊長每次都會記得叫隊友嗎？」——不會：守則原本�
 - e2e：`flows.spec.ts`（開關、預覽與守則全文、標準組合、送出只有布林、上限提示、自主擴編關、預設開、舊 daemon／舊 claude／派工關／舊 hub、手機 44px 與截圖、設定頁預設值）、`canvas.spec.ts`（新增後畫布出現團隊框與隊員，桌面＋手機）、`team-integration.spec.ts`（真 hub＋真 daemon＋假 claude：隊長收到 `--append-system-prompt`、隊員沒有、隊員有自己的 worktree、`list_members` 是 lead、畫布團隊框、接續照帶）、`codex-integration.spec.ts`（Codex 沒開 MCP 停用；開了真 daemon 帶 `-c developer_instructions`、建立即團隊）。
 - 審查後（2026-11-22）加的測試：`scripts/no-llm-team-mode.test.mjs`（串接 `+ input.name`、樣板字串、多帶一次、換值、簽名多收文字、本體拼別的變數、常數不是字面值都失敗）；protocol 四種組合逐字比對 fixture、`versionAtLeast`、`codex_too_old`、隊員列只收結構化欄位；hub 隊員同一個請求開好且先於隊長、上限 400、寫入者 409、部分失敗與全部失敗、Codex 太舊 409、團隊被刪／隊長被移出或改角色清記錄並送 daemon null、派工關掉接續不帶（記錄留著）且設定變了同步 daemon、Codex MCP 關掉接續不帶、daemon 降版接續拿掉 `teamLead`；daemon `session.teamLead` 更新本機清單、重啟照新的帶、Codex 版本太舊不帶；web 隊員列與規則。
 - **未驗證**：真 claude／codex 帶守則開對話後，隊長是否真的照節奏組隊（沒跑真對話）；Windows 經 `claude.cmd` 帶這段文字（字元已限制在 cmd 安全範圍）；Codex resume 舊 thread 時 `developer_instructions` 是否重新套用。
+
+## 28. 用量：全部時間與 hub 每日歷史（GM 2026-11-21）
+
+> GM 要「從始至今」的用量。原本頁首近 30 天、詳情最多 90 天，hub 只存每台最新一份快照，Claude Code 依 `cleanupPeriodDays` 清掉的紀錄就沒了。GM 選了兩項：①「全部時間」範圍；② hub 每天存一份歷史（同意升 schema）。用量仍然只讀本機對話紀錄、不呼叫模型、不讀 `auth.json`。（本節原編號 §27，因 `feat/team-mode` 用了 §27 改成 §28。）
+
+### 28.1 daemon：全部時間的增量掃描
+
+- `daemon/src/usageHistory.ts` 的 `UsageHistoryScanner`：掃 `<帳號設定目錄>/projects/**/*.jsonl`（同 §18）與 `$CODEX_HOME/sessions/**/*.jsonl`（同 §22.1；和 Codex 細項同一個條件：偵測到 codex 或資料夾裡有紀錄才掃），**不限天數**，算「日期（這台機器的時區）× 來源（claude／codex）× 模型」的四種 token。解析與去重沿用 `usage.ts`（`parseLine`、`codexFile`）：Claude 同一則回應（`message.id`＋`requestId`）、Codex 同一則事件（時間＋累計 total）跨檔只算一次、各欄取最大；沒有 timestamp 的行排不進日子，不算。資料夾先 `realpath` 再去重（符號連結、別名不會算兩次）。
+- **增量快取** `<daemon 資料夾>/usage-history-cache.json`（0600，先寫暫存檔再改名；格式版本 `USAGE_HISTORY_CACHE_VERSION` = 2）：以**路徑的 sha256** 為鍵（路徑裡有 session id 與專案資料夾，不寫進檔案；路徑只在記憶體），每檔記 `size`、`mtimeMs`、讀到的位元組 `offset`、`offset` 前 256 位元組的 sha1、這個檔的彙總數字（沒 key 的行累加成 `[日期, 模型, 四個數字]`；有 key 的每則一筆 `[key 的 48 位元 md5, 日期, 模型, 四個數字]`，彙總時才跨檔去重）、Codex 讀到一半的狀態（目前模型、上一則 total；**不存 cwd**）。**不存對話內容、session id、cwd、路徑、key 原文**。規則：大小與 mtime 都沒變 → 用快取；變大且尾巴雜湊相同（只往後加）→ 從 `offset` 接著讀；變小、同大小但 mtime 變了、尾巴對不上 → 整檔重讀；檔案不見 → 從快取拿掉（hub 已存的不受影響）。**不刪的例外**：這次沒掃 Codex（`codex` 是 null，例如暫時偵測不到）或讀資料夾遇到「不存在」以外的錯（例如權限）→ 那個來源的快取一個都不刪。最後一行沒換行且不是完整 JSON（還在寫）→ 不算，下次從那行開頭讀。時區或快取版本不同 → 整份重來；快取壞掉 → 當沒有。
+- **不擋其他工作**：每 256KB 一塊讀、只有含關鍵字的行才 `JSON.parse`；還沒遇到換行的半行先收成一串塊、看到換行才合併一次（數 MB 的單行不會 O(n²) 複製）；每個檔之間 `setImmediate` 讓出事件迴圈。同樣的 roots 同時只跑一次；roots 不同（例如多了帳號資料夾）就排在後面重掃，不回舊 roots 的結果。連上 hub 後第一次回報**不等**全掃：照舊先送 30／90 天，全掃在背景跑，做完立刻再回報一次（帶回填）。之後每次回報（每 15 分鐘）都做增量掃描。**hub 不支援歷史（welcome 沒有 `usageHistory: true`，即舊 hub）時不掃也不送**。
+- **量測**（2026-11-21，開發機，假資料 2,000 個 JSONL、528MB、15.9 萬則有 usage，時區 Asia/Taipei）：首次全掃 1.35 秒、RSS 峰值比開始時多約 83MB、事件迴圈最大延遲 21ms；沒變動重掃 52ms（0 位元組）；20 個檔往後加 95ms（只讀 4.9KB）；daemon 重啟後讀快取 69ms；快取檔 6.5MB。同一份資料既有的 90 天掃描 974ms、RSS 峰值多約 95MB。（審查修正後重量見 §28.5。）
+
+### 28.2 WS：`usage.history` 與 `usage.historyAck`
+
+- `hub.welcome` 多 `usageHistory: true`（新 hub）。daemon 只在看到它時才送歷史；舊 hub 不送這個欄位 → daemon 不送（舊 hub 本來就丟掉 `history`，送了只會每次重新回填）。
+- `usage` 訊息多一個選用欄位 `history`（`protocol/src/usageHistory.ts` 的 `UsageHistory`，`.optional().catch(undefined)`）：`{ version: 1, timeZone, today, complete, id?, days[], models[]（≤ 200）, rows: [日期索引, 模型索引, 來源（0 claude／1 codex）, 輸入, 輸出, 快取讀, 快取寫][]（≤ 50,000） }`。日期（`UsageDay`）一律是真的日曆日（`shiftUsageDay(d, 0) === d`，`2026-02-30`、`9999-99-99` 不收）。
+- **ack**：hub 寫完回 `usage.historyAck { id, ok }`（ok＝寫進資料庫；寫入失敗、版本看不懂 → false）。daemon 收到 ok 才把這則記成「送過」；沒回或 false → 下次回報照樣再送（含回填）。daemon 最多記 20 則沒回的。整則 `history` 被 schema 丟掉（壞掉）時 hub 收不到 id、不會回 ack，daemon 下次再送。
+- **送什麼**（`historyDelta`）：daemon 記住這條連線 hub 確認寫入過的每格數字（斷線就清空）。每次回報送「還沒確認過或數字變了的格」＋最近 `USAGE_HISTORY_RECENT_DAYS`（2）天的格，新的日子先送，放不下（列數或模型數上限）的下次再送。連上後第一次（記錄是空的）＝**回填**機器上掃得到的全部日子，全部送完那一則標 `complete: true`。**沒東西可送也送一則 `rows: []`**（hub 才知道這是新 daemon）。重連、hub 重啟都會再回填一次（hub 依保存規則合併，重送不會多算）。
+- **相容**：舊 hub＋新 daemon：見上，不送歷史，總數、細項照舊。舊 daemon＋新 hub：舊 daemon 不送 `history`，hub 把它的 90 天細項（`detail`、`codex.detail`）依「日期 × 模型」加總（去掉 session）寫進歷史（`detailToHistoryCells`）。**新 daemon 不退回細項**：同一條連線送過看得懂的 `history` 之後，hub 不再拿細項寫歷史（細項是另一次掃描，可能蓋掉歷史的最近兩天）；新 daemon 首次全掃還沒做完前（還沒送過）仍用細項。`history.version` 看不懂（更新的 daemon）→ 回 ok:false、照舊用細項。
+
+### 28.3 hub：schema v12 與保存規則
+
+- **v12**（`db.ts`，只加表，不動既有資料；升級前照既有慣例寫 `hub.db.bak-…-v11` 備份並驗證）：
+  - `usage_history (machine_id, day, source ∈ {claude, codex}, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, updated_at)`，主鍵 `(machine_id, day, source, model)`，`WITHOUT ROWID`。`day` 是**那台機器時區**的日曆日。不存 session、cwd、對話內容。
+  - `usage_history_machines (machine_id, name, time_zone, updated_at, complete_at)`：機器名稱（移除後顯示用）、時區、最後寫入時間、最後一次收到完整回填的時間（null＝daemon 太舊只送過 90 天）。
+  - 兩張表都**沒有外鍵**：刪機器時 `usage:<機器>` 快照照舊刪，歷史留著（和 reviews、audit 一樣）。不設保留期限，但**每台最多 `USAGE_HISTORY_MACHINE_ROW_LIMIT`（200,000）列**：滿了只更新已有的列、不新增，記 warn（正常一台一年約 365 天 × 幾個模型 × 2 來源，幾千列）。
+  - **退版**：退回 v11 的 hub 要用 `-v11` 備份，備份之後的所有變更都會遺失（README「退版」一節）。
+- **日期用 hub 的時鐘把關**（protocol 的 `trustedHistoryToday`、`historyDayAllowed`）：
+  - daemon 的 `today`（`history.today`；舊格式取細項最後一天）必須落在 **hub 的 UTC 今天 ±1 天**內才可信（各時區 UTC−12～+14 的「今天」一定在這範圍；daemon 時鐘差超過一天就當不可信）。不可信 → 當 null：**這次沒有「最近」，什麼日子都不能變小**。
+  - 寫入前丟掉 `day < 2020-01-01`（`USAGE_HISTORY_MIN_DAY`）與 `day > hub 的明天` 的列（記 warn）。報表也套同樣範圍。
+- **保存規則**（`protocol` 的 `shouldReplaceHistory`；`store.upsertUsageHistory` 用同一規則的 SQL `ON CONFLICT … DO UPDATE … WHERE`，一台一次一個交易）：
+  1. 沒存過 → 寫（四項全 0 的格不寫）。
+  2. `recentFrom ≤ day ≤ today`（今天與昨天，today 是驗過的）→ **以最新為準，可以變小**。
+  3. 其他日子 → 新值的**四項合計 ≥ 舊值**才整列換掉（四個數字永遠來自同一次掃描），否則保留——也就是「曾見過的最大值」。
+  4. 從不刪列：daemon 不送某格（紀錄被清掉、檔案被刪）＝不動。
+  5. **換了時區的完整回填**：`complete: true` 而且 `timeZone` 和 hub 記的不同（記的不是 null）→ 這則送來的格直接換掉、不比大小（日子的歸屬變了，舊時區的大數字不該留著）；沒送到的格不動（不刪）。回填超過 5 萬列分批時，只有最後一則（complete）不比大小。
+  - **取捨**：用「最大值」而不是「最後一次非零值」，因為清理是整檔刪除，同一天可能還剩一部分檔案（變小但非零），「最後一次非零值」會被這種部分值蓋掉；用量只會累加，正常情況下數字不會合理地變小。代價：daemon 修正去重而讓舊日子變小時，更早的日子不會跟著變小（可能略為高估）；最近 2 天仍會更正。最近幾天允許變小是為了今天、昨天的歸屬與去重修正能即時生效；`cleanupPeriodDays` 小於 2 天的機器在這兩天內可能被清掉的紀錄拉低（預設 30 天不受影響）。換時區時沒在新回填裡出現的舊格會留著（可能略為高估）。
+- 寫入在 `recordUsage` 之後（`recordUsageHistory`），失敗只記 log 並回 ack ok:false；同時更新 `usage_history_machines` 的名稱（跟著機器改名）、時區（新值是 null 時保留舊的）、`complete_at`（只在 `complete` 時更新）。
+
+### 28.4 REST 與網頁
+
+- `GET /api/usage/history`（auth **user**）→ `UsageHistoryReport { generatedAt, months[]（YYYY-MM）, models[], machines[], ranges: [機器索引, 來源, 最早一天, 最晚一天][], rows: [機器索引, 月份索引, 模型索引, 來源, 輸入, 輸出, 快取讀, 快取寫][] }`。**以月為單位**：比各機器記憶體裡細項最早一天還早的部分在 SQL 端 `GROUP BY 機器, 月份, 來源, 模型` 加好；和細項重疊的最近日子逐日讀出，和細項（壓成日期 × 模型）每格取四項合計較大者，再按月加（`buildUsageHistoryReport`，hub 與網頁假後端共用）。回應大小只和「月份 × 機器 × 模型」有關，和天數、資料表列數無關。`ranges` 是 SQL 算的每台每個來源有用量的最早／最晚一天（篩選後的「資料範圍」用）。`machines[]` 依機器列表順序，已移除但還有歷史的排在後面（`removed: true`、`online: false`、用 `usage_history_machines.name`）；每台有 `timeZone`、`firstDay`／`lastDay`、`updatedAt`、`completeAt`。
+- **網頁**（`usage/AllTime.tsx`、`usage/history.ts`；共用小元件搬到 `usage/parts.tsx`）：期間多一個「全部」（7／30／90／全部）。選了全部時改向 `/api/usage/history` 要資料（開著時每分鐘重讀），由上而下：篩選（期間、計算、有 Codex 時「代理」、超過一台時「機器」下拉，含已移除的）→ 全部時間合計（大數字＋四項拆開，標資料範圍；各台保存的日期範圍、已移除、「daemon 太舊或還沒回填，只有近 90 天」；說明「hub 每天保存的歷史＋機器上還在的紀錄，每天取較大；Claude Code 依 cleanupPeriodDays 清掉、在 hub 開始保存之前就沒了的紀錄算不到」）→ **每月趨勢**（同一個圖元件，月份從最早有資料的月到這個月，沒資料的月是 0；防呆：月份格式不對不畫、最多 600 個月、比這個月晚的不畫；依 token 類型／機器／代理堆疊；表格檢視欄名「月份」；x 軸標籤依語系，一月與第一個月帶年份）→ 依模型、機器、代理的分布。全部時間沒有排行（hub 歷史不存 session），畫面寫明。所有機器都沒細項時，空狀態多一個「看 hub 保存的全部歷史」按鈕。手機：同一頁，月趨勢可橫向捲。假後端：`shared/fakeUsage.ts` 的 `demoUsageHistory`（demo-studio 7 個月、demo-gpu 5 個月、Codex 6 個月前起，另有已移除的 demo-old-mac）。
+- **no-llm**：daemon 只多讀同一批本機對話紀錄檔並寫自己的快取檔；hub 只讀寫自己的資料表；`usage.historyAck` 走既有的 hub WebSocket。沒有新的連線、行程或送字寫法（`CALL_SITES` 不變）。見 `docs/no-llm-review.md`。
+- **protocol 權限**：本節的 protocol 變更（`usageHistory.ts`、`usage.ts` 的 `UsageDay` 日曆檢查、`ws.ts` 的 `usage.history`、`hub.welcome.usageHistory`、`usage.historyAck`、`routes.usageHistory`）與 `shared/backend.ts`、`hubBackend.ts`、`fakeBackend.ts` 的修改由實作者修改，**合併前須由 Lead 審查**（§8）。
+
+### 28.5 驗證
+
+- daemon `usageHistory.test.ts`：不限 90 天、跨檔去重、和 90 天細項一致、增量快取（沒變／往後加只讀新的／改寫變小／改寫變大尾巴不符／刪除／重開沿用；快取不含對話內容、路徑、session id、Codex cwd）、最後一行沒寫完、數 MB 單行（2 秒內）與接著讀、時區換了、Codex（換算、跨檔去重、接著讀記得模型與上一則 total）、Codex 這次沒掃不刪快取、掃描中換 roots、符號連結別名只算一次、壞快取、`historyDelta`（回填 complete、之後只送最近 2 天與有變的、沒變送空的、沒確認會重送、分批）。`daemon.test.ts`：舊 hub 不掃不送；新 hub 背景全掃完回填、ack 失敗重送、ack 成功後只送空的。
+- hub `test/usageHistory.test.ts`：`UsageDay` 日曆檢查、`trustedHistoryToday`（±1 天、9999-12-31／2000-01-01／2026-11-25／null）、保存規則（舊日不被歸零／變小、最近兩天可變小、比今天晚的不算最近、today 不可信不能變小、force）、今天亂送時舊日不變小、未來與 2020 以前的丟掉、每台列數上限、換時區 force、機器資訊與 `complete_at`、SQL 按月加總與範圍、migration v11→v12（含舊資料：先備份、舊資料不動、新表是空的）、報表（逐日取大再按月、已移除的機器、未來與太舊的月份不進表）、WS＋REST（舊 daemon 細項寫歷史、新 daemon 回填並收到 ack、送過歷史後不退回細項、清掉後不歸零、401、移除機器後仍可看、亂送今天與未來日期、換時區回填、看不懂的版本回 ok:false 改用細項）。
+- web `usage/history.test.ts`（月彙總、跨年、補 0、依機器／來源堆疊、篩選、分布、範圍、空資料、月份防呆）；e2e `flows-usage.spec.ts`（桌面：切全部、說明與已移除機器、表格「月份」、只看 Codex、依代理堆疊、選已移除的機器、切回 30 天；全部機器沒細項仍可打開歷史；手機：整頁不橫向捲）。
+- **審查修正後重量**（2026-11-22，同一份假資料、快取格式 v2）：首次全掃 1.72 秒、RSS 峰值多約 89MB、事件迴圈最大延遲 19ms；沒變動 58ms；20 個檔往後加 76ms；重啟讀快取 68ms；快取檔 6.5MB（鍵改成 sha256 後大小不變）。
+- **未驗證**：真機上的首次全掃時間與記憶體（只用假資料量）；Claude Code 是否會改寫既有 JSONL 中段（假設只往後加；改寫會被尾巴雜湊抓到而整檔重讀，但只改中段且大小、尾巴都不變的情況抓不到）；舊 hub＋新 daemon、舊 daemon＋新 hub 沒有實機混跑（依 welcome 欄位與 zod 行為推論，單元測試涵蓋）。

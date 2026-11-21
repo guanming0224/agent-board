@@ -190,6 +190,83 @@ test.describe('用量詳情（桌面）', () => {
     await expect(page.getByTestId('usage-overview')).toHaveCount(0);
   });
 
+  test('全部：以月為單位、寫出最早日期與「清掉的紀錄算不到」；依來源、機器篩選；已移除的機器仍在', async ({
+    page,
+  }) => {
+    await open(page, '#/usage');
+    await page.getByTestId('usage-period').getByRole('button', { name: '全部' }).click();
+    const all = page.getByTestId('usage-alltime');
+    await expect(all).toBeVisible();
+    // 每日的總覽與排行不在「全部」裡；改成全部時間合計與每月趨勢。
+    await expect(page.getByTestId('usage-overview')).toHaveCount(0);
+    await expect(page.getByTestId('usage-history-summary')).toContainText('全部時間合計');
+    await expect(page.getByTestId('usage-history-note')).toContainText('cleanupPeriodDays');
+    await expect(page.getByTestId('usage-history-note')).toContainText('算不到');
+    // 各台保存的日期範圍；已移除的 demo-old-mac 只剩 hub 歷史。
+    await expect(page.getByTestId('usage-history-coverage')).toContainText(
+      'demo-old-mac（已移除）',
+    );
+    await expect(page.getByTestId('usage-history-machine-m-studio')).toContainText('到');
+    const months = await page.getByTestId('usage-monthly-plot').locator('.usage-hit').count();
+    expect(months).toBeGreaterThanOrEqual(11);
+    // 表格檢視：欄名是月份，列是 YYYY-MM。
+    await page.getByTestId('usage-monthly-table-toggle').click();
+    const table = page.getByTestId('usage-monthly-table');
+    await expect(table.locator('thead th').first()).toHaveText('月份');
+    await expect(table.locator('tbody th').first()).toHaveText(/^\d{4}-\d{2}$/);
+
+    const total = async () =>
+      (await page
+        .getByTestId('usage-history-summary')
+        .locator('.usage-tile-value')
+        .getAttribute('title')) ?? '';
+    const everything = await total();
+    // 只看 Codex：合計變小，依機器分布只剩 demo-studio。
+    await page.getByTestId('usage-agent').getByRole('button', { name: 'Codex' }).click();
+    expect(await total()).not.toBe(everything);
+    await expect(page.getByTestId('usage-history-by-machine').locator('li')).toHaveCount(1);
+    await expect(page.getByTestId('usage-history-by-model')).toContainText('gpt-5-codex');
+    await page.getByTestId('usage-agent').getByRole('button', { name: '合計' }).click();
+    // 依來源堆疊、依機器篩選（已移除的機器也能選）。
+    await page.getByTestId('usage-history-stack').getByRole('button', { name: '依代理' }).click();
+    await expect(page.getByTestId('usage-legend')).toContainText('Codex');
+    await page.getByTestId('usage-history-machine').selectOption('m-old-mac');
+    await expect(page.getByTestId('usage-history-by-machine').locator('li')).toHaveCount(1);
+    await expect(page.getByTestId('usage-history-by-machine')).toContainText('demo-old-mac');
+    await expect(page.getByTestId('usage-history-by-agent')).toHaveCount(1);
+    await page.getByTestId('usage-history-machine').selectOption('all');
+    await page.getByTestId('usage-monthly-table-toggle').click();
+    await page.getByRole('button', { name: '圖', exact: true }).click();
+    await page
+      .getByTestId('usage-history-stack')
+      .getByRole('button', { name: '依 token 類型' })
+      .click();
+    await page.screenshot({ path: '/tmp/uh-shots/usage-all-desktop.png', fullPage: true });
+    await page.getByTestId('usage-history-by-model').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: '/tmp/uh-shots/usage-all-desktop-trend.png' });
+    // 切回 30 天：每日的畫面回來。
+    await page.getByTestId('usage-period').getByRole('button', { name: '30 天' }).click();
+    await expect(page.getByTestId('usage-overview')).toBeVisible();
+    await expect(page.getByTestId('usage-alltime')).toHaveCount(0);
+  });
+
+  test('全部機器都沒有細項時，仍可打開 hub 保存的歷史', async ({ page }) => {
+    await open(
+      page,
+      '#/canvas',
+      `const real = backend.usageReport.bind(backend);
+       backend.usageReport = async () => {
+         const r = await real();
+         r.machines = r.machines.map((m) => ({ ...m, state: 'old_daemon', countedAt: null }));
+         r.rows = [];
+         return r;
+       };`,
+    );
+    await page.evaluate(() => (location.hash = '#/usage'));
+    await page.getByTestId('usage-open-all').click();
+    await expect(page.getByTestId('usage-history-summary')).toBeVisible();
+  });
+
   test('讀不到時寫錯誤與重試，恢復後再讀', async ({ page }) => {
     await open(
       page,
@@ -249,5 +326,14 @@ test.describe('用量詳情（手機）', () => {
     // 點團隊：手機開團隊頁。
     await table.getByRole('button', { name: '登入重構' }).click();
     await expect(page.getByTestId('phone-team')).toBeVisible();
+  });
+  test('全部：每月趨勢可以橫向捲，整頁不橫向捲', async ({ page }) => {
+    await open(page, '#/usage');
+    await page.getByTestId('usage-period').getByRole('button', { name: '全部' }).click();
+    await expect(page.getByTestId('usage-history-summary')).toBeVisible();
+    await expect(page.getByTestId('usage-monthly-plot')).toBeVisible();
+    const pageWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(pageWidth).toBeLessThanOrEqual(390);
+    await page.screenshot({ path: '/tmp/uh-shots/usage-all-phone.png', fullPage: true });
   });
 });

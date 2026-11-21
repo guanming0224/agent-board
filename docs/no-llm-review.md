@@ -33,6 +33,7 @@
   更新失敗的推播只帶機器名稱、版本與原因代碼。
   Node（2026-11-11，CONTRACTS §21.10）：0.1.1 曾在建置時從 nodejs.org 下載 Node 放進發布檔；0.1.2 拿掉，建置與
   執行都不再下載 Node，服務用各機的系統 node。install.sh 驗下載內容改用系統的 `shasum`／`sha256sum`。
+  用量歷史（2026-11-21，CONTRACTS §28）：daemon 多掃同一批本機對話紀錄的全部日子（增量快取只存數字），hub 每天存「機器 × 日期 × 來源 × 模型」的 token 數；不送任何字進 PTY、不呼叫模型、不讀 `auth.json`。
   Codex 第二輪（2026-11-12，CONTRACTS §22）：Codex 用量只讀 `$CODEX_HOME/sessions/` 的對話紀錄（不碰 `auth.json`）；
   Codex 也掛派工 MCP（同一支 server、`-c` 帶入，見下）；**交叉審查**是唯一用非互動模式開 CLI 的地方
   （`claude -p`、`codex exec`，唯讀），只能由 GM 在網頁按確認或隊長呼叫 `request_review` 觸發，見「交叉審查」一節。
@@ -48,6 +49,7 @@ corepack pnpm check:no-llm    # scripts/check-no-llm.mjs
 2026-11-12 Windows 上線前必修（CONTRACTS §20.7）後 42 處：新增 `scripts/lib/process-start.mjs` 的 `child-process`（安裝程式判斷 agent 還在不在，只讀程序啟動時間：`ps -o lstart=`、Windows 的 PowerShell `Get-Process`）；`processCheck.ts` 多了 Windows 的 PowerShell 查詢（同一個呼叫點）。session host 與 hook／MCP socket 改成挑戰／回應（`@agent-board/protocol/local-auth`，只用 `node:crypto` 算 HMAC），連線的位置沒變、不連網路、不送字進 PTY。hub 的「允許自動更新」只改 settings 與發目標，沒有新的連線。同日審查修正後 43 處：新增 `packages/session-host/src/endpoint.ts` 的 `child-process`（Windows 的資料夾 ACL：System32 的 `whoami /user` 取自己的 SID、`icacls` 拿掉繼承只給自己與 SYSTEM，只在本機改權限）；`processCheck.ts` 改成非同步、一次查完（`ps -o pid=,lstart= -p<清單>`、PowerShell 用絕對路徑），同一個呼叫點；session host 與 hook server 遇到同名 pipe 已開時用本機 socket 請對方證明身分（`proveHost`／`proveDaemon`，連線位置沒變）；`daemon.alert` 走既有的 hub WebSocket。
 2026-11-17 Windows 自動更新修正（CONTRACTS §20.7「停服務」）後 46 處：新增 `scripts/lib/service-processes.mjs` 的 `child-process`（安裝程式停 Windows 服務時找出並結束還活著的服務程序，只在本機）。
 2026-11-19 下載續傳（CONTRACTS §21.12）後仍 46 處：daemon 下載成品的 `fetch` 從 `selfUpdate.ts` 搬到 `releaseDownload.ts`（同一個 hub、同一個機器 token，多了 `Range` 標頭），沒有新的連線對象。
+2026-11-21 用量歷史（CONTRACTS §28）後仍 46 處：daemon 的 `usageHistory.ts` 只讀本機對話紀錄檔（Claude 的 `<帳號設定目錄>/projects/`、Codex 的 `$CODEX_HOME/sessions/`，和原本的用量統計同一批檔，不碰 `auth.json`），用 `node:fs` 讀檔、`node:crypto` 算雜湊，把彙總數字寫進 daemon 資料夾的快取檔；結果放進既有 `usage` 訊息的 `history` 欄位，走原本的 hub WebSocket。hub 只把數字寫進自己的 `usage_history` 表、`GET /api/usage/history` 只讀資料表與記憶體。同日審查修正加了 hub → daemon 的 `usage.historyAck`（寫入結果，走同一條 WebSocket）。沒有新的連線、行程或送字寫法，不送任何字進 PTY、不呼叫模型，`CALL_SITES` 不用改。
 
 這支腳本做三件事（任何一項不符就結束碼 1）：
 

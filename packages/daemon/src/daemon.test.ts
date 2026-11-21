@@ -1690,7 +1690,7 @@ describe('其他 hub 指令', () => {
     await h.hub.waitFor('session.created', (m) => m.requestId === 'after');
   });
 
-  it('連上後回報 usage（來自設定資料夾）', async () => {
+  it('連上後回報 usage（來自設定資料夾）；舊 hub 不送歷史', async () => {
     for (const daemon of h.daemons.splice(0)) await daemon.stop();
     const project = join(h.claudeDir, 'projects', 'p');
     mkdirSync(project, { recursive: true });
@@ -1704,6 +1704,53 @@ describe('其他 hub 指令', () => {
     await h.startDaemon();
     const usage = await h.hub.waitFor('usage', (m) => m.summary.inputTokens === 11);
     expect(usage.summary.outputTokens).toBe(22);
+    // fake hub 預設是舊 hub（welcome 沒有 usageHistory）：不掃全部時間、不送歷史。
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(h.hub.received.some((m) => m.type === 'usage' && m.history)).toBe(false);
+    expect(existsSync(join(h.dataDir, 'usage-history-cache.json'))).toBe(false);
+  });
+
+  it('用量歷史（§28）：背景全掃完回填；hub 回 ack 失敗就重送，ok 後只送最近兩天', async () => {
+    for (const daemon of h.daemons.splice(0)) await daemon.stop();
+    h.hub.usageHistory = true;
+    h.hub.historyAck = false;
+    const project = join(h.claudeDir, 'projects', 'p');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(
+      join(project, 'old.jsonl'),
+      `${JSON.stringify({
+        timestamp: '2025-03-01T12:00:00Z',
+        message: { id: 'old', usage: { input_tokens: 5, output_tokens: 6 } },
+      })}\n`,
+    );
+    await h.startDaemon();
+    const isBackfill = (m: DaemonToHub) =>
+      m.type === 'usage' && m.history?.complete === true && m.history.rows.length > 0;
+    const first = await h.hub.waitFor('usage', isBackfill);
+    expect(first.history!.days).toEqual(['2025-03-01']);
+    expect(first.history!.id).toBeTruthy();
+    expect(existsSync(join(h.dataDir, 'usage-history-cache.json'))).toBe(true);
+
+    // hub 寫入失敗（ack ok: false）：下一次回報整份再送（仍是回填）。
+    const daemon = h.daemons[0]!;
+    const count = () => h.hub.received.filter(isBackfill).length;
+    const before = count();
+    await (daemon as unknown as { reportUsage(): Promise<void> }).reportUsage();
+    await waitUntil(() => count() > before, '重送回填');
+
+    // 寫入成功之後：舊日子不再送，只剩空的或最近兩天的。
+    h.hub.historyAck = true;
+    await (daemon as unknown as { reportUsage(): Promise<void> }).reportUsage();
+    await waitUntil(() => count() > before + 1, 'ack 成功的那次回填');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const n = h.hub.received.length;
+    await (daemon as unknown as { reportUsage(): Promise<void> }).reportUsage();
+    await waitUntil(
+      () => h.hub.received.slice(n).some((m) => m.type === 'usage' && m.history),
+      '下一次回報',
+    );
+    const next = h.hub.received.slice(n).find((m) => m.type === 'usage' && m.history)!;
+    expect(next.type === 'usage' && next.history).toMatchObject({ complete: false, rows: [] });
   });
 });
 
@@ -1939,7 +1986,11 @@ describe('與 hub 的語意（Agent C）', () => {
     client.close();
 
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(h.hub.received.filter((m) => m.type === 'usage')).toHaveLength(1);
+    // 連上時回報一次；全部時間的首次掃描做完會再回報一次（帶回填的歷史，§28），welcome 重送不會再掃。
+    const usage = h.hub.received.filter((m) => m.type === 'usage');
+    expect(usage.filter((m) => !m.history)).toHaveLength(1);
+    expect(usage.filter((m) => m.history?.complete === true).length).toBeLessThanOrEqual(1);
+    expect(usage.length).toBeLessThanOrEqual(2);
   });
 
   it('接續已結束的 session（同 sessionId、resumeClaudeSessionId）：新 PTY、新畫面、新 session.created', async () => {
