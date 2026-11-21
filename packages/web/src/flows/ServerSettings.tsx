@@ -559,7 +559,11 @@ export function DispatchSection({ form }: { form: ServerSettingsForm }) {
   const t = useT();
   const { draft, patch } = form;
   return (
-    <Section id="dispatch" title={t('flows.settings.dispatch')} dirty={form.isDirty('dispatch')}>
+    <Section
+      id="dispatch"
+      title={t('flows.settings.dispatch')}
+      dirty={form.isDirty('dispatch', 'teamModeDefault')}
+    >
       <div className="field">
         <label className="check">
           <input
@@ -572,6 +576,24 @@ export function DispatchSection({ form }: { form: ServerSettingsForm }) {
           <span className="chip cost">◈ {t('flows.autoContinue.cost')}</span>
         </label>
         <p className="hint">{t('flows.dispatch.hint')}</p>
+      </div>
+      {/* 團隊模式（CONTRACTS §27）：只改新增 session 頁一打開時的預設值。 */}
+      <div className="field">
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="team-mode-default-toggle"
+            checked={draft.teamModeDefault}
+            onChange={(e) => patch({ teamModeDefault: e.target.checked })}
+          />
+          {t('flows.teamMode.defaultLabel')}
+        </label>
+        <p className="hint">{t('flows.teamMode.defaultHint')}</p>
+        {!draft.dispatch && (
+          <p className="hint" data-testid="team-mode-needs-dispatch">
+            {t('flows.teamMode.needsDispatch')}
+          </p>
+        )}
       </div>
     </Section>
   );

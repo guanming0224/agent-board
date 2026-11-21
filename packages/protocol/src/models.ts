@@ -129,6 +129,11 @@ export const MachineCapabilities = z.object({
    * Codex 強度只列舊白名單。格式不合只丟這個欄位（catch）。
    */
   codexModels: CodexModels.nullable().optional().catch(null),
+  /**
+   * daemon 認得團隊模式（`SessionSpec.teamLead`，CONTRACTS §27）。舊 daemon 不送；舊 hub 的 zod 也會丟掉，
+   * 所以網頁看到 true 就表示 hub 與 daemon 都是新版。
+   */
+  teamMode: z.boolean().optional(),
 });
 export type MachineCapabilities = z.infer<typeof MachineCapabilities>;
 
@@ -261,6 +266,11 @@ export const Session = z.object({
    */
   effort: SessionEffort.optional(),
   fallbackModel: z.string().optional(),
+  /**
+   * 以團隊模式建立（CONTRACTS §27）：建立時就成為新團隊的隊長，啟動 agent 時帶固定的隊長守則（接續也帶）。
+   * hub 存在 settings 表 `sessionTeamMode:<id>`（不升 schema）。沒有＝一般 session（舊 hub 不送）。
+   */
+  teamMode: z.literal(true).optional(),
 });
 export type Session = z.infer<typeof Session>;
 export type SessionAwaiting = NonNullable<Session['awaiting']>;
@@ -995,8 +1005,31 @@ export const Settings = z.object({
    * 舊設定沒有這個鍵＝內建清單（`MODEL_LISTS_DEFAULT`）。一般使用者用 `GET /api/model-lists` 讀。
    */
   modelLists: ModelLists.default(MODEL_LISTS_DEFAULT),
+  /**
+   * 新增 session 預設勾「團隊模式」（GM 2026-11-21，CONTRACTS §27）。只影響新增 session 頁一打開時的預設值。
+   * 舊設定沒有這個鍵＝關。一般使用者用 `GET /api/team-mode` 讀。
+   */
+  teamModeDefault: z.boolean().default(false),
 });
 export type Settings = z.infer<typeof Settings>;
+
+/**
+ * 新增 session 頁要知道的團隊模式資訊（`GET /api/team-mode`，auth user）：設定本身只有 owner 能讀。
+ * 舊 hub 沒有這條路由（404）：網頁不顯示團隊模式開關。
+ */
+export const TeamModeInfo = z.object({
+  /** 新增 session 預設開團隊模式。 */
+  defaultOn: z.boolean(),
+  /** 派工工具（`Settings.dispatch`）開著：關著時團隊模式沒有工具可用，hub 拒絕（409 team_mode_dispatch_off）。 */
+  dispatch: z.boolean(),
+  /** Codex 掛 agent-board MCP（`Settings.codexMcp`）：關著時 Codex 不能開團隊模式（409 team_mode_codex_mcp_off）。 */
+  codexMcp: z.boolean(),
+  /** 隊長自主擴編（`autoStaff.enabled`）：關著時守則改成只能用現有隊員。 */
+  autoStaff: z.boolean(),
+  /** 團隊人數上限（含隊長）：Preset 隊員最多開到 `teamLimit - 1` 位。 */
+  teamLimit: z.number().int().positive(),
+});
+export type TeamModeInfo = z.infer<typeof TeamModeInfo>;
 
 // ── 全部暫停（P2 項目三，GM 2026-11-08） ─────────────────────
 /**

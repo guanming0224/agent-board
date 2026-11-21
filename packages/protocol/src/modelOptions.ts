@@ -49,6 +49,11 @@ export const ClaudeFlags = z.object({
   effort: z.boolean(),
   efforts: z.array(z.string().max(20)).max(20).nullable(),
   fallbackModel: z.boolean(),
+  /**
+   * 認得 `--append-system-prompt`（團隊模式，CONTRACTS §27）。沒有這個鍵（0.1.15 以前的 daemon 偵測結果）＝不知道，
+   * 當成不支援：團隊模式照樣建團隊，但守則不帶，網頁提示。
+   */
+  appendSystemPrompt: z.boolean().optional(),
 });
 export type ClaudeFlags = z.infer<typeof ClaudeFlags>;
 
@@ -79,10 +84,13 @@ export function parseClaudeHelp(help: string): ClaudeFlags {
     }
   }
   const fallbackBlock = optionBlock(help, '--fallback-model');
+  const appendBlock = optionBlock(help, '--append-system-prompt');
   return {
     effort: effortBlock !== null,
     efforts,
     fallbackModel: fallbackBlock !== null && !/only[^.]*--print/i.test(fallbackBlock),
+    // 寫「only … --print」的版本互動模式不能用（同備援模型的判斷）。
+    appendSystemPrompt: appendBlock !== null && !/only[^.]*--print/i.test(appendBlock),
   };
 }
 
@@ -123,6 +131,24 @@ export function allowedModelOptions(
  * session 照開、只是沒帶參數），hub 對它們一律不送也不記，網頁看 `MachineCapabilities.modelOptions` 提示「太舊」。
  */
 export const MODEL_OPTIONS_FEATURE = 'session.modelOptions';
+
+/** daemon 在 hello `features` 宣告：認得 `SessionSpec.teamLead`（團隊模式，CONTRACTS §27）。 */
+export const TEAM_MODE_FEATURE = 'session.teamMode';
+
+/**
+ * 這台能不能把團隊模式的守則帶給 agent（hub、網頁共用）：daemon 要宣告團隊模式（capabilities.teamMode）；
+ * Claude 還要這台 claude 認得 `--append-system-prompt`（`claudeFlags.appendSystemPrompt`）。Codex 用
+ * `-c developer_instructions=…`（官方設定鍵），不看版本。
+ * 回 `unavailable`＝daemon 太舊（不能開團隊模式）；`no_guide`＝可以建團隊但守則帶不進去；`ok`＝都可以。
+ */
+export function teamModeSupport(
+  agent: Agent,
+  capabilities: { teamMode?: boolean; claudeFlags?: ClaudeFlags | null } | undefined,
+): 'ok' | 'no_guide' | 'unavailable' {
+  if (!capabilities?.teamMode) return 'unavailable';
+  if (agent === 'codex') return 'ok';
+  return capabilities.claudeFlags?.appendSystemPrompt === true ? 'ok' : 'no_guide';
+}
 
 // ── Codex 模型目錄（`codex debug models`，GM 2026-11-18，CONTRACTS §26.11） ─────────────
 /**

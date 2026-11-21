@@ -158,6 +158,9 @@ const CLAUDE_FLAGS = new Set([
   // 模型名稱，只改用哪個模型、想多深，不放寬任何工具或權限，仍是互動模式。
   '--effort',
   '--fallback-model',
+  // 團隊模式（GM 2026-11-21，CONTRACTS §27）：系統提示尾端加一段寫死在 leadGuide.ts 的固定英文（teamModeGuide），
+  // 只隨這次啟動生效、不在對話中途送字；值只能是 teamModeGuide(...)（下面 3d 檢查）。仍是互動模式。
+  '--append-system-prompt',
   '--name',
   // agent-board 工具（派工 2026-11-06 審查、進度卡 2026-11-08）：掛 daemon 產生的 MCP 設定檔（本機 MCP server，
   // 只連 daemon 的 socket），並事先允許開著的那幾個工具（最多 7 個，見 AGENT_BOARD_TOOLS）；
@@ -358,6 +361,27 @@ problems.push(
   }
   if (!text.includes("'read-only'") || !text.includes("'plan'")) {
     problems.push(`${NON_INTERACTIVE_FILE}：審查要用 codex 唯讀沙盒與 claude plan 模式`);
+  }
+}
+
+// 3d. 團隊模式的守則（§27）：--append-system-prompt 與 developer_instructions 的值只能是 teamModeGuide(...)
+// （leadGuide.ts 的固定常數組合），不能是 spec 裡的字串或任何變數。
+{
+  const checks = [
+    ['packages/daemon/src/session.ts', /'--append-system-prompt',\s*([^)]*\))/g],
+    ['packages/daemon/src/codex.ts', /developer_instructions=("\$\{[^}]*\}")/g],
+  ];
+  for (const [file, re] of checks) {
+    const text = readFileSync(join(root, file), 'utf8');
+    const uses = [...text.matchAll(re)];
+    if (uses.length !== 1) {
+      problems.push(`${file}：團隊模式的守則應該剛好組一次（找到 ${uses.length} 次）`);
+    }
+    for (const [, value] of uses) {
+      if (!/^"?(\$\{tomlString\()?teamModeGuide\(input\.teamLead\)\)?\}?"?$/.test(value.trim())) {
+        problems.push(`${file}：團隊模式的守則只能是 teamModeGuide(input.teamLead)，找到 ${value}`);
+      }
+    }
   }
 }
 

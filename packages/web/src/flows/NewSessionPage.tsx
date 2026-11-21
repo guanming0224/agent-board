@@ -9,6 +9,8 @@ import {
   codexPermissionArgs,
   PermissionMode,
   supportsFallbackModel,
+  teamModeGuide,
+  teamModeSupport,
   validEffort,
 } from '@agent-board/protocol';
 import type { Machine, Session, Settings } from '@agent-board/protocol';
@@ -57,6 +59,15 @@ import {
   pickForAgent,
   type ModelPick,
 } from './modelChoice';
+import { usePresetList } from '../team/presetStore';
+import { refreshTeams } from '../team/store';
+import { PRESET_IDS } from '../team/teamPlan';
+import {
+  startTeamMembers,
+  teamModeMembers,
+  teamModePlanError,
+  type TeamModeChoice,
+} from './teamMode';
 
 const LONG_CONTEXT_TOKENS = 100_000;
 const D = NEW_SESSION_DRAFT;
@@ -146,6 +157,9 @@ export function NewSessionPage() {
   const projects = useProjects();
   const templates = useLoad(useCallback(() => backend.listTemplates(), [backend]));
   const settings = useLoad(useCallback(() => backend.getSettings(), [backend]));
+  // 團隊模式（CONTRACTS §27）：預設值、上限。舊 hub 沒有這條路由（null）＝不顯示開關。
+  const teamInfo = useLoad(useCallback(() => backend.getTeamModeInfo(), [backend]));
+  const { presets } = usePresetList();
 
   // 表單欄位放草稿（STYLE §5.2）：開著時去點收件匣、團隊框等換掉網址，再開 #/new 還在；
   // ✕／Esc 明確關閉才清（App 的 closeNewSession）。
@@ -168,6 +182,9 @@ export function NewSessionPage() {
   const [firstPrompt, setFirstPrompt] = useDraftState(D, 'firstPrompt', '');
   const [templateId, setTemplateId] = useDraftState(D, 'templateId', '');
   const [templateName, setTemplateName] = useDraftState(D, 'templateName', '');
+  // null＝照設定的預設值（Settings.teamModeDefault）；使用者動過就記在草稿。
+  const [teamChoice, setTeamChoice] = useDraftState<boolean | null>(D, 'teamMode', null);
+  const [teamPreset, setTeamPreset] = useDraftState<TeamModeChoice>(D, 'teamPreset', '');
   const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
@@ -212,6 +229,34 @@ export function NewSessionPage() {
   // 帳號資料夾是 Claude Code 的設定；Codex 不帶（hub 也會擋）。
   const trimmedAccount = codex ? '' : account.trim();
 
+  // 團隊模式（§27）：能不能開、守則帶不帶得進去、隊員照 Preset 開幾位。
+  const info = teamInfo.data ?? null;
+  const teamSupport = teamModeSupport(agent, machine?.capabilities);
+  const teamBlocked: string | null = !info
+    ? null
+    : teamSupport === 'unavailable'
+      ? t('flows.teamMode.unavailable', { machine: machine?.name ?? '—' })
+      : !info.dispatch
+        ? t('flows.teamMode.dispatchOff')
+        : codex && !info.codexMcp
+          ? t('flows.teamMode.codexMcpOff')
+          : null;
+  const teamOn = !!info && teamBlocked === null && (teamChoice ?? info.defaultOn);
+  const teamName = name.trim();
+  const teamMembers = teamOn
+    ? teamModeMembers(
+        teamPreset,
+        presets,
+        teamName,
+        info?.teamLimit ?? 1,
+        new Set(sessions.map((s) => s.name)),
+      )
+    : null;
+  const teamPlanError =
+    teamMembers && teamName
+      ? teamModePlanError({ name: teamName, mode, useWorktree }, teamMembers.rows, !advice.notGit)
+      : null;
+
   // 換機器後資料夾清單就不是同一台的了。
   useEffect(() => setBrowsing(false), [machineId]);
 
@@ -241,6 +286,7 @@ export function NewSessionPage() {
         : null,
     model: modelErrors.model,
     fallback: modelErrors.fallback,
+    team: teamPlanError ? t(`team.new.err.${teamPlanError}`) : null,
   };
   const firstError = Object.values(errors).find(Boolean) ?? null;
 
@@ -254,7 +300,18 @@ export function NewSessionPage() {
     ...models,
     accountProfile: trimmedAccount || null,
     resumeClaudeSessionId: resume.trim() || null,
+    // 團隊模式：預覽標出守則參數（實際的布林由 hub 填）；Claude 帶不進去時不標。
+    ...(teamOn && teamSupport === 'ok'
+      ? { teamLead: { autoStaff: info?.autoStaff ?? true, presetMembers: false } }
+      : {}),
   });
+  const teamGuide =
+    teamOn && teamSupport === 'ok'
+      ? teamModeGuide({
+          autoStaff: info?.autoStaff ?? true,
+          presetMembers: (teamMembers?.rows.length ?? 0) > 0,
+        })
+      : null;
   const settingsPending = settings.loading && !settings.data;
   const warnings = quotaWarnings(t, guards, sessions, machineId, trimmedAccount, resumed);
 
@@ -300,15 +357,52 @@ export function NewSessionPage() {
         ...(codex ? { agent } : {}),
         // 新建 session 放在目前工作區（P2 §2.3）。
         zoneId: currentZoneId(),
+        // 團隊模式（§27）：只送布林，守則文字在 hub／daemon。
+        ...(teamOn
+          ? { teamMode: true, teamPresetMembers: (teamMembers?.rows.length ?? 0) > 0 }
+          : {}),
       });
       // 清掉名稱，避免連按建立出第二個一樣的 session。
       setName('');
       setTried(false);
+      const done = t('flows.new.created', { name: created.name });
+      setNote({ text: done });
+      let teamText: string | null = null;
+      let teamFailed = false;
+      if (teamOn && teamMembers && teamMembers.rows.length > 0) {
+        try {
+          const result = await startTeamMembers(backend, {
+            lead: created,
+            members: teamMembers,
+            machineId,
+            cwd: cwd.trim(),
+            projectId: projectId || null,
+            gitOk: !advice.notGit,
+          });
+          teamText =
+            result.teamId === null
+              ? t('flows.teamMode.noTeam')
+              : result.failed > 0
+                ? t('flows.teamMode.partial', {
+                    team: created.name,
+                    created: result.created,
+                    failed: result.failed,
+                  })
+                : t('flows.teamMode.created', { team: created.name, created: result.created });
+          teamFailed = result.teamId === null || result.failed > 0;
+        } catch (e) {
+          teamText = t('flows.teamMode.membersFailed', { error: errorText(e) });
+          teamFailed = true;
+        }
+      }
+      // 畫布的團隊框馬上出現（hub 也會推 team.updated，這裡再讀一次不用等輪詢）。
+      if (teamOn) void refreshTeams(backend).catch(() => {});
       setNote({
+        ...(teamFailed ? { tone: 'err' as const } : {}),
         text: (
           <>
-            {t('flows.new.created', { name: created.name })}{' '}
-            <a href="#/canvas">{t('flows.new.toCanvas')}</a>
+            {done}
+            {teamText && <> {teamText}</>} <a href="#/canvas">{t('flows.new.toCanvas')}</a>
           </>
         ),
       });
@@ -511,6 +605,87 @@ export function NewSessionPage() {
             {errors.agent && <p className="field-error">{errors.agent}</p>}
           </fieldset>
 
+          {info && (
+            <fieldset className="field" data-testid="team-mode">
+              <legend>{t('flows.teamMode.legend')}</legend>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  id="ns-team-mode"
+                  data-testid="team-mode-toggle"
+                  checked={teamOn}
+                  disabled={teamBlocked !== null}
+                  onChange={(e) => setTeamChoice(e.target.checked)}
+                />
+                {t('flows.teamMode.label')}
+              </label>
+              <p className="hint">
+                {t('flows.teamMode.hint', { team: teamName || t('flows.new.name') })}
+              </p>
+              {teamBlocked && (
+                <p className="hint" data-testid="team-mode-blocked">
+                  {teamBlocked}
+                </p>
+              )}
+              {teamOn && !info.autoStaff && (
+                <p className="hint" data-testid="team-mode-autostaff-off">
+                  {t('flows.teamMode.autoStaffOff')}
+                </p>
+              )}
+              {teamOn && teamSupport === 'no_guide' && (
+                <p className="hint" data-testid="team-mode-no-guide">
+                  {t('flows.teamMode.noGuide', { machine: machine?.name ?? '—' })}
+                </p>
+              )}
+              {teamOn && (
+                <div className="field">
+                  <label htmlFor="ns-team-preset">{t('flows.teamMode.preset')}</label>
+                  <select
+                    id="ns-team-preset"
+                    data-testid="team-mode-preset"
+                    value={teamPreset}
+                    onChange={(e) => setTeamPreset(e.target.value as TeamModeChoice)}
+                  >
+                    <option value="">{t('flows.teamMode.presetNone')}</option>
+                    <optgroup label={t('flows.teamMode.presetBuiltin')}>
+                      {PRESET_IDS.filter((id) => id !== 'none').map((id) => (
+                        <option key={id} value={`builtin:${id}`}>
+                          {t(`team.new.preset.${id}`)} · {t(`team.new.presetHint.${id}`)}
+                        </option>
+                      ))}
+                    </optgroup>
+                    {presets.length > 0 && (
+                      <optgroup label={t('flows.teamMode.presetSaved')}>
+                        {presets.map((p) => (
+                          <option key={p.id} value={`preset:${p.id}`}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                  {teamMembers && teamMembers.rows.length > 0 && (
+                    <p className="hint" data-testid="team-mode-members">
+                      {t('flows.teamMode.members', {
+                        names: teamMembers.rows.map((r) => r.name).join('、'),
+                      })}
+                    </p>
+                  )}
+                  {teamMembers && teamMembers.dropped > 0 && (
+                    <p className="hint" data-testid="team-mode-capped">
+                      {t('flows.teamMode.capped', {
+                        limit: info.teamLimit,
+                        kept: teamMembers.rows.length,
+                        dropped: teamMembers.dropped,
+                      })}
+                    </p>
+                  )}
+                  {errors.team && <p className="field-error">{errors.team}</p>}
+                </div>
+              )}
+            </fieldset>
+          )}
+
           <Field label={t('flows.new.cwd')} htmlFor="ns-cwd" error={tried ? errors.cwd : null}>
             <div className="input-row">
               <input
@@ -699,6 +874,12 @@ export function NewSessionPage() {
             {preview.join('\n')}
           </pre>
           <p className="hint">{t('flows.new.previewNote')}</p>
+          {teamGuide && (
+            <details data-testid="team-mode-guide">
+              <summary>{t('flows.teamMode.guideTitle')}</summary>
+              <pre className="command">{teamGuide}</pre>
+            </details>
+          )}
           {firstPrompt.trim() && (
             <>
               <h3>{t(codex ? 'flows.new.previewFirstCodex' : 'flows.new.previewFirst')}</h3>

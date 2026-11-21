@@ -4,6 +4,7 @@ import {
   routes,
   SEARCH_DEEP_DEADLINE_MS,
   SEARCH_DEEP_GRACE_MS,
+  TeamModeInfo,
   WS_PATHS,
 } from '@agent-board/protocol';
 import { isNewerZoneGroups, progressOwnerKey, progressOwnerOf } from '@agent-board/protocol';
@@ -697,6 +698,12 @@ export function createHubBackend() {
     },
     getSettings: () => call('settingsGet'),
     getModelLists: () => call('modelListsGet'),
+    // 舊 hub 沒有 /api/team-mode（404，或被當成網頁回 HTML）：當成不支援團隊模式，不顯示開關。
+    getTeamModeInfo: () =>
+      call('teamModeGet').then(
+        (info) => TeamModeInfo.safeParse(info).data ?? null,
+        () => null,
+      ),
     updateSettings: (patch) => call('settingsUpdate', { body: patch }),
     pushVapidKey: async () => (await call('pushVapidKey')).publicKey,
     async pushSubscribe(subscription) {

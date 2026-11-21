@@ -66,6 +66,7 @@ export const KEY_CATEGORY: Record<keyof Settings, Category> = {
   dangerRules: 'security',
   canarySoakHours: 'machines',
   modelLists: 'sessions',
+  teamModeDefault: 'sessions',
 };
 
 /** 有伺服器設定欄位的分類：儲存列一直顯示。 */

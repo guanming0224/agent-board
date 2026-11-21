@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig, normalizeHubUrl } from './config';
 import { listDirectory, makeDirectory } from './fsList';
 import { parseNvidiaSmi, ResourceMonitor } from './resources';
+import { teamModeGuide } from '@agent-board/protocol';
 import { buildClaudeArgs, inputBoxVisible, screenFingerprint, withoutPromptBox } from './session';
 import { SessionStore, type PersistedSession } from './store';
 import { makeTempDir, waitUntil } from './test-support/harness';
@@ -183,6 +184,55 @@ describe('buildClaudeArgs', () => {
         name: 'n',
       }),
     ).toEqual(['--resume', 'r', '--permission-mode', 'plan', '--model', 'opus', '--name', 'n']);
+  });
+
+  it('團隊模式（§27）：認得 --append-system-prompt 才帶固定守則；resume 也帶；不認得或偵測不到就不帶', () => {
+    const base = { newSessionId: 'u', permissionMode: 'plan' as const, model: null, name: 'n' };
+    const teamLead = { autoStaff: false, presetMembers: false };
+    const guide = teamModeGuide(teamLead);
+    expect(
+      buildClaudeArgs({
+        ...base,
+        claudeFlags: { ...FULL_FLAGS, appendSystemPrompt: true },
+        teamLead,
+      }),
+    ).toEqual([
+      '--session-id',
+      'u',
+      '--permission-mode',
+      'plan',
+      '--append-system-prompt',
+      guide,
+      '--name',
+      'n',
+    ]);
+    expect(
+      buildClaudeArgs({
+        ...base,
+        resumeId: 'r',
+        claudeFlags: { ...FULL_FLAGS, appendSystemPrompt: true },
+        teamLead,
+      }),
+    ).toEqual([
+      '--resume',
+      'r',
+      '--permission-mode',
+      'plan',
+      '--append-system-prompt',
+      guide,
+      '--name',
+      'n',
+    ]);
+    // 0.1.15 的偵測結果沒有 appendSystemPrompt、偵測失敗、明確不支援：都不帶。
+    for (const claudeFlags of [FULL_FLAGS, null, { ...FULL_FLAGS, appendSystemPrompt: false }]) {
+      expect(buildClaudeArgs({ ...base, claudeFlags, teamLead })).not.toContain(
+        '--append-system-prompt',
+      );
+    }
+    // 沒開團隊模式不帶。
+    expect(
+      buildClaudeArgs({ ...base, claudeFlags: { ...FULL_FLAGS, appendSystemPrompt: true } }),
+    ).not.toContain('--append-system-prompt');
   });
 
   it('推理強度與備援模型（§26）：白名單／安全字元才帶，備援和主模型相同不帶', () => {

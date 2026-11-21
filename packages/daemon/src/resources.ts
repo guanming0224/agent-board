@@ -374,6 +374,8 @@ export async function probeCapabilities(
     ...(codexVersion ? { codexVersion } : {}),
     // 認得 SessionSpec.effort／fallbackModel（§26）：網頁據此決定要不要提示「daemon 太舊」。
     modelOptions: true,
+    // 認得團隊模式（SessionSpec.teamLead，CONTRACTS §27）。Claude 能不能帶守則另外看 claudeFlags.appendSystemPrompt。
+    teamMode: true,
     claudeFlags,
     // 一律帶這個鍵（null＝還沒抓到或抓不到）：網頁據此知道 daemon 認得依模型的 Codex 強度（§26.11）。
     // 目錄由 daemon 開機後在背景抓（refreshCodexCapabilities），抓完用 daemon.capabilities 送給 hub，不擋 hub 連線。

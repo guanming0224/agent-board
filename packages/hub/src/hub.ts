@@ -57,6 +57,7 @@ import {
   type SessionStatus,
   type Settings,
   type Task,
+  type AgentKind,
   type Team,
   type TeamHold,
   type TeamHoldMode,
@@ -97,7 +98,7 @@ import { ZoneGroupStore } from './zoneGroups';
 import { REVIEW_PREPARE_TIMEOUT_MS, ReviewEngine } from './reviews';
 import { conflict, HttpError, notFound } from './errors';
 import { SafeDelivery, type DeliveryItem } from './delivery';
-import { DispatchEngine, type DispatchDeps } from './dispatch';
+import { DEFAULT_TEAM_COLOR, DispatchEngine, type DispatchDeps } from './dispatch';
 import { StaffRequestEngine } from './staffRequests';
 import { ProgressEngine } from './progress';
 import { HandoffEngine } from './handoff';
@@ -1655,22 +1656,78 @@ export class Hub {
   }
 
   // ── Session 生命週期 ─────────────────────────────────
-  createSession(input: SessionSpec & { machineId: string; zoneId?: string }, user: User): Session {
-    return this.createSessionAs(input, user.id, null);
+  createSession(
+    input: SessionSpec & {
+      machineId: string;
+      zoneId?: string;
+      teamMode?: boolean;
+      teamPresetMembers?: boolean;
+    },
+    user: User,
+  ): Session {
+    const { teamMode, teamPresetMembers, ...rest } = input;
+    return this.createSessionAs(
+      rest,
+      user.id,
+      null,
+      teamMode === true ? { presetMembers: teamPresetMembers === true } : null,
+    );
   }
 
-  /** userId 為 null：派工工具開的（系統動作，dispatchedBy 是呼叫者）。 */
+  /**
+   * 團隊模式（CONTRACTS §27）能不能開：daemon 要認得（hello 宣告 `session.teamMode`）、派工工具要開著；
+   * Codex 還要「Codex 掛 agent-board MCP」開著（不然 Codex 沒有派工工具）。回傳要放進 spec 的布林。
+   * Claude 這台認不認得 `--append-system-prompt` 不擋：照樣建團隊，daemon 不帶守則（網頁事先提示）。
+   */
+  private teamLeadSpec(
+    machineId: string,
+    agent: AgentKind,
+    presetMembers: boolean,
+  ): NonNullable<SessionSpec['teamLead']> {
+    if (!this.daemonFor(machineId)?.features.has(DAEMON_FEATURES.teamMode)) {
+      throw conflict(
+        'team_mode_unavailable',
+        'The daemon on this machine is too old for team mode. Update Agent Board on that machine.',
+      );
+    }
+    const settings = this.store.getSettings();
+    if (!settings.dispatch) {
+      throw conflict(
+        'team_mode_dispatch_off',
+        'Team mode needs session dispatch (MCP tools). Turn it on in Settings first.',
+      );
+    }
+    if (agent === 'codex' && !settings.codexMcp) {
+      throw conflict(
+        'team_mode_codex_mcp_off',
+        'Team mode for Codex needs the Agent Board MCP tools for Codex. Turn them on in Settings first.',
+      );
+    }
+    return { autoStaff: settings.autoStaff.enabled, presetMembers };
+  }
+
+  /**
+   * userId 為 null：派工工具開的（系統動作，dispatchedBy 是呼叫者）。
+   * teamMode 不是 null：團隊模式（§27），建立時一起建新團隊、自己當隊長。
+   */
   private createSessionAs(
     input: SessionSpec & { machineId: string; zoneId?: string },
     userId: string | null,
     dispatchedBy: string | null,
+    teamMode: { presetMembers: boolean } | null = null,
   ): Session {
-    const { machineId, zoneId = this.store.defaultZoneId(), ...given } = input;
+    // teamLead 只能由 hub 依 teamMode 布林填（REST body 本來就沒有這個欄位，這裡再拿掉一次）。
+    const { machineId, zoneId = this.store.defaultZoneId(), ...withLead } = input;
+    const base: SessionSpec = { ...withLead };
+    delete base.teamLead;
     if (!this.store.getMachine(machineId)) throw notFound('Machine');
     this.requireZone(zoneId);
     if (!this.daemonFor(machineId)) throw conflict('machine_offline', 'Machine is offline');
-    const agent = agentOf(given);
-    if (agent === 'codex') this.assertCodexReady(machineId, given);
+    const agent = agentOf(base);
+    if (agent === 'codex') this.assertCodexReady(machineId, base);
+    const given: SessionSpec = teamMode
+      ? { ...base, teamLead: this.teamLeadSpec(machineId, agent, teamMode.presetMembers) }
+      : base;
     const spec = this.checkModelOptions(machineId, given);
     this.assertCwdNotDeleting(machineId, spec.cwd);
     const now = this.nowIso();
@@ -1706,7 +1763,21 @@ export class Hub {
       ...(agent === 'codex' ? { agent } : {}),
       ...(spec.effort ? { effort: spec.effort } : {}),
       ...(spec.fallbackModel ? { fallbackModel: spec.fallbackModel } : {}),
+      ...(teamMode ? { teamMode: true as const } : {}),
     };
+    // 團隊模式：一建立就是新團隊的隊長（名稱＝session 名稱，同 spawn_member 第一次開人時建的團隊）。
+    const team: Team | null = teamMode
+      ? {
+          id: randomUUID(),
+          name: spec.name,
+          goal: '',
+          doneCriteria: '',
+          color: DEFAULT_TEAM_COLOR,
+          contextMd: '',
+          taskAuto: false,
+          zoneId,
+        }
+      : null;
     const blocked = this.queueReason(session);
     if (blocked !== undefined) {
       session.status = 'queued';
@@ -1716,11 +1787,19 @@ export class Hub {
       this.store.insertSession(session, spec);
       if (agent === 'codex') this.store.setSessionAgent(session.id, agent);
       this.store.setSessionModelOpts(session.id, spec);
+      if (team) {
+        this.store.setSessionTeamMode(session.id);
+        this.store.upsertTeam(team);
+        this.store.upsertTeamMember({ teamId: team.id, sessionId: session.id, role: 'lead' });
+      }
       this.audit(
         userId,
         session.id,
         'session.create',
         JSON.stringify({
+          ...(team
+            ? { teamMode: true, teamId: team.id, presetMembers: teamMode?.presetMembers }
+            : {}),
           ...(agent === 'codex' ? { agent } : {}),
           name: spec.name,
           machineId,
@@ -1740,6 +1819,8 @@ export class Hub {
       }
     })();
     this.broadcast({ type: 'session.updated', session });
+    // 畫布馬上出現團隊框（不等 10 秒輪詢）。
+    if (team) this.broadcastTeam(team.id);
     if (session.status === 'starting') this.dispatchCreate(session, spec);
     else {
       this.scheduleResetDrain();
@@ -1960,6 +2041,11 @@ export class Hub {
       this.guarded('codex unavailable', () => this.failStart(session.id, 'codex_unavailable'));
       return;
     }
+    // 團隊模式（§27）：排隊或接續期間 daemon 換成舊版就不帶守則（舊 daemon 的 zod 本來也會丟掉）；團隊照舊。
+    if (spec.teamLead && !conn.features.has(DAEMON_FEATURES.teamMode)) {
+      spec = { ...spec };
+      delete spec.teamLead;
+    }
     // 排隊或接續期間 daemon 換成舊版、或那台 claude 不認得（§26.10）：不送，也不再記著，並推給畫面（畫面才不會誤顯示）。
     if (spec.effort || spec.fallbackModel) {
       const supported = this.supportedSpec(session.machineId, spec);
@@ -2097,6 +2183,16 @@ export class Hub {
       // 推理強度與備援模型（§26）：建立時指定的，接續照舊帶。
       ...(session.effort ? { effort: session.effort } : {}),
       ...(session.fallbackModel ? { fallbackModel: session.fallbackModel } : {}),
+      // 團隊模式（§27）：接續也帶守則（claude 的 --append-system-prompt 只對這次啟動有效）。自主擴編照現在的設定；
+      // Preset 隊員那一句只在建立時說，接續時團隊已經在了，守則本來就叫它先 list_members。
+      ...(session.teamMode
+        ? {
+            teamLead: {
+              autoStaff: this.store.getSettings().autoStaff.enabled,
+              presetMembers: false,
+            },
+          }
+        : {}),
     };
     this.audit(user.id, id, 'session.resume', '');
     this.store.setPendingSpec(id, spec);

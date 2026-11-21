@@ -1315,6 +1315,8 @@ export class Daemon {
         DAEMON_FEATURES.modelOptions,
         // Codex 推理強度依模型目錄驗、收 xhigh／max／ultra（CONTRACTS §26.11）。
         DAEMON_FEATURES.codexEffortsByModel,
+        // 團隊模式（CONTRACTS §27）：認得 SessionSpec.teamLead，啟動時帶固定的隊長守則。
+        DAEMON_FEATURES.teamMode,
         // 機器面板「重啟 session host」與 sessionHost.status（CONTRACTS §20.8）。
         DAEMON_FEATURES.sessionHostRestart,
       ],
@@ -1948,6 +1950,8 @@ export class Daemon {
         codexModels: this.capabilities?.codexModels ?? null,
         onDrop: (field) => dropped.add(field),
         firstPrompt: resumeId ? null : entry.pendingFirstPrompt,
+        // 團隊模式（§27）：固定的隊長守則，新開、resume、daemon 接回都帶（spec 存在本機 sessions.json）。
+        teamLead: spec.teamLead ?? null,
         hookTarget: {
           sessionId,
           socketPath: this.hookServer.path,
@@ -1982,6 +1986,8 @@ export class Daemon {
         // 用最近一次偵測的結果（claude 自動更新後由 refreshClaudeFlags 更新）。
         claudeFlags: this.capabilities?.claudeFlags ?? null,
         onDrop: (field) => dropped.add(field),
+        // 團隊模式（§27）：`--append-system-prompt` 是每次啟動的系統提示，--resume、daemon 接回也要再帶。
+        teamLead: spec.teamLead ?? null,
         name: spec.name,
         readOnly: spec.readOnly,
         mcp: this.prepareMcp(sessionId),

@@ -145,7 +145,17 @@ const machine = (id: string, name: string, online: boolean, hasGpu: boolean): Ma
     ...(hasGpu ? { codexVersion: '0.0.0-demo' } : {}),
     // 示範：離線的那台是舊版 daemon（不認得推理強度與備援模型，§26），上線後新增 session 會提示。
     ...(online
-      ? { modelOptions: true, claudeFlags: { effort: true, efforts: null, fallbackModel: true } }
+      ? {
+          modelOptions: true,
+          claudeFlags: {
+            effort: true,
+            efforts: null,
+            fallbackModel: true,
+            appendSystemPrompt: true,
+          },
+          // 團隊模式（§27）：上線的兩台是新版 daemon。
+          teamMode: true,
+        }
       : {}),
     // 示範：裝了 Codex 的那台回報 `codex debug models` 的目錄（§26.11）；名稱與級別取自 codex-cli 0.167.0 的實際輸出。
     ...(online && hasGpu ? { codexModels: DEMO_CODEX_MODELS } : {}),
@@ -589,6 +599,7 @@ const defaultSettings: Settings = {
   review: { ...REVIEW_SETTINGS_DEFAULT },
   canarySoakHours: CANARY_SOAK_HOURS_DEFAULT,
   modelLists: { claude: [...MODEL_LISTS_DEFAULT.claude], codex: [...MODEL_LISTS_DEFAULT.codex] },
+  teamModeDefault: false,
 };
 
 /** 測試可以改掉 demoReply，模擬隊長回了無法解析的內容。 */
@@ -1263,6 +1274,31 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
           : {}),
         zoneId: input.zoneId ?? DEFAULT_ZONE_ID,
       });
+      // 和 hub 相同（§27）：團隊模式一建立就是新團隊的隊長；daemon 太舊、派工關著、Codex 沒開 MCP 都 409。
+      if (input.teamMode) {
+        if (!state.machines.find((m) => m.id === input.machineId)?.capabilities.teamMode) {
+          throw apiError(409, 'team_mode_unavailable', 'The daemon is too old for team mode');
+        }
+        if (!settings.dispatch) {
+          throw apiError(409, 'team_mode_dispatch_off', 'Team mode needs session dispatch');
+        }
+        if (input.agent === 'codex' && !settings.codexMcp) {
+          throw apiError(409, 'team_mode_codex_mcp_off', 'Team mode for Codex needs MCP tools');
+        }
+        created.teamMode = true;
+        const team: Team = {
+          id: crypto.randomUUID(),
+          name: created.name,
+          goal: '',
+          doneCriteria: '',
+          color: 'teal',
+          contextMd: '',
+          taskAuto: false,
+          zoneId: created.zoneId,
+        };
+        teams.push(team);
+        members.push({ teamId: team.id, sessionId: created.id, role: 'lead' });
+      }
       state.sessions = [...state.sessions, created];
       // 和 hub 相同：第一個指令也是送進終端機的輸入，記一筆 terminal.input。
       if (input.firstPrompt !== null) {
@@ -1738,6 +1774,13 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
     readReviews: (ids) => fakeReviews.read(ids),
     getSettings: async () => settings,
     getModelLists: async () => settings.modelLists,
+    getTeamModeInfo: async () => ({
+      defaultOn: settings.teamModeDefault,
+      dispatch: settings.dispatch,
+      codexMcp: settings.codexMcp,
+      autoStaff: settings.autoStaff.enabled,
+      teamLimit: settings.autoStaff.teamLimit,
+    }),
     async updateSettings(patch) {
       settings = { ...settings, ...patch };
       // hub 會把新的上限廣播給每個人（board.waitingLimit）。

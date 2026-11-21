@@ -630,6 +630,17 @@ export function registerRest(app: FastifyInstance, deps: RestDeps): void {
     settingsGet: () => store.getSettings(),
     // 新增 session 的模型下拉清單（§26）：一般使用者也讀得到，只回清單本身。
     modelListsGet: () => store.getSettings().modelLists,
+    // 團隊模式（§27）：新增 session 頁要的預設值與上限，一般使用者也讀得到（設定本身只有 owner）。
+    teamModeGet: () => {
+      const settings = store.getSettings();
+      return {
+        defaultOn: settings.teamModeDefault,
+        dispatch: settings.dispatch,
+        codexMcp: settings.codexMcp,
+        autoStaff: settings.autoStaff.enabled,
+        teamLimit: settings.autoStaff.teamLimit,
+      };
+    },
     teamActivityRead: (ctx) => hub.readTeamActivity(ctx.body.ids, ctx.user),
     // 加開申請（CONTRACTS §23）：GM 同意 → 照申請開成員；拒絕 → 告訴隊長。audit 由 StaffRequestEngine 寫。
     staffRequestList: () => hub.staffRequests.list(),

@@ -84,6 +84,11 @@ const SESSION_AGENT_PREFIX = 'sessionAgent:';
  * 值 `{"effort"?: …, "fallbackModel"?: …}`，不升 schema。兩個都沒指定就不寫（舊資料都沒有＝跟 CLI 預設）。
  */
 const SESSION_MODEL_OPTS_PREFIX = 'sessionModelOpts:';
+/**
+ * 以團隊模式建立的 session（GM 2026-11-21，CONTRACTS §27）：settings 表 `sessionTeamMode:<sessionId>` = true，
+ * 不升 schema。接續時據此再帶隊長守則。沒有這個鍵＝一般 session（舊資料都是）。
+ */
+const SESSION_TEAM_MODE_PREFIX = 'sessionTeamMode:';
 const SessionModelOpts = z.object({
   effort: SessionEffort.optional(),
   fallbackModel: ModelName.optional(),
@@ -126,6 +131,7 @@ const DEFAULT_SETTINGS = (listenAddress: string): Settings => ({
   review: { ...REVIEW_SETTINGS_DEFAULT },
   canarySoakHours: CANARY_SOAK_HOURS_DEFAULT,
   modelLists: { claude: [...MODEL_LISTS_DEFAULT.claude], codex: [...MODEL_LISTS_DEFAULT.codex] },
+  teamModeDefault: false,
 });
 
 interface UserRow {
@@ -494,6 +500,8 @@ export class Store {
   private addedCache: Map<string, MemberAdded> | null = null;
   /** `sessionAgent:*` 的快取（session 清單在熱路徑上）。setSessionAgent、deleteSession 時清掉。 */
   private agentCache: Map<string, AgentKind> | null = null;
+  /** `sessionTeamMode:*` 的快取（同上，熱路徑）。setSessionTeamMode、deleteSession 時清掉。 */
+  private teamModeCache: Set<string> | null = null;
   /** `sessionModelOpts:*` 的快取（同上，熱路徑）。setSessionModelOpts、deleteSession 時清掉。 */
   private modelOptsCache: Map<string, SessionModelOpts> | null = null;
   /** `awaitingLead:*` 的快取（成員 id → 隊長 id）。setAwaitingLead、deleteSession 時清掉。 */
@@ -777,6 +785,7 @@ export class Store {
       ...(agent ? { agent } : {}),
       ...(opts?.effort ? { effort: opts.effort } : {}),
       ...(opts?.fallbackModel ? { fallbackModel: opts.fallbackModel } : {}),
+      ...(this.allTeamModes().has(row.id) ? { teamMode: true as const } : {}),
     });
   };
 
@@ -817,6 +826,25 @@ export class Store {
       this.setRaw(`${SESSION_MODEL_OPTS_PREFIX}${sessionId}`, value);
     }
     this.modelOptsCache = null;
+  }
+
+  private allTeamModes(): Set<string> {
+    if (this.teamModeCache) return this.teamModeCache;
+    const rows = this.db
+      .prepare(`SELECT key, value FROM settings WHERE key LIKE '${SESSION_TEAM_MODE_PREFIX}%'`)
+      .all() as { key: string; value: string }[];
+    this.teamModeCache = new Set(
+      rows
+        .filter((row) => safeJson(row.value) === true)
+        .map((row) => row.key.slice(SESSION_TEAM_MODE_PREFIX.length)),
+    );
+    return this.teamModeCache;
+  }
+
+  /** 記下這個 session 是團隊模式（CONTRACTS §27）；只有建立時寫一次。 */
+  setSessionTeamMode(sessionId: string): void {
+    this.setRaw(`${SESSION_TEAM_MODE_PREFIX}${sessionId}`, true);
+    this.teamModeCache = null;
   }
 
   private allAgents(): Map<string, AgentKind> {
@@ -875,6 +903,8 @@ export class Store {
       this.addedCache = null;
       this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${SESSION_AGENT_PREFIX}${id}`);
       this.agentCache = null;
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(`${SESSION_TEAM_MODE_PREFIX}${id}`);
+      this.teamModeCache = null;
       this.db
         .prepare('DELETE FROM settings WHERE key = ?')
         .run(`${SESSION_MODEL_OPTS_PREFIX}${id}`);
@@ -1962,7 +1992,8 @@ export class Store {
            AND key NOT LIKE '${SESSION_AGENT_PREFIX}%' AND key NOT LIKE '${AWAITING_LEAD_PREFIX}%'
            AND key NOT LIKE '${STAFF_REQUEST_PREFIX}%' AND key != '${STAFF_ACTIVITY_KEY}'
            AND key NOT LIKE '${STAFF_LAST_DECISION_PREFIX}%'
-           AND key NOT LIKE '${SESSION_MODEL_OPTS_PREFIX}%'`,
+           AND key NOT LIKE '${SESSION_MODEL_OPTS_PREFIX}%'
+           AND key NOT LIKE '${SESSION_TEAM_MODE_PREFIX}%'`,
       )
       .all() as {
       key: string;

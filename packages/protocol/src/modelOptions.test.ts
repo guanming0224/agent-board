@@ -177,6 +177,7 @@ describe('claude --help 解析（§26.10）', () => {
       effort: true,
       efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
       fallbackModel: true,
+      appendSystemPrompt: false,
     });
   });
 
@@ -186,8 +187,9 @@ describe('claude --help 解析（§26.10）', () => {
                                model is overloaded (only works with --print)
   --model <model>              Model for the current session.
 `;
-    expect(parseClaudeHelp(old)).toEqual({ effort: false, efforts: null, fallbackModel: false });
-    expect(parseClaudeHelp('')).toEqual({ effort: false, efforts: null, fallbackModel: false });
+    const none = { effort: false, efforts: null, fallbackModel: false, appendSystemPrompt: false };
+    expect(parseClaudeHelp(old)).toEqual(none);
+    expect(parseClaudeHelp('')).toEqual(none);
   });
 
   it('只列到 high（沒有 xhigh、max）；括號讀不到＝null；--effort-xxx 不算 --effort', () => {

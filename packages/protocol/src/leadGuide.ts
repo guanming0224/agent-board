@@ -86,6 +86,55 @@ export const DISPATCH_TOOL_DESCRIPTIONS = {
     "Release (archive) a member of a team you lead to free its slot, when it has finished and will not be needed again. Its session is stopped, handoff rules touching it are paused, and its conversation is kept; the user can restore it from Settings → Archived. reason is required (shown to the user). A member still in a turn (running, starting, waiting for the user's approval or plan review) or that still owes you a result cannot be released: wait for its result first. You cannot release yourself. Only the team lead can release members.",
 } as const;
 
+// ── 團隊模式（GM 2026-11-21，CONTRACTS §27） ─────────────────────────────
+// 新增 session 勾「團隊模式」時，daemon 在啟動 agent 時把下面的固定英文放進系統指示：
+//   Claude：`--append-system-prompt <文字>`；Codex：`-c developer_instructions="<文字>"`。
+// 只有這幾段常數，hub／daemon 只收布林（SessionSpec.teamLead 的 autoStaff、presetMembers），使用者與網頁送不進任何文字。
+// 文字刻意只用英數、底線、空白與 . , : ; ' ( ) -（不用雙引號、%、^、&、|、<、>、…）：Windows 經 claude.cmd 啟動時
+// cmd.exe 不會把它拆壞，放進 Codex 的 TOML 字串也不必擔心跳脫（仍照樣跳脫）。leadGuide.test 檢查字元。
+
+/** 團隊模式的開頭：你是隊長、團隊已經建好。 */
+export const TEAM_MODE_INTRO =
+  'Agent Board team mode: you are the lead of an Agent Board team that was created for you when this session started (list_members shows yourRole lead). ' +
+  'When you receive a task, first run list_members to check your team: its members, what they are doing, the team size limit and free slots.';
+
+/** 團隊模式：照 Preset 開好的隊員。 */
+export const TEAM_MODE_PRESET_MEMBERS =
+  'Members from a team preset were started for you together with this session and are waiting for work: look at them with list_members before assigning work, give them tasks with send_task, and only add someone if a needed role is still missing.';
+
+/** 團隊模式的節奏（以 LEAD_STAFFING_RHYTHM 為基礎，改成 cmd.exe 安全的字元）。 */
+export const TEAM_MODE_RHYTHM =
+  'Staffing rhythm: (1) decide which roles the task needs (worker edits code, tester writes and runs tests, researcher investigates read-only, reviewer reviews read-only) and compare with list_members. ' +
+  '(2) If a role is missing or the work is too big for the current members, add one with spawn_member and give a short reason. ' +
+  '(3) Write the split of work into the progress card, send_task to members, then end your turn: their results are typed back to you as Result from lines after your turn ends, so do not sleep or poll. ' +
+  '(4) While the work runs, if you are stuck, the workload is too large, or a skill is missing, add a member the same way. ' +
+  '(5) When a member is done and will not be needed again, release_member to free its slot. ' +
+  'Past the team size limit or 4 new members in 10 minutes, spawn_member sends the user a request to approve instead; then end your turn and wait for the Agent Board reply.';
+
+/** 團隊模式、隊長自主擴編關著（AUTOSTAFF_OFF_GUIDE 的意思）。 */
+export const TEAM_MODE_FIXED_STAFF =
+  'The user turned off lead auto-staffing: you cannot add or release members. Split the work among the current members with send_task, then end your turn: their results are typed back to you after your turn ends, so do not sleep or poll. If the team lacks a needed skill, tell the user.';
+
+/** 團隊模式的結尾：小事自己做。 */
+export const TEAM_MODE_SMALL_WORK =
+  'Do small tasks you can finish yourself in a few minutes yourself instead of delegating them. The user is notified of every member you add or release.';
+
+/**
+ * 團隊模式的系統指示（固定文字的組合，沒有任何變數內容）。`autoStaff`：hub 送出時的設定「隊長自主擴編」；
+ * `presetMembers`：這次建立時同時照 Preset 開了隊員。
+ */
+export function teamModeGuide(flags: { autoStaff: boolean; presetMembers: boolean }): string {
+  return [
+    TEAM_MODE_INTRO,
+    ...(flags.presetMembers ? [TEAM_MODE_PRESET_MEMBERS] : []),
+    flags.autoStaff ? TEAM_MODE_RHYTHM : TEAM_MODE_FIXED_STAFF,
+    TEAM_MODE_SMALL_WORK,
+  ].join(' ');
+}
+
+/** 團隊模式文字只能有的字元（cmd.exe 與 TOML 都安全）。 */
+export const TEAM_MODE_GUIDE_CHARS = /^[A-Za-z0-9_ .,:;'()-]+$/;
+
 /** 參數說明（inputSchema 的 description）。 */
 export const SPAWN_REASON_DESCRIPTION =
   'Required. One short sentence: why the team needs this member now (for example "No tester yet; the change needs regression tests"). Shown to the user.';

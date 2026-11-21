@@ -85,7 +85,7 @@ export function defaultModeFor(role: (typeof DISPATCH_ROLES)[number]): Permissio
   return 'plan';
 }
 /** 新團隊的框色（team/colors.ts 的第一個）。 */
-const DEFAULT_TEAM_COLOR = 'teal';
+export const DEFAULT_TEAM_COLOR = 'teal';
 
 /**
  * 權限模式的寬鬆程度：plan < default < acceptEdits < auto／dontAsk < bypassPermissions（GM 2026-11-06 定的順序）。

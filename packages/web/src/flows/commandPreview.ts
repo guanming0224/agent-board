@@ -13,6 +13,8 @@ function codexCommand(spec: Omit<SessionSpec, 'projectId' | 'firstPrompt'>): str
   if (spec.model) codex.push(`-m ${shellQuote(spec.model)}`);
   // 推理強度（§26）：和 daemon 的 buildCodexArgs 一樣用設定覆寫。
   if (spec.effort) codex.push(`-c ${shellQuote(`model_reasoning_effort="${spec.effort}"`)}`);
+  // 團隊模式（§27）：固定守則很長，用 <隊長守則> 代表（全文在預覽下方）。
+  if (spec.teamLead) codex.push(`-c 'developer_instructions="<team-mode guide>"'`);
   codex.push('--dangerously-bypass-hook-trust', '-c <hooks>');
   return codex.join(' ');
 }
@@ -37,6 +39,8 @@ export function commandPreview(spec: Omit<SessionSpec, 'projectId' | 'firstPromp
   if (spec.model) claude.push(`--model ${shellQuote(spec.model)}`);
   if (spec.effort) claude.push(`--effort ${spec.effort}`);
   if (spec.fallbackModel) claude.push(`--fallback-model ${shellQuote(spec.fallbackModel)}`);
+  // 團隊模式（§27）：同上，全文在預覽下方。
+  if (spec.teamLead) claude.push('--append-system-prompt <team-mode guide>');
   if (spec.name) claude.push(`--name ${shellQuote(spec.name)}`);
 
   const env = spec.accountProfile ? `CLAUDE_CONFIG_DIR=${shellQuote(spec.accountProfile)} ` : '';

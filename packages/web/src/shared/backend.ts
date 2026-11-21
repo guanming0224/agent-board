@@ -60,6 +60,7 @@ import type {
   ZoneGroupPatch,
   ZoneGroups,
   ModelLists,
+  TeamModeInfo,
 } from '@agent-board/protocol';
 import type { TerminalStream } from './terminal-contract';
 
@@ -187,7 +188,18 @@ export interface BoardBackend {
   saveLocale(locale: User['locale']): Promise<void>;
 
   /** zoneId：放在哪個工作區（新建 session 放在目前工作區）；沒給＝預設工作區。 */
-  createSession(input: SessionSpec & { machineId: string; zoneId?: string }): Promise<Session>;
+  /**
+   * 團隊模式（CONTRACTS §27）：`teamMode` 只是布林，守則文字是 hub／daemon 裡的固定常數；`teamPresetMembers`：
+   * 接著會照 Preset 開隊員。舊 hub 不認得這兩個欄位（zod 丟掉），所以畫面看 `getTeamModeInfo` 決定顯不顯示。
+   */
+  createSession(
+    input: Omit<SessionSpec, 'teamLead'> & {
+      machineId: string;
+      zoneId?: string;
+      teamMode?: boolean;
+      teamPresetMembers?: boolean;
+    },
+  ): Promise<Session>;
   updateSession(
     id: string,
     patch: { name?: string; archived?: boolean; markDone?: true; zoneId?: string },
@@ -298,6 +310,8 @@ export interface BoardBackend {
   getSettings(): Promise<Settings>;
   /** 新增 session 的模型下拉清單（CONTRACTS §26）。一般使用者也讀得到（設定本身只有 owner 能讀）。 */
   getModelLists(): Promise<ModelLists>;
+  /** 團隊模式的預設值與人數上限（CONTRACTS §27，一般使用者也讀得到）。舊 hub 沒有這條路由＝null（不顯示開關）。 */
+  getTeamModeInfo(): Promise<TeamModeInfo | null>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
   /** 操作紀錄（只有 owner）。由新到舊。 */
   listAudit(filter: AuditFilter): Promise<AuditEntry[]>;

@@ -38,6 +38,9 @@ if (argv[0] === '--help') {
       'Usage: claude [options] [command] [prompt]',
       '',
       'Options:',
+      // 團隊模式（§27）：照真 claude 2.1.329 的寫法。
+      '  --append-system-prompt <prompt>       Add text to the end of the default',
+      '                                        system prompt',
       '  --effort <level>                      Effort level for the current session',
       '                                        (low, medium, high, xhigh, max)',
       '  --fallback-model <model>              Models to fall back to when the main',

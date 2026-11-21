@@ -38,7 +38,8 @@ export const FAKE_CAPABILITIES: MachineCapabilities = {
   memoryBytes: 1024,
   claudeVersion: '9.9.9',
   // 假 claude 當作認得 --effort 與互動模式的 --fallback-model（§26.10）。
-  claudeFlags: { effort: true, efforts: null, fallbackModel: true },
+  claudeFlags: { effort: true, efforts: null, fallbackModel: true, appendSystemPrompt: true },
+  teamMode: true,
 };
 
 export function makeTempDir(): string {

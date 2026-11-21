@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
-import { DAEMON_FEATURES, DaemonToHub } from '@agent-board/protocol';
+import { DAEMON_FEATURES, DaemonToHub, teamModeGuide } from '@agent-board/protocol';
 import type { Daemon } from './daemon';
 import { hookSettingsLockKey, withFileLock } from './fileLock';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -42,7 +42,7 @@ const persisted = () =>
       sessionId: string;
       claudeSessionId: string;
       pendingFirstPrompt: string | null;
-      spec: { readOnly: boolean };
+      spec: { readOnly: boolean; teamLead?: unknown };
     }[];
   };
 
@@ -834,6 +834,21 @@ describe('daemon 重啟', () => {
     });
     // hello 宣告認得這兩個欄位（hub 才會送）。
     expect(h.hellos().at(-1)?.features).toContain(DAEMON_FEATURES.modelOptions);
+
+    writeTranscript(claudeId);
+    await h.restartDaemon();
+    await waitUntil(() => h.runs().length === 2, '第二次啟動');
+    expect(h.runs()[1]?.argv).toEqual(['--resume', claudeId, '--permission-mode', 'plan', ...tail]);
+  });
+
+  it('團隊模式（§27）：開的時候帶 --append-system-prompt 固定守則，記在清單裡，重啟 --resume 接回照樣帶', async () => {
+    const teamLead = { autoStaff: true, presetMembers: true };
+    await h.createAndSubscribe('tm', { permissionMode: 'plan', name: 'tm', teamLead });
+    const claudeId = h.runs()[0]?.argv[1] as string;
+    const tail = ['--append-system-prompt', teamModeGuide(teamLead), '--name', 'tm'];
+    expect(h.runs()[0]?.argv.slice(2)).toEqual(['--permission-mode', 'plan', ...tail]);
+    expect(persisted().sessions[0]?.spec.teamLead).toEqual(teamLead);
+    expect(h.hellos().at(-1)?.features).toContain(DAEMON_FEATURES.teamMode);
 
     writeTranscript(claudeId);
     await h.restartDaemon();

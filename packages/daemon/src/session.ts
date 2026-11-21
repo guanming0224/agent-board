@@ -17,6 +17,7 @@ import {
   sameModel,
   type ClaudeFlags,
   READ_ONLY_DISALLOWED_TOOLS,
+  teamModeGuide,
 } from '@agent-board/protocol';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import type { Terminal as TerminalType } from '@xterm/headless';
@@ -77,6 +78,11 @@ export interface ClaudeArgsInput {
   claudeFlags: ClaudeFlags | null;
   /** 有指定但這台 claude 帶不了而沒帶（§26.11）：daemon 回報 hub 清掉記錄。 */
   onDrop?: (field: 'effort' | 'fallbackModel') => void;
+  /**
+   * 團隊模式（CONTRACTS §27）：只有兩個布林，守則文字由 `teamModeGuide` 從固定常數組出來，用
+   * `--append-system-prompt` 帶。這台 claude 不認得（`claudeFlags.appendSystemPrompt` 不是 true）就不帶並記 warn。
+   */
+  teamLead?: { autoStaff: boolean; presetMembers: boolean } | null;
   name: string;
   /** 唯讀 session：拿掉改檔工具（SessionSpec.readOnly）。 */
   readOnly?: boolean;
@@ -121,6 +127,13 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
     else {
       log.warn('這台 claude 不支援互動模式的 --fallback-model，這次不帶');
       input.onDrop?.('fallbackModel');
+    }
+  }
+  if (input.teamLead) {
+    if (input.claudeFlags?.appendSystemPrompt === true) {
+      args.push('--append-system-prompt', teamModeGuide(input.teamLead));
+    } else {
+      log.warn('這台 claude 不認得 --append-system-prompt，團隊模式的隊長守則這次不帶');
     }
   }
   // 兩個都是可變長度參數：一個值一個 argv，最後一定接 --name，才不會吞到別的參數。

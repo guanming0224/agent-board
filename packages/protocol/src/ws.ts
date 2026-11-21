@@ -60,6 +60,7 @@ import {
   CODEX_EFFORTS_BY_MODEL_FEATURE,
   MODEL_OPTIONS_FEATURE,
   ModelName,
+  TEAM_MODE_FEATURE,
   SessionEffort,
 } from './modelOptions';
 
@@ -100,6 +101,12 @@ export const DAEMON_FEATURES = {
   modelOptions: MODEL_OPTIONS_FEATURE,
   /** Codex 推理強度依模型目錄驗，收 xhigh／max／ultra（§26.11）；capabilities 帶 `codexModels`。 */
   codexEffortsByModel: CODEX_EFFORTS_BY_MODEL_FEATURE,
+  /**
+   * 認得 `SessionSpec.teamLead`（團隊模式，CONTRACTS §27）：啟動 agent 時帶固定的隊長守則（Claude
+   * `--append-system-prompt`、Codex `-c developer_instructions`）；capabilities 帶 `teamMode: true`。
+   * 舊 daemon 沒有：hub 拒絕團隊模式（409 team_mode_unavailable），網頁停用開關。
+   */
+  teamMode: TEAM_MODE_FEATURE,
 } as const;
 
 export const TerminalSignal = z.enum(['escape', 'ctrl_c', 'terminate']);
@@ -160,6 +167,12 @@ export const SessionSpec = z.object({
   effort: SessionEffort.nullable().optional(),
   /** 備援模型（只有 Claude，`--fallback-model <model>`）。Codex 帶了 hub 拒絕、daemon 略過。 */
   fallbackModel: ModelName.nullable().optional(),
+  /**
+   * 團隊模式（CONTRACTS §27）：有這個欄位＝啟動時帶固定的隊長守則（`teamModeGuide`）。只有布林，文字由 daemon
+   * 從 leadGuide.ts 的常數組出來。autoStaff：hub 送出時「隊長自主擴編」開著；presetMembers：建立時同時照 Preset
+   * 開了隊員。網頁送不進這個欄位（REST body 拿掉，只收 `teamMode` 布林），由 hub 填。舊 daemon 不認得（zod 丟掉）。
+   */
+  teamLead: z.object({ autoStaff: z.boolean(), presetMembers: z.boolean() }).strict().optional(),
 });
 export type SessionSpec = z.infer<typeof SessionSpec>;
 

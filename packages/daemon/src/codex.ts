@@ -15,6 +15,8 @@ import {
   type CodexHookTarget,
   type HookEventName,
   type PermissionMode,
+  teamModeGuide,
+  tomlString,
 } from '@agent-board/protocol';
 import type { HookOutput } from './hookServer';
 import { log } from './log';
@@ -37,6 +39,11 @@ export interface CodexArgsInput {
   onDrop?: (field: 'effort') => void;
   /** 新對話的第一句（使用者在新增 session 時填的）；用官方的 `codex [PROMPT]` 帶入，接續時不帶。 */
   firstPrompt?: string | null;
+  /**
+   * 團隊模式（CONTRACTS §27）：只有兩個布林，守則文字由 `teamModeGuide` 從固定常數組出來，用官方設定鍵
+   * `-c developer_instructions="…"` 帶（只在這次啟動有效，不寫 ~/.codex）。resume 也帶。
+   */
+  teamLead?: { autoStaff: boolean; presetMembers: boolean } | null;
   /** 這個 session 的 hook 位址，寫進每個 hook 指令。 */
   hookTarget: CodexHookTarget;
   /** agent-board MCP server（派工、進度卡，Codex 第二輪）；設定都關著或找不到 server 時不掛。 */
@@ -65,6 +72,9 @@ export function buildCodexArgs(input: CodexArgsInput): string[] {
       );
       input.onDrop?.('effort');
     }
+  }
+  if (input.teamLead) {
+    args.push('-c', `developer_instructions="${tomlString(teamModeGuide(input.teamLead))}"`);
   }
   args.push('--dangerously-bypass-hook-trust');
   for (const override of codexHookOverrides(input.hookTarget)) args.push('-c', override);

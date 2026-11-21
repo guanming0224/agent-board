@@ -28,6 +28,16 @@ describe('commandPreview', () => {
     ]);
   });
 
+  it('團隊模式（§27）：Claude --append-system-prompt、Codex -c developer_instructions（守則全文另外顯示）', () => {
+    const teamLead = { autoStaff: true, presetMembers: false };
+    expect(commandPreview({ ...base, teamLead })[1]).toBe(
+      'claude --session-id <uuid> --permission-mode manual --append-system-prompt <team-mode guide> --name n',
+    );
+    expect(commandPreview({ ...base, agent: 'codex', teamLead })[1]).toBe(
+      `codex -s read-only -a on-request -c 'developer_instructions="<team-mode guide>"' --dangerously-bypass-hook-trust -c <hooks>`,
+    );
+  });
+
   it('推理強度與備援模型（§26）：和 daemon 的參數一樣的順序', () => {
     expect(
       commandPreview({ ...base, model: 'opus', effort: 'xhigh', fallbackModel: 'sonnet' })[1],

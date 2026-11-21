@@ -127,7 +127,10 @@ describe('agent-board-daemon pair', () => {
       effort: true,
       efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
       fallbackModel: true,
+      // 團隊模式（§27）：假 claude 照 2.1.329 列了 --append-system-prompt。
+      appendSystemPrompt: true,
     });
+    expect((hub.seen[0]?.capabilities as { teamMode?: boolean }).teamMode).toBe(true);
 
     const file = credentialsPath(h.dataDir);
     expect(statSync(file).mode & 0o777).toBe(0o600);

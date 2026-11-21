@@ -51,6 +51,7 @@ import {
   UserRole,
   Zone,
   ZoneName,
+  TeamModeInfo,
 } from './models';
 import { UsageReport } from './usage';
 import { Review, REVIEW_BOARD_KEEP, REVIEW_REASON_MAX, ReviewTargetInput } from './review';
@@ -127,6 +128,7 @@ export const SettingsPatch = Settings.extend({
   review: ReviewSettings,
   canarySoakHours: z.number().int().min(CANARY_SOAK_HOURS_MIN).max(CANARY_SOAK_HOURS_MAX),
   modelLists: ModelLists,
+  teamModeDefault: z.boolean(),
 }).partial();
 
 /**
@@ -342,7 +344,16 @@ export const routes = {
     path: '/api/sessions',
     auth: 'user',
     /** zoneId：放在哪個工作區（P2 §2：新建 session 放在目前工作區）；沒帶＝排第一個的工作區。 */
-    body: SessionSpec.extend({ machineId: Id, zoneId: Id.optional() }),
+    /**
+     * 團隊模式（CONTRACTS §27）：`teamMode: true`＝建立時就成為新團隊的隊長、啟動時帶固定守則；`teamPresetMembers`：
+     * 網頁接著會照 Preset 開隊員（守則多一句）。只收布林，`SessionSpec.teamLead` 由 hub 填，網頁送不進來。
+     */
+    body: SessionSpec.omit({ teamLead: true }).extend({
+      machineId: Id,
+      zoneId: Id.optional(),
+      teamMode: z.boolean().optional(),
+      teamPresetMembers: z.boolean().optional(),
+    }),
     response: Session,
   }),
   sessionsUpdate: route({
@@ -951,6 +962,13 @@ export const routes = {
     path: '/api/model-lists',
     auth: 'user',
     response: ModelLists,
+  }),
+  /** 團隊模式（CONTRACTS §27）：新增 session 頁讀預設值、人數上限等。舊 hub 沒有＝網頁不顯示開關。 */
+  teamModeGet: route({
+    method: 'GET',
+    path: '/api/team-mode',
+    auth: 'user',
+    response: TeamModeInfo,
   }),
 
   // 推播

@@ -354,6 +354,38 @@ export const zhTW: Record<string, string> = {
   'flows.new.resume': '接續舊對話',
   'flows.new.resumeHint': '留空開新對話；要接續就選或貼上 Claude 對話 ID。',
   'flows.new.firstPrompt': '第一個指令',
+  'flows.teamMode.legend': '團隊模式',
+  'flows.teamMode.label': '以隊長身分開（建立時就組好團隊）',
+  'flows.teamMode.hint':
+    '開著時，這個 session 一建立就是新團隊「{team}」的隊長，畫布馬上出現團隊框；啟動時帶一段寫死在 Agent Board 裡的固定英文守則（你是隊長、開工先用 list_members 看人力、照節奏開人／派工／封存，小事自己做），接續時也帶。不是 AI 產生的文字，也不會在對話中途送字。',
+  'flows.teamMode.autoStaffOff':
+    '「隊長自主擴編」關著：守則改成只能用現有隊員，隊長不能自己新增或封存成員。',
+  'flows.teamMode.noGuide':
+    '{machine} 上的 claude 不認得 --append-system-prompt：照樣建團隊，但守則帶不進去（隊長只在用 Agent Board 工具時看得到說明）。更新那台的 claude 後，daemon 重新連上就會帶。',
+  'flows.teamMode.unavailable':
+    '{machine} 的 daemon 太舊，不能用團隊模式。更新那台的 Agent Board 後再試。',
+  'flows.teamMode.dispatchOff':
+    '「允許 session 派工（MCP 工具）」關著，隊長沒有工具可用。請擁有者先在設定開啟。',
+  'flows.teamMode.codexMcpOff':
+    'Codex 隊長要用 Agent Board 的 MCP 工具（設定「Codex 掛 Agent Board MCP」），目前關著。',
+  'flows.teamMode.preset': '一開就帶的隊員',
+  'flows.teamMode.presetNone': '不帶，只開隊長',
+  'flows.teamMode.presetBuiltin': '內建組合',
+  'flows.teamMode.presetSaved': '團隊 Presets',
+  'flows.teamMode.members':
+    '會一起開好待命：{names}（同一台機器、同一個資料夾，沿用 Preset 的權限、模型與 worktree 規則）。',
+  'flows.teamMode.capped':
+    '團隊人數上限 {limit} 人（含隊長）：只會開前 {kept} 位隊員，另外 {dropped} 位不開。',
+  'flows.teamMode.created': '團隊「{team}」：開好 {created} 位隊員。',
+  'flows.teamMode.partial':
+    '團隊「{team}」：開好 {created} 位隊員，{failed} 位沒開成（到團隊面板補）。',
+  'flows.teamMode.noTeam': '沒找到團隊（hub 可能是舊版），隊員沒有開。',
+  'flows.teamMode.membersFailed': '隊員沒開成：{error}',
+  'flows.teamMode.guideTitle': '團隊模式守則（固定文字，啟動時帶給 agent）',
+  'flows.teamMode.defaultLabel': '新增 session 預設開「團隊模式」',
+  'flows.teamMode.defaultHint':
+    '只改新增 session 頁一打開時的預設值，每次建立前都還能關掉。團隊模式的 session 一建立就是新團隊的隊長，並帶固定的隊長守則。',
+  'flows.teamMode.needsDispatch': '派工關著時團隊模式不能用。',
   'flows.new.create': '建立 session',
   'flows.new.creating': '建立中…',
   'flows.new.created': '已建立 {name}。',
@@ -1285,6 +1317,38 @@ export const en: Record<string, string> = {
   'flows.new.resumeHint':
     'Leave empty for a new conversation, or pick or paste a Claude session ID.',
   'flows.new.firstPrompt': 'First prompt',
+  'flows.teamMode.legend': 'Team mode',
+  'flows.teamMode.label': 'Start as a team lead (team set up on creation)',
+  'flows.teamMode.hint':
+    'When on, this session is the lead of a new team "{team}" as soon as it is created, and the team frame shows on the canvas right away. It starts with a fixed English guide built into Agent Board (you are the lead, check staffing with list_members first, add, assign and release members in rhythm, do small tasks yourself), also on resume. It is not AI-generated text and nothing is typed in mid-conversation.',
+  'flows.teamMode.autoStaffOff':
+    'Lead auto-staffing is off: the guide tells the lead to use only the current members; it cannot add or release members.',
+  'flows.teamMode.noGuide':
+    'claude on {machine} does not know --append-system-prompt: the team is still set up, but the guide cannot be passed in (the lead only sees it when using Agent Board tools). Update claude on that machine; it applies once the daemon reconnects.',
+  'flows.teamMode.unavailable':
+    'The daemon on {machine} is too old for team mode. Update Agent Board on that machine first.',
+  'flows.teamMode.dispatchOff':
+    'Session dispatch (MCP tools) is off, so the lead would have no tools. Ask an owner to turn it on in Settings.',
+  'flows.teamMode.codexMcpOff':
+    'A Codex lead needs the Agent Board MCP tools for Codex (Settings), which are off.',
+  'flows.teamMode.preset': 'Members to start with',
+  'flows.teamMode.presetNone': 'None, lead only',
+  'flows.teamMode.presetBuiltin': 'Built-in',
+  'flows.teamMode.presetSaved': 'Team presets',
+  'flows.teamMode.members':
+    "Started and waiting together: {names} (same machine and folder; the preset's modes, models and worktree rules).",
+  'flows.teamMode.capped':
+    'Team size limit is {limit} (lead included): only the first {kept} members start; {dropped} more are skipped.',
+  'flows.teamMode.created': 'Team "{team}": {created} members started.',
+  'flows.teamMode.partial':
+    'Team "{team}": {created} members started, {failed} failed (add them from the team panel).',
+  'flows.teamMode.noTeam': 'No team found (the hub may be old); members were not started.',
+  'flows.teamMode.membersFailed': 'Members not started: {error}',
+  'flows.teamMode.guideTitle': 'Team mode guide (fixed text passed to the agent at start)',
+  'flows.teamMode.defaultLabel': 'New sessions start in team mode by default',
+  'flows.teamMode.defaultHint':
+    'Only changes what the New session page starts with; you can still turn it off each time. A team-mode session is the lead of a new team from the start and gets the fixed lead guide.',
+  'flows.teamMode.needsDispatch': 'Team mode does not work while dispatch is off.',
   'flows.new.create': 'Create session',
   'flows.new.creating': 'Creating…',
   'flows.new.created': 'Created {name}.',
