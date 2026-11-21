@@ -339,7 +339,7 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX reviews_created ON reviews(created_at);
   `,
   /*
-   * 12：用量歷史（GM 2026-11-21，CONTRACTS §27）。**只加表，不動既有資料**（升級前照樣寫 -v11 備份）。
+   * 12：用量歷史（GM 2026-11-21，CONTRACTS §28）。**只加表，不動既有資料**（升級前照樣寫 -v11 備份）。
    * usage_history：每台機器「日期（那台機器時區的日）× 來源（claude／codex）× 模型」的四種 token，
    *   只存數字與更新時間（不存 session、cwd、對話內容）。保存規則見 protocol 的 shouldReplaceHistory：
    *   最近 2 天以最新為準，更早的只在新值的四項合計 ≥ 舊值時整列換（Claude Code 清掉舊紀錄不會把它歸零）；

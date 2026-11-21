@@ -1,10 +1,11 @@
-// 用量歷史（GM 2026-11-21，CONTRACTS §27）：全部時間的掃描、增量快取（新增／變大／被刪／被改）、
+// 用量歷史（GM 2026-11-21，CONTRACTS §28）：全部時間的掃描、增量快取（新增／變大／被刪／被改）、
 // 跨檔去重、Codex、時區、送給 hub 的差異（回填、只送有變的日子）。測試只用假資料夾。
 import {
   appendFileSync,
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -186,6 +187,9 @@ describe('UsageHistoryScanner 全部時間', () => {
     const cacheText = readFileSync(join(data, USAGE_HISTORY_CACHE_FILE), 'utf8');
     expect(cacheText).not.toContain('sessionId');
     expect(cacheText).not.toContain('a1');
+    // 不存路徑（路徑裡有 session id 與專案資料夾）：鍵是路徑的 sha256。
+    expect(cacheText).not.toContain(SA);
+    expect(cacheText).not.toContain('projects');
     const again = new UsageHistoryScanner(join(data, USAGE_HISTORY_CACHE_FILE), {
       timeZone: 'UTC',
     });
@@ -288,6 +292,103 @@ describe('UsageHistoryScanner 全部時間', () => {
       'codex|2026-05-02|gpt-5.5': [5, 1, 0, 0],
     });
     expect(scan.earliest.codex).toBe('2026-05-01');
+    // 快取不存 Codex 的 cwd、thread id（路徑）。
+    const cacheText = readFileSync(join(data, USAGE_HISTORY_CACHE_FILE), 'utf8');
+    expect(cacheText).not.toContain('/w');
+    expect(cacheText).not.toContain(thread);
+    expect(cacheText).not.toContain('cwd');
+  });
+
+  it('Codex 這次沒掃（codex 是 null）：快取裡的 Codex 紀錄不刪，下次照樣沿用', async () => {
+    const { data } = setup();
+    const codexHome = temp();
+    const day = join(codexHome, 'sessions', '2026', '05', '01');
+    mkdirSync(day, { recursive: true });
+    writeFileSync(
+      join(day, 'rollout-2026-05-01T00-00-00-019a0000-0000-7000-8000-000000000009.jsonl'),
+      [
+        JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-5.5' } }),
+        JSON.stringify({
+          timestamp: '2026-05-01T01:00:00Z',
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: { input_tokens: 3, cached_input_tokens: 0, output_tokens: 1 },
+              total_token_usage: { total_tokens: 4 },
+            },
+          },
+        }),
+      ].join('\n') + '\n',
+    );
+    const scanner = new UsageHistoryScanner(join(data, USAGE_HISTORY_CACHE_FILE), {
+      timeZone: 'UTC',
+    });
+    await scanner.scan({ claude: [], codex: codexHome });
+    let scan = await scanner.scan({ claude: [], codex: null });
+    expect(scan.stats.removed).toBe(0);
+    expect(flat(scan.cells)['codex|2026-05-01|gpt-5.5']).toEqual([3, 1, 0, 0]);
+    scan = await scanner.scan({ claude: [], codex: codexHome });
+    expect(scan.stats).toMatchObject({ reused: 1, rescanned: 0 });
+  });
+
+  it('掃描中換了 roots：不回舊 roots 的結果，排在後面重掃', async () => {
+    const { config, data, project } = setup();
+    writeFileSync(
+      join(project, `${SA}.jsonl`),
+      claudeLine('2026-01-01T00:00:00Z', 'a', 'm', usage(1)) + '\n',
+    );
+    const other = temp();
+    mkdirSync(join(other, 'projects', 'q'), { recursive: true });
+    writeFileSync(
+      join(other, 'projects', 'q', `${SB}.jsonl`),
+      claudeLine('2026-01-02T00:00:00Z', 'b', 'm', usage(2)) + '\n',
+    );
+    const scanner = new UsageHistoryScanner(join(data, USAGE_HISTORY_CACHE_FILE), {
+      timeZone: 'UTC',
+    });
+    const one = scanner.scan({ claude: [config], codex: null });
+    const same = scanner.scan({ claude: [config], codex: null });
+    const both = scanner.scan({ claude: [config, other], codex: null });
+    expect(same).toBe(one);
+    expect(Object.keys(flat((await one).cells))).toEqual(['claude|2026-01-01|m']);
+    expect(Object.keys(flat((await both).cells))).toEqual([
+      'claude|2026-01-01|m',
+      'claude|2026-01-02|m',
+    ]);
+  });
+
+  it('同一個資料夾用別名（符號連結）給兩次：只算一次', async () => {
+    const { config, project, scanner } = setup();
+    writeFileSync(
+      join(project, `${SA}.jsonl`),
+      claudeLine('2026-01-01T00:00:00Z', 'a', 'm', usage(1)) + '\n',
+    );
+    const alias = join(temp(), 'alias');
+    symlinkSync(config, alias);
+    const scan = await scanner.scan({ claude: [config, alias], codex: null });
+    expect(scan.stats.files).toBe(1);
+    expect(flat(scan.cells)).toEqual({ 'claude|2026-01-01|m': [1, 0, 0, 0] });
+  });
+
+  it('很長的單行（數 MB、跨很多塊）照樣讀得到，接著讀也對', async () => {
+    const { config, project, scanner } = setup();
+    const file = join(project, `${SA}.jsonl`);
+    const big = JSON.stringify({
+      timestamp: '2026-06-01T00:00:00Z',
+      requestId: 'r-big',
+      message: { id: 'big', model: 'm', content: 'x'.repeat(3_000_000), usage: usage(7) },
+    });
+    writeFileSync(file, `${big}\n`);
+    const started = performance.now();
+    let scan = await scanner.scan({ claude: [config], codex: null });
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(flat(scan.cells)).toEqual({ 'claude|2026-06-01|m': [7, 0, 0, 0] });
+    appendFileSync(file, claudeLine('2026-06-02T00:00:00Z', 'next', 'm', usage(1)) + '\n');
+    bump(file, 5);
+    scan = await scanner.scan({ claude: [config], codex: null });
+    expect(scan.stats.appended).toBe(1);
+    expect(flat(scan.cells)['claude|2026-06-02|m']).toEqual([1, 0, 0, 0]);
   });
 
   it('壞掉的快取檔：當沒有，整個重掃', async () => {
@@ -346,7 +447,10 @@ describe('historyDelta 送給 hub 的差異', () => {
 
     // 隔天、沒有任何變動也沒有最近的日子：不帶歷史。
     const quiet = { timeZone: 'UTC', cells: [cell('2025-01-01', 1)] };
-    expect(historyDelta(quiet, '2026-11-25', state)).toBeNull();
+    expect(historyDelta(quiet, '2026-11-25', state).history).toMatchObject({
+      complete: false,
+      rows: [],
+    });
   });
 
   it('沒有送成功（沒 commit）：下次照樣再送；超過上限分批，送完最後一批才 complete', () => {
@@ -363,7 +467,7 @@ describe('historyDelta 送給 hub 的差異', () => {
     expect(days(b.history)).toEqual(['2026-01-01:0:1']);
     expect(b.history.complete).toBe(true);
     b.commit();
-    expect(historyDelta(scan, '2026-11-21', state, 2)).toBeNull();
+    expect(historyDelta(scan, '2026-11-21', state, 2).history.rows).toEqual([]);
   });
 
   it('機器上完全沒有紀錄：第一次仍送一則空的 complete（hub 記下「已回填」）', () => {
@@ -371,6 +475,8 @@ describe('historyDelta 送給 hub 的差異', () => {
     const d = historyDelta({ timeZone: 'UTC', cells: [] }, '2026-11-21', state)!;
     expect(d.history).toMatchObject({ complete: true, rows: [] });
     d.commit();
-    expect(historyDelta({ timeZone: 'UTC', cells: [] }, '2026-11-21', state)).toBeNull();
+    expect(historyDelta({ timeZone: 'UTC', cells: [] }, '2026-11-21', state).history).toMatchObject(
+      { complete: false, rows: [] },
+    );
   });
 });

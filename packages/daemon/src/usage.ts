@@ -46,17 +46,22 @@ function addInto(target: Counts, counts: Counts): void {
 const weight = (c: Counts) =>
   c.inputTokens + c.outputTokens + c.cacheReadTokens + c.cacheCreationTokens;
 
-export async function* jsonlFiles(dir: string): AsyncGenerator<string> {
+/** onError：讀不到資料夾（不存在以外的錯，例如沒有權限）時呼叫，用量歷史據此不刪快取。 */
+export async function* jsonlFiles(
+  dir: string,
+  onError?: (error: unknown) => void,
+): AsyncGenerator<string> {
   let dirents;
   try {
     dirents = await readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') onError?.(error);
     return;
   }
   for (const dirent of dirents) {
     const full = join(dir, dirent.name);
     // 符號連結不跟，避免繞圈。
-    if (dirent.isDirectory()) yield* jsonlFiles(full);
+    if (dirent.isDirectory()) yield* jsonlFiles(full, onError);
     else if (dirent.isFile() && dirent.name.endsWith('.jsonl')) yield full;
   }
 }

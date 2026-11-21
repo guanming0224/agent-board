@@ -217,6 +217,8 @@ Replace `daemon` with `hub` for the hub.
 
 An older hub refuses to open a newer database, and its error names the newest backup in that folder that it can use (newest by the time in the file name; right after a daylight-saving change or a time zone change, check the file times yourself).
 
+Versions with “Usage: all time” use schema v12 (two new usage-history tables). To go back to a hub from 0.1.15 or earlier, use the `-v11` backup; **everything** changed after that backup is lost (not only usage history, but sessions, teams, settings and every other change).
+
 **Options:** `--port`, `--host`, `--name`, `--claude-bin <path>`, `--repair` (pair again, even if already paired), `--no-service` (don't set up auto-start), `--no-start` (write the service files without starting them), `--from <tar.gz or folder>`.
 
 More about auto-start, including why Windows uses a scheduled task: [docs/install/services.en.md](docs/install/services.en.md).

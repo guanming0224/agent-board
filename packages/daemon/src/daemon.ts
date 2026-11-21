@@ -356,9 +356,13 @@ export class Daemon {
   /** 用量回報進行中又被要求一次（例如全部時間的首次掃描剛做完）：做完再跑一次。 */
   private usageAgain = false;
   private usageReportedOnConnect = false;
-  /** 全部時間的用量（GM 2026-11-21，CONTRACTS §27）：增量快取掃描器、這條連線送過的歷史。 */
+  /** 全部時間的用量（GM 2026-11-21，CONTRACTS §28）：增量快取掃描器、這條連線送過的歷史。 */
   private readonly usageHistory: UsageHistoryScanner;
   private historySend: HistorySendState = newHistorySendState();
+  /** hub 收得下歷史並會回 ack（welcome 的 `usageHistory`）；舊 hub 不送歷史。 */
+  private hubUsageHistory = false;
+  /** 送出、還沒收到 `usage.historyAck` 的歷史：編號 → 收到 ok 時記成「送過」。 */
+  private historyPending = new Map<string, () => void>();
   /** 首次全掃做完了沒（做完之前回報不等它，背景跑）。 */
   private historyWarm = false;
   private historyWarming = false;
@@ -1369,6 +1373,8 @@ export class Daemon {
     this.usageReportedOnConnect = false;
     // 重連後再回填一次全部歷史（hub 依保存規則合併，重送不會多算）。
     this.historySend = newHistorySendState();
+    this.historyPending.clear();
+    this.hubUsageHistory = false;
     // hub 重連後會重新訂閱（CONTRACTS §6.1），這裡回到沒人看的狀態。
     this.resources.stop();
     this.deepSearch.cancelAll();
@@ -1383,6 +1389,7 @@ export class Daemon {
     switch (message.type) {
       case 'hub.welcome':
         this.clearRevokedTimer();
+        this.hubUsageHistory = message.usageHistory === true;
         // 設定變更時 hub 會重送 welcome；用量每條連線只需要補報一次。
         this.applyHubSettings(
           message.dangerRules,
@@ -1418,6 +1425,13 @@ export class Daemon {
       case 'release.rollback':
         void this.updater.rollback();
         return;
+      case 'usage.historyAck': {
+        // hub 寫進資料庫才記成「送過」；失敗（ok: false）下次回報再送（CONTRACTS §28.2）。
+        const commit = this.historyPending.get(message.id);
+        this.historyPending.delete(message.id);
+        if (message.ok) commit?.();
+        return;
+      }
       case 'sessionHost.restart':
         void this.restartHostService();
         return;
@@ -2435,11 +2449,20 @@ export class Daemon {
         codex !== null &&
         (this.capabilities?.codexVersion !== undefined ||
           codex.stats.files + codex.stats.skippedFiles > 0);
-      // 全部時間（§27）：首次全掃在背景跑、不擋這次回報；做完之後每次回報都做增量掃描，只送有變的日子。
-      const history = this.historyWarm ? await this.scanHistory(sendCodex) : null;
-      const delta = history
-        ? historyDelta(history, dayFormatter(history.timeZone)(Date.now()), this.historySend)
-        : null;
+      // 全部時間（§28）：首次全掃在背景跑、不擋這次回報；做完之後每次回報都做增量掃描，只送有變的日子
+      // （沒變也送一則空的，hub 才不會退回用 90 天細項寫歷史）。舊 hub 不認得歷史：不掃也不送。
+      const wantHistory = this.hubUsageHistory;
+      const history = wantHistory && this.historyWarm ? await this.scanHistory(sendCodex) : null;
+      const delta =
+        history && this.hubUsageHistory
+          ? historyDelta(
+              history,
+              dayFormatter(history.timeZone)(Date.now()),
+              this.historySend,
+              undefined,
+              randomUUID(),
+            )
+          : null;
       const message: DaemonToHub = {
         type: 'usage',
         summary,
@@ -2447,16 +2470,18 @@ export class Daemon {
         ...(sendCodex ? { codex: { summary: codex.summary, detail: codex.detail } } : {}),
         ...(delta ? { history: delta.history } : {}),
       };
-      if (delta) {
+      if (delta?.history.id) {
         const state = this.historySend;
-        this.hub.sendConfirmed(message, (sent) => {
-          // 連線換過了（state 已重設）就不記：新連線會整份回填。
-          if (sent && state === this.historySend) delta.commit();
+        // 連線換過了（state 已重設）就不記：新連線會整份回填。最多記 20 則沒回的，太舊的丟掉（下次重送）。
+        this.historyPending.set(delta.history.id, () => {
+          if (state === this.historySend) delta.commit();
         });
-      } else {
-        this.send(message);
+        while (this.historyPending.size > 20) {
+          this.historyPending.delete(this.historyPending.keys().next().value!);
+        }
       }
-      if (!this.historyWarm) this.warmHistory(sendCodex);
+      this.send(message);
+      if (wantHistory && !this.historyWarm) this.warmHistory(sendCodex);
     } catch (error) {
       log.warn(`用量統計失敗：${errorMessage(error)}`);
     } finally {

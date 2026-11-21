@@ -11,6 +11,7 @@ import {
   historyTotals,
   monthly,
   monthsBetween,
+  MAX_MONTHS,
 } from './history';
 
 const machine = (machineId: string, name: string, removed = false) => ({
@@ -27,15 +28,20 @@ const machine = (machineId: string, name: string, removed = false) => ({
 
 const report: UsageHistoryReport = {
   generatedAt: '2026-11-21T00:00:00.000Z',
-  days: ['2025-12-31', '2026-01-01', '2026-01-15', '2026-03-02'],
+  months: ['2025-12', '2026-01', '2026-03'],
   models: ['claude-opus', 'gpt-5.5'],
   machines: [machine('m1', 'Mac'), machine('m2', 'Old', true)],
+  ranges: [
+    [0, 0, '2025-12-31', '2026-01-01'],
+    [0, 1, '2026-03-02', '2026-03-02'],
+    [1, 0, '2026-01-15', '2026-01-15'],
+  ],
   rows: [
-    // [機器, 日期, 模型, 來源, 輸入, 輸出, 快取讀, 快取寫]
+    // [機器, 月份, 模型, 來源, 輸入, 輸出, 快取讀, 快取寫]
     [0, 0, 0, 0, 1, 2, 3, 4],
     [0, 1, 0, 0, 10, 20, 30, 40],
-    [1, 2, 0, 0, 100, 200, 0, 0],
-    [0, 3, 1, 1, 5, 5, 50, 0],
+    [1, 1, 0, 0, 100, 200, 0, 0],
+    [0, 2, 1, 1, 5, 5, 50, 0],
   ],
 };
 
@@ -86,7 +92,14 @@ describe('全部期間：月彙總', () => {
       cacheRead: 33,
       cacheCreation: 44,
     });
-    expect(historyRange(report, claude)).toEqual({ first: '2025-12-31', last: '2026-01-15' });
+    expect(historyRange(report, { source: 'claude', machine: 'all' })).toEqual({
+      first: '2025-12-31',
+      last: '2026-01-15',
+    });
+    expect(historyRange(report, { source: 'all', machine: 'm1' })).toEqual({
+      first: '2025-12-31',
+      last: '2026-03-02',
+    });
     const m1 = filterHistory(report, { source: 'all', machine: 'm1' });
     expect(historyTotals(m1).input).toBe(16);
     expect(historyByModel(report, m1, 'conversation')).toEqual([
@@ -109,6 +122,22 @@ describe('全部期間：月彙總', () => {
     const m = monthly(empty, [], 'type', 'conversation', '2026-11');
     expect(m.days).toEqual(['2026-11']);
     expect(m.max).toBe(0);
-    expect(historyRange(empty, [])).toBeNull();
+    expect(historyRange({ ...empty, ranges: [] }, { source: 'all', machine: 'all' })).toBeNull();
+  });
+
+  it('防呆：月份格式不對回空、最多 MAX_MONTHS 個月；比這個月晚的月份不畫', () => {
+    expect(monthsBetween('9999-99', '2026-01')).toEqual([]);
+    const long = monthsBetween('0001-01', '9999-12');
+    expect(long).toHaveLength(MAX_MONTHS);
+    expect(long.at(-1)).toBe('9999-12');
+    const future = { ...report, months: ['2026-01', '9999-12'], rows: [[0, 1, 0, 0, 1, 1, 0, 0]] };
+    const m = monthly(
+      future as UsageHistoryReport,
+      future.rows as UsageHistoryReport['rows'],
+      'type',
+      'conversation',
+      '2026-11',
+    );
+    expect(m.days).toEqual(['2026-11']);
   });
 });

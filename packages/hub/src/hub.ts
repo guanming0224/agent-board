@@ -70,6 +70,7 @@ import {
   historyToCells,
   StoredUsage,
   USAGE_HISTORY_VERSION,
+  utcUsageDay,
   type UsageHistory,
   type UsageHistoryCell,
   type UsageHistoryReport,
@@ -203,6 +204,8 @@ interface DaemonConn {
   features: Set<string>;
   /** daemon 回報的 session host 狀態（hello、sessionHost.status；CONTRACTS §20.8）。舊 daemon 為 null。 */
   sessionHost: SessionHostState | null;
+  /** 這條連線送過 `usage.history`（新 daemon）：之後不再拿 90 天細項寫歷史（CONTRACTS §28.2）。 */
+  sentHistory?: boolean;
 }
 
 export interface ClientConn extends RelayClient {
@@ -871,12 +874,7 @@ export class Hub {
         return;
       case 'usage':
         this.recordUsage(conn.machineId, msg.summary, msg.detail ?? null, msg.codex ?? null);
-        this.recordUsageHistory(
-          conn.machineId,
-          msg.detail ?? null,
-          msg.codex ?? null,
-          msg.history ?? null,
-        );
+        this.recordUsageHistory(conn, msg.detail ?? null, msg.codex ?? null, msg.history ?? null);
         return;
       case 'fs.listResult':
       case 'fs.gitInitResult':
@@ -1025,6 +1023,7 @@ export class Hub {
       codexMcp: settings.codexMcp,
       protocolVersion: PROTOCOL_VERSION,
       release: this.release.targetFor(machineId),
+      usageHistory: true,
     };
   }
 
@@ -2987,63 +2986,97 @@ export class Hub {
   }
 
   /**
-   * 用量歷史（§27）：新 daemon 送 `history` 就寫它；沒有（舊 daemon、首次全掃還沒做完）就把 90 天細項壓成
-   * 「日期 × 模型」寫。保存規則在 store.upsertUsageHistory（舊日子不會被清掉的紀錄歸零）。寫不進去只記 log。
+   * 用量歷史（§28）：新 daemon 送 `history` 就寫它，寫完回 `usage.historyAck`（失敗回 ok:false，daemon 下次重送）。
+   * 舊 daemon（這條連線從沒送過 history）才把 90 天細項壓成「日期 × 模型」寫。保存規則與日期把關在
+   * store.upsertUsageHistory（舊日子不會被清掉的紀錄歸零；daemon 的今天、未來與太舊的日子用 hub 的時鐘檢查）。
+   * 換了時區的完整回填（B1）不比大小、直接換掉送來的格。寫不進去只記 log。
    */
   private recordUsageHistory(
-    machineId: string,
+    conn: DaemonConn,
     detail: UsageDetail | null,
     codex: CodexUsage | null,
     history: UsageHistory | null,
   ): void {
+    const machineId = conn.machineId;
     const useHistory = history !== null && history.version === USAGE_HISTORY_VERSION;
+    // 看得懂的歷史才算「新 daemon」；版本看不懂（更新的 daemon）照舊用細項。
+    if (useHistory) conn.sentHistory = true;
+    // 新 daemon 這次沒帶（或帶了看不懂的版本）：不退回用細項，免得 90 天細項蓋掉歷史的最近兩天。
+    if (!useHistory && conn.sentHistory) {
+      if (history?.id) this.send(conn.ws, { type: 'usage.historyAck', id: history.id, ok: false });
+      return;
+    }
     const claudeDetail = usableDetail(detail);
     const codexDetail = usableDetail(codex?.detail);
+    if (!useHistory && claudeDetail === null && codexDetail === null) {
+      if (history?.id) this.send(conn.ws, { type: 'usage.historyAck', id: history.id, ok: false });
+      return;
+    }
     const cells: UsageHistoryCell[] = useHistory
       ? historyToCells(history)
       : [
           ...(claudeDetail ? detailToHistoryCells(claudeDetail, 'claude') : []),
           ...(codexDetail ? detailToHistoryCells(codexDetail, 'codex') : []),
         ];
-    if (!useHistory && claudeDetail === null && codexDetail === null) return;
     const today = useHistory
       ? history.today
       : (claudeDetail?.days.at(-1) ?? codexDetail?.days.at(-1) ?? null);
     const timeZone = useHistory
       ? history.timeZone
       : (claudeDetail?.timeZone ?? codexDetail?.timeZone ?? null);
+    const now = this.deps.now();
+    let ok = true;
     try {
-      this.store.upsertUsageHistory(
-        {
-          machineId,
-          name: this.store.getMachine(machineId)?.name ?? machineId,
-          timeZone,
-          today,
-        },
+      const before = this.store.getUsageHistoryMachine(machineId);
+      const force =
+        useHistory &&
+        history.complete &&
+        before?.timeZone != null &&
+        before.timeZone !== history.timeZone;
+      const result = this.store.upsertUsageHistory(
+        { machineId, name: this.store.getMachine(machineId)?.name ?? machineId, timeZone, today },
         cells,
-        this.deps.now().toISOString(),
-        useHistory && history.complete,
+        now.toISOString(),
+        { complete: useHistory && history.complete, hubToday: utcUsageDay(now), force },
       );
+      if (result.skipped > 0 || result.dropped > 0) {
+        this.log.warn(
+          { machineId, skipped: result.skipped, dropped: result.dropped },
+          'usage history rows skipped (machine row limit) or dropped (day out of range)',
+        );
+      }
     } catch (error) {
+      ok = false;
       this.log.warn({ err: error, machineId }, 'failed to persist usage history');
+    }
+    if (history?.id) {
+      this.send(conn.ws, { type: 'usage.historyAck', id: history.id, ok: useHistory && ok });
     }
   }
 
-  /** 「全部」期間（GET /api/usage/history）：hub 歷史 ∪ 各機器記憶體裡最新的細項，每格取較大者。 */
+  /**
+   * 「全部」期間（GET /api/usage/history）：hub 歷史 ∪ 各機器記憶體裡最新的細項，每格取較大者，按月加總。
+   * 只有和細項重疊的最近日子逐日讀出來比；更早的在 SQL 端先按月加好（回應大小和天數無關）。
+   */
   usageHistoryReport(): UsageHistoryReport {
     const current = new Map<string, UsageHistoryCell[]>();
+    let cutoff = '9999-12-31';
     for (const [machineId, latest] of this.usage) {
       const claude = usableDetail(latest.detail);
       const codex = usableDetail(latest.codex?.detail);
-      current.set(machineId, [
+      const cells = [
         ...(claude ? detailToHistoryCells(claude, 'claude') : []),
         ...(codex ? detailToHistoryCells(codex, 'codex') : []),
-      ]);
+      ];
+      current.set(machineId, cells);
+      for (const c of cells) if (c.day < cutoff) cutoff = c.day;
     }
     return buildUsageHistoryReport({
       now: this.deps.now(),
       machines: this.store.listMachines(),
-      stored: this.store.listUsageHistory(),
+      monthly: this.store.listUsageHistoryMonthly(cutoff),
+      daily: this.store.listUsageHistory(cutoff),
+      ranges: this.store.listUsageHistoryRanges(),
       storedMachines: this.store.listUsageHistoryMachines(),
       current,
     });

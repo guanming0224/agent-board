@@ -316,5 +316,5 @@ export function demoUsageHistory(machines: readonly Machine[]): UsageHistoryRepo
         completeAt: new Date(now.getTime() - 6 * 60_000).toISOString(),
       })),
   ];
-  return buildUsageHistoryReport({ now, machines, stored, storedMachines, current });
+  return buildUsageHistoryReport({ now, machines, daily: stored, storedMachines, current });
 }

@@ -1,4 +1,4 @@
-// 用量詳情「全部」期間（GM 2026-11-21，CONTRACTS §27）的計算：資料是 hub 的 UsageHistoryReport
+// 用量詳情「全部」期間（GM 2026-11-21，CONTRACTS §28）的計算：資料是 hub 的 UsageHistoryReport
 // （GET /api/usage/history：hub 每天存的歷史 ∪ 各機器目前的掃描）。太長的每日列表不實用，一律以「月」為單位。
 // 純函式，畫面與測試共用。
 import type { UsageHistoryReport } from '@agent-board/protocol';
@@ -47,37 +47,36 @@ export function filterHistory(report: UsageHistoryReport, filter: HistoryFilter)
 export const hasCodexHistory = (report: UsageHistoryReport): boolean =>
   report.rows.some((row) => row[3] === 1);
 
-/** `YYYY-MM-DD` → `YYYY-MM`。 */
-export const monthOf = (day: string) => day.slice(0, 7);
+/** 月份列表最多幾個月（防呆：資料壞掉也不會畫出幾萬個月）。 */
+export const MAX_MONTHS = 600;
+const MONTH = /^(\d{4})-(0[1-9]|1[0-2])$/;
 
-/** 從 from 到 to（含）的每個月 `YYYY-MM`。 */
+/** 從 from 到 to（含）的每個月 `YYYY-MM`；格式不對回空陣列，最多 MAX_MONTHS 個（保留最新的）。 */
 export function monthsBetween(from: string, to: string): string[] {
+  const a = MONTH.exec(from);
+  const b = MONTH.exec(to);
+  if (!a || !b) return [];
+  const start = Number(a[1]) * 12 + Number(a[2]) - 1;
+  const end = Number(b[1]) * 12 + Number(b[2]) - 1;
   const out: string[] = [];
-  let [y, m] = from.split('-').map(Number) as [number, number];
-  const [ty, tm] = to.split('-').map(Number) as [number, number];
-  while (y < ty || (y === ty && m <= tm)) {
-    out.push(`${y}-${String(m).padStart(2, '0')}`);
-    m += 1;
-    if (m > 12) {
-      m = 1;
-      y += 1;
-    }
+  for (let n = Math.max(start, end - MAX_MONTHS + 1); n <= end; n += 1) {
+    out.push(`${Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, '0')}`);
   }
   return out;
 }
 
-/** 篩選後有資料的最早、最晚一天。 */
+/** 篩選後（來源、機器）有資料的最早、最晚一天（hub 給的 ranges）。 */
 export function historyRange(
   report: UsageHistoryReport,
-  rows: readonly Row[],
+  filter: HistoryFilter,
 ): { first: string; last: string } | null {
   let first: string | null = null;
   let last: string | null = null;
-  for (const row of rows) {
-    const day = report.days[row[1]];
-    if (day === undefined) continue;
-    if (first === null || day < first) first = day;
-    if (last === null || day > last) last = day;
+  for (const [m, s, from, to] of report.ranges) {
+    if (filter.source !== 'all' && (s === 1 ? 'codex' : 'claude') !== filter.source) continue;
+    if (filter.machine !== 'all' && report.machines[m]?.machineId !== filter.machine) continue;
+    if (first === null || from < first) first = from;
+    if (last === null || to > last) last = to;
   }
   return first === null || last === null ? null : { first, last };
 }
@@ -102,10 +101,13 @@ export function monthly(
   measure: Measure,
   thisMonth: string,
 ): Daily {
-  const range = historyRange(report, rows);
-  const from = range ? monthOf(range.first) : thisMonth;
-  const to = range && monthOf(range.last) > thisMonth ? monthOf(range.last) : thisMonth;
-  const months = monthsBetween(from, to);
+  // 月份從篩選後最早有資料的月到這個月；比這個月晚的月份（不該有，hub 已擋）不畫。
+  let from = thisMonth;
+  for (const row of rows) {
+    const month = report.months[row[1]];
+    if (month !== undefined && month < from) from = month;
+  }
+  const months = monthsBetween(from, thisMonth);
   const monthIndex = new Map(months.map((m, i) => [m, i]));
   let series: Series[];
   if (stackBy === 'type') {
@@ -125,7 +127,7 @@ export function monthly(
   const seriesIndex = new Map(series.map((s, i) => [s.key, i]));
   const values = months.map(() => series.map(() => 0));
   for (const row of rows) {
-    const mi = monthIndex.get(monthOf(report.days[row[1]] ?? ''));
+    const mi = monthIndex.get(report.months[row[1]] ?? '');
     if (mi === undefined) continue;
     const counts = zeroCounts();
     add(counts, row);

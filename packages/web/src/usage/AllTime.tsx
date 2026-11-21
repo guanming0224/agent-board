@@ -1,4 +1,4 @@
-// 用量詳情的「全部」期間（GM 2026-11-21，CONTRACTS §27）：資料是 hub 的 GET /api/usage/history
+// 用量詳情的「全部」期間（GM 2026-11-21，CONTRACTS §28）：資料是 hub 的 GET /api/usage/history
 // （hub 每天存的歷史 ∪ 各機器目前的掃描，每格取較大者），以月為單位。可依機器、來源（Claude／Codex）篩選，
 // 依 token 類型、機器、來源堆疊，依模型、機器、來源看分布。沒有 session 排行（hub 歷史不存 session）。
 // 只讀 hub 的資料，不呼叫任何模型。
@@ -157,7 +157,7 @@ function HistoryView({
       monthly(report, rows, stackBy === 'source' && !codex ? 'type' : stackBy, measure, thisMonth),
     [report, rows, stackBy, codex, measure, thisMonth],
   );
-  const range = historyRange(report, rows);
+  const range = historyRange(report, { source, machine: machineId });
   const total = historyTotals(rows);
   const machineName = (id: string) => {
     const m = report.machines.find((x) => x.machineId === id);

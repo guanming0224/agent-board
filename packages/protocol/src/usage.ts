@@ -20,7 +20,11 @@ export const USAGE_DETAIL_ROW_LIMIT = 20_000;
 export const USAGE_DETAIL_VERSION = 1;
 
 /** 本地時區的日期 `YYYY-MM-DD`（daemon 那台機器的時區）。 */
-export const UsageDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+export const UsageDay = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  // 真的日曆日（2026-02-30、9999-99-99 不行）；年份 1000 以前 Date.UTC 會換算成別的年，一併擋掉。
+  .refine((d) => shiftUsageDay(d, 0) === d, 'not a calendar day');
 export type UsageDay = z.infer<typeof UsageDay>;
 
 const Tokens = z.number().int().nonnegative();

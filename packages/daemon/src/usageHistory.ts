@@ -1,12 +1,13 @@
 // 用量歷史（GM 2026-11-21「從始至今」）：掃機器上還在的全部對話紀錄（Claude＋Codex，不限 90 天），
 // 算「日期（這台機器的時區）× 來源 × 模型」的四種 token。只讀本機檔案，不呼叫任何模型，不碰 Codex 的 auth.json。
 //
-// 增量快取（`<daemon 資料夾>/usage-history-cache.json`）：每個檔記 大小、mtime、讀到哪個位元組、最後 256 位元組的
-// 雜湊，與這個檔的彙總數字（不存對話內容、不存 session、不存 cwd）：
+// 增量快取（`<daemon 資料夾>/usage-history-cache.json`）：每個檔以「路徑的 sha256」為鍵（路徑本身含 session id
+// 與專案資料夾，不寫進檔案），記大小、mtime、讀到哪個位元組、最後 256 位元組的雜湊，與這個檔的彙總數字
+// （不存對話內容、不存 session、不存 cwd）：
 // - 大小、mtime 都沒變：直接用快取。
 // - 變大且讀過的最後 256 位元組沒變（JSONL 只會往後加）：從上次讀到的位置接著讀。
 // - 變小、同大小但 mtime 變了、或尾巴對不上（被改寫）：整個檔重讀。
-// - 檔案不見了：從快取拿掉（hub 已存的歷史不受影響，見 CONTRACTS §27）。
+// - 檔案不見了：從快取拿掉（hub 已存的歷史不受影響，見 CONTRACTS §28）。
 // 時區或快取格式不同就整份重來。
 //
 // 去重和 30／90 天的掃描（usage.ts）一樣：Claude 同一則回應（`message.id`＋`requestId`）、Codex 同一則事件
@@ -16,10 +17,11 @@
 // 效能：逐塊（256KB）讀、逐行判斷，只有含用量關鍵字的行才 JSON.parse；每個檔之間讓出事件迴圈，
 // 不擋其他工作；記憶體只放快取裡的數字（不放整個檔）。
 import { createHash } from 'node:crypto';
-import { open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   shiftUsageDay,
+  USAGE_HISTORY_MODEL_LIMIT,
   USAGE_HISTORY_RECENT_DAYS,
   USAGE_HISTORY_ROW_LIMIT,
   USAGE_HISTORY_VERSION,
@@ -40,7 +42,7 @@ import {
 } from './usage';
 
 /** 快取格式版本：解析規則改了就加一，舊快取整份丟掉重掃。 */
-export const USAGE_HISTORY_CACHE_VERSION = 1;
+export const USAGE_HISTORY_CACHE_VERSION = 2;
 export const USAGE_HISTORY_CACHE_FILE = 'usage-history-cache.json';
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -66,15 +68,19 @@ interface FileEntry {
   models: string[];
   cells: number[];
   entries: number[];
-  /** Codex 讀到一半的狀態（模型、上一則 total），接著讀時還原。 */
-  codex?: CodexReaderState;
+  /** Codex 讀到一半的狀態（模型、上一則 total；不存 cwd），接著讀時還原。 */
+  codex?: { model: string; previousTotal: number | null };
 }
 
 interface CacheData {
   version: number;
   timeZone: string;
+  /** 來源 → 路徑的 sha256 → 這個檔的彙總。 */
   sources: Record<UsageSource, Record<string, FileEntry>>;
 }
+
+/** 快取的鍵：路徑的 sha256（快取檔不留路徑；路徑裡有 session id 與專案資料夾）。 */
+const pathKey = (file: string): string => createHash('sha256').update(file).digest('hex');
 
 export interface UsageHistoryRoots {
   /** Claude 的帳號設定資料夾（掃 `<dir>/projects/**\/*.jsonl`）。 */
@@ -267,7 +273,9 @@ async function readLines(
     const chunk = Buffer.allocUnsafe(CHUNK_BYTES);
     let position = start;
     let consumed = start;
-    let carry: Buffer = Buffer.alloc(0);
+    // 還沒遇到換行的半行：先收成一串塊，看到換行才合併一次（很長的單行不會每塊都重新複製，避免 O(n²)）。
+    let pending: Buffer[] = [];
+    let pendingLength = 0;
     let bytes = 0;
     const handle = (slice: Buffer) => {
       for (const needle of needles) {
@@ -282,26 +290,35 @@ async function readLines(
       if (bytesRead === 0) break;
       position += bytesRead;
       bytes += bytesRead;
-      const buf =
-        carry.length > 0
-          ? Buffer.concat([carry, chunk.subarray(0, bytesRead)])
-          : chunk.subarray(0, bytesRead);
+      const buf = chunk.subarray(0, bytesRead);
       let lineStart = 0;
-      for (;;) {
-        const nl = buf.indexOf(10, lineStart);
-        if (nl === -1) break;
-        if (nl > lineStart) handle(buf.subarray(lineStart, nl));
+      let nl = buf.indexOf(10);
+      if (nl !== -1 && pendingLength > 0) {
+        const line = Buffer.concat([...pending, buf.subarray(0, nl)]);
+        handle(line);
+        consumed += pendingLength + nl + 1;
+        pending = [];
+        pendingLength = 0;
         lineStart = nl + 1;
+        nl = buf.indexOf(10, lineStart);
       }
-      consumed += lineStart;
-      // chunk 會被下一次讀覆蓋，剩下的半行要複製出來。
-      carry = Buffer.from(buf.subarray(lineStart));
+      while (nl !== -1) {
+        if (nl > lineStart) handle(buf.subarray(lineStart, nl));
+        consumed += nl + 1 - lineStart;
+        lineStart = nl + 1;
+        nl = buf.indexOf(10, lineStart);
+      }
+      if (lineStart < bytesRead) {
+        // chunk 會被下一次讀覆蓋，剩下的半行要複製出來。
+        pending.push(Buffer.from(buf.subarray(lineStart)));
+        pendingLength += bytesRead - lineStart;
+      }
     }
-    if (carry.length > 0) {
-      const text = carry.toString('utf8');
+    if (pendingLength > 0) {
+      const carry = Buffer.concat(pending);
       let complete = false;
       try {
-        JSON.parse(text);
+        JSON.parse(carry.toString('utf8'));
         complete = true;
       } catch {
         // 還沒寫完：下次從這行開頭再讀。
@@ -330,17 +347,26 @@ export interface UsageHistoryScannerOptions {
 export class UsageHistoryScanner {
   private cache: CacheData | null = null;
   private running: Promise<UsageHistoryScan> | null = null;
+  private runningKey = '';
 
   constructor(
     private readonly cachePath: string,
     private readonly options: UsageHistoryScannerOptions = {},
   ) {}
 
+  /** 同樣的 roots 正在掃就共用那一次；roots 不同（例如多了帳號資料夾）就排在後面重掃，不回舊結果。 */
   scan(roots: UsageHistoryRoots): Promise<UsageHistoryScan> {
-    this.running ??= this.run(roots).finally(() => {
-      this.running = null;
-    });
-    return this.running;
+    const key = JSON.stringify(roots);
+    if (this.running && this.runningKey === key) return this.running;
+    const previous = this.running?.catch(() => undefined) ?? Promise.resolve();
+    const next = previous
+      .then(() => this.run(roots))
+      .finally(() => {
+        if (this.running === next) this.running = null;
+      });
+    this.running = next;
+    this.runningKey = key;
+    return next;
   }
 
   private async run(roots: UsageHistoryRoots): Promise<UsageHistoryScan> {
@@ -362,21 +388,34 @@ export class UsageHistoryScanner {
     };
     let dirty = false;
 
+    // 資料夾先換成真實路徑再去重（符號連結、/tmp 與 /private/tmp 這類別名不會算兩次）。
+    const real = (dir: string) => realpath(dir).catch(() => dir);
+    const claudeRoots = [...new Set(await Promise.all(roots.claude.map(real)))];
+    const codexRoot = roots.codex === null ? null : await real(roots.codex);
     const lists: Record<UsageSource, string[]> = { claude: [], codex: [] };
-    for (const dir of new Set(roots.claude)) {
-      for await (const file of jsonlFiles(join(dir, 'projects'))) lists.claude.push(file);
+    // 讀不到（不存在以外的錯）或這次沒掃（codex 是 null）：這個來源的快取一個都不刪，免得暫時的錯把整份清掉。
+    const unstable: Record<UsageSource, boolean> = { claude: false, codex: codexRoot === null };
+    for (const dir of claudeRoots) {
+      for await (const file of jsonlFiles(join(dir, 'projects'), () => (unstable.claude = true))) {
+        lists.claude.push(file);
+      }
     }
-    if (roots.codex !== null) {
-      for await (const file of jsonlFiles(join(roots.codex, 'sessions'))) lists.codex.push(file);
+    if (codexRoot !== null) {
+      for await (const file of jsonlFiles(
+        join(codexRoot, 'sessions'),
+        () => (unstable.codex = true),
+      )) {
+        lists.codex.push(file);
+      }
     }
 
     for (const source of ['claude', 'codex'] as const) {
       const files = [...new Set(lists[source])].sort();
       const known = cache.sources[source];
-      const present = new Set(files);
-      for (const file of Object.keys(known)) {
-        if (!present.has(file)) {
-          delete known[file];
+      const present = new Set(files.map(pathKey));
+      for (const key of Object.keys(known)) {
+        if (!present.has(key) && !unstable[source]) {
+          delete known[key];
           stats.removed += 1;
           dirty = true;
         }
@@ -408,7 +447,8 @@ export class UsageHistoryScanner {
     stats: UsageHistoryStats,
   ): Promise<boolean> {
     const info = await stat(file);
-    const old = known[file];
+    const key = pathKey(file);
+    const old = known[key];
     if (old && old.size === info.size && old.mtimeMs === info.mtimeMs) {
       stats.reused += 1;
       return false;
@@ -422,7 +462,7 @@ export class UsageHistoryScanner {
     const agg = new FileAggregate(base);
     const reader: FileReader & { state?: () => CodexReaderState } =
       source === 'codex'
-        ? codexFile(file, null, base?.codex)
+        ? codexFile(file, null, base?.codex ? { ...base.codex, cwd: null } : undefined)
         : { sessionId: null, parse: parseLine };
     const dayNums = new Map<string, number>();
     const { consumed, bytes } = await readLines(file, start, NEEDLES[source], (line) => {
@@ -440,7 +480,8 @@ export class UsageHistoryScanner {
     stats.bytesRead += bytes;
     if (base) stats.appended += 1;
     else stats.rescanned += 1;
-    known[file] = {
+    const codexState = reader.state?.();
+    known[key] = {
       size: info.size,
       mtimeMs: info.mtimeMs,
       offset: consumed,
@@ -448,7 +489,9 @@ export class UsageHistoryScanner {
       models: agg.models,
       cells: agg.cells,
       entries: agg.entries,
-      ...(reader.state ? { codex: reader.state() } : {}),
+      ...(codexState
+        ? { codex: { model: codexState.model, previousTotal: codexState.previousTotal } }
+        : {}),
     };
     return true;
   }
@@ -560,16 +603,18 @@ export interface HistoryDelta {
 }
 
 /**
- * 決定這次要送哪些歷史列：還沒送過或數字變了的，加上最近 `USAGE_HISTORY_RECENT_DAYS` 天（一定重送）。
- * 新的日子先送，一則最多 `limit` 列，放不下的下次再送。全部都送過了（第一次的回填完成）才標 complete。
- * 沒東西可送、而且回填已經完成時回傳 null（這次 `usage` 不帶歷史）。
+ * 決定這次要送哪些歷史列：還沒送過（hub 確認寫入）或數字變了的，加上最近 `USAGE_HISTORY_RECENT_DAYS` 天
+ * （一定重送）。新的日子先送，一則最多 `limit` 列、`USAGE_HISTORY_MODEL_LIMIT` 個模型，放不下的下次再送。
+ * 全部都送過了（第一次的回填完成）才標 complete。沒東西可送時也回傳一則 `rows: []`（hub 才知道這台是新 daemon、
+ * 不拿 90 天細項寫歷史，CONTRACTS §28.2）。
  */
 export function historyDelta(
   scan: Pick<UsageHistoryScan, 'timeZone' | 'cells'>,
   today: string,
   state: HistorySendState,
   limit = USAGE_HISTORY_ROW_LIMIT,
-): HistoryDelta | null {
+  id?: string,
+): HistoryDelta {
   const recentFrom = shiftUsageDay(today, -(USAGE_HISTORY_RECENT_DAYS - 1));
   const sig = (c: UsageHistoryCell) =>
     `${c.inputTokens},${c.outputTokens},${c.cacheReadTokens},${c.cacheCreationTokens}`;
@@ -577,9 +622,6 @@ export function historyDelta(
   const pending = scan.cells
     .filter((c) => c.day >= recentFrom || state.sent.get(keyOf(c)) !== sig(c))
     .sort((a, b) => (a.day > b.day ? -1 : a.day < b.day ? 1 : 0));
-  const picked = pending.slice(0, Math.max(0, limit));
-  const complete = !state.complete && picked.length === pending.length;
-  if (picked.length === 0 && !complete) return null;
   const days: string[] = [];
   const dayIndex = new Map<string, number>();
   const models: string[] = [];
@@ -593,21 +635,31 @@ export function historyDelta(
     }
     return i;
   };
-  const rows: UsageHistoryRow[] = picked.map((c) => [
-    index(days, dayIndex, c.day),
-    index(models, modelIndex, c.model),
-    c.source === 'codex' ? 1 : 0,
-    c.inputTokens,
-    c.outputTokens,
-    c.cacheReadTokens,
-    c.cacheCreationTokens,
-  ]);
+  const picked: UsageHistoryCell[] = [];
+  const rows: UsageHistoryRow[] = [];
+  for (const c of pending) {
+    if (rows.length >= Math.max(0, limit)) break;
+    // 模型名稱超過上限：這格留到下一則（新模型下次再送）。
+    if (!modelIndex.has(c.model) && models.length >= USAGE_HISTORY_MODEL_LIMIT) continue;
+    picked.push(c);
+    rows.push([
+      index(days, dayIndex, c.day),
+      index(models, modelIndex, c.model),
+      c.source === 'codex' ? 1 : 0,
+      c.inputTokens,
+      c.outputTokens,
+      c.cacheReadTokens,
+      c.cacheCreationTokens,
+    ]);
+  }
+  const complete = !state.complete && picked.length === pending.length;
   return {
     history: {
       version: USAGE_HISTORY_VERSION,
       timeZone: scan.timeZone,
       today,
       complete,
+      ...(id ? { id } : {}),
       days,
       models,
       rows,
