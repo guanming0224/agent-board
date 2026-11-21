@@ -1209,3 +1209,67 @@ test('還沒有團隊的 session（§24.5，真 daemon、真 git）：開 BD 被
     )
     .not.toBeNull();
 });
+
+test('團隊模式（§27，真 hub、真 daemon、假 claude）：新增頁開團隊模式＋小隊 → 建立即團隊、畫布團隊框、隊員開好；隊長帶 --append-system-prompt，接續也帶', async ({
+  page,
+}) => {
+  await page.goto('/#/new');
+  await page.getByLabel('名稱', { exact: true }).fill('tm-lead');
+  await page.getByLabel('工作目錄').fill(repo);
+  const toggle = page.getByTestId('team-mode-toggle');
+  await expect(toggle).toBeEnabled();
+  await toggle.check();
+  await page.getByTestId('team-mode-preset').selectOption('builtin:squad');
+  await expect(page.getByTestId('team-mode-members')).toContainText('tm-lead-BD1');
+  await expect(page.getByTestId('command-preview')).toContainText(
+    '--append-system-prompt <team-mode guide>',
+  );
+  await page.getByRole('button', { name: '建立 session' }).click();
+  await expect(page.getByText('團隊「tm-lead」：開好 1 位隊員')).toBeVisible({ timeout: 20_000 });
+
+  const teams = (await (await page.request.get('/api/teams')).json()) as Team[];
+  const team = teams.find((t) => t.name === 'tm-lead')!;
+  expect(team).toBeTruthy();
+  const members = (await (
+    await page.request.get(`/api/teams/${team.id}/members`)
+  ).json()) as TeamMember[];
+  const all = (await (await page.request.get('/api/sessions')).json()) as Session[];
+  const leadSession = all.find((s) => s.name === 'tm-lead')!;
+  const bd = all.find((s) => s.name === 'tm-lead-BD1')!;
+  expect(leadSession.teamMode).toBe(true);
+  expect(members.find((m) => m.sessionId === leadSession.id)?.role).toBe('lead');
+  expect(members.find((m) => m.sessionId === bd.id)?.role).toBe('worker');
+  await expectStatus(page.request, leadSession.id, 'waiting_input');
+  await expectStatus(page.request, bd.id, 'waiting_input');
+  expect((await getSession(page.request, bd.id)).worktreePath).toContain('.agent-board-wt');
+
+  // 假 claude 收到的參數：隊長有固定守則，隊員沒有。
+  await screenOf(page, leadSession.id).toContain(
+    'SYSPROMPT Agent Board team mode: you are the lead',
+  );
+  expect(await readScreen(page, bd.id)).not.toContain('SYSPROMPT');
+  // list_members 一開始就看得到 yourRole lead 與人數上限。
+  await typeInto(page, leadSession.id, 'mcp list_members {}');
+  await screenOf(page, leadSession.id).toContain('"yourRole":"lead"');
+  await screenOf(page, leadSession.id).toContain('"limit":12');
+
+  // 畫布：團隊框直接出現。
+  await page.goto('/#/canvas');
+  await expect(page.getByTestId(`team-open-${team.id}`)).toBeVisible({ timeout: 20_000 });
+
+  // 接續：hub 記著團隊模式，--resume 也帶守則。
+  await typeInto(page, leadSession.id, 'quit');
+  await expect
+    .poll(async () => (await getSession(page.request, leadSession.id)).endedAt, {
+      timeout: 20_000,
+    })
+    .not.toBeNull();
+  const resumed = await page.request.post(`/api/sessions/${leadSession.id}/resume`);
+  expect(resumed.ok()).toBe(true);
+  await expectStatus(page.request, leadSession.id, 'waiting_input');
+  await screenOf(page, leadSession.id).toContain('--resume');
+  await screenOf(page, leadSession.id).toContain('SYSPROMPT Agent Board team mode');
+  // 不會多建第二個團隊。
+  const after = (await (await page.request.get('/api/teams')).json()) as Team[];
+  expect(after.filter((t) => t.name === 'tm-lead')).toHaveLength(1);
+});

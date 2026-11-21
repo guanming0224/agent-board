@@ -3936,3 +3936,46 @@ test.describe('session 卡片上的 git init（CONTRACTS §24.5）', () => {
     await expect(card(page, 's-docs').getByTestId('not-git')).toBeHidden();
   });
 });
+
+test.describe('團隊模式（§27）', () => {
+  for (const [width, height, tag] of [
+    [1440, 900, 'desktop'],
+    [390, 844, 'phone'],
+  ] as const) {
+    test(`新增 session 開團隊模式＋小隊：建立後畫布直接出現團隊框與隊員（${tag}）`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height });
+      await openCanvas(page);
+      await page.evaluate(() => (location.hash = '#/new'));
+      const form = page.getByRole('form', { name: '新增 session' });
+      const name = `tm-${tag}`;
+      await form.getByLabel('名稱', { exact: true }).fill(name);
+      await form.getByLabel('工作目錄').fill(`/home/demo/${name}`);
+      await form.getByTestId('team-mode-toggle').check();
+      await form.getByTestId('team-mode-preset').selectOption('builtin:squad');
+      await expect(form.getByTestId('team-mode-members')).toContainText(`${name}-BD1`);
+      if (CONTENT_SCREENSHOTS) {
+        await form
+          .getByTestId('team-mode')
+          .evaluate((el) => el.scrollIntoView({ block: 'center' }));
+        await page.screenshot({ path: `${CONTENT_SCREENSHOTS}/team-mode-new-${tag}.png` });
+      }
+      await form.getByRole('button', { name: '建立 session' }).click();
+      await expect(page.getByText(`團隊「${name}」：開好 1 位隊員`)).toBeVisible();
+      await page.keyboard.press('Escape');
+      await page.evaluate(() => (location.hash = '#/canvas'));
+      const frame = page.locator('.team-open', { hasText: name });
+      await expect(frame).toBeVisible({ timeout: 15_000 });
+      // 打開團隊面板：畫布把隊長與隊員框進看得到的地方，面板列出兩位。
+      const teamId = (await frame.getAttribute('data-testid'))!.slice('team-open-'.length);
+      await page.evaluate((id) => (location.hash = `#/team/${id}`), teamId);
+      await expect(page.getByTestId('team-workbench')).toContainText(`${name}-BD1`);
+      if (CONTENT_SCREENSHOTS) {
+        // 等面板滑入、畫布移到團隊（動畫）結束再截。
+        await page.waitForTimeout(1200);
+        await page.screenshot({ path: `${CONTENT_SCREENSHOTS}/team-mode-canvas-${tag}.png` });
+      }
+    });
+  }
+});

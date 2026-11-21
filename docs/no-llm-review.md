@@ -14,6 +14,10 @@
   使用者按「帶入進度卡」送出的卡片內容一行、按「請隊長更新 ◈」送出的固定一行（2026-11-08 P3 項目一補）。
   進度卡的 MCP 工具（get_progress／update_progress）只讀寫 hub 的資料，不送任何字進 PTY。
   隊長自主擴編（2026-11-10）：守則只寫在 MCP 工具說明與工具回傳裡（Claude 呼叫才看到），不用 hook 注入、不自動送字；
+  團隊模式（2026-11-21，CONTRACTS §27）：使用者在新增 session 勾「團隊模式」時，daemon 啟動 agent 時把一段**寫死在
+  `protocol/src/leadGuide.ts` 的固定英文**（`teamModeGuide`，四種組合都是常數拼接）放進系統提示（Claude
+  `--append-system-prompt`、Codex `-c developer_instructions="…"`）；只在啟動（新開、接續、daemon 接回）時當參數帶入，
+  不送字進 PTY、不在對話中途出現，hub／daemon 只收布林，見下方「團隊模式」一節；
   加開申請（2026-11-13，CONTRACTS §23）：隊長超過人數或頻率上限時改成向 GM 申請；GM 按同意才開成員，結果用固定英文一行（`[Agent Board] …`）經 SafeDelivery 告訴隊長，不呼叫模型；
   一鍵 git init（2026-11-13，CONTRACTS §24）：GM（owner）在網頁按確認後，daemon 在那個資料夾跑固定的 git 指令（`init`、`symbolic-ref`、`ls-files`、`config`、`add -A`、`commit`、`rev-parse`），走 `worktree.ts` 既有的 `git()` 呼叫點（`daemon/src/gitInit.ts` 只 import 它，`CALL_SITES` 不變，仍是 45 處）；不設 remote、不 push、不送任何字進 PTY。團隊「共用資料夾」只是 hub 的設定與固定的工具回傳文字；
   `release_member` 走 hub 既有的封存流程（停 session、暫停交接規則），不送任何字進 PTY。
@@ -61,7 +65,7 @@ corepack pnpm check:no-llm    # scripts/check-no-llm.mjs
    `.pty.write(`、`type: 'terminal.input',`、`.sendPrompt(`），和腳本裡的 `CALL_SITES` 清單比對。
    多出沒審查過的位置就失敗。
 3. daemon 給 `claude` 的參數只能是 `--resume`、`--session-id`、`--permission-mode`、
-   `--disallowedTools`、`--model`、`--effort`、`--fallback-model`（2026-11-17 加，CONTRACTS §26）、`--mcp-config`、`--allowedTools`、`--name`（以及探測版本用的 `--version`、偵測認得哪些參數用的 `--help`（2026-11-17 加，§26.10：只印說明就結束，不開對話、不呼叫模型）），daemon 原始碼不得出現 `-p`／`--print`（非互動模式會直接
+   `--disallowedTools`、`--model`、`--effort`、`--fallback-model`（2026-11-17 加，CONTRACTS §26）、`--append-system-prompt`（2026-11-21 加，§27 團隊模式；值只能是 `teamModeGuide(input.teamLead)`，3d 檢查）、`--mcp-config`、`--allowedTools`、`--name`（以及探測版本用的 `--version`、偵測認得哪些參數用的 `--help`（2026-11-17 加，§26.10：只印說明就結束，不開對話、不呼叫模型）），daemon 原始碼不得出現 `-p`／`--print`（非互動模式會直接
    耗用模型）。另外確認 `--allowedTools` 只會列 agent-board 自己的工具：protocol 的 `DispatchTool`＋`MemoryTool`
    必須正好是審查過的 7 個（`AGENT_BOARD_TOOLS`；2026-11-10 加 `release_member`），daemon 一律用 `mcp__agent-board__<tool>` 組全名（2026-11-08 加）。
    codex（2026-11-10 加，3c）：`packages/daemon/src/codex.ts` 與 `packages/protocol/src/codex.ts` 裡的參數只能是
@@ -150,6 +154,7 @@ Node 標頭檔。這是 npm 的行為，和 LLM 無關。
   `--disallowedTools Edit Write NotebookEdit`（只減少能用的工具）、可選的 `--model <name>`、
   可選的 `--effort <low|medium|high|xhigh|max>` 與 `--fallback-model <name>`（2026-11-17，CONTRACTS §26：強度只收白名單、
   模型名稱只收安全字元 `MODEL_NAME_RE`，只改用哪個模型、想多深，不放寬工具或權限）、
+  團隊模式（2026-11-21，§27）才有的 `--append-system-prompt <固定守則>`（值只能是 `teamModeGuide(...)`，見「團隊模式」一節）、
   `--name <name>`，以及「允許 session 派工」或「讓 session 讀寫進度卡」開著時的 `--mcp-config <daemon 產生的設定檔>` 與
   `--allowedTools <開著的功能的工具全名>`（派工 5 個、進度卡 2 個，最多 7 個，全部是 `mcp__agent-board__*`；
   MCP server 是本機的 `agent-board-mcp`，只連 daemon 的 socket；兩個設定都關就完全不掛；
@@ -247,6 +252,33 @@ Codex session 也掛同一支 `agent-board-mcp`（派工、進度卡、`request_
 只列開著的工具（同 `--allowedTools`，`check:no-llm` 確認它由同一份 `enabledTools` 組成）；`default_tools_approval_mode="approve"`
 只作用在這個 server。不寫 `~/.codex`、不建專案 `.codex`。
 
+## 團隊模式：啟動時帶的固定守則（2026-11-21，CONTRACTS §27）
+
+GM 問「隊長每次都會記得叫隊友嗎？」——原本只有 Claude 自己用到 agent-board 工具才看得到守則。團隊模式讓使用者在
+新增 session 時選擇「以隊長身分開」，啟動時就把守則交給 agent。
+
+- **文字是什麼**：`packages/protocol/src/leadGuide.ts` 的 `TEAM_MODE_INTRO`、`TEAM_MODE_PRESET_MEMBERS`、`TEAM_MODE_RHYTHM`、
+  `TEAM_MODE_FIXED_STAFF`、`TEAM_MODE_SMALL_WORK` 五段常數，`teamModeGuide({ autoStaff, presetMembers })` 只決定拼哪幾段
+  （四種組合），沒有任何變數內容（不含使用者打的字、session 名稱、prompt、理由）。字元限制在英數、底線、空白與
+  `. , : ; ' ( ) -`（`TEAM_MODE_GUIDE_CHARS`，測試檢查），Windows 經 `claude.cmd` 啟動時不會被 cmd.exe 拆壞。
+- **誰產生**：寫死在程式裡，**不是 LLM 產生**，中控台沒有任何呼叫模型的地方（本文件其他各節不變）。
+- **怎麼帶**：只在 daemon 組啟動參數時帶（`buildClaudeArgs` 的 `--append-system-prompt`、`buildCodexArgs` 的
+  `-c developer_instructions="<tomlString(文字)>"`）。新開、`--resume`／`codex resume` 接續、daemon 重啟接回都帶，
+  因為系統提示只對那次啟動有效。**不送字進 PTY**：不經 `ManagedSession.write`、`sendFirstPrompt`、SafeDelivery，
+  不在對話中途出現，所以「送進 `claude` 的字從哪裡來」表沒有新增來源；也不用 hook `additionalContext`。
+- **為什麼不違反承諾**：承諾是「中控台不呼叫 LLM、不主動送字」。這段文字和既有的 `--permission-mode`、`--disallowedTools`
+  一樣是使用者選了選項後由中控台決定的**啟動設定**；Claude／Codex 仍只在使用者（或使用者啟用的規則）送字時才回合，
+  中控台不會因為團隊模式多送任何一行。守則只是告訴隊長「先 `list_members`、照節奏開人／派工／封存、小事自己做」，
+  真的開人仍要 Claude 自己呼叫 `spawn_member`，受原本的派工設定、人數上限、加開申請、權限上限管。
+- **只收布林**：網頁送 `teamMode`、`teamPresetMembers`（REST body 只收布林，`SessionSpec.teamLead` 從 body 拿掉）；hub 依
+  設定填 `teamLead: { autoStaff, presetMembers }`（zod `.strict()`，多的欄位拒絕）送 daemon；daemon 用這兩個布林選常數。
+  使用者與網頁送不進任何文字到命令列。
+- **`check:no-llm`**：`CLAUDE_FLAGS` 加 `--append-system-prompt`；新增檢查 3d：`session.ts` 的 `--append-system-prompt` 與
+  `codex.ts` 的 `developer_instructions=` 各只能出現一次，值只能是 `teamModeGuide(input.teamLead)`。Codex 的 `-c` 本來就在
+  允許清單。`CALL_SITES` 不變（沒有新的連線、行程或終端機輸入點）。
+- 一建立就成為團隊（hub 在建立 session 的同一個交易裡建團隊、加隊長）與照 Preset 開隊員（網頁沿用 `runPlan` 呼叫
+  `createSession`，隊員沒有第一個指令、待命）都不送字、不呼叫模型。
+
 ## 送進 `claude` 的字從哪裡來（全部）
 
 PTY 只有兩個寫入點：`ManagedSession.write`（`packages/daemon/src/session.ts:295`）與
@@ -310,6 +342,8 @@ Claude Code 決定，不在中控台範圍。
   只在使用者打開設定時、知道重置時間時送一次固定的一行。
 - 額度恢復後自動接續預設開啟、設定關著也送、讀不出重置時間時用猜的，或內容改成帶對話。
 - 派工工具在設定關著時仍然掛上或仍然能開成員、成員上限或權限上限被拿掉、結果改成帶完整對話，或結果送進呼叫者後又自動觸發新的工作。
+- 團隊模式的守則改成含變數內容（使用者或網頁送來的字、session 名稱、prompt）、由模型產生，或改成在 session 開好後送進 PTY／對話中途送；
+  hub／daemon 收文字而不是布林。
 - 隊長守則改成用 hook `additionalContext` 注入、session 開好後自動送進對話，或 hub 在收到任務／卡住時自動替隊長呼叫 `spawn_member`（目前只有 Claude 自己呼叫工具才會新增或封存成員）；團隊人數上限或「設定關掉＝不能新增也不能封存」被拿掉。
 - daemon 給 claude 加 `--strict-mcp-config`、把 `--allowedTools`（或 Codex 的 `enabled_tools`／`default_tools_approval_mode`）放寬到 agent-board 工具（派工 6 個＋進度卡 2 個）以外，或 MCP server 改成連 daemon 以外的地方。
 - 進度卡寫入改成會觸發送字（例如每回合結束自動提醒更新、寫入後自動帶入），或改用 hook `additionalContext`／寫檔案進專案資料夾把卡片塞進對話，或「帶入進度卡」「請隊長更新」改成沒有使用者按就送。

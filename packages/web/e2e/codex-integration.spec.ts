@@ -468,3 +468,51 @@ test('模型目錄（§26.11）：daemon 跑 codex debug models、只留五個�
   expect(rejected.status()).toBe(400);
   expect(((await rejected.json()) as { code: string }).code).toBe('invalid_effort');
 });
+
+test('團隊模式（§27）：Codex 沒開 MCP 時停用；開了之後真 daemon 帶 -c developer_instructions 固定守則、建立即團隊', async ({
+  page,
+}) => {
+  const machine = ((await (await page.request.get('/api/machines')).json()) as Machine[]).find(
+    (m) => m.online,
+  )!;
+  expect(machine.capabilities.teamMode).toBe(true);
+  await page.goto('/#/new');
+  await page.getByTestId('agent-picker').getByText('Codex', { exact: true }).click();
+  await expect(page.getByTestId('team-mode-toggle')).toBeDisabled();
+  await expect(page.getByTestId('team-mode-blocked')).toContainText('Codex 隊長要用');
+
+  // 「Codex 掛 Agent Board MCP」開著才能開（測完關回去，不影響其他測試）。
+  expect((await page.request.patch('/api/settings', { data: { codexMcp: true } })).ok()).toBe(true);
+  try {
+    const response = await page.request.post('/api/sessions', {
+      data: {
+        machineId: machine.id,
+        name: 'codex-lead',
+        projectId: null,
+        cwd: repo,
+        useWorktree: false,
+        permissionMode: 'default',
+        model: null,
+        accountProfile: null,
+        resumeClaudeSessionId: null,
+        firstPrompt: null,
+        agent: 'codex',
+        teamMode: true,
+      },
+    });
+    expect(response.ok()).toBe(true);
+    const lead = (await response.json()) as Session;
+    expect(lead.teamMode).toBe(true);
+    await expectStatus(page.request, lead.id, 'waiting_input');
+    await expect
+      .poll(async () => readScreen(page, lead.id), { timeout: 20_000 })
+      .toContain('devinstr developer_instructions="Agent Board team mode: you are the lead');
+    const teams = (await (await page.request.get('/api/teams')).json()) as {
+      id: string;
+      name: string;
+    }[];
+    expect(teams.some((t) => t.name === 'codex-lead')).toBe(true);
+  } finally {
+    await page.request.patch('/api/settings', { data: { codexMcp: false } });
+  }
+});

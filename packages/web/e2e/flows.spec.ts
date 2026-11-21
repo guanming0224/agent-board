@@ -1841,6 +1841,166 @@ test.describe('新增 session', () => {
   });
 });
 
+test.describe('新增 session：團隊模式（§27）', () => {
+  test.use({ locale: 'zh-TW', viewport: { width: 1280, height: 900 } });
+
+  const rigTeam = machine({
+    id: 'm-t',
+    name: 'rig-team',
+    capabilities: {
+      ...rigA.capabilities,
+      teamMode: true,
+      claudeFlags: { effort: true, efforts: null, fallbackModel: true, appendSystemPrompt: true },
+    },
+  });
+  const seed = (machines: Machine[] = [rigTeam]): Seed => ({ machines, sessions: [] });
+  const info = (over: Record<string, unknown>) =>
+    patchBackend(
+      'getTeamModeInfo',
+      `async () => (${JSON.stringify({ defaultOn: false, dispatch: true, codexMcp: false, autoStaff: true, teamLimit: 12, ...over })})`,
+    );
+  const preview = (page: Page) => page.getByTestId('command-preview');
+
+  test('開團隊模式＋標準組合：預覽帶守則參數與全文、隊員名單；送出只有布林，隊員照組合開好', async ({
+    page,
+  }) => {
+    await open(page, 'new', seed());
+    await page.getByLabel('名稱', { exact: true }).fill('Alpha');
+    await page.getByLabel('工作目錄').fill('/work/alpha');
+    const toggle = page.getByTestId('team-mode-toggle');
+    await expect(toggle).toBeEnabled();
+    await expect(toggle).not.toBeChecked();
+    await expect(page.getByTestId('team-mode-preset')).toHaveCount(0);
+    await expect(preview(page)).not.toContainText('--append-system-prompt');
+    await toggle.check();
+    await expect(preview(page)).toContainText('--append-system-prompt <team-mode guide>');
+    await page.getByTestId('team-mode-guide').locator('summary').click();
+    await expect(page.getByTestId('team-mode-guide').locator('pre')).toContainText(
+      'Agent Board team mode: you are the lead',
+    );
+    await page.getByTestId('team-mode-preset').selectOption('builtin:standard');
+    await expect(page.getByTestId('team-mode-members')).toContainText(
+      'Alpha-BD1、Alpha-BD2、Alpha-RV',
+    );
+    // 選了組合：守則多一句「已有隊員」。
+    await expect(page.getByTestId('team-mode-guide').locator('pre')).toContainText(
+      'Members from a team preset were started for you',
+    );
+    await expect(page.getByTestId('team-mode-capped')).toHaveCount(0);
+    await page.getByRole('button', { name: '建立 session' }).click();
+    await expect(modal(page).getByText('團隊「Alpha」：開好 3 位隊員')).toBeVisible();
+    const creates = (await calls(page)).filter((c) => c.type === 'create') as {
+      input: Record<string, unknown>;
+    }[];
+    expect(creates.map((c) => c.input.name)).toEqual([
+      'Alpha',
+      'Alpha-BD1',
+      'Alpha-BD2',
+      'Alpha-RV',
+    ]);
+    expect(creates[0]!.input).toMatchObject({ teamMode: true, teamPresetMembers: true });
+    expect(creates[0]!.input).not.toHaveProperty('teamLead');
+    // 隊員不是團隊模式（守則只給隊長）。
+    expect(creates[1]!.input).not.toHaveProperty('teamMode');
+  });
+
+  test('人數上限：只開到上限並提示；自主擴編關著：守則改成只能用現有隊員；設定預設開＝一打開就勾著', async ({
+    page,
+  }) => {
+    await open(page, 'new', {
+      ...seed(),
+      patch: info({ defaultOn: true, autoStaff: false, teamLimit: 2 }),
+    });
+    await page.getByLabel('名稱', { exact: true }).fill('Beta');
+    await page.getByLabel('工作目錄').fill('/work/beta');
+    await expect(page.getByTestId('team-mode-toggle')).toBeChecked();
+    await expect(page.getByTestId('team-mode-autostaff-off')).toBeVisible();
+    await page.getByTestId('team-mode-preset').selectOption('builtin:standard');
+    await expect(page.getByTestId('team-mode-members')).toContainText('Beta-BD1');
+    await expect(page.getByTestId('team-mode-capped')).toHaveText(
+      '團隊人數上限 2 人（含隊長）：只會開前 1 位隊員，另外 2 位不開。',
+    );
+    await page.getByTestId('team-mode-guide').locator('summary').click();
+    await expect(page.getByTestId('team-mode-guide').locator('pre')).toContainText(
+      'cannot add or release members',
+    );
+    await page.getByRole('button', { name: '建立 session' }).click();
+    await expect(modal(page).getByText('團隊「Beta」：開好 1 位隊員')).toBeVisible();
+    // 使用者自己關掉：不送 teamMode。
+    await page.getByLabel('名稱', { exact: true }).fill('Gamma');
+    await page.getByTestId('team-mode-toggle').uncheck();
+    await page.getByRole('button', { name: '建立 session' }).click();
+    await expect(modal(page).getByText('已建立 Gamma')).toBeVisible();
+    const last = (await calls(page)).filter((c) => c.type === 'create').at(-1) as {
+      input: Record<string, unknown>;
+    };
+    expect(last.input).not.toHaveProperty('teamMode');
+  });
+
+  test('相容：舊 daemon 停用並說明；claude 不認得 --append-system-prompt 提示且預覽不帶；派工關著停用；舊 hub 不顯示', async ({
+    page,
+  }) => {
+    // 舊 daemon（沒有 capabilities.teamMode）。
+    await open(page, 'new', seed([rigA]));
+    await expect(page.getByTestId('team-mode-toggle')).toBeDisabled();
+    await expect(page.getByTestId('team-mode-blocked')).toHaveText(
+      'rig-a 的 daemon 太舊，不能用團隊模式。更新那台的 Agent Board 後再試。',
+    );
+    // 新 daemon、舊 claude。
+    const oldClaude = machine({
+      id: 'm-c',
+      name: 'rig-oldclaude',
+      capabilities: { ...rigA.capabilities, teamMode: true },
+    });
+    await open(page, 'new', seed([oldClaude]));
+    await page.getByLabel('工作目錄').fill('/w');
+    await page.getByTestId('team-mode-toggle').check();
+    await expect(page.getByTestId('team-mode-no-guide')).toContainText(
+      'rig-oldclaude 上的 claude 不認得 --append-system-prompt',
+    );
+    await expect(preview(page)).not.toContainText('--append-system-prompt');
+    await expect(page.getByTestId('team-mode-guide')).toHaveCount(0);
+    // 派工關著。
+    await open(page, 'new', { ...seed(), patch: info({ dispatch: false }) });
+    await expect(page.getByTestId('team-mode-toggle')).toBeDisabled();
+    await expect(page.getByTestId('team-mode-blocked')).toContainText('允許 session 派工');
+    // 舊 hub（沒有 /api/team-mode）：整塊不顯示。
+    await open(page, 'new', {
+      ...seed(),
+      patch: patchBackend('getTeamModeInfo', 'async () => null'),
+    });
+    await expect(page.getByLabel('名稱', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('team-mode')).toHaveCount(0);
+  });
+
+  test('手機：控制項至少 44px、不水平捲動；截圖（桌面＋手機）', async ({ page }, testInfo) => {
+    const shots = process.env.AB_TM_SHOTS;
+    for (const [width, height, tag] of [
+      [390, 844, 'phone'],
+      [1280, 900, 'desktop'],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      await open(page, 'new', seed());
+      await page.getByLabel('名稱', { exact: true }).fill('Alpha');
+      await page.getByLabel('工作目錄').fill('/work/alpha');
+      await page.getByTestId('team-mode-toggle').check();
+      await page.getByTestId('team-mode-preset').selectOption('builtin:standard');
+      if (tag === 'phone') {
+        const box = await page.locator('#ns-team-preset').boundingBox();
+        expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+        await expectNoPageOverflow(page);
+      }
+      await page.getByTestId('team-mode').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+      await page.screenshot({
+        path: join(
+          shots ?? join(testInfo.project.outputDir, 'shots'),
+          `team-mode-flows-${tag}.png`,
+        ),
+      });
+    }
+  });
+});
+
 test.describe('設定', () => {
   test.use({ locale: 'zh-TW', viewport: { width: 1280, height: 900 } });
 
@@ -1973,6 +2133,25 @@ test.describe('設定', () => {
     expect(((await calls(page))[0] as { patch: unknown }).patch).toEqual({ dispatch: false });
     await open(page, 'settings/dispatch');
     await expect(page.locator('#s-dispatch')).toBeInViewport();
+  });
+
+  test('團隊模式預設值（§27）：預設關；勾了存檔只送 teamModeDefault；派工關著時提示', async ({
+    page,
+  }) => {
+    await open(page, 'settings/sessions');
+    const section = page.locator('#s-dispatch');
+    const toggle = section.getByTestId('team-mode-default-toggle');
+    await expect(toggle).not.toBeChecked();
+    await expect(section).toContainText('新增 session 預設開「團隊模式」');
+    await toggle.check();
+    await expect(section.locator('.chip.unsaved')).toHaveText('未存檔');
+    await page.getByRole('button', { name: '儲存設定' }).click();
+    await expect(page.getByTestId('save-bar').locator('.msg')).toHaveText('已儲存');
+    expect(((await calls(page))[0] as { patch: unknown }).patch).toEqual({
+      teamModeDefault: true,
+    });
+    await section.getByTestId('dispatch-toggle').uncheck();
+    await expect(section.getByTestId('team-mode-needs-dispatch')).toBeVisible();
   });
 
   test('隊長自主擴編：預設開、上限 12、推播開；上限 2–20 才能存，存檔只送 autoStaff', async ({

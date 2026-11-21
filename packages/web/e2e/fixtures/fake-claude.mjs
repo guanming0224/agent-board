@@ -17,6 +17,9 @@ if (args[0] === '--help') {
       'Usage: claude [options] [command] [prompt]',
       '',
       'Options:',
+      // 團隊模式（§27）：照真 claude 2.1.329 的寫法。
+      '  --append-system-prompt <prompt>       Add text to the end of the default',
+      '                                        system prompt',
       '  --effort <level>                      Effort level for the current session',
       '                                        (low, medium, high, xhigh, max)',
       '  --fallback-model <model>              Models to fall back to when the main',
@@ -140,6 +143,9 @@ function callMcp(name, input) {
 }
 
 console.log(`fake claude ${sessionId} args=${args.join(' ')}`);
+// 團隊模式（§27）另外印一行短的：守則很長、會折行，測試比對不到。
+const appended = flag('--append-system-prompt');
+if (appended) console.log(`SYSPROMPT ${appended.slice(0, 40)}|${appended.length}`);
 hook('SessionStart', { source: flag('--resume') ? 'resume' : 'startup', context_tokens: 1234 });
 console.log('READY');
 

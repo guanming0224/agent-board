@@ -1446,3 +1446,58 @@ GM 回饋「模型清單太簡陋」，四項都做。**不升 schema（仍是 v
 - hub `test/modelOptions.test.ts`：依目錄 200／400、不在目錄收整份、舊 daemon 只送舊白名單、`spawn_member` 指定與沿用、釘選／隱藏的存取與整理。hook `mcp.test.ts`：enum 多 `ultra`。
 - web `modelMenu.test.ts`（分組、釘選順序、隱藏、目錄來源與合併、強度依模型）。e2e `flows.spec.ts`（Claude 分組與說明、Codex 目錄分組／強度隨模型變／標預設／換模型清掉、舊 daemon 內建清單與提示、設定頁釘選隱藏後新增頁跟著變、手機 44px 與截圖）、`canvas.spec.ts`（快速建立的選項）、`codex-integration.spec.ts`（真 hub＋真 daemon＋假 codex 的 `debug models`：hub 拿到的只有五個欄位、新增頁列目錄、實際參數 `-m gpt-fake-ultra -c model_reasoning_effort="ultra"`、模型不支援 400）。
 - **未驗證**：真 codex 帶 `xhigh`／`max`／`ultra` 實際開對話；其他機器（Windows、其他帳號）的 `codex debug models` 輸出；真的舊版 codex（沒有 `debug models`）的 `--help` 輸出（測試用假的主說明；先看說明就停，不會跑 `debug models`）；Claude 完整版本名稱是否每台 claude 都認得（只依 GM 給的名稱）。
+
+## 27. 團隊模式：新增 session 以隊長身分開（GM 2026-11-21）
+
+GM 問「隊長每次都會記得叫隊友嗎？」——不會：守則原本只在 MCP 工具說明與 `list_members`／`get_progress` 回傳裡（§11.7），Claude 自己用到工具才看得到，11/14 後新開的 session 都沒組隊。GM 決定三項都做，變成 Agent Board 的既定架構。**不升 schema（仍是 v11）**。
+
+### 27.1 守則（`protocol/src/leadGuide.ts`）
+
+- 五段固定英文常數：`TEAM_MODE_INTRO`（你是隊長、團隊已建好、收到任務先 `list_members` 看成員、人數上限與空位）、`TEAM_MODE_PRESET_MEMBERS`（已照 Preset 開好隊員在待命，先 `list_members` 看再 `send_task`，缺角色才加人）、`TEAM_MODE_RHYTHM`（以 `LEAD_STAFFING_RHYTHM` 為基礎的五步節奏＋上限與加開申請）、`TEAM_MODE_FIXED_STAFF`（`AUTOSTAFF_OFF_GUIDE` 的意思：不能新增或封存，用現有隊員分工）、`TEAM_MODE_SMALL_WORK`（幾分鐘做得完的小事自己做）。
+- `teamModeGuide({ autoStaff, presetMembers })` 只決定拼哪幾段（四種組合），沒有任何變數內容。字元只用英數、底線、空白與 `. , : ; ' ( ) -`（`TEAM_MODE_GUIDE_CHARS`，測試檢查）：Windows 經 `claude.cmd` 啟動時 cmd.exe 不會拆壞，放進 Codex 的 TOML 字串也不必跳脫（仍照樣 `tomlString`）。
+
+### 27.2 CLI 參數（只用 `--help` 與公開文件判斷，沒有跑真對話）
+
+- **Claude**（本機 claude 2.1.329 `--help`）：`--append-system-prompt <prompt>  Add text to the end of the default system prompt`，說明沒有「only works with --print」，互動模式可用。系統提示是每次啟動組的，所以新開、`--resume` 接續、daemon 重啟接回**每次都帶**（help 沒寫 resume 不能帶；是否和 resume 前那次的守則合併或取代：未驗證，因為每次都帶同一段固定文字，結果相同）。
+  - 偵測：`parseClaudeHelp` 多一個 `ClaudeFlags.appendSystemPrompt`（有這個選項而且說明沒寫只能配 `--print`；`--append-system-prompt-file` 不算）。舊 daemon 的偵測結果沒有這個鍵＝不知道＝不帶。
+  - `buildClaudeArgs`：`teamLead` 有值而且 `claudeFlags.appendSystemPrompt === true` 才帶 `--append-system-prompt <teamModeGuide(...)>`（在 `--fallback-model` 之後、`--mcp-config` 之前）；否則不帶並記 warn。
+- **Codex**（codex-cli 0.167.0）：`codex --help` 只有通用的 `-c, --config <key=value>`（值用 TOML 解析），沒有列出守則鍵；官方設定文件（`developers.openai.com/codex/config-reference`，現轉址到 `learn.chatgpt.com/docs/config-file/config-reference`）列 `developer_instructions`（string）：「Additional developer instructions injected into the session (optional)」；設定範例說它排在 AGENTS.md 之前。`instructions` 文件寫「Reserved for future use」，`model_instructions_file` 是「取代內建指示」，都不用。
+  - `buildCodexArgs`：`-c developer_instructions="<tomlString(teamModeGuide(...))>"`，放在推理強度之後、`--dangerously-bypass-hook-trust` 之前；`codex resume` 也帶（`codex resume --help` 同樣收 `-c`）。只在這次啟動有效，不寫 `~/.codex`。
+  - **未驗證**：真 codex 是否真的把它放進對話（沒有跑真對話）；resume 一個舊 thread 時是否重新套用（文件沒寫）；更舊的 codex 不認得這個鍵時是忽略還是報錯（`--strict-config` 才會對未知鍵報錯，daemon 沒帶）。
+- `check:no-llm`：`CLAUDE_FLAGS` 加 `--append-system-prompt`；新增 3d：`session.ts` 的 `--append-system-prompt` 與 `codex.ts` 的 `developer_instructions=` 各只能出現一次、值只能是 `teamModeGuide(input.teamLead)`（`docs/no-llm-review.md`「團隊模式」一節）。
+
+### 27.3 協定與相容
+
+- `SessionSpec.teamLead?: { autoStaff: boolean, presetMembers: boolean }`（`.strict()`，多的欄位拒絕）：有＝帶守則。**只有布林**，文字由 daemon 用常數組。舊 daemon 的 zod 會丟掉（不帶、不壞）。
+- REST `POST /api/sessions` 的 body 是 `SessionSpec.omit({ teamLead })` 加 `teamMode?: boolean`、`teamPresetMembers?: boolean`：網頁只能送布林，送來的 `teamLead` 被丟掉，hub 自己填（`createSessionAs` 再拿掉一次）。`teamMode` 不是布林 400 `invalid_request`。
+- daemon hello `features` 加 `session.teamMode`（`DAEMON_FEATURES.teamMode`），`MachineCapabilities.teamMode: true`（舊 hub 的 zod 會丟掉，所以網頁看到 true＝hub 與 daemon 都是新版）。
+- `Session.teamMode?: true`：hub 存在 settings 表 `sessionTeamMode:<id>`（和 `sessionAgent:*` 同一種做法；`getSettings` 不讀、刪除 session 時一起刪）。
+- `Settings.teamModeDefault`（預設 false，舊設定沒有這個鍵＝關），`SettingsPatch` 可改。
+- `GET /api/team-mode`（auth user）回 `TeamModeInfo { defaultOn, dispatch, codexMcp, autoStaff, teamLimit }`：一般使用者讀不到 `/api/settings`，新增頁靠這條。**舊 hub 沒有這條路由**（404 或被當成網頁）→ 網頁的 `getTeamModeInfo` 回 null → 不顯示團隊模式。
+- 相容表：舊 daemon → 開關停用＋「daemon 太舊」（hub 也 409 `team_mode_unavailable`）；新 daemon＋claude 不認得 `--append-system-prompt` → 照樣建團隊、守則不帶，畫面提示（`team-mode-no-guide`），預覽不列參數；舊 hub＋新網頁 → 不顯示；排隊或接續期間 daemon 換成舊版 → `dispatchCreate` 拿掉 `teamLead`（團隊照舊）。
+
+### 27.4 hub：建立即成團隊
+
+- `createSession` 收到 `teamMode: true`：依序檢查 daemon 宣告 `session.teamMode`（否則 409 `team_mode_unavailable`）、`Settings.dispatch` 開著（否則 409 `team_mode_dispatch_off`：沒有派工工具，隊長什麼都不能做）、Codex 還要 `Settings.codexMcp`（否則 409 `team_mode_codex_mcp_off`）。都過了才建，什麼都沒建就回錯誤。
+- 填 `teamLead = { autoStaff: Settings.autoStaff.enabled, presetMembers: teamPresetMembers === true }`，在建立 session 的**同一個交易**裡：寫 `sessionTeamMode:<id>`、建新團隊（名稱＝session 名稱、`teal`、目標空白、任務自動執行關、放在 session 的工作區，同 `spawn_member` 第一次開人時建的團隊）、加隊長（`role: lead`）。之後推 `team.updated`，畫布不等 10 秒輪詢。所以 `list_members` 一開始就是 `yourRole: "lead"`、`staffing { size: 1, limit }`。
+- audit `session.create` 多 `teamMode: true`、`teamId`、`presetMembers`。
+- 接續（`resumeSession`）：`Session.teamMode` 是 true 就再帶 `teamLead`，`autoStaff` 照**當下**的設定，`presetMembers` false（團隊已經在了；守則本來就叫它先 `list_members`）。不會再建團隊。daemon 重啟接回用本機 `sessions.json` 裡存的 spec（建立當時的兩個布林）。
+- 已知：hub 只在建立當下檢查派工設定；之後關掉派工，接續照樣帶守則，但工具呼叫回 `dispatch_disabled`（守則提到的工具用不了）。
+
+### 27.5 網頁（`flows/NewSessionPage.tsx`、`flows/teamMode.ts`）
+
+- 新增 session 在 Agent 下面多一區「團隊模式」（`data-testid="team-mode"`；`getTeamModeInfo` 是 null 時整區不顯示）：勾選框「以隊長身分開（建立時就組好團隊）」，預設照 `TeamModeInfo.defaultOn`，使用者動過就記在草稿（`teamMode`、`teamPreset`）。停用條件與說明：daemon 太舊、派工關著、Codex 沒開 MCP（`team-mode-blocked`）。開著時：自主擴編關著的提示、claude 不認得參數的提示；預覽多 `--append-system-prompt <team-mode guide>`（Codex `-c 'developer_instructions="<team-mode guide>"'`），下面可展開看守則全文（`team-mode-guide`，就是 daemon 會帶的那段）。
+- 「一開就帶的隊員」下拉：不帶（只開隊長）／內建組合（小隊、標準、探索）／團隊 Presets（存好的）。`teamModeMembers`：內建組合用 `presetRows(..., { hasLead: true })`；Preset 用 `presetToPlanRows` 後拿掉隊長列（隊長就是這個 session，用表單上的權限、模型），沿用每列的權限模式、模型、worktree 設定與 label 命名。**人數上限**：隊員最多 `teamLimit - 1` 位，照列序截斷，畫面寫「只會開前 N 位，另外 M 位不開」（`team-mode-capped`）。和隊長一起用 `validatePlan` 檢查（名稱重複、主資料夾兩位寫入者）。
+- 送出：`createSession({ …, teamMode: true, teamPresetMembers: 有隊員 })` → `startTeamMembers`：用名稱＋`listTeamMembers` 找到 hub 建的團隊（隊長是這個 session），沿用 `runPlan`（`team: { existing }`）逐列 `createSession`＋`putTeamMember`（同機器、同 cwd、同工作區、worktree 照 `rowUsesWorktree`、唯讀角色唯讀；隊員沒有第一個指令，開好待命、不帶守則）；Preset 有交接規則時照原本的列序號建（隊長列換成這個 session，沒開的列略過）。部分失敗保留已建的，訊息「開好 N 位隊員，M 位沒開成」；找不到團隊（舊 hub）說明且不開隊員。最後 `refreshTeams`。
+- Preset 的目標、TEAM.md、隊長第一個指令、初始進度卡、任務自動執行**不套用**（只開隊員與交接規則；隊長的第一個指令用表單上填的）。
+- 設定 → Session 與額度 →「允許 session 派工」區塊多一個「新增 session 預設開『團隊模式』」（`team-mode-default-toggle`；派工關著時提示沒作用）。
+
+### 27.6 不呼叫模型
+
+守則是寫死的常數、只在啟動參數帶、不送字進 PTY、不在對話中途出現；hub／daemon 只收布林。建團隊、開隊員都是既有的 REST 路徑，隊員沒有第一個指令。詳見 `docs/no-llm-review.md`「團隊模式」。
+
+### 27.7 測試與未驗證
+
+- protocol `teamMode.test.ts`（四種組合的字元與內容、自主擴編關著不提 spawn_member、2.1.329 `--help` 解析、`-file` 變體與只能配 `--print` 不算、`teamModeSupport`、`teamLead` 只收兩個布林、REST body 丟掉 `teamLead`、舊資料相容）；daemon `misc.test.ts`（認得才帶、resume 也帶、不認得或偵測不到不帶）、`codex.test.ts`（`-c developer_instructions`、resume 也帶）、`daemon.test.ts`（真 daemon＋假 claude：帶、存進 sessions.json、hello 宣告、重啟 `--resume` 照帶）、`process.test.ts`（假 claude 的 `--help` 偵測進 capabilities）；hub `test/teamMode.test.ts`（建立即團隊、`list_members` 的 yourRole lead 與上限、只收布林、自主擴編關著、舊 daemon 409、派工關／Codex MCP 關 409、接續照帶且不再建團隊、刪除清鍵、設定預設值與 `/api/team-mode`）；web `teamMode.test.ts`（內建與 Preset 隊員、上限截斷、撞名、validatePlan、規則對應、假後端整條路）、`commandPreview.test.ts`。
+- e2e：`flows.spec.ts`（開關、預覽與守則全文、標準組合、送出只有布林、上限提示、自主擴編關、預設開、舊 daemon／舊 claude／派工關／舊 hub、手機 44px 與截圖、設定頁預設值）、`canvas.spec.ts`（新增後畫布出現團隊框與隊員，桌面＋手機）、`team-integration.spec.ts`（真 hub＋真 daemon＋假 claude：隊長收到 `--append-system-prompt`、隊員沒有、隊員有自己的 worktree、`list_members` 是 lead、畫布團隊框、接續照帶）、`codex-integration.spec.ts`（Codex 沒開 MCP 停用；開了真 daemon 帶 `-c developer_instructions`、建立即團隊）。
+- **未驗證**：真 claude／codex 帶守則開對話後，隊長是否真的照節奏組隊（沒跑真對話）；Windows 經 `claude.cmd` 帶這段文字（字元已限制在 cmd 安全範圍）；Codex resume 舊 thread 時 `developer_instructions` 是否重新套用。

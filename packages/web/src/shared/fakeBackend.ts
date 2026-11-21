@@ -1276,7 +1276,9 @@ export function createFakeBackend(): BoardBackend & FakeBackendControls {
       });
       // 和 hub 相同（§27）：團隊模式一建立就是新團隊的隊長；daemon 太舊、派工關著、Codex 沒開 MCP 都 409。
       if (input.teamMode) {
-        if (!state.machines.find((m) => m.id === input.machineId)?.capabilities.teamMode) {
+        // e2e 直接塞進畫面的機器不在假後端的清單裡：那種不擋（畫面已經照 capabilities 停用開關）。
+        const target = state.machines.find((m) => m.id === input.machineId);
+        if (target && !target.capabilities.teamMode) {
           throw apiError(409, 'team_mode_unavailable', 'The daemon is too old for team mode');
         }
         if (!settings.dispatch) {
